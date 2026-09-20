@@ -9,17 +9,7 @@ import {
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { agentLoop, agentLoopContinue } from "../src/agent-loop.ts";
-import {
-	canonicalJson,
-	createFailureFingerprint,
-	createToolCallFingerprint,
-	createToolRecoveryCall,
-	createToolRecoveryObservation,
-	ObserveToolRecoveryController,
-	setDefaultStreamFn,
-	ToolExecutionError,
-	type ToolRecoveryObservation,
-} from "../src/index.ts";
+import { setDefaultStreamFn } from "../src/index.ts";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
 
 // Mock stream for testing - mimics MockAssistantStream
@@ -88,7 +78,9 @@ function createUserMessage(text: string): UserMessage {
 
 // Simple identity converter for tests - just passes through standard messages
 function identityConverter(messages: AgentMessage[]): Message[] {
-	return messages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "toolResult") as Message[];
+	return messages.filter(
+		(m) => m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult",
+	) as Message[];
 }
 
 describe("default stream function compatibility", () => {
@@ -108,7 +100,7 @@ describe("default stream function compatibility", () => {
 		});
 
 		try {
-			const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+			const context: AgentContext = { messages: [], tools: [] };
 			const config: AgentLoopConfig = { model: createModel(), convertToLlm: identityConverter };
 			const stream = Reflect.apply(agentLoop, undefined, [
 				[createUserMessage("Hello")],
@@ -128,7 +120,6 @@ describe("default stream function compatibility", () => {
 describe("agentLoop with AgentMessage", () => {
 	it("should emit events with AgentMessage types", async () => {
 		const context: AgentContext = {
-			systemPrompt: "You are helpful.",
 			messages: [],
 			tools: [],
 		};
@@ -173,6 +164,45 @@ describe("agentLoop with AgentMessage", () => {
 		expect(eventTypes).toContain("agent_end");
 	});
 
+	it("should build provider context exclusively from transcript messages", async () => {
+		const initialSystem: AgentMessage = {
+			role: "system",
+			content: "Transcript prompt",
+			toolsAdded: [],
+			timestamp: 1,
+		};
+		const context: AgentContext = {
+			messages: [],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		const stream = agentLoop(
+			[initialSystem, createUserMessage("Hello")],
+			context,
+			config,
+			undefined,
+			(_model, providerContext) => {
+				// The provider receives a transcript: no top-level prompt or tool fields.
+				expect(Object.keys(providerContext)).toEqual(["messages"]);
+				expect(providerContext.messages[0]).toBe(initialSystem);
+				const response = new MockAssistantStream();
+				queueMicrotask(() => {
+					response.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				});
+				return response;
+			},
+		);
+
+		await stream.result();
+	});
+
 	it("should handle custom message types via convertToLlm", async () => {
 		// Create a custom message type
 		interface CustomNotification {
@@ -188,7 +218,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "You are helpful.",
 			messages: [notification as unknown as AgentMessage], // Custom message in context
 			tools: [],
 		};
@@ -230,7 +259,6 @@ describe("agentLoop with AgentMessage", () => {
 
 	it("should apply transformContext before convertToLlm", async () => {
 		const context: AgentContext = {
-			systemPrompt: "You are helpful.",
 			messages: [
 				createUserMessage("old message 1"),
 				createAssistantMessage([{ type: "text", text: "old response 1" }]),
@@ -317,7 +345,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -396,7 +423,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -469,7 +495,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -548,7 +573,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -623,7 +647,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -706,7 +729,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -825,7 +847,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [slowTool],
 		};
@@ -919,7 +940,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [slowTool, fastTool],
 		};
@@ -995,7 +1015,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1053,11 +1072,10 @@ describe("agentLoop with AgentMessage", () => {
 			},
 		};
 		const context: AgentContext = {
-			systemPrompt: "first prompt",
 			messages: [],
 			tools: [tool],
 		};
-		let convertedSecondTurnSystemPrompt = "";
+		let convertedSecondTurnHasUpdate = false;
 		let prepareCalls = 0;
 		let prepared = false;
 		const config: AgentLoopConfig = {
@@ -1069,10 +1087,10 @@ describe("agentLoop with AgentMessage", () => {
 				prepared = true;
 				return {
 					context: {
-						systemPrompt: "second prompt",
 						messages: currentContext.messages.slice(),
 						tools: currentContext.tools,
 					},
+					messages: [{ role: "system", content: "updated guidance", timestamp: 1 }],
 				};
 			},
 		};
@@ -1081,7 +1099,9 @@ describe("agentLoop with AgentMessage", () => {
 		const stream = agentLoop([createUserMessage("echo something")], context, config, undefined, (_model, ctx) => {
 			llmCalls++;
 			if (llmCalls === 2) {
-				convertedSecondTurnSystemPrompt = ctx.systemPrompt ?? "";
+				convertedSecondTurnHasUpdate = ctx.messages.some(
+					(message) => message.role === "system" && message.content === "updated guidance",
+				);
 			}
 			const mockStream = new MockAssistantStream();
 			queueMicrotask(() => {
@@ -1111,55 +1131,7 @@ describe("agentLoop with AgentMessage", () => {
 
 		expect(llmCalls).toBe(2);
 		expect(prepareCalls).toBe(1);
-		expect(convertedSecondTurnSystemPrompt).toBe("second prompt");
-	});
-
-	it("prepares each request after queued steering messages are injected", async () => {
-		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
-		let steeringPolls = 0;
-		const preparedRoles: string[][] = [];
-		const validatedRoles: string[][] = [];
-		const config: AgentLoopConfig = {
-			model: createModel(),
-			convertToLlm: identityConverter,
-			getSteeringMessages: async () => {
-				steeringPolls++;
-				return steeringPolls === 2 ? [createUserMessage("queued steering")] : [];
-			},
-			prepareRequest: async (requestContext) => {
-				preparedRoles.push(requestContext.messages.map((message) => message.role));
-				return requestContext;
-			},
-			transformContext: async (messages) => [...messages, createUserMessage("transformed")],
-			validateRequest: async (requestContext) => {
-				validatedRoles.push(requestContext.messages.map((message) => message.role));
-			},
-		};
-
-		let llmCalls = 0;
-		const stream = agentLoop([createUserMessage("first")], context, config, undefined, () => {
-			llmCalls++;
-			const mockStream = new MockAssistantStream();
-			queueMicrotask(() => {
-				mockStream.push({
-					type: "done",
-					reason: "stop",
-					message: createAssistantMessage([{ type: "text", text: `response ${llmCalls}` }]),
-				});
-			});
-			return mockStream;
-		});
-
-		for await (const _event of stream) {
-			// consume
-		}
-
-		expect(llmCalls).toBe(2);
-		expect(preparedRoles).toEqual([["user"], ["user", "assistant", "user"]]);
-		expect(validatedRoles).toEqual([
-			["user", "user"],
-			["user", "assistant", "user", "user"],
-		]);
+		expect(convertedSecondTurnHasUpdate).toBe(true);
 	});
 
 	it("should stop after the current turn when shouldStopAfterTurn returns true", async () => {
@@ -1180,7 +1152,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1241,11 +1212,14 @@ describe("agentLoop with AgentMessage", () => {
 		expect(steeringPolls).toBe(1);
 		expect(followUpPolls).toBe(0);
 		expect(callbackToolResultIds).toEqual(["tool-1"]);
-		expect(callbackContextRoles).toEqual(["user", "assistant", "toolResult"]);
-		expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(callbackContextRoles).toEqual(["system", "user", "assistant", "toolResult"]);
+		// The context declares no tools, so the loop announces the loadout with a system message.
+		expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "toolResult"]);
 		expect(events.map((event) => event.type)).toEqual([
 			"agent_start",
 			"turn_start",
+			"message_start",
+			"message_end",
 			"message_start",
 			"message_end",
 			"message_start",
@@ -1276,7 +1250,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1307,7 +1280,7 @@ describe("agentLoop with AgentMessage", () => {
 
 		const messages = await stream.result();
 		expect(llmCalls).toBe(1);
-		expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "toolResult"]);
 		expect(events.filter((event) => event.type === "turn_end")).toHaveLength(1);
 	});
 
@@ -1328,7 +1301,6 @@ describe("agentLoop with AgentMessage", () => {
 			},
 		};
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1387,7 +1359,6 @@ describe("agentLoop with AgentMessage", () => {
 			},
 		};
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1446,7 +1417,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1486,6 +1456,7 @@ describe("agentLoop with AgentMessage", () => {
 		const messages = await stream.result();
 		expect(callIndex).toBe(2);
 		expect(messages.map((message) => message.role)).toEqual([
+			"system",
 			"user",
 			"assistant",
 			"toolResult",
@@ -1510,7 +1481,6 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "",
 			messages: [],
 			tools: [tool],
 		};
@@ -1546,7 +1516,6 @@ describe("agentLoop with AgentMessage", () => {
 describe("agentLoopContinue with AgentMessage", () => {
 	it("should throw when context has no messages", () => {
 		const context: AgentContext = {
-			systemPrompt: "You are helpful.",
 			messages: [],
 			tools: [],
 		};
@@ -1567,7 +1536,6 @@ describe("agentLoopContinue with AgentMessage", () => {
 		const userMessage: AgentMessage = createUserMessage("Hello");
 
 		const context: AgentContext = {
-			systemPrompt: "You are helpful.",
 			messages: [userMessage],
 			tools: [],
 		};
@@ -1620,7 +1588,6 @@ describe("agentLoopContinue with AgentMessage", () => {
 		};
 
 		const context: AgentContext = {
-			systemPrompt: "You are helpful.",
 			messages: [customMessage as unknown as AgentMessage],
 			tools: [],
 		};
@@ -1664,930 +1631,5 @@ describe("agentLoopContinue with AgentMessage", () => {
 		const messages = await stream.result();
 		expect(messages.length).toBe(1);
 		expect(messages[0].role).toBe("assistant");
-	});
-});
-
-function createToolCallThenStopStream(toolCalls: Extract<AssistantMessage["content"][number], { type: "toolCall" }>[]) {
-	let calls = 0;
-	return {
-		streamFn: () => {
-			const stream = new MockAssistantStream();
-			queueMicrotask(() => {
-				calls++;
-				stream.push({
-					type: "done",
-					reason: calls === 1 ? "toolUse" : "stop",
-					message:
-						calls === 1
-							? createAssistantMessage(toolCalls, "toolUse")
-							: createAssistantMessage([{ type: "text", text: "done" }]),
-				});
-			});
-			return stream;
-		},
-		getCalls: () => calls,
-	};
-}
-
-describe("Tool recovery observation", () => {
-	it("uses canonical key order", () => {
-		expect(canonicalJson({ z: 1, nested: { b: 2, a: 1 }, a: 0 })).toBe(
-			canonicalJson({ a: 0, nested: { a: 1, b: 2 }, z: 1 }),
-		);
-	});
-
-	it("ignores volatile PID, time, random id, URL query, absolute paths, and secrets", async () => {
-		const first = {
-			path: "/tmp/agent/target.ts",
-			pid: 100,
-			timestamp: "2026-08-15T10:00:00Z",
-			requestId: "1e6b4de2-ef2d-4f95-b771-62744f082778",
-			url: "https://example.invalid/api?token=first",
-			apiKey: "first-secret",
-		};
-		const second = {
-			path: "/tmp/agent/target.ts",
-			pid: 200,
-			timestamp: "2026-08-15T10:01:00Z",
-			requestId: "10f4be6e-1d6e-4cc4-8e45-87f39c790324",
-			url: "https://example.invalid/api?token=second",
-			apiKey: "second-secret",
-		};
-		const firstFingerprint = await createToolCallFingerprint("read", first);
-		const secondFingerprint = await createToolCallFingerprint("read", second);
-		expect(firstFingerprint.callSignature).toBe(secondFingerprint.callSignature);
-		const canonical = canonicalJson(first);
-		expect(canonical).not.toContain("first-secret");
-		expect(canonical).not.toContain("/tmp/agent");
-		expect(canonical).not.toContain("token=first");
-	});
-
-	it("removes URL credentials while retaining absolute target distinctions only in target hashes", async () => {
-		const privateUrl = await createToolCallFingerprint("read", {
-			url: "https://alice:password@example.invalid/a?token=first#fragment",
-		});
-		const scrubbedUrl = await createToolCallFingerprint("read", {
-			url: "https://bob:other@example.invalid/a?token=second#other",
-		});
-		const firstPath = await createToolCallFingerprint("read", { path: "/private/one.ts" });
-		const secondPath = await createToolCallFingerprint("read", { path: "/private/two.ts" });
-		expect(privateUrl.targetHash).toBe(scrubbedUrl.targetHash);
-		expect(firstPath.targetHash).not.toBe(secondPath.targetHash);
-		const canonical = canonicalJson({
-			path: "/private/one.ts",
-			url: "https://alice:password@example.invalid/a?token=x",
-		});
-		expect(canonical).not.toContain("/private/one.ts");
-		expect(canonical).not.toContain("alice");
-		expect(canonical).not.toContain("password");
-		expect(canonical).not.toContain("token=x");
-	});
-
-	it("changes target and failure fingerprints when the target changes", async () => {
-		const first = await createToolCallFingerprint("read", { path: "src/first.ts" });
-		const second = await createToolCallFingerprint("read", { path: "src/second.ts" });
-		expect(first.targetHash).not.toBe(second.targetHash);
-		expect(
-			await createFailureFingerprint({ toolName: "read", code: "TARGET_NOT_FOUND", targetHash: first.targetHash }),
-		).not.toBe(
-			await createFailureFingerprint({ toolName: "read", code: "TARGET_NOT_FOUND", targetHash: second.targetHash }),
-		);
-	});
-
-	it("uses only explicit stable constraints for failure fingerprints", async () => {
-		const firstCall = await createToolRecoveryCall(
-			"first",
-			"apply_patch",
-			{ path: "src/target.ts" },
-			"conditional_write",
-		);
-		const secondCall = await createToolRecoveryCall(
-			"second",
-			"apply_patch",
-			{ path: "src/target.ts" },
-			"conditional_write",
-		);
-		const createObservation = async (call: typeof firstCall, details: Record<string, unknown>, contextHash: string) =>
-			await createToolRecoveryObservation({
-				call,
-				isError: true,
-				error: new ToolExecutionError("patch match failed", {
-					code: "PATCH_MATCH_NOT_FOUND",
-					category: "precondition",
-					retryable: false,
-					details,
-					fingerprintConstraint: { hunkHeaderHash: "header-a", contextHash },
-				}),
-			});
-
-		const first = await createObservation(
-			firstCall,
-			{
-				candidateLines: [12],
-				mtimeMs: 1,
-				snapshot: "first snapshot",
-				evidence: "first evidence",
-			},
-			"context-a",
-		);
-		const movedCandidate = await createObservation(
-			secondCall,
-			{
-				candidateLines: [91],
-				mtimeMs: 2,
-				snapshot: "second snapshot",
-				evidence: "second evidence",
-			},
-			"context-a",
-		);
-		expect(first.failure?.fingerprint).toBe(movedCandidate.failure?.fingerprint);
-
-		const changedTargetCall = await createToolRecoveryCall(
-			"third",
-			"apply_patch",
-			{ path: "src/other.ts" },
-			"conditional_write",
-		);
-		const changedTarget = await createObservation(changedTargetCall, { candidateLines: [12] }, "context-a");
-		const changedContext = await createObservation(secondCall, { candidateLines: [12] }, "context-b");
-		expect(first.failure?.fingerprint).not.toBe(changedTarget.failure?.fingerprint);
-		expect(first.failure?.fingerprint).not.toBe(changedContext.failure?.fingerprint);
-	});
-
-	it("keeps before, after, execution end, and ToolResult singular for recovery resolutions", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		for (const action of [
-			{
-				type: "accept_as_success" as const,
-				verification: "verified",
-				replacementResult: { content: [{ type: "text" as const, text: "accepted" }], details: {} },
-			},
-			{
-				type: "ask_model_to_rebuild" as const,
-				guidance: "rebuild",
-				replacementResult: { content: [{ type: "text" as const, text: "rebuild" }], details: {} },
-			},
-			{
-				type: "refresh_context" as const,
-				adapter: "read_parent_directory",
-				replacementResult: { content: [{ type: "text" as const, text: "refresh" }], details: {} },
-			},
-		]) {
-			let beforeCalls = 0;
-			let afterCalls = 0;
-			let executions = 0;
-			const tool: AgentTool<typeof schema> = {
-				name: "failing",
-				label: "Failing",
-				description: "Fault injection tool",
-				parameters: schema,
-				async execute() {
-					executions++;
-					throw new ToolExecutionError("failed", {
-						code: "MATCH_NOT_FOUND",
-						category: "precondition",
-						retryable: false,
-					});
-				},
-			};
-			const response = createToolCallThenStopStream([
-				{ type: "toolCall", id: `call-${action.type}`, name: "failing", arguments: { value: "x" } },
-			]);
-			const events: AgentEvent[] = [];
-			const stream = agentLoop(
-				[createUserMessage("run")],
-				{ systemPrompt: "", messages: [], tools: [tool] },
-				{
-					model: createModel(),
-					convertToLlm: identityConverter,
-					beforeToolCall: async () => {
-						beforeCalls++;
-						return undefined;
-					},
-					afterToolCall: async () => {
-						afterCalls++;
-						return undefined;
-					},
-					toolRecoveryController: {
-						preflight: () => undefined,
-						decideAttempt: (observation) => {
-							observation.action = action.type;
-							observation.outcome = action.type === "accept_as_success" ? "recovered" : "needs_model";
-							return { action, observation };
-						},
-						observe: () => {},
-					},
-				},
-				undefined,
-				response.streamFn,
-			);
-			for await (const event of stream) events.push(event);
-			const messages = await stream.result();
-			expect({ beforeCalls, afterCalls, executions }).toEqual({ beforeCalls: 1, afterCalls: 1, executions: 1 });
-			expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
-			expect(messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
-		}
-	});
-
-	it("keeps ToolExecutionError fields available to recovery", () => {
-		const error = new ToolExecutionError("Timed out", {
-			code: "TIMEOUT",
-			category: "transient",
-			retryable: true,
-			details: { retryAfterMs: 10 },
-		});
-		expect(error.name).toBe("ToolExecutionError");
-		expect(error.code).toBe("TIMEOUT");
-		expect(error.category).toBe("transient");
-		expect(error.retryable).toBe(true);
-		expect(error.details).toEqual({ retryAfterMs: 10 });
-	});
-
-	it("classifies ordinary Tool errors as UNCLASSIFIED without retrying", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let executions = 0;
-		const observations: ToolRecoveryObservation[] = [];
-		const tool: AgentTool<typeof schema> = {
-			name: "failing",
-			label: "Failing",
-			description: "Failing tool",
-			parameters: schema,
-			async execute() {
-				executions++;
-				throw new Error("ordinary failure");
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "failing", arguments: { value: "x" } },
-		]);
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				toolRecoveryController: new ObserveToolRecoveryController((observation) => {
-					observations.push(observation);
-				}),
-			},
-			undefined,
-			response.streamFn,
-		);
-		for await (const _event of stream) {
-			// consume
-		}
-		expect(executions).toBe(1);
-		expect(response.getCalls()).toBe(2);
-		expect(observations).toHaveLength(1);
-		expect(observations[0]?.failure).toMatchObject({ code: "UNCLASSIFIED", category: "unknown", retryable: false });
-	});
-
-	it("calls hooks once and observes one finalized result", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let beforeCalls = 0;
-		let afterCalls = 0;
-		let executions = 0;
-		let preflights = 0;
-		const observations: ToolRecoveryObservation[] = [];
-		const tool: AgentTool<typeof schema> = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo tool",
-			parameters: schema,
-			async execute() {
-				executions++;
-				return { content: [{ type: "text", text: "ok" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "echo", arguments: { value: "x" } },
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				beforeToolCall: async () => {
-					beforeCalls++;
-					return undefined;
-				},
-				afterToolCall: async () => {
-					afterCalls++;
-					return undefined;
-				},
-				toolRecoveryController: {
-					preflight: () => {
-						preflights++;
-						return undefined;
-					},
-					observe: (observation) => {
-						observations.push(observation);
-					},
-				},
-			},
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) {
-			events.push(event);
-		}
-		expect({ beforeCalls, afterCalls, executions, preflights }).toEqual({
-			beforeCalls: 1,
-			afterCalls: 1,
-			executions: 1,
-			preflights: 1,
-		});
-		expect(observations).toHaveLength(1);
-		expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(1);
-		expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
-		const recoveryEvent = events.find(
-			(event): event is Extract<AgentEvent, { type: "tool_recovery_observe" }> =>
-				event.type === "tool_recovery_observe",
-		);
-		expect(recoveryEvent).toMatchObject({
-			toolCallId: "call-1",
-			toolName: "echo",
-			action: "observe",
-			outcome: "success",
-		});
-		expect(recoveryEvent).not.toHaveProperty("args");
-		expect(recoveryEvent).not.toHaveProperty("result");
-	});
-
-	it("keeps schema, before-blocked, and unavailable calls on the immediate path", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let beforeCalls = 0;
-		let afterCalls = 0;
-		let executions = 0;
-		let recoveryCalls = 0;
-		const tool: AgentTool<typeof schema> = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo tool",
-			parameters: schema,
-			async execute() {
-				executions++;
-				return { content: [{ type: "text", text: "unexpected" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "schema", name: "echo", arguments: {} },
-			{ type: "toolCall", id: "blocked", name: "echo", arguments: { value: "blocked" } },
-			{ type: "toolCall", id: "unavailable", name: "missing", arguments: {} },
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				beforeToolCall: async () => {
-					beforeCalls++;
-					return { block: true };
-				},
-				afterToolCall: async () => {
-					afterCalls++;
-					return undefined;
-				},
-				toolRecoveryController: {
-					preflight: () => {
-						recoveryCalls++;
-						return undefined;
-					},
-					observe: () => {
-						recoveryCalls++;
-					},
-				},
-			},
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) {
-			events.push(event);
-		}
-		expect({ beforeCalls, afterCalls, executions, recoveryCalls }).toEqual({
-			beforeCalls: 1,
-			afterCalls: 0,
-			executions: 0,
-			recoveryCalls: 0,
-		});
-		expect(events.filter((event) => event.type === "tool_recovery_observe")).toHaveLength(0);
-	});
-
-	it("records a post-hook failure without re-running the Tool", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let executions = 0;
-		const observations: ToolRecoveryObservation[] = [];
-		const tool: AgentTool<typeof schema> = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo tool",
-			parameters: schema,
-			async execute() {
-				executions++;
-				return { content: [{ type: "text", text: "ok" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "echo", arguments: { value: "x" } },
-		]);
-		const messages = await agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				afterToolCall: async () => {
-					throw new ToolExecutionError("Command timed out after 1 seconds", {
-						code: "TIMEOUT",
-						category: "transient",
-						retryable: true,
-					});
-				},
-				toolRecoveryController: new ObserveToolRecoveryController((observation) => {
-					observations.push(observation);
-				}),
-			},
-			undefined,
-			response.streamFn,
-		).result();
-		expect(executions).toBe(1);
-		expect(observations[0]?.failure?.code).toBe("POST_HOOK_FAILURE");
-		expect(observations[0]?.failure?.retryable).toBe(false);
-		const toolResult = messages.find((message) => message.role === "toolResult");
-		expect(toolResult?.role === "toolResult" ? toolResult.content : []).toContainEqual({
-			type: "text",
-			text: "Command timed out after 1 seconds",
-		});
-	});
-
-	it("retries a bounded assist decision without duplicating hooks or logical Tool events", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let executions = 0;
-		let beforeCalls = 0;
-		let afterCalls = 0;
-		const delays: number[] = [];
-		const tool: AgentTool<typeof schema> = {
-			name: "read",
-			label: "Read",
-			description: "Fault injection read",
-			parameters: schema,
-			async execute() {
-				executions++;
-				if (executions < 3) {
-					throw new ToolExecutionError("timed out", {
-						code: "TIMEOUT",
-						category: "transient",
-						retryable: true,
-					});
-				}
-				return { content: [{ type: "text", text: "recovered" }], details: {} };
-			},
-		};
-		const recoveryEvents: Array<Extract<AgentEvent, { type: "tool_recovery_observe" }>> = [];
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "retry-call", name: "read", arguments: { value: "x" } },
-		]);
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				beforeToolCall: async () => {
-					beforeCalls++;
-					return undefined;
-				},
-				afterToolCall: async () => {
-					afterCalls++;
-					return undefined;
-				},
-				toolRecoveryController: {
-					preflight: () => undefined,
-					decideAttempt: (observation) => {
-						const retry = executions < 3;
-						observation.action = retry ? "retry_same_args" : "stop";
-						observation.warning = executions === 2;
-						return {
-							action: retry
-								? { type: "retry_same_args", delayMs: executions * 10 }
-								: { type: "stop", reason: "budget" },
-							observation,
-						};
-					},
-					waitForRetry: async (delayMs) => {
-						delays.push(delayMs);
-						return true;
-					},
-					observe: (observation) => {
-						if (observation.outcome === "success") {
-							observation.action = "retry_same_args";
-							observation.outcome = "recovered";
-						}
-					},
-				},
-			},
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) {
-			if (event.type === "tool_recovery_observe") recoveryEvents.push(event);
-		}
-		expect({ executions, beforeCalls, afterCalls, delays }).toEqual({
-			executions: 3,
-			beforeCalls: 1,
-			afterCalls: 1,
-			delays: [10, 20],
-		});
-		expect(recoveryEvents.map((event) => [event.action, event.outcome, event.warning ?? false])).toEqual([
-			["retry_same_args", "failure", false],
-			["retry_same_args", "failure", true],
-			["retry_same_args", "recovered", false],
-		]);
-		expect(response.getCalls()).toBe(2);
-	});
-
-	it("isolates streamed updates from completed retry attempts", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		type ToolUpdate = NonNullable<Parameters<AgentTool<typeof schema>["execute"]>[3]>;
-		let executions = 0;
-		let beforeCalls = 0;
-		let afterCalls = 0;
-		let finalObservations = 0;
-		let firstOnUpdate: ToolUpdate | undefined;
-		let secondOnUpdate: ToolUpdate | undefined;
-		const tool: AgentTool<typeof schema> = {
-			name: "read",
-			label: "Read",
-			description: "Retry update isolation",
-			parameters: schema,
-			async execute(_toolCallId, _params, _signal, onUpdate) {
-				if (!onUpdate) throw new Error("expected update callback");
-				executions++;
-				if (executions === 1) {
-					firstOnUpdate = onUpdate;
-					throw new ToolExecutionError("timed out", {
-						code: "TIMEOUT",
-						category: "transient",
-						retryable: true,
-					});
-				}
-				const previousOnUpdate = firstOnUpdate;
-				if (!previousOnUpdate) throw new Error("missing first attempt update callback");
-				const currentOnUpdate = onUpdate;
-				secondOnUpdate = currentOnUpdate;
-				previousOnUpdate({ content: [{ type: "text", text: "stale" }], details: {} });
-				currentOnUpdate({ content: [{ type: "text", text: "current" }], details: {} });
-				return { content: [{ type: "text", text: "done" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "retry-update", name: "read", arguments: { value: "x" } },
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				beforeToolCall: async () => {
-					beforeCalls++;
-					return undefined;
-				},
-				afterToolCall: async () => {
-					afterCalls++;
-					return undefined;
-				},
-				toolRecoveryController: {
-					preflight: () => undefined,
-					decideAttempt: (observation) => ({
-						action: { type: "retry_same_args", delayMs: 0 },
-						observation: { ...observation, action: "retry_same_args" },
-					}),
-					waitForRetry: async () => true,
-					observe: () => {
-						finalObservations++;
-					},
-				},
-			},
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) {
-			events.push(event);
-		}
-
-		// 已结束的 attempt 永久失效，逻辑 Tool Call 完成后也不能再产生 update。
-		firstOnUpdate?.({ content: [{ type: "text", text: "stale after finish" }], details: {} });
-		secondOnUpdate?.({ content: [{ type: "text", text: "current after finish" }], details: {} });
-
-		const updateTexts = events.flatMap((event) => {
-			if (event.type !== "tool_execution_update") return [];
-			return event.partialResult.content.flatMap((content: { type: string; text?: string }) =>
-				content.type === "text" && typeof content.text === "string" ? [content.text] : [],
-			);
-		});
-		expect(updateTexts).toEqual(["current"]);
-		expect({ executions, beforeCalls, afterCalls, finalObservations }).toEqual({
-			executions: 2,
-			beforeCalls: 1,
-			afterCalls: 1,
-			finalObservations: 1,
-		});
-		expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(1);
-		expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
-		expect(response.getCalls()).toBe(2);
-	});
-
-	it("cancels a retry during backoff without starting another Tool attempt", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		const abortController = new AbortController();
-		let executions = 0;
-		let beforeCalls = 0;
-		let afterCalls = 0;
-		const observations: ToolRecoveryObservation[] = [];
-		const tool: AgentTool<typeof schema> = {
-			name: "read",
-			label: "Read",
-			description: "Abort fault injection read",
-			parameters: schema,
-			async execute() {
-				executions++;
-				throw new ToolExecutionError("timed out", {
-					code: "TIMEOUT",
-					category: "transient",
-					retryable: true,
-				});
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "abort-call", name: "read", arguments: { value: "x" } },
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				beforeToolCall: async () => {
-					beforeCalls++;
-					return undefined;
-				},
-				afterToolCall: async () => {
-					afterCalls++;
-					return undefined;
-				},
-				toolRecoveryController: {
-					preflight: () => undefined,
-					decideAttempt: (observation) => ({
-						action: { type: "retry_same_args", delayMs: 10 },
-						observation: { ...observation, action: "retry_same_args" },
-					}),
-					waitForRetry: async (_delayMs, signal) => {
-						abortController.abort();
-						return signal?.aborted !== true;
-					},
-					observe: (observation) => {
-						observations.push(observation);
-					},
-				},
-			},
-			abortController.signal,
-			response.streamFn,
-		);
-		for await (const event of stream) events.push(event);
-		expect({ executions, beforeCalls, afterCalls }).toEqual({ executions: 1, beforeCalls: 1, afterCalls: 1 });
-		expect(observations.at(-1)?.failure?.code).toBe("CANCELLED");
-		expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(1);
-		expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(1);
-	});
-
-	it("skips identical parallel Tool calls after preparing the first one", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let executions = 0;
-		const tool: AgentTool<typeof schema> = {
-			name: "duplicate-parallel",
-			label: "Duplicate parallel",
-			description: "Duplicate parallel tool",
-			parameters: schema,
-			async execute() {
-				executions++;
-				return { content: [{ type: "text", text: "executed" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "duplicate-parallel", arguments: { value: "same" } },
-			{ type: "toolCall", id: "call-2", name: "duplicate-parallel", arguments: { value: "same" } },
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: createModel(), convertToLlm: identityConverter },
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) events.push(event);
-
-		expect(executions).toBe(1);
-		const toolEnds = events.filter((event) => event.type === "tool_execution_end");
-		expect(toolEnds).toHaveLength(2);
-		const duplicateEnd = toolEnds.find((event) => event.toolCallId === "call-2");
-		expect(duplicateEnd).toMatchObject({ isError: true });
-		expect(duplicateEnd?.type === "tool_execution_end" ? duplicateEnd.result.content : []).toContainEqual(
-			expect.objectContaining({ type: "text", text: expect.stringContaining("已跳过重复 Tool 调用") }),
-		);
-	});
-
-	it("blocks conflicting execution keys before running parallel tools", async () => {
-		const schema = Type.Object({ path: Type.String(), value: Type.String() });
-		let executions = 0;
-		const tool: AgentTool<typeof schema> = {
-			name: "file-mutation",
-			label: "File mutation",
-			description: "File mutation",
-			parameters: schema,
-			getExecutionKeys: (args) => [`file:${(args as { path: string }).path}`],
-			async execute() {
-				executions++;
-				return { content: [{ type: "text", text: "executed" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "file-mutation", arguments: { path: "same.ts", value: "first" } },
-			{ type: "toolCall", id: "call-2", name: "file-mutation", arguments: { path: "same.ts", value: "second" } },
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: createModel(), convertToLlm: identityConverter },
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) events.push(event);
-
-		expect(executions).toBe(0);
-		const toolEnds = events.filter((event) => event.type === "tool_execution_end");
-		expect(toolEnds).toHaveLength(2);
-		for (const toolEnd of toolEnds) {
-			expect(toolEnd).toMatchObject({ isError: true });
-			if (toolEnd.type === "tool_execution_end") {
-				expect(toolEnd.result.content).toContainEqual(
-					expect.objectContaining({ type: "text", text: expect.stringContaining("不能同时修改同一个目标") }),
-				);
-			}
-		}
-	});
-
-	it("blocks conflicting execution keys before running sequential tools", async () => {
-		const schema = Type.Object({ path: Type.String(), value: Type.String() });
-		let executions = 0;
-		const tool: AgentTool<typeof schema> = {
-			name: "sequential-file-mutation",
-			label: "Sequential file mutation",
-			description: "Sequential file mutation",
-			parameters: schema,
-			getExecutionKeys: (args) => [`file:${(args as { path: string }).path}`],
-			async execute() {
-				executions++;
-				return { content: [{ type: "text", text: "executed" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{
-				type: "toolCall",
-				id: "sequential-call-1",
-				name: "sequential-file-mutation",
-				arguments: { path: "same.ts", value: "first" },
-			},
-			{
-				type: "toolCall",
-				id: "sequential-call-2",
-				name: "sequential-file-mutation",
-				arguments: { path: "same.ts", value: "second" },
-			},
-		]);
-		const events: AgentEvent[] = [];
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{ model: createModel(), convertToLlm: identityConverter, toolExecution: "sequential" },
-			undefined,
-			response.streamFn,
-		);
-		for await (const event of stream) events.push(event);
-
-		expect(executions).toBe(0);
-		const toolEnds = events.filter((event) => event.type === "tool_execution_end");
-		expect(toolEnds).toHaveLength(2);
-		for (const toolEnd of toolEnds) {
-			expect(toolEnd).toMatchObject({ isError: true });
-			if (toolEnd.type === "tool_execution_end") {
-				expect(toolEnd.result.content).toContainEqual(
-					expect.objectContaining({ type: "text", text: expect.stringContaining("不能同时修改同一个目标") }),
-				);
-			}
-		}
-	});
-
-	it("keeps parallel observations isolated by tool call", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		let releaseFirst: (() => void) | undefined;
-		let firstStarted: (() => void) | undefined;
-		const firstStartedPromise = new Promise<void>((resolve) => {
-			firstStarted = resolve;
-		});
-		const firstDone = new Promise<void>((resolve) => {
-			releaseFirst = resolve;
-		});
-		const observations: ToolRecoveryObservation[] = [];
-		const tool: AgentTool<typeof schema> = {
-			name: "parallel",
-			label: "Parallel",
-			description: "Parallel tool",
-			parameters: schema,
-			async execute(_toolCallId, params) {
-				if (params.value === "first") {
-					firstStarted?.();
-					await firstDone;
-					return { content: [{ type: "text", text: "first" }], details: {} };
-				}
-				await firstStartedPromise;
-				releaseFirst?.();
-				throw new Error("second failed");
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "parallel", arguments: { value: "first" } },
-			{ type: "toolCall", id: "call-2", name: "parallel", arguments: { value: "second" } },
-		]);
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				toolRecoveryController: new ObserveToolRecoveryController((observation) => {
-					observations.push(observation);
-				}),
-			},
-			undefined,
-			response.streamFn,
-		);
-		for await (const _event of stream) {
-			// consume
-		}
-		expect(observations.map((observation) => observation.toolCallId).sort()).toEqual(["call-1", "call-2"]);
-		expect(observations.find((observation) => observation.toolCallId === "call-1")?.outcome).toBe("success");
-		expect(observations.find((observation) => observation.toolCallId === "call-2")?.failure?.code).toBe(
-			"UNCLASSIFIED",
-		);
-	});
-
-	it("awaits aborted observations without leaving background recovery work", async () => {
-		const schema = Type.Object({ value: Type.String() });
-		const abortController = new AbortController();
-		let pendingObservations = 0;
-		let observedAbort = false;
-		const tool: AgentTool<typeof schema> = {
-			name: "abort",
-			label: "Abort",
-			description: "Abort tool",
-			parameters: schema,
-			async execute() {
-				abortController.abort();
-				return { content: [{ type: "text", text: "done" }], details: {} };
-			},
-		};
-		const response = createToolCallThenStopStream([
-			{ type: "toolCall", id: "call-1", name: "abort", arguments: { value: "x" } },
-		]);
-		const stream = agentLoop(
-			[createUserMessage("run")],
-			{ systemPrompt: "", messages: [], tools: [tool] },
-			{
-				model: createModel(),
-				convertToLlm: identityConverter,
-				toolRecoveryController: new ObserveToolRecoveryController(async (_observation, signal) => {
-					pendingObservations++;
-					await Promise.resolve();
-					observedAbort = signal?.aborted === true;
-					pendingObservations--;
-				}),
-			},
-			abortController.signal,
-			response.streamFn,
-		);
-		for await (const _event of stream) {
-			// consume
-		}
-		expect(observedAbort).toBe(true);
-		expect(pendingObservations).toBe(0);
 	});
 });

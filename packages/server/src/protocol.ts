@@ -74,6 +74,7 @@ type _AiModelFieldsAccountedFor = Assert<
 		| "reasoning"
 		| "thinkingLevelMap"
 		| "input"
+		| "promptCache"
 		| "cost"
 		| "contextWindow"
 		| "maxTokens"
@@ -110,7 +111,7 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 type _AiToolResultMessageFieldsAccountedFor = Assert<
 	ExactKeys<
 		ToolResultMessage,
-		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "addedToolNames" | "isError" | "timestamp"
+		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "isError" | "timestamp"
 	>
 >;
 

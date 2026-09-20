@@ -9,6 +9,7 @@ import { type OpenAIResponsesOptions, stream as streamOpenAIResponses } from "..
 import { convertResponsesMessages, processResponsesStream } from "../src/api/openai-responses-shared.ts";
 import type { AssistantMessage, Model } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 function createModel(supportsWebSearch: boolean): Model<"openai-responses"> {
 	return {
@@ -60,10 +61,10 @@ async function capturePayload(
 
 	const response = streamOpenAIResponses(
 		model,
-		{
+		normalizeContext({
 			messages: [{ role: "user", content: "Search the web", timestamp: 0 }],
 			tools: [],
-		},
+		}),
 		{
 			...options,
 			apiKey: "test",
@@ -328,7 +329,7 @@ describe("OpenAI Responses hosted web search", () => {
 			},
 		];
 
-		const input = convertResponsesMessages(model, { messages: [assistant] }, new Set(["upstream"]));
+		const input = convertResponsesMessages(model, normalizeContext({ messages: [assistant] }), new Set(["upstream"]));
 		expect(input).toContainEqual(expect.objectContaining({ type: "web_search_call", id: "ws_1" }));
 		expect(input).toContainEqual(
 			expect.objectContaining({
@@ -343,7 +344,11 @@ describe("OpenAI Responses hosted web search", () => {
 		);
 
 		const otherModel = { ...model, id: "gpt-5.6-other" };
-		const crossModelInput = convertResponsesMessages(otherModel, { messages: [assistant] }, new Set(["upstream"]));
+		const crossModelInput = convertResponsesMessages(
+			otherModel,
+			normalizeContext({ messages: [assistant] }),
+			new Set(["upstream"]),
+		);
 		expect(crossModelInput.some((item) => typeof item === "object" && item.type === "web_search_call")).toBe(false);
 	});
 });

@@ -11,8 +11,8 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 		tokensPerSecond: scenario === "abort" ? 100 : undefined,
 	});
 
-	const isSessionNameRequest = (context: { systemPrompt?: string }): boolean =>
-		context.systemPrompt?.includes("会话命名助手") === true;
+	const isSessionNameRequest = (context: { messages: readonly unknown[] }): boolean =>
+		JSON.stringify(context.messages).includes("会话命名助手");
 	if (scenario === "tool") {
 		let toolCallReturned = false;
 		faux.setResponses([
@@ -31,12 +31,12 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 				isSessionNameRequest(context) ? fauxAssistantMessage("自动标题") : fauxAssistantMessage("tool complete"),
 		]);
 	} else if (scenario === "abort") {
-		const response = (context: { systemPrompt?: string }) =>
+		const response = (context: { messages: readonly unknown[] }) =>
 			isSessionNameRequest(context) ? fauxAssistantMessage("自动标题") : fauxAssistantMessage("x".repeat(20_000));
 		faux.setResponses([response, response]);
 	} else if (scenario === "resources") {
 		const resourceResponses = ["prompt expanded", "skill expanded"];
-		const response = (context: { systemPrompt?: string }) =>
+		const response = (context: { messages: readonly unknown[] }) =>
 			isSessionNameRequest(context)
 				? fauxAssistantMessage("自动标题")
 				: fauxAssistantMessage(resourceResponses.shift() ?? "skill expanded");

@@ -14,7 +14,13 @@ import {
 	retryAssistantCall,
 	uuidv7,
 } from "@earendil-works/pi-ai";
-import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import type {
+	AssistantMessage,
+	Model,
+	SimpleStreamOptions,
+	TranscriptContext,
+	Usage,
+} from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.ts";
 import {
@@ -32,6 +38,12 @@ import {
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 } from "./utils.ts";
+
+function normalizeSummarizationContext(systemPrompt: string, messages: AgentMessage[]): TranscriptContext {
+	return {
+		messages: [{ role: "system", content: systemPrompt, timestamp: 0 }, ...messages],
+	} as TranscriptContext;
+}
 
 // ============================================================================
 // File Operation Tracking
@@ -88,7 +100,9 @@ function getMessageFromEntryForCompaction(entry: SessionEntry): AgentMessage | u
 	if (entry.type === "compaction") {
 		return undefined;
 	}
-	return sessionEntryToContextMessages(entry)[0];
+	// System messages are prompt state, not conversation; the compaction entry carries their replay.
+	const message = sessionEntryToContextMessages(entry)[0];
+	return message?.role === "system" ? undefined : message;
 }
 
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
@@ -435,6 +449,7 @@ export function findCutPoint(
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
 			// 连续 Tool Result 必须和对应 Tool Call 一起保留，超出预算时回到最后一个合法切点。
+			// 选择当前预算后的最近合法切点，避免单独保留没有对应 Tool Call 的结果。
 			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
 			break;
 		}
@@ -586,7 +601,7 @@ function createSummarizationOptions(
  */
 export async function completeSummarization(
 	model: Model<any>,
-	context: Context,
+	context: TranscriptContext,
 	options: SimpleStreamOptions,
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
@@ -689,14 +704,13 @@ async function summarizeConversationText(options: {
 	while (firstChunk || remaining.length > 0) {
 		firstChunk = false;
 		const instructions = summary ? options.updatePrompt : options.initialPrompt;
-		const buildContext = (conversation: string): Context => {
+		const buildContext = (conversation: string): TranscriptContext => {
 			let promptText = `<conversation>\n${conversation}\n</conversation>\n\n`;
 			if (summary) promptText += `<previous-summary>\n${summary}\n</previous-summary>\n\n`;
 			promptText += instructions;
-			return {
-				systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
-				messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
-			};
+			return normalizeSummarizationContext(SUMMARIZATION_SYSTEM_PROMPT, [
+				{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() },
+			]);
 		};
 
 		let chunk = remaining;
@@ -965,7 +979,7 @@ export async function compact(
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
+		let historyText = previousSummary ?? "No prior history.";
 		let historyUsage: Usage | undefined;
 		if (messagesToSummarize.length > 0) {
 			const historyResult = await generateSummaryWithUsage(

@@ -1182,7 +1182,7 @@ function modelDefinitionFromCatalog(
 		cost: model.cost,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
-		...(api === model.api && model.compat ? { compat: model.compat } : {}),
+		...(api === model.api && model.compat ? { compat: model.compat as ModelsJsonModel["compat"] } : {}),
 	};
 }
 
@@ -2901,7 +2901,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					: existing?.maxTokens
 						? { maxTokens: existing.maxTokens }
 						: {}),
-				...(existing?.compat ? { compat: existing.compat } : {}),
+				...(existing?.compat ? { compat: existing.compat as ModelsJsonModel["compat"] } : {}),
 			});
 		}
 		await runtime.refresh({ allowNetwork: false, providers: [input.provider] });

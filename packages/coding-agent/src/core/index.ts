@@ -69,6 +69,8 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
+export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+export type { CacheWarmingDecision, CacheWarmingStatus } from "./cache-warmer.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 // Extensions system
@@ -81,6 +83,8 @@ export {
 	type BeforeAgentStartEvent,
 	type BeforeAgentStartEventResult,
 	type BuildSystemPromptOptions,
+	type CacheWarmingDecisionEvent,
+	type CacheWarmingDecisionEventResult,
 	type ContextEvent,
 	defineTool,
 	discoverAndLoadExtensions,
@@ -102,6 +106,7 @@ export {
 	type InlineExtension,
 	type LoadExtensionsResult,
 	type MessageRenderer,
+	type NormalizedBuildSystemPromptOptions,
 	type ProjectTrustContext,
 	type RegisteredCommand,
 	type SessionBeforeCompactEvent,

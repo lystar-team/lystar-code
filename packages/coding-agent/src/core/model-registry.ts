@@ -2,6 +2,7 @@ import type {
 	Api,
 	AssistantImages,
 	AssistantMessage,
+	AssistantMessageEventStream,
 	AuthResult,
 	Context,
 	ImagesApi,
@@ -12,6 +13,7 @@ import type {
 	ModelsApiStreamOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
+	ModelsSimpleStreamOptions,
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
@@ -123,6 +125,20 @@ export class ModelRegistry {
 		options?: ImagesOptions,
 	): Promise<AssistantImages> {
 		return this.runtime.generateImages(model, context, options);
+	}
+
+	/** Stream through the configured provider with request-time authentication. */
+	stream<TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: ModelsApiStreamOptions<TApi>,
+	): AssistantMessageEventStream {
+		return this.runtime.stream(model, context, options);
+	}
+
+	/** Stream with provider-neutral options and request-time authentication. */
+	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+		return this.runtime.streamSimple(model, context, options);
 	}
 
 	complete<TApi extends Api>(

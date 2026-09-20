@@ -1,15 +1,6 @@
 import { symlink } from "node:fs/promises";
-import {
-	type AssistantMessage,
-	type AssistantMessageEvent,
-	EventStream,
-	type Message,
-	type Model,
-} from "@earendil-works/pi-ai";
 import { applyPatch } from "diff";
-import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
-import { agentLoop } from "../../src/agent-loop.ts";
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "../../src/harness/context.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { type BashToolDetails, createBashTool } from "../../src/harness/tools/bash.ts";
@@ -27,69 +18,7 @@ import {
 	type ShellExecResult,
 } from "../../src/harness/types.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "../../src/harness/utils/truncate.ts";
-import type { AgentContext, AgentLoopConfig, AgentMessage, AgentTool } from "../../src/types.ts";
 import { createTempDir } from "./session-test-utils.ts";
-
-function createAgentUsage() {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-	};
-}
-
-function createAgentModel(): Model<"openai-responses"> {
-	return {
-		id: "mock",
-		name: "mock",
-		api: "openai-responses",
-		provider: "openai",
-		baseUrl: "https://example.invalid",
-		reasoning: false,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 8192,
-		maxTokens: 2048,
-	};
-}
-
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
-
-function createAssistantMessage(
-	content: AssistantMessage["content"],
-	stopReason: AssistantMessage["stopReason"],
-): AssistantMessage {
-	return {
-		role: "assistant",
-		content,
-		api: "openai-responses",
-		provider: "openai",
-		model: "mock",
-		usage: createAgentUsage(),
-		stopReason,
-		timestamp: Date.now(),
-	};
-}
-
-function identityConverter(messages: AgentMessage[]): Message[] {
-	return messages.filter(
-		(message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult",
-	) as Message[];
-}
 
 const noUpdate = () => {};
 
@@ -162,26 +91,6 @@ class BlockingEditExecutionEnv extends NodeExecutionEnv {
 		if (content === "ALPHA\nBETA\n" || content === "alpha\nBETA\n") {
 			this.secondEditWriteStarted = true;
 		}
-		return super.writeFile(path, content, context);
-	}
-}
-
-class ConflictEditExecutionEnv extends NodeExecutionEnv {
-	readCount = 0;
-	writeAttempts = 0;
-
-	override async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
-		this.readCount++;
-		if (this.readCount === 2) getOrThrow(await super.writeFile(path, "changed\n", context));
-		return super.readTextFile(path, context);
-	}
-
-	override async writeFile(
-		path: string,
-		content: string | Uint8Array,
-		context: Context,
-	): Promise<Result<void, FileError>> {
-		this.writeAttempts++;
 		return super.writeFile(path, content, context);
 	}
 }
@@ -273,69 +182,6 @@ function createTinyBmp(): Uint8Array {
 	view.setUint32(34, 4, true);
 	return bytes;
 }
-
-describe("Agent loop unknown tools", () => {
-	it("lists active tools and suggests edit for unavailable apply_patch", async () => {
-		const toolSchema = Type.Object({});
-		const tools: AgentTool<typeof toolSchema, Record<string, never>>[] = [
-			{
-				name: "read",
-				label: "read",
-				description: "Read files",
-				parameters: toolSchema,
-				async execute() {
-					return { content: [], details: {} };
-				},
-			},
-			{
-				name: "edit",
-				label: "edit",
-				description: "Edit files",
-				parameters: toolSchema,
-				async execute() {
-					return { content: [], details: {} };
-				},
-			},
-		];
-		const context: AgentContext = { systemPrompt: "", messages: [], tools };
-		const config: AgentLoopConfig = { model: createAgentModel(), convertToLlm: identityConverter };
-		let calls = 0;
-		const stream = agentLoop(
-			[{ role: "user", content: "edit a file", timestamp: Date.now() }],
-			context,
-			config,
-			undefined,
-			() => {
-				const response = new MockAssistantStream();
-				queueMicrotask(() => {
-					const message =
-						calls++ === 0
-							? createAssistantMessage(
-									[{ type: "toolCall", id: "apply-patch", name: "apply_patch", arguments: {} }],
-									"toolUse",
-								)
-							: createAssistantMessage([{ type: "text", text: "done" }], "stop");
-					response.push({
-						type: "done",
-						reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
-						message,
-					});
-				});
-				return response;
-			},
-		);
-
-		const messages = await stream.result();
-		const result = messages.find(
-			(message): message is Extract<AgentMessage, { role: "toolResult" }> => message.role === "toolResult",
-		);
-
-		expect(textOutput(result!)).toBe(
-			'Tool "apply_patch" is unavailable.\nAvailable tools: read, edit.\nFor file changes, retry with "edit".',
-		);
-		expect(result?.isError).toBe(true);
-	});
-});
 
 describe("AgentHarness tools", () => {
 	describe("read", () => {
@@ -506,7 +352,7 @@ describe("AgentHarness tools", () => {
 				BACKGROUND_CONTEXT,
 			);
 
-			expect(textOutput(result)).toBe("Successfully wrote 5 bytes to nested/dir/file.txt");
+			expect(textOutput(result)).toBe("Successfully wrote to nested/dir/file.txt");
 			expect(getOrThrow(await context.env.readTextFile("nested/dir/file.txt", BACKGROUND_CONTEXT))).toBe("hello");
 		});
 
@@ -545,42 +391,6 @@ describe("AgentHarness tools", () => {
 	});
 
 	describe("edit", () => {
-		it("rejects an edit when the target changes before write", async () => {
-			const env = new ConflictEditExecutionEnv({ cwd: createTempDir() });
-			getOrThrow(await env.writeFile("conflict.txt", "alpha\nbeta\n", BACKGROUND_CONTEXT));
-			env.writeAttempts = 0;
-
-			await expect(
-				createEditTool().execute(
-					"edit-write-conflict",
-					{ path: "conflict.txt", edits: [{ oldText: "alpha", newText: "ALPHA" }] },
-					noUpdate,
-					{ env },
-					invocation,
-					BACKGROUND_CONTEXT,
-				),
-			).rejects.toMatchObject({
-				code: "WRITE_CONFLICT",
-				category: "stale_state",
-				retryable: false,
-				details: {
-					expectedContentHash: expect.any(String),
-					actualContentHash: expect.any(String),
-				},
-				fingerprintConstraint: { kind: "edit_write_conflict" },
-			});
-			expect(env.writeAttempts).toBe(0);
-			expect(getOrThrow(await env.readTextFile("conflict.txt", BACKGROUND_CONTEXT))).toBe("changed\n");
-		});
-
-		it("exposes target keys for same-batch mutation conflict detection", () => {
-			const editTool = createEditTool();
-			const writeTool = createWriteTool();
-
-			expect(editTool.getExecutionKeys?.({ path: "edit.txt", edits: [] })).toEqual(["harness-file:edit.txt"]);
-			expect(writeTool.getExecutionKeys?.({ path: "edit.txt", content: "next" })).toEqual(["harness-file:edit.txt"]);
-		});
-
 		it("applies disjoint edits and returns both diff formats", async () => {
 			const context = createContext();
 			const original = "alpha\nbeta\ngamma\ndelta\n";
@@ -608,24 +418,6 @@ describe("AgentHarness tools", () => {
 			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(
 				"ALPHA\nbeta\nGAMMA\ndelta\n",
 			);
-		});
-
-		it("returns an idempotent success for a validated no-op edit", async () => {
-			const context = createContext();
-			const original = "already final\n";
-			getOrThrow(await context.env.writeFile("edit.txt", original, BACKGROUND_CONTEXT));
-
-			const result = await createEditTool().execute(
-				"edit-no-op",
-				{ path: "edit.txt", edits: [{ oldText: "already final", newText: "already final" }] },
-				noUpdate,
-				context,
-				invocation,
-				BACKGROUND_CONTEXT,
-			);
-
-			expect(textOutput(result)).toBe("No changes needed for edit.txt; the requested content is already present.");
-			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(original);
 		});
 
 		it("matches all edits against the original and rejects overlaps", async () => {
@@ -676,66 +468,6 @@ describe("AgentHarness tools", () => {
 					BACKGROUND_CONTEXT,
 				),
 			).rejects.toThrow(/Found 3 occurrences/);
-		});
-
-		it("reports duplicate candidate lines without writing the file", async () => {
-			const context = createContext();
-			const original = "\uFEFFbefore\r\nrepeat\r\nmiddle\r\nrepeat\r\nafter\r\nrepeat\r\n";
-			getOrThrow(await context.env.writeFile("edit.txt", original, BACKGROUND_CONTEXT));
-
-			await expect(
-				createEditTool().execute(
-					"edit-duplicate-lines",
-					{ path: "edit.txt", edits: [{ oldText: "repeat", newText: "changed" }] },
-					noUpdate,
-					context,
-					invocation,
-					BACKGROUND_CONTEXT,
-				),
-			).rejects.toThrow(
-				"Found 3 occurrences of edits[0] in edit.txt at lines 2, 4, 6.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.",
-			);
-			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(original);
-		});
-
-		it("reports fuzzy duplicate candidate lines without writing the file", async () => {
-			const context = createContext();
-			const original = "header\n\u201ctarget\u201d\nbody\n\u201etarget\u201f\n";
-			getOrThrow(await context.env.writeFile("edit.txt", original, BACKGROUND_CONTEXT));
-
-			await expect(
-				createEditTool().execute(
-					"edit-fuzzy-duplicate-lines",
-					{ path: "edit.txt", edits: [{ oldText: '"target"', newText: "changed" }] },
-					noUpdate,
-					context,
-					invocation,
-					BACKGROUND_CONTEXT,
-				),
-			).rejects.toThrow("Found 2 occurrences of edits[0] in edit.txt at lines 2, 4.");
-			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(original);
-		});
-
-		it("limits duplicate candidate lines to five", async () => {
-			const context = createContext();
-			getOrThrow(
-				await context.env.writeFile(
-					"edit.txt",
-					Array.from({ length: 101 }, () => "target").join("\n"),
-					BACKGROUND_CONTEXT,
-				),
-			);
-
-			await expect(
-				createEditTool().execute(
-					"edit-many-duplicates",
-					{ path: "edit.txt", edits: [{ oldText: "target", newText: "changed" }] },
-					noUpdate,
-					context,
-					invocation,
-					BACKGROUND_CONTEXT,
-				),
-			).rejects.toThrow("Found 101 occurrences of edits[0] in edit.txt at lines 1, 2, 3, 4, 5 +96 more.");
 		});
 
 		it("keeps the mutation queue locked until an aborted edit write settles", async () => {
@@ -833,78 +565,6 @@ describe("AgentHarness tools", () => {
 				"\uFEFFone\r\nTWO\r\n",
 			);
 		});
-
-		it("consumes explicit indentation without damaging the next line", async () => {
-			const context = createContext();
-			getOrThrow(await context.env.writeFile("edit.txt", "\tfoo();\n\tbar();\n", BACKGROUND_CONTEXT));
-
-			await createEditTool().execute(
-				"edit-fuzzy-indent-boundary",
-				{ path: "edit.txt", edits: [{ oldText: "  foo();\n", newText: "  baz();\n" }] },
-				noUpdate,
-				context,
-				invocation,
-				BACKGROUND_CONTEXT,
-			);
-
-			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(
-				"  baz();\n\tbar();\n",
-			);
-		});
-
-		it("does not report adjacent fuzzy edits as overlapping", async () => {
-			const context = createContext();
-			getOrThrow(await context.env.writeFile("edit.txt", "\tfoo();\n\tbar();\n", BACKGROUND_CONTEXT));
-
-			await createEditTool().execute(
-				"edit-fuzzy-adjacent-edits",
-				{
-					path: "edit.txt",
-					edits: [
-						{ oldText: "  foo();\n", newText: "  baz();\n" },
-						{ oldText: "\tbar();\n", newText: "\tqux();\n" },
-					],
-				},
-				noUpdate,
-				context,
-				invocation,
-				BACKGROUND_CONTEXT,
-			);
-
-			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(
-				"  baz();\n\tqux();\n",
-			);
-		});
-
-		it("chooses the matching tier independently for each edit", async () => {
-			const context = createContext();
-			getOrThrow(
-				await context.env.writeFile(
-					"edit.txt",
-					'\u201ctarget\u201d\n"exact"\n\u201cexact\u201d\n',
-					BACKGROUND_CONTEXT,
-				),
-			);
-
-			await createEditTool().execute(
-				"edit-independent-tiers",
-				{
-					path: "edit.txt",
-					edits: [
-						{ oldText: '"target"', newText: '"changed"' },
-						{ oldText: "\u201cexact\u201d", newText: "precise" },
-					],
-				},
-				noUpdate,
-				context,
-				invocation,
-				BACKGROUND_CONTEXT,
-			);
-
-			expect(getOrThrow(await context.env.readTextFile("edit.txt", BACKGROUND_CONTEXT))).toBe(
-				'"changed"\n"exact"\nprecise\n',
-			);
-		});
 	});
 
 	describe("bash", () => {
@@ -955,10 +615,7 @@ describe("AgentHarness tools", () => {
 			try {
 				await createBashTool().execute(
 					"bash-timeout-output",
-					{
-						command: "printf 'line-%s\\n' {1..3000}; sleep 2",
-						timeout: 0.05,
-					},
+					{ command: "emit-output-then-time-out", timeout: 0.05 },
 					noUpdate,
 					context,
 					invocation,

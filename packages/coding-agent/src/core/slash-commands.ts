@@ -25,6 +25,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "export", description: t("command.export") },
 	{ name: "import", description: t("command.import") },
 	{ name: "share", description: t("command.share") },
+	{ name: "bug", description: "报告 Pi 问题", argumentHint: "<描述>" },
 	{ name: "copy", description: t("command.copy") },
 	{ name: "name", description: t("command.name") },
 	{ name: "session", description: t("command.session") },

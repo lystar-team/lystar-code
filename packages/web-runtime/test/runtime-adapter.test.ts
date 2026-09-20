@@ -801,9 +801,10 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
 		const faux = registerFauxProvider();
+		let responseCount = 0;
 		faux.setResponses([
-			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "主回复"),
-			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "主回复"),
+			() => fauxAssistantMessage(responseCount++ === 0 ? "自动标题" : "主回复"),
+			() => fauxAssistantMessage(responseCount++ === 0 ? "自动标题" : "主回复"),
 		]);
 		const model = faux.getModel();
 		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
@@ -944,9 +945,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const cwd = join(tempDir, "project");
 		const faux = registerFauxProvider();
 		faux.setResponses([
-			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "first"),
-			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "second"),
-			(context) => fauxAssistantMessage(context.systemPrompt?.includes("会话命名助手") ? "自动标题" : "forked"),
+			(context) =>
+				fauxAssistantMessage(JSON.stringify(context.messages).includes("会话命名助手") ? "自动标题" : "first"),
+			(context) =>
+				fauxAssistantMessage(JSON.stringify(context.messages).includes("会话命名助手") ? "自动标题" : "second"),
+			(context) =>
+				fauxAssistantMessage(JSON.stringify(context.messages).includes("会话命名助手") ? "自动标题" : "forked"),
 		]);
 		const model = faux.getModel();
 		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });

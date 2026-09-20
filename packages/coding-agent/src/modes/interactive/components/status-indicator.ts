@@ -20,6 +20,15 @@ export class StatusIndicator extends Loader {
 		this.kind = kind;
 	}
 
+	renderInBorder(width: number): string {
+		const line = super.render(width + 2)[1] ?? "";
+		return truncateToWidth(line.startsWith(" ") ? line.slice(1).trimEnd() : line.trimEnd(), width, "");
+	}
+
+	renderSpinnerInBorder(width: number): string {
+		return truncateToWidth(this.getRenderedIndicator(), width, "");
+	}
+
 	dispose(): void {
 		this.stop();
 	}
@@ -35,15 +44,6 @@ export class WorkingStatusIndicator extends StatusIndicator {
 			message,
 			indicator,
 		);
-	}
-
-	renderInBorder(width: number): string {
-		const line = super.render(width + 2)[1] ?? "";
-		return truncateToWidth(line.startsWith(" ") ? line.slice(1).trimEnd() : line.trimEnd(), width, "");
-	}
-
-	renderSpinnerInBorder(width: number): string {
-		return truncateToWidth(this.getRenderedIndicator(), width, "");
 	}
 }
 

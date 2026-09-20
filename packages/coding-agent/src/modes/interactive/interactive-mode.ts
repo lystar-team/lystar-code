@@ -4540,6 +4540,9 @@ export class InteractiveMode {
 				// Tool results are rendered inline with tool calls, handled separately
 				break;
 			}
+			case "system": {
+				break;
+			}
 			default: {
 				const _exhaustive: never = message;
 			}

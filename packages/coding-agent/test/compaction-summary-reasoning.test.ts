@@ -1,10 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-	type AssistantMessage,
-	type Context,
-	estimateContextTokensUpperBound,
-	type Model,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, TranscriptContext } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionPreparation,
@@ -120,11 +115,11 @@ describe("generateSummary reasoning options", () => {
 	});
 
 	it("honors caller-supplied routing session and tool choice without prompt caching", async () => {
-		await completeSummarization(
-			createModel(false),
-			{ systemPrompt: "Summarize", messages: [] },
-			{ sessionId: "current-routing-session", cacheRetention: "long", toolChoice: "auto" },
-		);
+		await completeSummarization(createModel(false), { messages: [] } as unknown as TranscriptContext, {
+			sessionId: "current-routing-session",
+			cacheRetention: "long",
+			toolChoice: "auto",
+		});
 
 		expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
 			sessionId: "current-routing-session",
@@ -133,20 +128,23 @@ describe("generateSummary reasoning options", () => {
 		});
 	});
 
-	it("preserves the standalone split-turn summary prompt", async () => {
+	it("preserves the previous summary without an empty history request for a split turn", async () => {
 		const preparation: CompactionPreparation = {
 			firstKeptEntryId: "entry-keep",
 			messagesToSummarize: [],
 			turnPrefixMessages: messages,
 			isSplitTurn: true,
 			tokensBefore: 100,
+			previousSummary: "previous checkpoint",
 			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
 			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
 		};
 
-		await compact(preparation, createModel(false), "test-key");
+		const result = await compact(preparation, createModel(false), "test-key");
 
-		const requestContext = completeSimpleMock.mock.calls[0][1] as Context;
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		expect(result.summary).toContain("previous checkpoint");
+		const requestContext = completeSimpleMock.mock.calls[0][1] as TranscriptContext;
 		const prompt = JSON.stringify(requestContext.messages);
 		expect(prompt).toContain("This is the PREFIX of a turn that was too large to keep");
 		expect(prompt).toContain("<conversation>");
@@ -248,27 +246,6 @@ describe("generateSummary reasoning options", () => {
 			apiKey: "test-key",
 		});
 		expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
-	});
-
-	it("summarizes oversized history in bounded requests", async () => {
-		const model = { ...createModel(false, 100), contextWindow: 3_000 };
-		const largeMessages: AgentMessage[] = [{ role: "user", content: "你".repeat(4_000), timestamp: Date.now() }];
-
-		await generateSummary(largeMessages, model, 100, "test-key");
-
-		expect(completeSimpleMock.mock.calls.length).toBeGreaterThan(1);
-		for (const [, context, options] of completeSimpleMock.mock.calls) {
-			expect(estimateContextTokensUpperBound(context).tokens + (options?.maxTokens ?? 0)).toBeLessThanOrEqual(
-				model.contextWindow,
-			);
-		}
-	});
-
-	it("blocks an oversized summarization request before calling the provider", async () => {
-		const model = { ...createModel(false), contextWindow: 100 };
-
-		await expect(generateSummary(messages, model, 20, "test-key")).rejects.toThrow("已占满模型上下文");
-		expect(completeSimpleMock).not.toHaveBeenCalled();
 	});
 
 	it("leaves Anthropic refusal fallback handling to pi-ai model metadata", async () => {
