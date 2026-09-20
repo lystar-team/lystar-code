@@ -4242,6 +4242,88 @@
               "type": "string",
               "maxLength": 16384
             },
+            "webSearch": {
+              "type": "object",
+              "required": [
+                "status",
+                "action",
+                "sources"
+              ],
+              "properties": {
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "in_progress"
+                    },
+                    {
+                      "type": "string",
+                      "const": "searching"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    }
+                  ]
+                },
+                "action": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "search"
+                    },
+                    {
+                      "type": "string",
+                      "const": "open_page"
+                    },
+                    {
+                      "type": "string",
+                      "const": "find_in_page"
+                    }
+                  ]
+                },
+                "query": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "pattern": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "title": {
+                        "type": "string",
+                        "maxLength": 16384
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "maxItems": 32
+                }
+              },
+              "additionalProperties": false
+            },
             "diff": {
               "type": "object",
               "required": [
@@ -4321,6 +4403,88 @@
             "summary": {
               "type": "string",
               "maxLength": 16384
+            },
+            "webSearch": {
+              "type": "object",
+              "required": [
+                "status",
+                "action",
+                "sources"
+              ],
+              "properties": {
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "in_progress"
+                    },
+                    {
+                      "type": "string",
+                      "const": "searching"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    }
+                  ]
+                },
+                "action": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "search"
+                    },
+                    {
+                      "type": "string",
+                      "const": "open_page"
+                    },
+                    {
+                      "type": "string",
+                      "const": "find_in_page"
+                    }
+                  ]
+                },
+                "query": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "pattern": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "title": {
+                        "type": "string",
+                        "maxLength": 16384
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "maxItems": 32
+                }
+              },
+              "additionalProperties": false
             },
             "diff": {
               "type": "object",
@@ -4405,6 +4569,88 @@
             "summary": {
               "type": "string",
               "maxLength": 16384
+            },
+            "webSearch": {
+              "type": "object",
+              "required": [
+                "status",
+                "action",
+                "sources"
+              ],
+              "properties": {
+                "status": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "in_progress"
+                    },
+                    {
+                      "type": "string",
+                      "const": "searching"
+                    },
+                    {
+                      "type": "string",
+                      "const": "completed"
+                    },
+                    {
+                      "type": "string",
+                      "const": "failed"
+                    }
+                  ]
+                },
+                "action": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "search"
+                    },
+                    {
+                      "type": "string",
+                      "const": "open_page"
+                    },
+                    {
+                      "type": "string",
+                      "const": "find_in_page"
+                    }
+                  ]
+                },
+                "query": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "pattern": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "url"
+                    ],
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "title": {
+                        "type": "string",
+                        "maxLength": 16384
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "maxItems": 32
+                }
+              },
+              "additionalProperties": false
             },
             "diff": {
               "type": "object",
@@ -6532,6 +6778,83 @@
                         },
                         "additionalProperties": false
                       }
+                    },
+                    "agentSteps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "title",
+                          "status",
+                          "toolCallIds",
+                          "startedAt"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 512
+                          },
+                          "status": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "running"
+                              },
+                              {
+                                "type": "string",
+                                "const": "completed"
+                              },
+                              {
+                                "type": "string",
+                                "const": "failed"
+                              },
+                              {
+                                "type": "string",
+                                "const": "interrupted"
+                              }
+                            ]
+                          },
+                          "toolCallIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "maxItems": 256
+                          },
+                          "messageEntryIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "maxItems": 256
+                          },
+                          "startedAt": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "endedAt": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "summary": {
+                            "type": "string",
+                            "maxLength": 4096
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "maxItems": 512
                     }
                   },
                   "additionalProperties": false

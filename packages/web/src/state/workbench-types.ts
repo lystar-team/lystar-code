@@ -8,6 +8,7 @@ import type {
 	GitStatus,
 	ToolActivityState,
 	ToolDiff,
+	WebSearchProgress,
 } from "@lystar/code-web-protocol";
 import type {
 	FileResponse,
@@ -58,6 +59,7 @@ export interface LiveTool {
 	status: "running" | "success" | "error";
 	stepId?: string;
 	inputPreview?: boolean;
+	webSearch?: WebSearchProgress;
 	diff?: ToolDiff;
 }
 
@@ -99,6 +101,8 @@ export interface WorkbenchState {
 	session?: WebSessionSnapshot;
 	sessionError?: string;
 	transcript: WorkbenchTranscriptItem[];
+	/** 当前会话 Transcript 已知的最新步骤索引；工具归属只来自这份索引或实时 stepId。 */
+	agentSteps: Record<string, AgentStep>;
 	transcriptPageLoaded: boolean;
 	transcriptLoading: boolean;
 	transcriptError?: string;
@@ -265,6 +269,7 @@ export interface WorkbenchState {
 export interface SubagentConversationState {
 	snapshot: SubagentSnapshot;
 	transcript: WorkbenchTranscriptItem[];
+	agentSteps: Record<string, AgentStep>;
 	transcriptPageLoaded: boolean;
 	transcriptLoading: boolean;
 	transcriptError?: string;

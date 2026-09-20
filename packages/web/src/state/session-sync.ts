@@ -43,13 +43,16 @@ export function isSameSessionSnapshot(current: WebSessionSnapshot | undefined, i
 		current.leafId === incoming.leafId &&
 		current.queuedSteerCount === incoming.queuedSteerCount &&
 		current.queuedFollowUpCount === incoming.queuedFollowUpCount &&
+		JSON.stringify(current.queuedSteerMessages ?? []) === JSON.stringify(incoming.queuedSteerMessages ?? []) &&
+		JSON.stringify(current.queuedFollowUpMessages ?? []) === JSON.stringify(incoming.queuedFollowUpMessages ?? []) &&
 		current.contextTokens === incoming.contextTokens &&
 		current.contextWindow === incoming.contextWindow &&
 		current.transcriptGeneration === incoming.transcriptGeneration &&
 		current.transcriptRevision === incoming.transcriptRevision &&
 		current.toolActivityEpoch === incoming.toolActivityEpoch &&
 		current.toolActivityRevision === incoming.toolActivityRevision &&
-		JSON.stringify(current.toolActivities ?? []) === JSON.stringify(incoming.toolActivities ?? [])
+		JSON.stringify(current.toolActivities ?? []) === JSON.stringify(incoming.toolActivities ?? []) &&
+		JSON.stringify(current.activeStep) === JSON.stringify(incoming.activeStep)
 	);
 }
 
@@ -60,6 +63,16 @@ export function runtimeHistoryChanged(
 	// Runtime generation 与历史文件 generation 的格式不同，只能与同来源的快照比较。
 	return current !== undefined && current.id === incoming.id &&
 		current.transcriptGeneration !== incoming.transcriptGeneration;
+}
+
+export function isSameTranscriptHistory(
+	current: { generation?: string; leafId?: string | null },
+	incoming: { transcriptGeneration: string; leafId: string | null },
+): boolean {
+	return (
+		(current.generation === undefined || current.generation === incoming.transcriptGeneration) &&
+		(current.leafId === undefined || current.leafId === incoming.leafId)
+	);
 }
 
 export function mergeOperationSnapshots(current: readonly WebOperation[], incoming: readonly WebOperation[]): WebOperation[] {

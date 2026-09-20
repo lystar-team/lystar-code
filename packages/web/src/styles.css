@@ -191,6 +191,7 @@ kbd {
 	.prompt-input-shell [data-slot="input-group"],
 	.prompt-input-shell [data-slot="input-group"]:focus-within,
 	.prompt-input-shell [data-slot="input-group"]:has([data-slot="input-group-control"]:focus-visible) {
+		border-radius: 48px;
 		corner-shape: squircle;
 	}
 }
@@ -469,6 +470,32 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 [data-slot="popover-content"][data-state="closed"]:has([role="group"][aria-label="选择发送方式"]) {
 	opacity: 0;
 	visibility: hidden;
+}
+
+/* 触摸设备没有可靠的 Hover，Hover 后才出现的操作需要进入正常布局。 */
+@media (hover: none), (pointer: coarse) {
+	.mobile-hover-action,
+	.attachment-remove-button {
+		opacity: 1 !important;
+		pointer-events: auto !important;
+	}
+
+	.mobile-hover-indicator {
+		opacity: 1 !important;
+	}
+
+	.mobile-quick-action {
+		display: none !important;
+	}
+
+	.mobile-session-button {
+		padding-right: 4.5rem !important;
+	}
+
+	.mobile-session-status {
+		right: 2.25rem !important;
+		opacity: 1 !important;
+	}
 }
 
 @media (prefers-reduced-motion: reduce) {

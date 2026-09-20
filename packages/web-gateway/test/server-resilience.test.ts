@@ -282,18 +282,43 @@ test("Gateway 合并实时增量并在非进度事件前保持顺序", async (t)
 	internal.handleHostEvent(context, {
 		type: "session_progress",
 		sessionPath: "/tmp/resilience-session.jsonl",
-		progress: { type: "assistant_delta", text: "O" },
+		progress: { type: "assistant_delta", text: "O", stepId: "step-1" },
 	});
 	internal.handleHostEvent(context, {
 		type: "session_progress",
 		sessionPath: "/tmp/resilience-session.jsonl",
-		progress: { type: "assistant_delta", text: "K" },
+		progress: { type: "assistant_delta", text: "K", stepId: "step-1" },
 	});
 	await wait(75);
 
 	assert.deepEqual(socket.sent, [
-		{ type: "session_progress", sessionId: "session-1", progress: { type: "assistant_delta", text: "OK" }, seq: 1 },
+		{
+			type: "session_progress",
+			sessionId: "session-1",
+			progress: { type: "assistant_delta", text: "OK", stepId: "step-1" },
+			seq: 1,
+		},
 	]);
+
+	socket.sent.length = 0;
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/resilience-session.jsonl",
+		progress: { type: "assistant_delta", text: "A", stepId: "step-1" },
+	});
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath: "/tmp/resilience-session.jsonl",
+		progress: { type: "assistant_delta", text: "B", stepId: "step-2" },
+	});
+	await wait(75);
+	assert.deepEqual(
+		socket.sent.map((event) => event.progress),
+		[
+			{ type: "assistant_delta", text: "A", stepId: "step-1" },
+			{ type: "assistant_delta", text: "B", stepId: "step-2" },
+		],
+	);
 
 	internal.handleHostEvent(context, { type: "sessions_changed", cwd: "/tmp" });
 	assert.deepEqual(socket.sent.at(-1), { type: "sessions_changed" });

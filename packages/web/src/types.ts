@@ -1,4 +1,5 @@
 import type {
+	AgentStep,
 	CompletionResult,
 	GitBranches,
 	GitCommit,
@@ -213,6 +214,7 @@ export type GatewayEvent =
 			fromRevision: number;
 			toRevision: number;
 			items: WebTranscriptItem[];
+			agentSteps?: AgentStep[];
 			seq?: number;
 	  }
 	| { type: "session_progress"; sessionId: string; progress: SessionProgress; seq?: number }

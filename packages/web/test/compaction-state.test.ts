@@ -71,6 +71,13 @@ describe("compaction state", () => {
 		expect(reconcileCompactionState(state, [summary("summary-1")])).toBeUndefined();
 	});
 
+	it("clears the temporary card as soon as compaction is cancelled", () => {
+		const running = restoreCompactionState(undefined, "compaction", []);
+		expect(
+			updateCompactionState(running, { type: "compaction", status: "cancelled", reason: "manual" }, []),
+		).toBeUndefined();
+	});
+
 	it("does not create a compaction card for unrelated retry or a late completion", () => {
 		expect(restoreCompactionState(undefined, "retry", [])).toBeUndefined();
 		expect(

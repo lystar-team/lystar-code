@@ -364,7 +364,7 @@ function MessageActionBar({
 	return (
 		<MessageActions
 			className={cn(
-				visible ? "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100" : "hidden",
+				visible ? "mobile-hover-action opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100" : "hidden",
 				role === "user" && "self-end",
 			)}
 		>

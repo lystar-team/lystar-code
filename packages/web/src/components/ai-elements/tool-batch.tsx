@@ -1,7 +1,7 @@
 "use client";
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
-import type { ToolDiff, TranscriptSubagentRef } from "@lystar/code-web-protocol";
+import type { ToolDiff, TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
@@ -57,6 +57,7 @@ export interface ToolBatchTool {
 	state: ToolBatchState;
 	stepId?: string;
 	detail?: string;
+	webSearch?: WebSearchProgress;
 	sources?: Array<{ url: string; title?: string }>;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
 	subagents?: TranscriptSubagentRef[];
@@ -65,6 +66,10 @@ export interface ToolBatchTool {
 }
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
+
+function webSearchSources(tool: ToolBatchTool): readonly { url: string; title?: string }[] {
+	return tool.sources ?? tool.webSearch?.sources ?? [];
+}
 
 export interface ToolBatchProps {
 	tools: ToolBatchTool[];
@@ -236,7 +241,11 @@ function parseToolSummary(summary: string): Record<string, unknown> | undefined 
 	}
 }
 
-function webSearchTitle(summary: string): string {
+function webSearchTitle(summary: string, webSearch?: WebSearchProgress): string {
+	if (webSearch?.action === "search" && webSearch.query?.trim()) return webSearch.query.trim();
+	if (webSearch?.action === "open_page" && webSearch.url) return `打开 ${webSearch.url}`;
+	if (webSearch?.action === "find_in_page" && webSearch.pattern?.trim()) return `查找 ${webSearch.pattern.trim()}`;
+	if (webSearch?.action === "find_in_page" && webSearch.url) return `查找 ${webSearch.url}`;
 	const parsed = parseToolSummary(summary);
 	if (parsed?.type === "webSearchCall") {
 		const action =
@@ -258,7 +267,11 @@ function webSearchTitle(summary: string): string {
 	return summary || "网页搜索";
 }
 
-function webSearchDetail(summary: string): { label: string; value: string } | undefined {
+function webSearchDetail(summary: string, webSearch?: WebSearchProgress): { label: string; value: string } | undefined {
+	if (webSearch?.action === "search" && webSearch.query?.trim()) return { label: "搜索内容", value: webSearch.query.trim() };
+	if (webSearch?.action === "open_page" && webSearch.url) return { label: "打开网页", value: webSearch.url };
+	if (webSearch?.action === "find_in_page" && webSearch.pattern?.trim()) return { label: "查找内容", value: webSearch.pattern.trim() };
+	if (webSearch?.action === "find_in_page" && webSearch.url) return { label: "查找网页内容", value: webSearch.url };
 	const parsed = parseToolSummary(summary);
 	if (parsed?.type === "webSearchCall") {
 		const action =
@@ -282,7 +295,7 @@ function webSearchDetail(summary: string): { label: string; value: string } | un
 }
 
 function toolTitle(tool: ToolBatchTool): string {
-	if (tool.name === "web_search") return webSearchTitle(tool.summary);
+	if (tool.name === "web_search") return webSearchTitle(tool.summary, tool.webSearch);
 	const parsed = parseToolSummary(tool.summary);
 	if (tool.name === "image_gen" && typeof parsed?.prompt === "string") return parsed.prompt;
 	if (typeof parsed?.command === "string") return parsed.command;
@@ -557,7 +570,7 @@ function ToolActivityRow({
 	onOpenChange?: (open: boolean) => void;
 }) {
 	const [open, setOpen] = useControllableState({ defaultProp: false, prop: controlledOpen, onChange: onOpenChange });
-	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
+	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || webSearchSources(tool).length);
 	const stats = diffStats(tool.diff);
 	const lineRange = readLineRange(tool);
 	const { filename, directory } = activityPathParts(tool);
@@ -731,7 +744,7 @@ function CommandErrorPanel({
 						</CollapsibleTrigger>
 					) : null}
 				</div>
-				<div className="rounded-md bg-muted px-3 py-2 font-mono text-[13px] leading-5">$ {command}</div>
+				<div className="min-w-0 max-w-full overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-[13px] leading-5 whitespace-pre">$ {command}</div>
 				<div className="flex min-w-0 items-start gap-2">
 					<CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
 					<span className="min-w-0 flex-1 break-words font-mono text-[13px] leading-5 text-destructive">{excerpt ?? "命令执行失败"}</span>
@@ -954,8 +967,8 @@ const ImageGenerationProgress = memo(
 );
 
 function WebSearchToolDetail({ tool }: { tool: ToolBatchTool }) {
-	const sources = tool.sources ?? [];
-	const detail = webSearchDetail(tool.summary);
+	const sources = webSearchSources(tool);
+	const detail = webSearchDetail(tool.summary, tool.webSearch);
 	const active = tool.state === "input-available" || tool.state === "input-queued";
 	return (
 		<div className="grid min-w-0 gap-2">
@@ -1187,7 +1200,7 @@ function ToolBatchRow({
 			? true
 			: tool.name === "web_search"
 				? true
-				: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length || tool.subagents?.length);
+				: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || webSearchSources(tool).length || tool.subagents?.length);
 
 	useEffect(() => {
 		if (
@@ -1243,8 +1256,8 @@ function ToolBatchRow({
 						</span>
 					) : null}
 					<span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-						{tool.name === "web_search" && tool.sources?.length ? (
-							<span className="text-xs text-muted-foreground">来源 · {tool.sources.length}</span>
+						{tool.name === "web_search" && webSearchSources(tool).length ? (
+							<span className="text-xs text-muted-foreground">来源 · {webSearchSources(tool).length}</span>
 						) : null}
 						{toolStatusIndicator(tool.state)}
 						{tool.state !== "output-available" ? (
@@ -1266,7 +1279,7 @@ function ToolBatchRow({
 						"min-w-0 pb-0.5 pl-6 pr-0 pt-0",
 						tool.name === "image_gen"
 							? "overflow-visible"
-							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain",
+							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto",
 					)}
 					onClick={(event) => {
 						event.stopPropagation();
@@ -1440,7 +1453,7 @@ export const ToolBatch = memo(function ToolBatch({
 					imageTool ||
 					imageGenerationTool ||
 					initialOpen ||
-					(tool.name === "web_search" && Boolean(tool.sources?.length))
+					(tool.name === "web_search" && Boolean(webSearchSources(tool).length))
 				}
 				open={imageTool || imageGenerationTool ? undefined : open}
 				onOpenChange={imageTool || imageGenerationTool ? undefined : setOpen}
@@ -1481,7 +1494,7 @@ export const ToolBatch = memo(function ToolBatch({
 			<GsapCollapsibleContent
 				open={open}
 				data-transcript-resize-anchor
-				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain pb-0"
+				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto pb-0"
 				onClick={(event) => {
 					if (canCollapseFromContent(event)) setOpen(false);
 				}}

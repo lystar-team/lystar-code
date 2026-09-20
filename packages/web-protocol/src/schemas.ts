@@ -275,6 +275,27 @@ export const UsageProgressSchema = StrictObject({
 export type UsageProgress = Static<typeof UsageProgressSchema>;
 
 const ProgressTextSchema = Type.String({ maxLength: 16 * 1024 });
+export const WebSearchProgressSchema = StrictObject({
+	status: Type.Union([
+		Type.Literal("in_progress"),
+		Type.Literal("searching"),
+		Type.Literal("completed"),
+		Type.Literal("failed"),
+	]),
+	action: Type.Union([Type.Literal("search"), Type.Literal("open_page"), Type.Literal("find_in_page")]),
+	query: Type.Optional(ProgressTextSchema),
+	pattern: Type.Optional(ProgressTextSchema),
+	url: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	sources: Type.Array(
+		StrictObject({
+			url: Type.String({ minLength: 1, maxLength: 4096 }),
+			title: Type.Optional(ProgressTextSchema),
+		}),
+		{ maxItems: 32 },
+	),
+});
+export type WebSearchProgress = Static<typeof WebSearchProgressSchema>;
+export type WebSearchProgressSource = WebSearchProgress["sources"][number];
 const ToolDiffFileSchema = StrictObject({
 	path: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
 	operation: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
@@ -354,6 +375,7 @@ export const SessionProgressSchema = Type.Union([
 		name: Type.String({ minLength: 1, maxLength: 256 }),
 		stepId: Type.Optional(Id),
 		summary: Type.Optional(ProgressTextSchema),
+		webSearch: Type.Optional(WebSearchProgressSchema),
 		diff: Type.Optional(ToolDiffSchema),
 	}),
 	StrictObject({
@@ -362,6 +384,7 @@ export const SessionProgressSchema = Type.Union([
 		name: Type.String({ minLength: 1, maxLength: 256 }),
 		stepId: Type.Optional(Id),
 		summary: ProgressTextSchema,
+		webSearch: Type.Optional(WebSearchProgressSchema),
 		diff: Type.Optional(ToolDiffSchema),
 	}),
 	StrictObject({
@@ -371,6 +394,7 @@ export const SessionProgressSchema = Type.Union([
 		stepId: Type.Optional(Id),
 		status: Type.Union([Type.Literal("success"), Type.Literal("error")]),
 		summary: ProgressTextSchema,
+		webSearch: Type.Optional(WebSearchProgressSchema),
 		diff: Type.Optional(ToolDiffSchema),
 	}),
 	StrictObject({
@@ -628,6 +652,8 @@ export const TranscriptPageSchema = StrictObject({
 	transcriptGeneration: Id,
 	transcriptRevision: Type.Integer({ minimum: 0 }),
 	complete: Type.Boolean(),
+	/** 当前页中工具或消息涉及的最新步骤快照；归属不由客户端按时间推断。 */
+	agentSteps: Type.Optional(Type.Array(AgentStepSchema, { maxItems: 512 })),
 	requestContext: Type.Optional(TranscriptRequestContextSchema),
 });
 export type TranscriptPage = Static<typeof TranscriptPageSchema>;
@@ -2118,6 +2144,7 @@ export const ServerEventSchema = Type.Union([
 		fromRevision: Type.Integer({ minimum: 0 }),
 		toRevision: Type.Integer({ minimum: 0 }),
 		items: Type.Array(TranscriptItemSchema),
+		agentSteps: Type.Optional(Type.Array(AgentStepSchema, { maxItems: 512 })),
 	}),
 	StrictObject({ type: Type.Literal("operation_updated"), operation: OperationSnapshotSchema }),
 	StrictObject({

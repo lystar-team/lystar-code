@@ -134,7 +134,31 @@ describe("chat lifecycle", () => {
 		expect(hasActiveSessionSnapshot(snapshot!)).toBe(false);
 		expect(restored.liveTurnActive).toBe(false);
 		expect(restored.liveSteps).toEqual({});
+		expect(restored.liveTools).toEqual({});
+		expect(restored.liveTurnItems.some((item) => item.kind === "tools")).toBe(false);
 		expect(hasActiveSessionWork({ ...restored, session: snapshot, currentOperation: undefined })).toBe(false);
+	});
+
+	it("相同工具 revision 的空闲快照会清掉会话缓存中的运行工具", () => {
+		const current = {
+			...liveState(),
+			toolActivityEpoch: "epoch-1",
+			toolActivityRevision: 3,
+		};
+		const snapshot = {
+			id: "session-1",
+			activity: "idle",
+			phase: "idle",
+			queuedFollowUpCount: 0,
+			toolActivityEpoch: "epoch-1",
+			toolActivityRevision: 3,
+			toolActivities: [],
+		} as WorkbenchState["session"];
+
+		const restored = restoreRuntimeActivities(current, snapshot!);
+
+		expect(restored.liveTools).toEqual({});
+		expect(restored.liveTurnItems.some((item) => item.kind === "tools")).toBe(false);
 	});
 
 	it("活动快照用当前步骤替换缓存中的旧步骤", () => {

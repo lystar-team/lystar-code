@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+	type AgentStep,
 	assertWorkspaceCommandResult,
 	type Capability,
 	type ClientMessage,
@@ -28,6 +29,7 @@ import { WebSessionHandoffServer } from "./session-handoff-server.ts";
 import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
+import { mergeWebSearchProgress, webSearchProgressSummary } from "./web-search-progress.ts";
 
 const BASE_CAPABILITIES: Capability[] = [
 	"session-paging",
@@ -236,6 +238,7 @@ function sessionProgressKey(progress: SessionProgress): string | undefined {
 	switch (progress.type) {
 		case "assistant_delta":
 		case "thinking_delta":
+			return `${progress.type}:${progress.stepId ?? ""}`;
 		case "phase":
 		case "queue_update":
 		case "status":
@@ -252,6 +255,12 @@ function sessionProgressKey(progress: SessionProgress): string | undefined {
 
 function shouldSendProgressImmediately(progress: SessionProgress): boolean {
 	if (progress.type === "agent_step" || progress.type === "tool_start" || progress.type === "tool_end") return true;
+	if (
+		progress.type === "tool_update" &&
+		progress.name === "web_search" &&
+		(progress.webSearch?.query || progress.webSearch?.url || progress.webSearch?.sources.length)
+	)
+		return true;
 	if (progress.type !== "tool_state") return false;
 	return (
 		(progress.activity.state === "running" &&
@@ -263,10 +272,31 @@ function shouldSendProgressImmediately(progress: SessionProgress): boolean {
 }
 
 function mergeSessionProgress(left: SessionProgress, right: SessionProgress): SessionProgress {
+	if (
+		left.type === "tool_update" &&
+		right.type === "tool_update" &&
+		left.toolCallId === right.toolCallId &&
+		left.name === right.name
+	) {
+		const webSearch = mergeWebSearchProgress(left.webSearch, right.webSearch);
+		return {
+			...right,
+			...(webSearch ? { webSearch } : {}),
+			...(right.name === "web_search" && webSearch ? { summary: webSearchProgressSummary(webSearch) } : {}),
+		};
+	}
 	if (left.type === "assistant_delta" && right.type === "assistant_delta")
-		return { type: "assistant_delta", text: left.text + right.text };
+		return {
+			type: "assistant_delta",
+			text: left.text + right.text,
+			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+		};
 	if (left.type === "thinking_delta" && right.type === "thinking_delta")
-		return { type: "thinking_delta", text: left.text + right.text };
+		return {
+			type: "thinking_delta",
+			text: left.text + right.text,
+			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+		};
 	return right;
 }
 
@@ -645,7 +675,7 @@ export class WebRuntimeService {
 				return jsonValue({
 					...page,
 					requestContext: request.context,
-					items: this.projectTranscriptItems(sessionPath, page.items),
+					items: this.projectTranscriptItems(sessionPath, page.items, page.agentSteps),
 				});
 			}
 			case "search_transcript": {
@@ -1999,9 +2029,13 @@ export class WebRuntimeService {
 		return summaries;
 	}
 
-	private projectTranscriptItems(sessionPath: string, items: readonly TranscriptItem[]): TranscriptItem[] {
+	private projectTranscriptItems(
+		sessionPath: string,
+		items: readonly TranscriptItem[],
+		agentSteps: readonly AgentStep[] = [],
+	): TranscriptItem[] {
 		const compactItems = items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item));
-		return projectTranscriptBatch(compactItems);
+		return projectTranscriptBatch(compactItems, agentSteps);
 	}
 
 	private sessionTranscriptFact(
@@ -2552,6 +2586,7 @@ export class WebRuntimeService {
 						transcriptGeneration: string;
 						fromRevision: number;
 						transcriptRevision: number;
+						agentSteps?: AgentStep[];
 					};
 					this.rememberRuntimeTranscriptFact(runtime, payload.transcriptRevision);
 					void this.broadcast({
@@ -2560,7 +2595,8 @@ export class WebRuntimeService {
 						transcriptGeneration: payload.transcriptGeneration,
 						fromRevision: payload.fromRevision,
 						toRevision: payload.transcriptRevision,
-						items: this.projectTranscriptItems(sessionPath, payload.items),
+						agentSteps: payload.agentSteps,
+						items: this.projectTranscriptItems(sessionPath, payload.items, payload.agentSteps),
 					});
 				} else if (event.type === "subagent_updated") {
 					this.flushSessionProgress(sessionPath);

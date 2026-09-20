@@ -622,6 +622,54 @@ function assistantViews(
 	return views.length > 0 ? views : [{ type: "assistant", text: "", ...(images.length > 0 ? { images } : {}) }];
 }
 
+export function projectedAgentStepFromItem(item: TranscriptItem): AgentStep | undefined {
+	return projectedAgentStep(record(item.payload));
+}
+
+function transcriptReferenceIds(item: TranscriptItem): {
+	entryIds: Set<string>;
+	toolCallIds: Set<string>;
+	stepIds: Set<string>;
+} {
+	const entryIds = new Set([item.entryId]);
+	const toolCallIds = new Set<string>();
+	const stepIds = new Set<string>();
+	const projectedStep = projectedAgentStepFromItem(item);
+	if (projectedStep) stepIds.add(projectedStep.id);
+	const payload = record(item.payload);
+	const entryMessage = record(payload?.message);
+	if (typeof entryMessage?.toolCallId === "string") toolCallIds.add(entryMessage.toolCallId);
+	if (Array.isArray(entryMessage?.content)) {
+		for (const part of entryMessage.content) {
+			const candidate = record(part);
+			if (typeof candidate?.id === "string") toolCallIds.add(candidate.id);
+		}
+	}
+	return { entryIds, toolCallIds, stepIds };
+}
+
+export function relevantAgentSteps(
+	items: readonly TranscriptItem[],
+	steps: readonly AgentStep[] | undefined,
+): AgentStep[] {
+	if (!steps?.length || !items.length) return [];
+	const entryIds = new Set<string>();
+	const toolCallIds = new Set<string>();
+	const stepIds = new Set<string>();
+	for (const item of items) {
+		const references = transcriptReferenceIds(item);
+		for (const id of references.entryIds) entryIds.add(id);
+		for (const id of references.toolCallIds) toolCallIds.add(id);
+		for (const id of references.stepIds) stepIds.add(id);
+	}
+	return steps.filter(
+		(step) =>
+			stepIds.has(step.id) ||
+			(step.messageEntryIds ?? []).some((id) => entryIds.has(id)) ||
+			step.toolCallIds.some((id) => toolCallIds.has(id)),
+	);
+}
+
 function message(item: TranscriptItem): JsonRecord | undefined {
 	return record(record(item.payload)?.message);
 }
@@ -756,13 +804,19 @@ export function projectTranscriptItems(
 	return projectTranscriptViews(item, toolCalls).map((view) => ({ ...item, view }));
 }
 
-export function projectTranscriptBatch(items: readonly TranscriptItem[]): TranscriptItem[] {
+export function projectTranscriptBatch(
+	items: readonly TranscriptItem[],
+	knownAgentSteps: readonly AgentStep[] = [],
+): TranscriptItem[] {
 	const stepByToolCall = new Map<string, string>();
 	const latestStepEntryIdsByStep = new Map<string, string>();
 	for (const item of items) {
-		const step = projectedAgentStep(record(item.payload));
+		const step = projectedAgentStepFromItem(item);
 		if (!step) continue;
 		latestStepEntryIdsByStep.set(step.id, item.entryId);
+		for (const toolCallId of step.toolCallIds) stepByToolCall.set(toolCallId, step.id);
+	}
+	for (const step of knownAgentSteps) {
 		for (const toolCallId of step.toolCallIds) stepByToolCall.set(toolCallId, step.id);
 	}
 	const toolCalls = new Map<string, TranscriptToolCallProjection>();

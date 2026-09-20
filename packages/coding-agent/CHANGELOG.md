@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- 修复 Web 会话切换、分页恢复和 Subagent 历史加载时的 Task/工具归属与顺序：统一使用会话级步骤索引和序列归并，保留 `stepId`，清理过期工具活动与取消压缩卡片。
+
 ## [0.85.1-lystar.16] - 2026-09-17
 
 ### Added

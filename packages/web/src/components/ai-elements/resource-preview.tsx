@@ -639,7 +639,7 @@ export function ResourceImage({
 						</span>
 					)}
 					{source ? (
-						<span className="pointer-events-none absolute right-2 bottom-2 rounded-full bg-background/85 p-1.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+						<span className="mobile-hover-indicator pointer-events-none absolute right-2 bottom-2 rounded-full bg-background/85 p-1.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
 							<ZoomInIcon className="size-4 text-foreground" />
 						</span>
 					) : null}

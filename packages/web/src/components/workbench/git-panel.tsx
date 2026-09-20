@@ -769,7 +769,7 @@ function GitFileRow({
 					</span>
 				) : null}
 			</button>
-			<div className="flex shrink-0 items-center pr-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+			<div className="mobile-hover-action pointer-events-none flex shrink-0 items-center pr-1 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
 				{onDiscard ? (
 					<Button
 						size="icon-xs"

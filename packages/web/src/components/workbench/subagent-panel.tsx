@@ -44,6 +44,7 @@ function conversationState(parent: WorkbenchState, view: SubagentConversationSta
 		session: { activity: snapshotActivity(snapshot.state) },
 		sessionError: undefined,
 		transcript: view.transcript,
+		agentSteps: view.agentSteps,
 		transcriptPageLoaded: view.transcriptPageLoaded || !hasSessionFile,
 		transcriptLoading: view.transcriptLoading && hasSessionFile,
 		transcriptError: view.transcriptError,

@@ -38,6 +38,7 @@ import {
 	type ModelOptions,
 	type ModelProviderSummary,
 	type ModelSummary,
+	mergeWebSearchProgress,
 	type OperationSnapshot,
 	type ProjectFileSaveResult,
 	type ProjectInstruction,
@@ -57,6 +58,7 @@ import {
 	type ThinkingLevel,
 	type TranscriptItem,
 	type TranscriptPage,
+	webSearchProgressSummary,
 } from "@lystar/code-web-protocol";
 import {
 	getRuntimeServiceStatus,
@@ -404,6 +406,7 @@ function progressCoalescingKey(event: WebSessionProgressEvent): string | undefin
 	switch (event.progress.type) {
 		case "assistant_delta":
 		case "thinking_delta":
+			return `${event.sessionId}:${event.progress.type}:${event.progress.stepId ?? ""}`;
 		case "phase":
 		case "queue_update":
 		case "status":
@@ -420,6 +423,12 @@ function progressCoalescingKey(event: WebSessionProgressEvent): string | undefin
 
 function shouldSendProgressImmediately(progress: SessionProgress): boolean {
 	if (progress.type === "tool_start" || progress.type === "tool_end") return true;
+	if (
+		progress.type === "tool_update" &&
+		progress.name === "web_search" &&
+		(progress.webSearch?.query || progress.webSearch?.url || progress.webSearch?.sources.length)
+	)
+		return true;
 	if (progress.type !== "tool_state") return false;
 	return (
 		(progress.activity.state === "running" &&
@@ -431,10 +440,31 @@ function shouldSendProgressImmediately(progress: SessionProgress): boolean {
 }
 
 function mergeProgress(left: SessionProgress, right: SessionProgress): SessionProgress {
+	if (
+		left.type === "tool_update" &&
+		right.type === "tool_update" &&
+		left.toolCallId === right.toolCallId &&
+		left.name === right.name
+	) {
+		const webSearch = mergeWebSearchProgress(left.webSearch, right.webSearch);
+		return {
+			...right,
+			...(webSearch ? { webSearch } : {}),
+			...(right.name === "web_search" && webSearch ? { summary: webSearchProgressSummary(webSearch) } : {}),
+		};
+	}
 	if (left.type === "assistant_delta" && right.type === "assistant_delta")
-		return { type: "assistant_delta", text: left.text + right.text };
+		return {
+			type: "assistant_delta",
+			text: left.text + right.text,
+			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+		};
 	if (left.type === "thinking_delta" && right.type === "thinking_delta")
-		return { type: "thinking_delta", text: left.text + right.text };
+		return {
+			type: "thinking_delta",
+			text: left.text + right.text,
+			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+		};
 	return right;
 }
 
@@ -4182,6 +4212,7 @@ export class WebGatewayServer {
 						fromRevision: event.fromRevision,
 						toRevision: event.toRevision,
 						items: event.items.map(publicTranscriptItem),
+						...(event.agentSteps?.length ? { agentSteps: event.agentSteps } : {}),
 					}
 				: undefined;
 		}

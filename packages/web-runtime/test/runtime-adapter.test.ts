@@ -191,7 +191,14 @@ describe("CodingAgentRuntimeAdapter", () => {
 			assistantMessageEvent: {
 				type: "websearch_end",
 				contentIndex: 0,
-				call: { ...webSearchCall, status: "completed" },
+				call: {
+					...webSearchCall,
+					status: "completed",
+					action: {
+						...webSearchCall.action,
+						sources: [{ type: "url", url: "https://uniapp.dcloud.net.cn/api/canvas" }],
+					},
+				},
 			},
 		} as unknown as AgentSessionEvent;
 		expect(projectRuntimeProgress(webSearchStart)).toEqual([
@@ -200,6 +207,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 				toolCallId: "web-search-1",
 				name: "web_search",
 				summary: "uni-app H5 Canvas touch event",
+				webSearch: {
+					status: "searching",
+					action: "search",
+					query: "uni-app H5 Canvas touch event",
+					sources: [],
+				},
 			},
 		]);
 		expect(projectRuntimeProgress(webSearchUpdate)).toEqual([
@@ -208,6 +221,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 				toolCallId: "web-search-1",
 				name: "web_search",
 				summary: "uni-app H5 Canvas touch event",
+				webSearch: {
+					status: "searching",
+					action: "search",
+					query: "uni-app H5 Canvas touch event",
+					sources: [],
+				},
 			},
 		]);
 		expect(projectRuntimeProgress(webSearchEnd)).toEqual([
@@ -217,6 +236,12 @@ describe("CodingAgentRuntimeAdapter", () => {
 				name: "web_search",
 				status: "success",
 				summary: "uni-app H5 Canvas touch event",
+				webSearch: {
+					status: "completed",
+					action: "search",
+					query: "uni-app H5 Canvas touch event",
+					sources: [{ url: "https://uniapp.dcloud.net.cn/api/canvas" }],
+				},
 			},
 		]);
 		const appended = { type: "entry_appended", entry: {} } as unknown as AgentSessionEvent;
@@ -1006,7 +1031,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(isAbsolute(relative(join(agentDir, "sessions"), sessionPath))).toBe(false);
 		const firstCommitted = firstEvents.filter((event) => event.type === "entry_committed").map(eventPayload);
 		expect(firstCommitted).toHaveLength(1);
-		expect(firstCommitted[0].items.map((item) => item.payload.message?.role)).toEqual(["user", "assistant"]);
+		expect(firstCommitted[0].items.map((item) => item.payload.message?.role)).toEqual(["system", "user", "assistant"]);
 		expect(firstCommitted[0].fromRevision).toBe(0);
 		const firstRevision = firstCommitted[0].transcriptRevision;
 		const firstGeneration = firstCommitted[0].transcriptGeneration;
@@ -1015,7 +1040,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 			.split("\n")
 			.map((line) => JSON.parse(line) as { message?: { role?: string } })
 			.flatMap((entry) => (entry.message?.role ? [entry.message.role] : []));
-		expect(persistedRoles).toEqual(["user", "assistant"]);
+		expect(persistedRoles).toEqual(["system", "user", "assistant"]);
 
 		await runtime.dispose();
 		runtime = await adapter.openSession(sessionPath, async () => ({ cancelled: true }));

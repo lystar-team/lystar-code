@@ -373,6 +373,27 @@ describe("WebRuntimeService Session observation", () => {
 			sessionPath,
 			progress: { type: "assistant_delta", text: "OK" },
 		});
+
+		messages.length = 0;
+		emit?.({ type: "progress", payload: { type: "assistant_delta", text: "A", stepId: "step-1" } });
+		emit?.({ type: "progress", payload: { type: "assistant_delta", text: "B", stepId: "step-2" } });
+		await waitFor(
+			() =>
+				messages.filter(
+					(message): message is Extract<ServerMessage, { type: "event" }> =>
+						message.type === "event" && message.event.type === "session_progress",
+				).length === 2,
+		);
+		const stepProgress = messages
+			.filter(
+				(message): message is Extract<ServerMessage, { type: "event" }> =>
+					message.type === "event" && message.event.type === "session_progress",
+			)
+			.flatMap((message) => (message.event.type === "session_progress" ? [message.event.progress] : []));
+		expect(stepProgress).toEqual([
+			{ type: "assistant_delta", text: "A", stepId: "step-1" },
+			{ type: "assistant_delta", text: "B", stepId: "step-2" },
+		]);
 	});
 	it("工具生命周期即时发送，持续工具输出按调用合并", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-tool-progress-"));

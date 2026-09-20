@@ -56,7 +56,7 @@ import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
 import { VirtualizedSessionList } from "./virtualized-session-list";
 
-const SESSION_PAGE_SIZE = 10;
+const SESSION_PAGE_SIZE = 7;
 
 type ProjectDropTarget =
 	| { kind: "project"; projectId: string; position: DropPosition }
@@ -550,6 +550,8 @@ export const ProjectRail = memo(function ProjectRail({
 		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
 		const visibleSessions = sessions.slice(0, visibleSessionCount);
 		const hasMoreSessions = visibleSessions.length < sessions.length;
+		const canCollapseSessions = visibleSessionCount > SESSION_PAGE_SIZE && sessions.length > SESSION_PAGE_SIZE;
+		const hasSessionPagination = hasMoreSessions || canCollapseSessions;
 
 		return (
 			<ContextMenu key={project.id}>
@@ -718,10 +720,10 @@ export const ProjectRail = memo(function ProjectRail({
 								<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
 									<Button
 										className={cn(
-											"text-muted-foreground transition-opacity hover:text-foreground",
+											"mobile-hover-action mobile-quick-action text-muted-foreground transition-opacity hover:text-foreground",
 											projectActionsVisible
-												? "opacity-100"
-												: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+												? "pointer-events-auto opacity-100"
+												: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
 										)}
 										size="icon-sm"
 										variant="ghost"
@@ -740,9 +742,10 @@ export const ProjectRail = memo(function ProjectRail({
 										<DropdownMenuTrigger asChild>
 											<Button
 												className={cn(
+													"mobile-hover-action",
 													projectActionsVisible
-														? "opacity-100"
-														: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+														? "pointer-events-auto opacity-100"
+														: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
 												)}
 												size="icon-sm"
 												variant="ghost"
@@ -752,6 +755,10 @@ export const ProjectRail = memo(function ProjectRail({
 											</Button>
 										</DropdownMenuTrigger>
 										<DropdownMenuContent align="end">
+											<DropdownMenuItem onSelect={() => void createProjectSession(project.id)}>
+												<MessageSquarePlus className="size-4" />
+												新建会话
+											</DropdownMenuItem>
 											<DropdownMenuItem onSelect={() => setSessionManagementProject(project)}>
 												<List className="size-4" />
 												会话管理
@@ -817,21 +824,45 @@ export const ProjectRail = memo(function ProjectRail({
 													);
 												}}
 											/>
-											{hasMoreSessions ? (
-												<Button
-													className="mt-0.5 h-8 w-full min-w-0 justify-start gap-2 py-1 pr-2 !pl-8 text-left text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
-													variant="ghost"
-													onClick={() =>
-														setSessionVisibleCounts((current) => ({
-															...current,
-															[project.id]:
-																(current[project.id] ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE,
-														}))
-													}
-												>
-													<span className="project-list-item-label min-w-0 flex-1 truncate">加载更多</span>
-												</Button>
-											) : null}
+							{hasSessionPagination ? (
+								<div
+									className="mt-0.5 flex min-w-0 items-center gap-1"
+									role="group"
+									aria-label="会话列表分页"
+								>
+									{hasMoreSessions ? (
+										<Button
+											className="h-8 min-w-0 flex-1 justify-start gap-2 py-1 pr-2 !pl-8 text-left text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
+											variant="ghost"
+											onClick={() =>
+												setSessionVisibleCounts((current) => ({
+													...current,
+													[project.id]:
+														(current[project.id] ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE,
+												}))
+											}
+										>
+											<span className="project-list-item-label min-w-0 flex-1 truncate">加载更多</span>
+										</Button>
+									) : (
+										<span className="min-w-0 flex-1" aria-hidden="true" />
+									)}
+									{canCollapseSessions ? (
+										<Button
+											className="h-8 shrink-0 justify-end px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
+											variant="ghost"
+											onClick={() =>
+												setSessionVisibleCounts((current) => ({
+													...current,
+													[project.id]: SESSION_PAGE_SIZE,
+												}))
+											}
+										>
+											<span className="project-list-item-label">收起更多</span>
+										</Button>
+									) : null}
+								</div>
+							) : null}
 										</>
 									) : (
 										<span className="px-2 py-2 text-[13px] text-muted-foreground">暂无会话</span>
@@ -990,10 +1021,10 @@ export const ProjectRail = memo(function ProjectRail({
 									<div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5">
 										<Button
 											className={cn(
-												"text-muted-foreground transition-opacity hover:text-foreground",
+												"mobile-hover-action mobile-quick-action text-muted-foreground transition-opacity hover:text-foreground",
 												groupActionsVisible
-													? "opacity-100"
-													: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+													? "pointer-events-auto opacity-100"
+													: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
 											)}
 											size="icon-sm"
 											variant="ghost"
@@ -1012,9 +1043,10 @@ export const ProjectRail = memo(function ProjectRail({
 											<DropdownMenuTrigger asChild>
 												<Button
 													className={cn(
+														"mobile-hover-action",
 														groupActionsVisible
-															? "opacity-100"
-															: "opacity-0 group-hover:opacity-100 max-lg:opacity-100",
+															? "pointer-events-auto opacity-100"
+															: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
 													)}
 													size="icon-sm"
 													variant="ghost"
@@ -1063,7 +1095,12 @@ export const ProjectRail = memo(function ProjectRail({
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col bg-background">
-			<div className="flex h-16 shrink-0 items-center justify-between px-4 pr-14 lg:pr-4">
+			<div
+				className={cn(
+					"flex h-16 shrink-0 items-center justify-between px-4",
+					onNavigate ? "pr-14 lg:pr-4" : "pr-4",
+				)}
+			>
 				<div className="flex items-center gap-2.5 font-semibold tracking-tight">
 					<BrandLogo logo={state.branding.logo} className="size-7 rounded-md object-contain" />
 					<span>{state.branding.name}</span>

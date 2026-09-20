@@ -7,6 +7,7 @@ export const AGENT_STEP_CUSTOM_TYPE = "lystar.web.agent-step";
 export const STEP_START_TOOL_NAME = "step_start";
 export const STEP_END_TOOL_NAME = "step_end";
 export const AGENT_STEP_TOOL_NAMES = new Set([STEP_START_TOOL_NAME, STEP_END_TOOL_NAME]);
+const AGENT_STEP_EVENT_LIMIT = 512;
 
 interface PersistedAgentStep {
 	version: 1;
@@ -85,6 +86,29 @@ export class AgentStepController {
 			if (step.toolCallIds.includes(toolCallId)) return step.id;
 		}
 		return undefined;
+	}
+
+	stepsForEntries(entries: readonly SessionEntry[]): AgentStep[] {
+		const entryIds = new Set(entries.map((entry) => entry.id));
+		const toolCallIds = new Set<string>();
+		for (const entry of entries) {
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "toolResult") toolCallIds.add(entry.message.toolCallId);
+			if (entry.message.role !== "assistant") continue;
+			for (const part of entry.message.content) {
+				if (part.type === "toolCall") toolCallIds.add(part.id);
+			}
+		}
+		const persistedStepIds = new Set(entries.flatMap((entry) => agentStepFromEntry(entry)?.id ?? []));
+		return [...this.steps.values()]
+			.filter(
+				(step) =>
+					step.messageEntryIds?.some((entryId) => entryIds.has(entryId)) ||
+					step.toolCallIds.some((toolCallId) => toolCallIds.has(toolCallId)) ||
+					persistedStepIds.has(step.id),
+			)
+			.sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id))
+			.slice(-AGENT_STEP_EVENT_LIMIT);
 	}
 
 	start(title: string): AgentStep {

@@ -28,6 +28,7 @@ import {
 	needsTranscriptRefreshForCommit,
 	runtimeHistoryChanged,
 } from "./session-sync.ts";
+import { agentStepIndexChanged, mergeAgentStepIndex } from "./session-timeline.ts";
 import {
 	appendLiveTextBlock,
 	applySubagentProgress,
@@ -489,6 +490,9 @@ export function useWorkbenchStreamActions({
 									transcriptLeafId: event.snapshot.leafId,
 									previousCursor: undefined,
 									hasMorePrevious: false,
+									agentSteps: {},
+									toolActivityEpoch: undefined,
+									toolActivityRevision: undefined,
 									liveTools: {},
 									liveSteps: {},
 									liveTurnItems: [],
@@ -531,6 +535,9 @@ export function useWorkbenchStreamActions({
 								transcriptLeafId: undefined,
 								previousCursor: undefined,
 								hasMorePrevious: false,
+								agentSteps: {},
+								toolActivityEpoch: undefined,
+								toolActivityRevision: undefined,
 								liveTools: {},
 								liveSteps: {},
 								liveTurnItems: [],
@@ -555,14 +562,16 @@ export function useWorkbenchStreamActions({
 					scheduleTranscriptRefresh(event.sessionId);
 					return;
 				}
-				const refreshNeeded = needsTranscriptRefreshForCommit(
-					{
-						pageLoaded: stateRef.current.transcriptPageLoaded,
-						revision: stateRef.current.transcriptRevision,
-						runtimeGeneration: stateRef.current.session?.transcriptGeneration,
-					},
-					event,
-				);
+				const refreshNeeded =
+					Boolean(event.agentSteps?.length && agentStepIndexChanged(stateRef.current.agentSteps, event.agentSteps)) ||
+					needsTranscriptRefreshForCommit(
+						{
+							pageLoaded: stateRef.current.transcriptPageLoaded,
+							revision: stateRef.current.transcriptRevision,
+							runtimeGeneration: stateRef.current.session?.transcriptGeneration,
+						},
+						event,
+					);
 				updateState((current) => {
 					if (current.sessionId !== event.sessionId) return current;
 					const sameHistory =
@@ -580,6 +589,7 @@ export function useWorkbenchStreamActions({
 						: mergeTranscriptEntries(current.transcript, event.items, false, renderIdOverrides);
 					const updated = {
 						...next,
+						agentSteps: mergeAgentStepIndex(current.agentSteps, event.agentSteps),
 						transcript,
 						transcriptPageLoaded: current.transcriptPageLoaded,
 						previousCursor: current.previousCursor,

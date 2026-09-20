@@ -2,6 +2,7 @@ import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AGENT_STEP_CUSTOM_TYPE } from "../src/agent-steps.ts";
 import { TranscriptCursorInvalidError, TranscriptReader } from "../src/transcript-reader.ts";
 
 type Entry = Record<string, unknown>;
@@ -28,6 +29,28 @@ describe("TranscriptReader", () => {
 			parentId,
 			timestamp: "2026-08-13T00:00:00Z",
 			message: { role, content: id, timestamp: 1 },
+		};
+	}
+
+	function agentStepEntry(id: string, parentId: string | null, toolCallIds: string[]): Entry {
+		return {
+			type: "custom",
+			id,
+			parentId,
+			timestamp: "2026-08-13T00:00:00Z",
+			customType: AGENT_STEP_CUSTOM_TYPE,
+			data: {
+				version: 1,
+				step: {
+					id: "step-1",
+					title: "读取文件",
+					status: "completed",
+					toolCallIds,
+					messageEntryIds: [],
+					startedAt: 1,
+					endedAt: 2,
+				},
+			},
 		};
 	}
 
@@ -91,6 +114,7 @@ describe("TranscriptReader", () => {
 			transcriptGeneration: "session-1",
 			transcriptRevision: 0,
 			complete: true,
+			agentSteps: [],
 		});
 	});
 
@@ -112,6 +136,52 @@ describe("TranscriptReader", () => {
 		expect((page.items[0].payload as { message: { content: string } }).message.content).toHaveLength(
 			largeText.length,
 		);
+	});
+
+	it("keeps tail reads bounded when unrelated older lines exceed the parser limit", async () => {
+		writeFileSync(
+			sessionPath,
+			`${JSON.stringify(header())}\n${"x".repeat(2048)}\n${JSON.stringify(message("tail", null))}\n`,
+		);
+
+		const page = await new TranscriptReader(1024).read(sessionPath, { limit: 1 });
+
+		expect(page.items.map((item) => item.entryId)).toEqual(["tail"]);
+	});
+
+	it("returns the related Task index when the Task entry is outside the current page", async () => {
+		write([
+			message("root", null),
+			agentStepEntry("step-entry", "root", ["call-1"]),
+			{
+				...message("assistant", "step-entry", "assistant"),
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } }],
+					stopReason: "toolUse",
+					timestamp: 1,
+				},
+			},
+			{
+				...message("result", "assistant", "toolResult"),
+				message: {
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "read",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: 1,
+				},
+			},
+			message("leaf", "result"),
+		]);
+
+		const page = await new TranscriptReader().read(sessionPath, { limit: 2 });
+
+		expect(page.items.map((item) => item.entryId)).toEqual(["assistant", "result", "leaf"]);
+		expect(page.agentSteps).toEqual([
+			expect.objectContaining({ id: "step-1", status: "completed", toolCallIds: ["call-1"] }),
+		]);
 	});
 
 	it("keeps an assistant tool call with its tool result", async () => {

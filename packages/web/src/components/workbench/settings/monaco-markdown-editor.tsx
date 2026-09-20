@@ -1,10 +1,12 @@
 import type * as Monaco from "monaco-editor/editor/editor.api.js";
 import { useEffect, useId, useRef, useState } from "react";
+import { cn } from "../../../lib/utils";
 import type { ThemeMode } from "../../../state/use-workbench";
 import { ensureMonacoLanguage, loadMonacoRuntime, setMonacoTheme } from "../monaco-runtime";
 
 interface MonacoMarkdownEditorProps {
 	ariaLabel?: string;
+	className?: string;
 	disabled: boolean;
 	fileName?: string;
 	onChange: (value: string) => void;
@@ -15,6 +17,7 @@ interface MonacoMarkdownEditorProps {
 
 export function MonacoMarkdownEditor({
 	ariaLabel = "全局 AGENTS.md 内容",
+	className,
 	disabled,
 	fileName = "AGENTS.md",
 	onChange,
@@ -128,7 +131,7 @@ export function MonacoMarkdownEditor({
 	}, [theme]);
 
 	return (
-		<div className="relative flex h-[clamp(320px,calc(100dvh-23rem),680px)] min-w-0 flex-col overflow-hidden rounded-lg border border-border/70 bg-background md:h-[clamp(360px,calc(100dvh-19rem),800px)]">
+		<div className={cn("relative flex h-[clamp(320px,calc(100dvh-23rem),680px)] min-w-0 flex-col overflow-hidden rounded-lg border border-border/70 bg-background md:h-[clamp(360px,calc(100dvh-19rem),800px)]", className)}>
 			<div className="flex h-9 shrink-0 items-center justify-between border-b border-border/70 bg-muted/30 px-3 text-xs text-muted-foreground">
 				<span>Markdown</span>
 				<span>Ctrl/⌘ + S 保存</span>

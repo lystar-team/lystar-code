@@ -24,6 +24,7 @@ export type SessionDetailCache = Pick<
 	WorkbenchState,
 	| "session"
 	| "transcript"
+	| "agentSteps"
 	| "transcriptPageLoaded"
 	| "transcriptGeneration"
 	| "transcriptRevision"
@@ -50,6 +51,7 @@ export function sessionDetailCacheFromState(state: WorkbenchState): SessionDetai
 	return {
 		session: state.session,
 		transcript: state.transcript,
+		agentSteps: state.agentSteps,
 		transcriptPageLoaded: state.transcriptPageLoaded,
 		transcriptGeneration: state.transcriptGeneration,
 		transcriptRevision: state.transcriptRevision,
@@ -517,6 +519,7 @@ export function initialState(): WorkbenchState {
 		projectGroups: [],
 		sessionError: undefined,
 		transcript: [],
+		agentSteps: {},
 		transcriptPageLoaded: false,
 		transcriptLoading: false,
 		transcriptError: undefined,

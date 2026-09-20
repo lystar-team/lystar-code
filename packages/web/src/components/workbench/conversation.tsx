@@ -14,6 +14,7 @@ import type { VirtuosoHandle } from "react-virtuoso";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { type LiveCompactionState } from "../../state/compaction-state";
+import { agentStepsFromIndex } from "../../state/session-timeline";
 import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import type { PromptAttachmentPreview } from "../../types";
@@ -41,6 +42,7 @@ export type ConversationState = {
 	session?: Pick<NonNullable<WorkbenchState["session"]>, "activity">;
 	sessionError?: string;
 	transcript: WorkbenchState["transcript"];
+	agentSteps: WorkbenchState["agentSteps"];
 	transcriptPageLoaded: boolean;
 	transcriptLoading: boolean;
 	transcriptError?: string;
@@ -153,6 +155,7 @@ type ConversationRenderCacheEntry = {
 	transcript: WorkbenchState["transcript"];
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"];
 	promptSendTimes: WorkbenchState["promptSendTimes"];
+	agentSteps: WorkbenchState["agentSteps"];
 	liveTools: WorkbenchState["liveTools"];
 	liveTurnItems: WorkbenchState["liveTurnItems"];
 	liveCompaction: WorkbenchState["liveCompaction"];
@@ -382,7 +385,8 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 			(streamingImageGeneration || candidate.detail === tool.detail) &&
 			JSON.stringify(candidate.subagents) === JSON.stringify(tool.subagents) &&
 			candidate.inputPreview === tool.inputPreview &&
-			toolSourcesEqual(tool.sources, candidate.sources) &&
+			JSON.stringify(tool.webSearch) === JSON.stringify(candidate.webSearch) &&
+			toolSourcesEqual(tool.sources ?? tool.webSearch?.sources, candidate.sources ?? candidate.webSearch?.sources) &&
 			candidate.images === tool.images &&
 			candidate.diff === tool.diff
 		);
@@ -509,19 +513,10 @@ function groupAgentSteps(
 	const renderedSteps = new Map<string, AgentStepRenderItem>();
 	const stepIdByToolCallId = new Map<string, string>();
 	const stepIdByMessageEntryId = new Map<string, string>();
-	const stepsByStartedAt = [...steps.values()].sort((left, right) => right.startedAt - left.startedAt);
 	for (const step of steps.values()) {
 		for (const toolCallId of step.toolCallIds) stepIdByToolCallId.set(toolCallId, step.id);
 		for (const messageEntryId of step.messageEntryIds ?? []) stepIdByMessageEntryId.set(messageEntryId, step.id);
 	}
-	const stepIdAtTimestamp = (timestamp: string | undefined): string | undefined => {
-		if (!timestamp) return undefined;
-		const occurredAt = Date.parse(timestamp);
-		if (!Number.isFinite(occurredAt)) return undefined;
-		return stepsByStartedAt.find(
-			(step) => occurredAt >= step.startedAt && (step.endedAt === undefined || occurredAt <= step.endedAt),
-		)?.id;
-	};
 	const ensureStep = (stepId: string, fallback?: AgentStep): AgentStepRenderItem | undefined => {
 		const step = steps.get(stepId) ?? fallback;
 		if (!step) return undefined;
@@ -546,19 +541,8 @@ function groupAgentSteps(
 			ensureStep(item.step.id, item.step);
 			continue;
 		}
-		if (item.kind === "compaction") {
-			const stepId = stepIdAtTimestamp(item.timestamp);
-			if (stepId) {
-				const step = ensureStep(stepId);
-				if (step && !step.items.some((candidate) => candidate.key === item.key)) {
-					step.items.push(item);
-					continue;
-				}
-			}
-		}
 		if (item.kind === "message" && item.entryId) {
-			const explicitStepId = stepIdByMessageEntryId.get(item.entryId);
-			const stepId = explicitStepId ?? (item.role === "user" ? stepIdAtTimestamp(item.timestamp) : undefined);
+			const stepId = stepIdByMessageEntryId.get(item.entryId);
 			if (stepId) {
 				const step = ensureStep(stepId);
 				if (step && !step.items.some((candidate) => candidate.key === item.key)) {
@@ -604,16 +588,35 @@ export function buildPersistedRenderItems(
 	toolIndex: ToolIndex,
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"] = [],
 	promptSendTimes: WorkbenchState["promptSendTimes"] = {},
+	agentSteps: WorkbenchState["agentSteps"] = {},
 ): ConversationContentRenderItem[] {
 	const rendered: Array<RawRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
 	let batchKey = "";
 	let batchEntryId: string | undefined;
 	let batchStepId: string | undefined;
-	const latestSteps = new Map<string, { entryId: string; step: AgentStep }>();
+	const latestSteps = new Map<string, { entryId: string; step: AgentStep }>(
+		agentStepsFromIndex(agentSteps).map((step) => [step.id, { entryId: `agent-step-index:${step.id}`, step }]),
+	);
 	for (const item of items) {
-		if (item.view?.type === "agent_step") latestSteps.set(item.view.step.id, { entryId: item.entryId, step: item.view.step });
+		if (item.view?.type === "agent_step" && !latestSteps.has(item.view.step.id))
+			latestSteps.set(item.view.step.id, { entryId: item.entryId, step: item.view.step });
 	}
+	const stepIdByEntryId = new Map<string, string>();
+	const stepIdByToolCallId = new Map<string, string>();
+	for (const [stepId, value] of latestSteps) {
+		for (const entryId of value.step.messageEntryIds ?? []) stepIdByEntryId.set(entryId, stepId);
+		for (const toolCallId of value.step.toolCallIds) stepIdByToolCallId.set(toolCallId, stepId);
+	}
+	const renderedStepIds = new Set<string>();
+	const appendPersistedStepAnchor = (stepId: string | undefined, key: string) => {
+		if (!stepId || renderedStepIds.has(stepId)) return;
+		const latest = latestSteps.get(stepId);
+		if (!latest) return;
+		flushBatch();
+		renderedStepIds.add(stepId);
+		rendered.push({ kind: "agent-step-anchor", key: `agent-step-index-anchor:${key}:${stepId}`, step: latest.step });
+	};
 
 	const pendingAtIndex = new Map<number, WorkbenchState["pendingUserPrompts"]>();
 	for (const prompt of pendingUserPrompts) {
@@ -665,13 +668,12 @@ export function buildPersistedRenderItems(
 		if (index === items.length) break;
 		const item = items[index]!;
 		if (item.view?.type === "agent_step") {
-			flushBatch();
 			const latest = latestSteps.get(item.view.step.id);
-			if (latest?.entryId === item.entryId) {
-				rendered.push({ kind: "agent-step-anchor", key: item.renderId, step: latest.step });
-			}
+			if (latest) latest.entryId = item.entryId;
+			appendPersistedStepAnchor(item.view.step.id, item.renderId);
 			continue;
 		}
+		appendPersistedStepAnchor(item.entryId ? stepIdByEntryId.get(item.entryId) : undefined, item.renderId);
 		const viewModel = toSessionItemViewModel(item, toolIndex.statuses);
 		if (viewModel.kind === "reasoning") {
 			flushBatch();
@@ -700,6 +702,7 @@ export function buildPersistedRenderItems(
 			flushBatch();
 			const searchTool = viewModel.tools[0];
 			if (searchTool) {
+				appendPersistedStepAnchor(stepIdByToolCallId.get(searchTool.id), item.renderId);
 				rendered.push({
 					kind: "tool-batch",
 					key: `web-search:${item.renderId}:${searchTool.id}`,
@@ -711,7 +714,8 @@ export function buildPersistedRenderItems(
 		}
 		if (viewModel.kind === "tools" && item.view?.type === "tool_call") {
 			for (const tool of viewModel.tools) {
-				const stepId = item.view.calls.find((call) => call.id === tool.id)?.stepId;
+				const stepId = item.view.calls.find((call) => call.id === tool.id)?.stepId ?? stepIdByToolCallId.get(tool.id);
+				appendPersistedStepAnchor(stepId, item.renderId);
 				const result = toolIndex.results.get(tool.id);
 				const resolvedTool = result
 					? { ...tool, ...result, summary: tool.name === "image_gen" ? result.summary || tool.summary : tool.summary || result.summary }
@@ -737,6 +741,7 @@ export function buildPersistedRenderItems(
 			flushBatch();
 			const resultTool = viewModel.tools[0];
 			if (resultTool) {
+				appendPersistedStepAnchor(item.view.stepId ?? stepIdByToolCallId.get(resultTool.id), item.renderId);
 				rendered.push({
 					kind: "tool-batch",
 					key: `tool-result:${item.renderId}:${resultTool.id}`,
@@ -780,8 +785,6 @@ export function appendLiveRenderItems(
 ): ConversationContentRenderItem[] {
 	const next = [...rendered];
 	const stepIdByToolCallId = new Map<string, string>();
-	const runningSteps = Object.values(liveSteps).filter((step) => step.status === "running");
-	const runningStepId = runningSteps.length === 1 ? runningSteps[0]?.id : undefined;
 	for (const step of Object.values(liveSteps)) {
 		for (const toolCallId of step.toolCallIds) stepIdByToolCallId.set(toolCallId, step.id);
 	}
@@ -818,8 +821,7 @@ export function appendLiveRenderItems(
 				copyVisible: false,
 				editable: false,
 			};
-			const stepId = item.stepId ?? runningStepId;
-			if (!stepId || !appendStepItem(stepId, message)) next.push(message);
+			if (!item.stepId || !appendStepItem(item.stepId, message)) next.push(message);
 			continue;
 		}
 		if (item.kind === "thinking") continue;
@@ -856,13 +858,7 @@ export function appendLiveRenderItems(
 			}),
 		);
 		const explicitStepId = candidateStepIds.size === 1 ? candidateStepIds.values().next().value : undefined;
-		const pendingStepId =
-			candidateStepIds.size === 0 &&
-			runningStepId &&
-			tools.every((tool) => tool.state === "input-available" || tool.state === "input-queued")
-				? runningStepId
-				: undefined;
-		const stepId = explicitStepId ?? pendingStepId;
+		const stepId = explicitStepId;
 		const toolsWithStep = stepId
 			? tools.map((tool) => (tool.stepId ? tool : { ...tool, stepId }))
 			: tools;
@@ -893,7 +889,7 @@ export function appendLiveRenderItems(
 			next[existingIndex] = { ...next[existingIndex], live: true, state: liveCompaction };
 		} else if (!hasRenderItemKey(key)) {
 			const compaction: CompactionRenderItem = { kind: "compaction", key, live: true, state: liveCompaction };
-			if (!runningStepId || !appendStepItem(runningStepId, compaction)) next.push(compaction);
+			next.push(compaction);
 		}
 	}
 	return next;
@@ -1092,6 +1088,7 @@ export function ConversationView({
 		const cached = renderCacheRef.current.get(cacheKey);
 		if (
 			cached?.transcript === state.transcript &&
+			cached.agentSteps === state.agentSteps &&
 			cached.pendingUserPrompts === state.pendingUserPrompts &&
 			cached.promptSendTimes === state.promptSendTimes &&
 			cached.liveTools === state.liveTools &&
@@ -1145,6 +1142,7 @@ export function ConversationView({
 			toolIndex,
 			state.pendingUserPrompts,
 			state.promptSendTimes,
+			state.agentSteps,
 		);
 		const renderItems = buildConversationRenderItems(
 			persistedRenderItems,
@@ -1160,6 +1158,7 @@ export function ConversationView({
 		);
 		const entry: ConversationRenderCacheEntry = {
 			transcript: state.transcript,
+			agentSteps: state.agentSteps,
 			pendingUserPrompts: state.pendingUserPrompts,
 			promptSendTimes: state.promptSendTimes,
 			liveTools: state.liveTools,
@@ -1193,6 +1192,7 @@ export function ConversationView({
 		state.promptSendTimes,
 		state.sessionId,
 		state.transcript,
+		state.agentSteps,
 	]);
 
 	return (

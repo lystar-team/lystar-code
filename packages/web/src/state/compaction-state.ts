@@ -45,6 +45,7 @@ export function updateCompactionState(
 ): LiveCompactionState | undefined {
 	const summaryCountAtStart = current?.summaryCountAtStart ?? compactionSummaryCount(items);
 	if (progress.type === "compaction") {
+		if (progress.status === "cancelled") return undefined;
 		if (progress.status === "completed" && !current && compactionSummaryCount(items) > 0) return undefined;
 		return {
 			status: progress.status,

@@ -19,7 +19,7 @@
 		"build:native:linux": "npm --prefix packages/tui run build:native:linux",
 		"build:native:win32": "npm --prefix packages/tui run build:native:win32",
 		"build:web": "npm run build --workspace=@lystar/code-web && npm run build --workspace=@lystar/code-web-gateway",
-		"build:web-dev": "npm run build:unbundled --workspace=@earendil-works/pi-coding-agent && npm run build --workspace=@lystar/code-web-protocol && npm run build --workspace=@lystar/code-web-runtime && npm run build --workspace=@lystar/code-web-gateway",
+		"build:web-dev": "npm run build --workspace=@earendil-works/chord && npm run build --workspace=@earendil-works/pi-tui && npm run build --workspace=@earendil-works/pi-telemetry && npm run build:offline --workspace=@earendil-works/pi-ai && npm run build --workspace=@earendil-works/pi-agent-core && npm run build:unbundled --workspace=@earendil-works/pi-coding-agent && npm run build --workspace=@lystar/code-web-protocol && npm run build --workspace=@lystar/code-web-runtime && npm run build --workspace=@lystar/code-web-gateway",
 		"check": "npm run check:ci && npm run check:web && npm run check:browser-smoke",
 		"check:ci": "biome check --error-on-warnings . && npm run check:pinned-deps && npm run check:runtime-deps && npm run check:entry-graphs && npm run check:ts-imports && npm run check:schema && npm run check:shrinkwrap && npm run check:install-lock:coding-agent && tsgo --noEmit",
 		"check:web": "npm run check --workspace=@lystar/code-web && npm run build --workspace=@lystar/code-web-gateway",

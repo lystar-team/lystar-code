@@ -287,7 +287,7 @@ export const Composer = memo(function Composer({
 							) : null}
 							<PromptCompletionMenu />
 							<PromptInput
-								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[48px] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
+								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[var(--radius)] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
 								globalDrop
 								multiple
 								maxFileSize={1024 * 1024 * 1024}

@@ -29,6 +29,7 @@ import type {
 	UsageProgress,
 } from "@lystar/code-web-protocol";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
+import { webSearchProgressFromCall, webSearchProgressSummary } from "./web-search-progress.ts";
 
 type PendingResponse = {
 	command: string;
@@ -68,23 +69,6 @@ function textFromContent(value: unknown): string {
 			return item?.type === "text" && typeof item.text === "string" ? item.text : "";
 		})
 		.join("");
-}
-
-function webSearchProgressSummary(call: Record<string, unknown>): string {
-	const action = record(call.action);
-	if (action?.type === "search") {
-		if (typeof action.query === "string" && action.query.trim().length > 0) return action.query.trim();
-		if (Array.isArray(action.queries)) {
-			const query = action.queries.find(
-				(value): value is string => typeof value === "string" && value.trim().length > 0,
-			);
-			if (query) return query.trim();
-		}
-		return "网页搜索";
-	}
-	if (action?.type === "open_page") return typeof action.url === "string" ? `打开 ${action.url}` : "打开网页";
-	if (action?.type === "find_in_page") return typeof action.url === "string" ? `查找 ${action.url}` : "查找网页内容";
-	return "网页搜索";
 }
 
 function usage(value: unknown): UsageProgress | undefined {
@@ -166,7 +150,8 @@ export function projectAgentEvent(value: unknown): SessionProgress[] {
 		) {
 			const call = record(stream.call);
 			if (call && typeof call.id === "string") {
-				const summary = webSearchProgressSummary(call);
+				const webSearch = webSearchProgressFromCall(call);
+				const summary = webSearchProgressSummary(webSearch);
 				if (stream.type === "websearch_end") {
 					updates.push({
 						type: "tool_end",
@@ -174,11 +159,24 @@ export function projectAgentEvent(value: unknown): SessionProgress[] {
 						name: "web_search",
 						status: call.status === "failed" ? "error" : "success",
 						summary,
+						...(webSearch ? { webSearch } : {}),
 					});
 				} else if (stream.type === "websearch_start") {
-					updates.push({ type: "tool_start", toolCallId: call.id, name: "web_search", summary });
+					updates.push({
+						type: "tool_start",
+						toolCallId: call.id,
+						name: "web_search",
+						summary,
+						...(webSearch ? { webSearch } : {}),
+					});
 				} else {
-					updates.push({ type: "tool_update", toolCallId: call.id, name: "web_search", summary });
+					updates.push({
+						type: "tool_update",
+						toolCallId: call.id,
+						name: "web_search",
+						summary,
+						...(webSearch ? { webSearch } : {}),
+					});
 				}
 			}
 		}

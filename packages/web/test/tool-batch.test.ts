@@ -136,6 +136,33 @@ describe("Skill read tool display", () => {
 		expect(imageMarkup).not.toContain("max-w-3xl");
 	});
 
+	it("chains expanded tool scrolling to the conversation at card boundaries", () => {
+		const singleMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [readTool("src/large-file.ts")],
+				initialOpen: true,
+			}),
+		);
+		expect(singleMarkup).toContain("max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto");
+
+		const batchedMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [
+					readTool("src/large-file.ts"),
+					{
+						id: "bash-chain",
+						name: "bash",
+						summary: JSON.stringify({ command: "printf output" }),
+						state: "output-available",
+						detail: "output",
+					},
+				],
+				initialOpen: true,
+			}),
+		);
+		expect(batchedMarkup).toContain("max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto");
+	});
+
 	it("shows the actual line range for repeated segmented reads", () => {
 		const tools: ToolBatchTool[] = [
 			{

@@ -60,4 +60,31 @@ describe("Subagent workbench state", () => {
 		});
 		expect(state.liveTurnActive).toBe(false);
 	});
+
+	it("starts a new turn without inheriting stale tools, Task state, or compaction cards", () => {
+		let itemIndex = 0;
+		let batchIndex = 0;
+		let state = createSubagentConversationState(snapshot());
+		const next = (progress: SessionProgress) => {
+			state = applySubagentProgress(
+				state,
+				progress,
+				() => `item-${++itemIndex}`,
+				() => `batch-${++batchIndex}`,
+			);
+		};
+
+		next({
+			type: "agent_step",
+			step: { id: "step-1", title: "检查", status: "running", toolCallIds: [], startedAt: 1 },
+		});
+		next({ type: "tool_start", toolCallId: "tool-1", name: "read", summary: "README.md" });
+		next({ type: "compaction", status: "running", reason: "threshold" });
+		next({ type: "phase", phase: "turn" });
+
+		expect(state.liveSteps).toEqual({});
+		expect(state.liveTools).toEqual({});
+		expect(state.liveCompaction).toBeUndefined();
+		expect(state.liveTurnItems).toEqual([]);
+	});
 });

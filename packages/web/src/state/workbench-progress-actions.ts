@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { mergeWebSearchProgress } from "@lystar/code-web-protocol";
 import type { SessionProgress } from "@lystar/code-web-protocol";
 import {
 	removeQueuedUserPrompt,
@@ -14,7 +15,7 @@ import {
 	mergeToolDiff,
 	nextLiveToolBatchId,
 } from "./workbench-live-state.ts";
-import { mergeWebSearchSummary } from "./tool-batching.ts";
+import { mergeWebSearchToolSummary } from "./tool-batching.ts";
 import { gitCredentialAuthorizationMessageFromProgress, sessionActivityFromProgress } from "./workbench-state.ts";
 import type { WorkbenchState } from "./workbench-types.ts";
 
@@ -108,9 +109,13 @@ export function useWorkbenchProgressActions({
 						return applyToolActivityState(current, progress.activity);
 					case "tool_start": {
 						const previous = current.liveTools[progress.toolCallId];
+						const webSearch =
+							progress.name === "web_search"
+								? mergeWebSearchProgress(previous?.webSearch, progress.webSearch)
+								: undefined;
 						const summary =
 							progress.name === "web_search"
-								? mergeWebSearchSummary(previous?.summary, progress.summary)
+								? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
 								: progress.summary ?? previous?.summary ?? "正在执行";
 						const batchId =
 							previous?.batchId ??
@@ -134,6 +139,7 @@ export function useWorkbenchProgressActions({
 									state: "running",
 									status: "running",
 									stepId: progress.stepId ?? previous?.stepId,
+									...(webSearch ? { webSearch } : {}),
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
@@ -152,9 +158,13 @@ export function useWorkbenchProgressActions({
 					case "tool_update": {
 						const previous = current.liveTools[progress.toolCallId];
 						if (previous && previous.status !== "running") return current;
+						const webSearch =
+							progress.name === "web_search"
+								? mergeWebSearchProgress(previous?.webSearch, progress.webSearch)
+								: undefined;
 						const summary =
 							progress.name === "web_search"
-								? mergeWebSearchSummary(previous?.summary, progress.summary)
+								? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
 								: progress.summary || previous?.summary || "正在执行";
 						const batchId =
 							previous?.batchId ??
@@ -179,6 +189,7 @@ export function useWorkbenchProgressActions({
 									result: progress.summary,
 									status: "running",
 									stepId: progress.stepId ?? previous?.stepId,
+									...(webSearch ? { webSearch } : {}),
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
@@ -195,9 +206,13 @@ export function useWorkbenchProgressActions({
 					}
 					case "tool_end": {
 						const previous = current.liveTools[progress.toolCallId];
+						const webSearch =
+							progress.name === "web_search"
+								? mergeWebSearchProgress(previous?.webSearch, progress.webSearch)
+								: undefined;
 						const summary =
 							progress.name === "web_search"
-								? mergeWebSearchSummary(previous?.summary, progress.summary)
+								? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
 								: previous?.summary ?? progress.summary;
 						const batchId =
 							previous?.batchId ??
@@ -222,6 +237,7 @@ export function useWorkbenchProgressActions({
 									result: progress.summary,
 									status: progress.status,
 									stepId: progress.stepId ?? previous?.stepId,
+									...(webSearch ? { webSearch } : {}),
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
 							},
@@ -262,8 +278,8 @@ export function useWorkbenchProgressActions({
 						const liveCompaction =
 							progress.phase === "compaction"
 								? restoreCompactionState(current.liveCompaction, progress.phase, current.transcript)
-								: progress.phase === "idle" && current.liveCompaction?.status === "running"
-									? { ...current.liveCompaction, status: "completed" as const, retry: undefined }
+								: progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
+									? undefined
 									: current.liveCompaction;
 						return {
 							...current,
@@ -274,6 +290,9 @@ export function useWorkbenchProgressActions({
 										liveTurnStartRevision: current.transcriptRevision,
 										liveTurnActive: true,
 										liveTurnItems: current.liveTurnItems.filter((item) => item.kind === "user"),
+										liveTools: {},
+										toolActivityEpoch: undefined,
+										toolActivityRevision: undefined,
 										liveSteps: {},
 									}
 								: progress.phase === "idle" || progress.phase === "interrupted"

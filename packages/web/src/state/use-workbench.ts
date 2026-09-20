@@ -14,10 +14,12 @@ import { readLastSession, saveLastSession } from "./session-persistence.ts";
 import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
+	isSameTranscriptHistory,
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	replaceSessionOperationSnapshots,
 } from "./session-sync.ts";
+import { agentStepIndexChanged, mergeAgentStepIndex } from "./session-timeline.ts";
 import { mergeTranscriptPage, transcriptRenderIdOverrides } from "./transcript-state.ts";
 import {
 	applySubagentProgress,
@@ -284,6 +286,7 @@ export function useWorkbench() {
 										session: undefined,
 										lease: undefined,
 										transcript: [],
+										agentSteps: {},
 										transcriptPageLoaded: false,
 										transcriptLoading: false,
 										transcriptError: undefined,
@@ -337,9 +340,6 @@ export function useWorkbench() {
 				const result = await webApi.transcript(sessionId, { cursor, limit: TRANSCRIPT_PAGE_SIZE });
 				if (requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId) return;
 				(deferCommit && !cursor ? transitionState : updateState)((current) => {
-					const resultMatchesCurrentHistory =
-						current.transcriptGeneration === undefined ||
-						current.transcriptGeneration === result.transcriptGeneration;
 					const currentHistoryChangedSinceRequest = isTranscriptResponseObsolete(
 						requestedHistory,
 						{
@@ -349,16 +349,24 @@ export function useWorkbench() {
 						result,
 					);
 					const sameHistory =
-						resultMatchesCurrentHistory &&
+						isSameTranscriptHistory(
+							{
+								generation: current.transcriptGeneration,
+								leafId: current.transcriptLeafId,
+							},
+							result,
+						) &&
 						!(
 							current.transcriptPageLoaded &&
 							current.transcriptGeneration === undefined &&
 							current.transcript.length > 0
 						);
 					const staleRevision =
+						sameHistory &&
 						current.transcriptGeneration === result.transcriptGeneration &&
 						current.transcriptRevision !== undefined &&
 						current.transcriptRevision > result.transcriptRevision;
+					const incomingAgentStepsChanged = agentStepIndexChanged(current.agentSteps, result.agentSteps);
 					if (currentHistoryChangedSinceRequest)
 						return cursor ? current : { ...current, transcriptLoading: false };
 					if (cursor && !sameHistory) return current;
@@ -376,7 +384,8 @@ export function useWorkbench() {
 						sameHistory &&
 						current.transcriptPageLoaded &&
 						current.transcriptRevision === result.transcriptRevision &&
-						!shouldClearLiveTurn(current)
+						!shouldClearLiveTurn(current) &&
+						!incomingAgentStepsChanged
 					) {
 						const pendingUserPrompts = reconcilePendingUserPrompts(current.pendingUserPrompts, current.transcript);
 						const liveTurnItems = reconcileLiveUserPrompts(current.liveTurnItems, current.transcript);
@@ -387,6 +396,7 @@ export function useWorkbench() {
 							return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
 						return {
 							...current,
+							agentSteps: mergeAgentStepIndex(current.agentSteps, result.agentSteps),
 							transcriptLoading: false,
 							pendingUserPrompts,
 							promptSendTimes: withPromptSendTimes(current, current.transcript),
@@ -427,6 +437,7 @@ export function useWorkbench() {
 					const updated = {
 						...next,
 						...transcriptWindow,
+						agentSteps: mergeAgentStepIndex(sameHistory ? current.agentSteps : {}, result.agentSteps),
 						transcriptLoading: false,
 						transcriptError: undefined,
 						pendingUserPrompts,
@@ -583,6 +594,7 @@ export function useWorkbench() {
 					const updated: SubagentConversationState = {
 						...view,
 						...transcriptWindow,
+						agentSteps: mergeAgentStepIndex(sameHistory ? view.agentSteps : {}, result.agentSteps),
 						transcriptLoading: false,
 						loadingEarlier: false,
 						transcriptError: undefined,
@@ -594,6 +606,7 @@ export function useWorkbench() {
 						...(sameHistory
 							? {}
 							: {
+									agentSteps: {},
 									liveTools: {},
 									liveSteps: {},
 									liveTurnItems: [],

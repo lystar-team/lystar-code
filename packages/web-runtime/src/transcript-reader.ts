@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
+	AgentStep,
 	JsonValue,
 	TranscriptItem,
 	TranscriptPage,
@@ -9,7 +10,7 @@ import type {
 	TranscriptSearchResult,
 } from "@lystar/code-web-protocol";
 
-import { projectTranscriptItems } from "./transcript-projection.ts";
+import { projectedAgentStepFromItem, projectTranscriptItems, relevantAgentSteps } from "./transcript-projection.ts";
 
 const READ_BUFFER_SIZE = 64 * 1024;
 const DEFAULT_MAX_JSONL_LINE_BYTES = 128 * 1024 * 1024;
@@ -21,6 +22,7 @@ const SEARCH_CACHE_LIMIT = 8;
 const SEARCH_CACHE_BYTES = 32 * 1024 * 1024;
 const SEARCH_CACHE_ENTRY_BYTES = 256 * 1024;
 const SEARCH_SNIPPET_LENGTH = 320;
+const AGENT_STEP_INDEX_LIMIT = 8;
 
 type RawEntry = Record<string, unknown> & { type: string; id?: string; parentId?: string | null; timestamp?: string };
 type RewriteGeneration = {
@@ -367,6 +369,10 @@ function searchEntry(entry: RawEntry, query: string): TranscriptSearchHit | unde
 export class TranscriptReader {
 	private readonly observed = new Map<string, ObservedGeneration>();
 	private readonly searchIndexes = new Map<string, SearchIndex>();
+	private readonly agentStepIndexes = new Map<
+		string,
+		{ generation: string; revision: number; leafId: string; steps: AgentStep[] }
+	>();
 	private readonly maxJsonlLineBytes: number;
 	private searchCacheBytes = 0;
 
@@ -392,6 +398,7 @@ export class TranscriptReader {
 				transcriptGeneration: options.emptyGeneration,
 				transcriptRevision: 0,
 				complete: true,
+				agentSteps: [],
 			};
 		}
 		try {
@@ -481,7 +488,33 @@ export class TranscriptReader {
 					transcriptGeneration: generation,
 					transcriptRevision: completeSize,
 					complete: true,
+					agentSteps: [],
 				};
+			}
+			const cachedAgentSteps = this.agentStepIndexes.get(resolvedPath);
+			const sameAgentStepIndex =
+				cachedAgentSteps?.generation === generation &&
+				cachedAgentSteps.revision === completeSize &&
+				cachedAgentSteps.leafId === leafId;
+			const latestAgentSteps = new Map(
+				(sameAgentStepIndex ? cachedAgentSteps.steps : []).map((step) => [step.id, step]),
+			);
+			const rememberAgentStep = (entry: RawEntry): AgentStep | undefined => {
+				const step = projectedAgentStepFromItem(toTranscriptItem(entry));
+				if (step && !latestAgentSteps.has(step.id)) latestAgentSteps.set(step.id, step);
+				return step;
+			};
+			if (cursor && !sameAgentStepIndex) {
+				let indexWantedId: string | null = leafId;
+				await scanReverse(handle, completeSize, this.maxJsonlLineBytes, (line) => {
+					if (indexWantedId === null || indexWantedId === cursor.wantedId) return true;
+					const entry = parseLine(line);
+					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== indexWantedId)
+						return false;
+					indexWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+					rememberAgentStep(entry);
+					return indexWantedId === cursor.wantedId;
+				});
 			}
 			const items: RawEntry[] = [];
 			let wantedId: string | null = cursor?.wantedId ?? leafId;
@@ -496,17 +529,47 @@ export class TranscriptReader {
 						return false;
 					matched = true;
 					wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+					const step = rememberAgentStep(entry);
 					if (isVisible(entry)) items.push(entry);
 					const splitsToolExchange =
 						entry.type === "message" && (entry.message as { role?: string } | undefined)?.role === "toolResult";
-					return items.length >= options.limit && !splitsToolExchange;
+					return items.length >= options.limit && !splitsToolExchange && !step;
 				},
 			);
 			if (!matched || (nextOffset === 0 && wantedId !== null)) throw new TranscriptCursorInvalidError();
+			if (wantedId !== null && nextOffset > 0) {
+				let boundaryWantedId: string | null = wantedId;
+				await scanReverse(handle, nextOffset, this.maxJsonlLineBytes, (line) => {
+					if (boundaryWantedId === null) return true;
+					const entry = parseLine(line);
+					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== boundaryWantedId)
+						return false;
+					boundaryWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+					return !rememberAgentStep(entry) || boundaryWantedId === null;
+				});
+			}
+			const allAgentSteps = [...latestAgentSteps.values()].sort(
+				(left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id),
+			);
+			this.agentStepIndexes.delete(resolvedPath);
+			this.agentStepIndexes.set(resolvedPath, {
+				generation,
+				revision: completeSize,
+				leafId,
+				steps: allAgentSteps,
+			});
+			while (this.agentStepIndexes.size > AGENT_STEP_INDEX_LIMIT) {
+				const oldest = this.agentStepIndexes.keys().next().value;
+				if (oldest === undefined) break;
+				this.agentStepIndexes.delete(oldest);
+			}
 			items.reverse();
+			const transcriptItems = items.map(toTranscriptItem);
+			const pageAgentSteps = relevantAgentSteps(transcriptItems, allAgentSteps);
 			const hasMorePrevious = wantedId !== null && nextOffset > 0;
 			return {
-				items: items.map(toTranscriptItem),
+				items: transcriptItems,
+				...(pageAgentSteps.length > 0 ? { agentSteps: pageAgentSteps } : {}),
 				previousCursor: hasMorePrevious
 					? encodeCursor({
 							version: CURSOR_VERSION,

@@ -1,3 +1,6 @@
+import { webSearchProgressSummary } from "@lystar/code-web-protocol";
+import type { WebSearchProgress } from "@lystar/code-web-protocol";
+
 export interface ToolBatchDescriptor {
 	name: string;
 	summary: string;
@@ -42,6 +45,15 @@ export function mergeWebSearchSummary(previous: string | undefined, next: string
 	const nextSummary = next?.trim();
 	if (nextSummary && nextSummary !== "网页搜索") return nextSummary;
 	return previous?.trim() || nextSummary || "网页搜索";
+}
+
+export function mergeWebSearchToolSummary(
+	previous: string | undefined,
+	next: string | undefined,
+	progress: WebSearchProgress | undefined,
+): string {
+	const structured = webSearchProgressSummary(progress);
+	return mergeWebSearchSummary(previous, structured === "网页搜索" ? next : structured);
 }
 
 export function shouldJoinToolBatch(

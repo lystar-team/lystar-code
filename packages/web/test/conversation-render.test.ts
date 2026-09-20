@@ -486,7 +486,7 @@ describe("conversation render items", () => {
 			title: "读取项目说明",
 			status: "completed" as const,
 			toolCallIds: ["read-1", "orphan-1"],
-			messageEntryIds: ["assistant-step-update", "assistant-step-error"],
+			messageEntryIds: ["assistant-step-update", "user-steer", "assistant-step-error"],
 			startedAt: Date.parse("2026-09-16T00:00:00.500Z"),
 			endedAt: Date.parse("2026-09-16T00:00:04.500Z"),
 		};
@@ -634,7 +634,6 @@ describe("conversation render items", () => {
 			step: { id: step.id, title: "读取项目说明", status: "completed" },
 			items: [
 				{ kind: "tool-stack", stepId: step.id },
-				{ kind: "compaction", entryId: "compaction-step", text: "保留当前检查目标与已读取结果。" },
 				{
 					kind: "tool-stack",
 					stepId: step.id,
@@ -660,11 +659,56 @@ describe("conversation render items", () => {
 				},
 			],
 		});
+		expect(workProcess.items).toContainEqual(
+			expect.objectContaining({
+				kind: "compaction",
+				entryId: "compaction-step",
+				text: "保留当前检查目标与已读取结果。",
+			}),
+		);
 		expect(completed.map((item) => item.kind)).toEqual(["message", "work-process", "result-boundary", "message"]);
 		expect(completed.some((item) => item.kind === "result-boundary")).toBe(true);
 	});
 
-	it("实时工具缺少明确归属时立即进入当前唯一运行步骤", () => {
+	it("Task 条目不在当前分页时仍按步骤索引归组工具", () => {
+		const step = {
+			id: "step-page",
+			title: "读取跨页文件",
+			status: "completed" as const,
+			toolCallIds: ["read-page"],
+			messageEntryIds: [],
+			startedAt: 1,
+			endedAt: 2,
+		};
+		const persisted = buildPersistedRenderItems(
+			[
+				{
+					entryId: "assistant-page",
+					parentId: "older-step-entry",
+					timestamp: "2026-09-20T00:00:00.000Z",
+					kind: "message",
+					view: {
+						type: "tool_call" as const,
+						calls: [{ id: "read-page", name: "read", summary: "README.md", stepId: step.id }],
+					},
+				},
+			],
+			emptyToolIndex,
+			[],
+			{},
+			{ [step.id]: step },
+		);
+
+		expect(persisted).toMatchObject([
+			{
+				kind: "agent-step",
+				step: { id: step.id, status: "completed" },
+				items: [{ kind: "tool-stack", stepId: step.id }],
+			},
+		]);
+	});
+
+	it("缺少明确 stepId 的实时活动保持在会话时间线顶层", () => {
 		const step = {
 			id: "step-live",
 			title: "检查实时状态",
@@ -718,14 +762,12 @@ describe("conversation render items", () => {
 			{
 				kind: "agent-step",
 				step: { id: step.id },
-				items: [
-					{ kind: "message", key: "live-step-text", text: "正在核对运行状态。", live: true },
-					{ kind: "tool-stack", stepId: step.id, batches: [{ tools: [{ id: "write-1", stepId: step.id }] }] },
-					{ kind: "message", key: "optimistic-user:queue-1", role: "user", text: "Thinking 保持外部" },
-					{ kind: "tool-stack", stepId: step.id, batches: [{ tools: [{ id: "read-2", stepId: step.id }] }] },
-					{ kind: "compaction", key: "live-compaction:1", live: true, state: { status: "running" } },
-				],
+				items: [{ kind: "message", key: "live-step-text", text: "正在核对运行状态。", live: true }],
 			},
+			{ kind: "tool-stack", stepId: undefined, batches: [{ tools: [{ id: "write-1", stepId: undefined }] }] },
+			{ kind: "message", key: "optimistic-user:queue-1", role: "user", text: "Thinking 保持外部" },
+			{ kind: "tool-stack", stepId: undefined, batches: [{ tools: [{ id: "read-2", stepId: undefined }] }] },
+			{ kind: "compaction", key: "live-compaction:1", live: true, state: { status: "running" } },
 		]);
 	});
 

@@ -1,3 +1,4 @@
+import { mergeWebSearchProgress } from "@lystar/code-web-protocol";
 import type {
 	AgentStep,
 	SessionProgress,
@@ -20,7 +21,7 @@ import {
 	reconcileQueuedUserPromptCounts,
 } from "./chat-lifecycle.ts";
 import { restoreCompactionState, updateCompactionState } from "./compaction-state.ts";
-import { mergeWebSearchSummary, shouldJoinLiveToolBatch } from "./tool-batching.ts";
+import { mergeWebSearchToolSummary, shouldJoinLiveToolBatch } from "./tool-batching.ts";
 import type {
 	LiveTool,
 	LiveTurnItem,
@@ -189,19 +190,21 @@ export function liveToolFromActivity(activity: ToolActivity, previous: LiveTool 
 		activity.state === "error" ||
 		activity.state === "cancelled" ||
 		activity.state === "interrupted";
+	const webSearch = activity.name === "web_search" ? previous?.webSearch : undefined;
 	return {
 		id: activity.toolCallId,
 		name: activity.name,
 		batchId,
 		summary:
 			activity.name === "web_search"
-				? mergeWebSearchSummary(previous?.summary, activity.summary)
+				? mergeWebSearchToolSummary(previous?.summary, activity.summary, webSearch)
 				: activity.summary || previous?.summary || activity.name,
 		state: activity.state,
 		status: toolActivityStatus(activity.state),
 		stepId: activity.stepId ?? previous?.stepId,
 		inputPreview: activity.inputPreview,
 		result: activity.output ?? activity.progress ?? activity.error ?? previous?.result,
+		...(webSearch ? { webSearch } : {}),
 		...(terminal ? { diff: activity.diff } : { diff: mergeToolDiff(previous?.diff, activity.diff) }),
 	};
 }
@@ -266,10 +269,19 @@ export function applyToolActivityState(current: WorkbenchState, activity: ToolAc
 }
 
 export function restoreToolActivities(current: WorkbenchState, snapshot: WebSessionSnapshot): WorkbenchState {
-	if (!snapshot.toolActivityEpoch || snapshot.toolActivityRevision === undefined) return current;
+	if (!snapshot.toolActivityEpoch || snapshot.toolActivityRevision === undefined) {
+		if (hasActiveSessionSnapshot(snapshot)) return current;
+		return {
+			...current,
+			toolActivityEpoch: undefined,
+			toolActivityRevision: undefined,
+			liveTools: {},
+			liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "tools"),
+		};
+	}
 	if (
 		current.toolActivityEpoch === snapshot.toolActivityEpoch &&
-		(current.toolActivityRevision ?? -1) >= snapshot.toolActivityRevision
+		(current.toolActivityRevision ?? -1) > snapshot.toolActivityRevision
 	) {
 		return current;
 	}
@@ -373,6 +385,7 @@ export function createSubagentConversationState(snapshot: SubagentSnapshot): Sub
 	return {
 		snapshot,
 		transcript: [],
+		agentSteps: {},
 		transcriptPageLoaded: false,
 		transcriptLoading: false,
 		hasMorePrevious: false,
@@ -526,9 +539,11 @@ export function applySubagentProgress(
 		case "tool_end": {
 			const previous = current.liveTools[progress.toolCallId];
 			if (progress.type === "tool_update" && previous && previous.status !== "running") return current;
+			const webSearch =
+				progress.name === "web_search" ? mergeWebSearchProgress(previous?.webSearch, progress.webSearch) : undefined;
 			const summary =
 				progress.name === "web_search"
-					? mergeWebSearchSummary(previous?.summary, progress.summary)
+					? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
 					: progress.summary || previous?.summary || "正在执行";
 			const batchId =
 				previous?.batchId ??
@@ -547,6 +562,7 @@ export function applySubagentProgress(
 						status,
 						stepId: progress.stepId ?? previous?.stepId,
 						result: progress.summary,
+						...(webSearch ? { webSearch } : {}),
 						diff: mergeToolDiff(previous?.diff, progress.diff),
 					},
 				},
@@ -584,8 +600,19 @@ export function applySubagentProgress(
 					progress.phase === "turn"
 						? current.liveTurnItems.filter((item) => item.kind === "user")
 						: current.liveTurnItems,
-				liveSteps: progress.phase === "turn" ? {} : current.liveSteps,
+				...(progress.phase === "turn"
+					? {
+							liveTools: {},
+							toolActivityEpoch: undefined,
+							toolActivityRevision: undefined,
+							liveSteps: {},
+					  }
+					: {}),
 				liveTurnStartRevision: progress.phase === "turn" ? current.transcriptRevision : current.liveTurnStartRevision,
+				liveCompaction:
+					progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
+						? undefined
+						: current.liveCompaction,
 				statusText:
 					progress.phase === "idle"
 						? ""

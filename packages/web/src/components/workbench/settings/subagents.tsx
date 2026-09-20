@@ -1,14 +1,141 @@
 import { Bot, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { cn } from "../../../lib/utils";
 import type { SubagentConfig, WebThinkingLevel } from "../../../types";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../ui/dialog";
 import { Input } from "../../ui/input";
 import { Spinner } from "../../ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
 import type { WorkbenchActions } from "../types";
 import type { WorkbenchState } from "../../../state/use-workbench";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor";
+import { SettingSection } from "./shared";
+
+type AgentProviderOption = { id: string; name: string };
+type AgentModelOption = Pick<WorkbenchState["modelOptions"][number], "provider" | "id" | "name">;
+
+function AgentConfigurationFields({
+	className,
+	draft,
+	providers,
+	availableModels,
+	thinkingLevels,
+	toolOptions,
+	onChange,
+}: {
+	className?: string;
+	draft: AgentDraft;
+	providers: readonly AgentProviderOption[];
+	availableModels: readonly AgentModelOption[];
+	thinkingLevels: readonly WebThinkingLevel[];
+	toolOptions: readonly string[];
+	onChange: (draft: AgentDraft) => void;
+}) {
+	return (
+		<div className={cn("min-h-0 space-y-5", className)}>
+			<SettingSection title="基本信息">
+				<div className="grid gap-3">
+					<label className="grid gap-2 text-sm font-medium">
+						范围
+						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.scope} onChange={(event) => onChange({ ...draft, scope: event.target.value as "user" | "project" })} disabled={Boolean(draft.source && draft.source.scope !== "builtin")}>
+							<option value="user">个人</option>
+							<option value="project">项目</option>
+						</select>
+					</label>
+					<label className="grid gap-2 text-sm font-medium">
+						名称
+						<Input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} placeholder="review-specialist" />
+					</label>
+					<label className="grid gap-2 text-sm font-medium">
+						描述
+						<Input value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} placeholder="说明该智能体负责的任务" />
+					</label>
+				</div>
+			</SettingSection>
+
+			<SettingSection title="模型">
+				<div className="grid gap-3">
+					<label className="grid gap-2 text-sm font-medium">
+						供应商
+						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.provider} onChange={(event) => onChange({ ...draft, provider: event.target.value, model: "", thinkingLevel: "" })}>
+							<option value="">继承当前会话</option>
+							{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+						</select>
+					</label>
+					<label className="grid gap-2 text-sm font-medium">
+						模型
+						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value, thinkingLevel: "" })} disabled={!draft.provider && !draft.model}>
+							<option value="">继承当前会话</option>
+							{availableModels.map((model) => <option key={`${model.provider}:${model.id}`} value={model.id}>{model.name}</option>)}
+						</select>
+					</label>
+					<label className="grid gap-2 text-sm font-medium">
+						思考强度
+						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.thinkingLevel} onChange={(event) => onChange({ ...draft, thinkingLevel: event.target.value as WebThinkingLevel | "" })}>
+							<option value="">继承模型设置</option>
+							{thinkingLevels.map((level) => <option key={level} value={level}>{level}</option>)}
+						</select>
+					</label>
+				</div>
+			</SettingSection>
+
+			<SettingSection title="工具权限">
+				<div className="grid gap-2">
+					<div className="flex items-center justify-between gap-3">
+						<p className="text-xs text-muted-foreground">不选择时允许全部工具。</p>
+						<span className="shrink-0 text-xs text-muted-foreground">
+							{draft.tools.length ? `已选择 ${draft.tools.length}/${toolOptions.length}` : "全部工具"}
+						</span>
+					</div>
+					<div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-border/70 p-3">
+						{toolOptions.map((tool) => (
+							<label key={tool} className="flex items-center gap-2 text-sm">
+								<input type="checkbox" checked={draft.tools.includes(tool)} onChange={(event) => onChange({ ...draft, tools: event.target.checked ? [...draft.tools, tool] : draft.tools.filter((candidate) => candidate !== tool) })} />
+								<span className="font-mono text-xs">{tool}</span>
+							</label>
+						))}
+					</div>
+				</div>
+			</SettingSection>
+		</div>
+	);
+}
+
+function AgentMarkdownPanel({
+	className,
+	draft,
+	disabled,
+	onChange,
+	onSave,
+	theme,
+}: {
+	className?: string;
+	draft: AgentDraft;
+	disabled: boolean;
+	onChange: (content: string) => void;
+	onSave: () => void;
+	theme: WorkbenchState["theme"];
+}) {
+	return (
+		<div className={cn("min-w-0", className)}>
+			<div className="mb-3">
+				<h2 className="text-sm font-semibold">智能体正文</h2>
+			</div>
+			<MonacoMarkdownEditor
+				className="h-[min(52dvh,420px)] md:h-[min(52dvh,520px)] lg:h-[clamp(360px,calc(100dvh-19rem),800px)]"
+				disabled={disabled}
+				onChange={onChange}
+				onSave={onSave}
+				theme={theme}
+				value={draft.content}
+				ariaLabel="智能体正文"
+				fileName={`${draft.name || "agent"}.md`}
+			/>
+		</div>
+	);
+}
 
 const THINKING_LEVELS: WebThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp", "image_gen"];
@@ -47,6 +174,7 @@ function draftFor(config?: SubagentConfig): AgentDraft {
 
 export function SubagentSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [draft, setDraft] = useState<AgentDraft>();
+	const [mobileEditorTab, setMobileEditorTab] = useState<"config" | "markdown">("config");
 	const providers = useMemo(() => {
 		const names = new Map(state.modelOptionProviders.map((provider) => [provider.id, provider.name]));
 		for (const model of state.modelOptions) if (!names.has(model.provider)) names.set(model.provider, model.provider);
@@ -75,6 +203,11 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 		? THINKING_LEVELS.filter((level) => selectedModel.supportedThinkingLevels.includes(level))
 		: THINKING_LEVELS;
 	const toolOptions = [...new Set([...DEFAULT_TOOLS, ...(draft?.tools ?? [])])];
+
+	const openDraft = (config?: SubagentConfig) => {
+		setDraft(draftFor(config));
+		setMobileEditorTab("config");
+	};
 
 	const save = async () => {
 		if (!draft) return;
@@ -117,7 +250,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 						<RefreshCw className={state.subagentConfigsLoading ? "size-4 animate-spin" : "size-4"} />
 						刷新
 					</Button>
-					<Button size="sm" onClick={() => setDraft(draftFor())}>
+					<Button size="sm" onClick={() => openDraft()}>
 						<Plus className="size-4" />
 						新建智能体
 					</Button>
@@ -160,7 +293,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 										删除
 									</Button>
 								) : null}
-								<Button variant="outline" size="sm" onClick={() => setDraft(draftFor(config))}>
+								<Button variant="outline" size="sm" onClick={() => openDraft(config)}>
 									<Pencil className="size-4" />
 									{config.scope === "builtin" ? "创建覆盖" : "编辑"}
 								</Button>
@@ -171,77 +304,71 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 			)}
 
 			<Dialog open={Boolean(draft)} onOpenChange={(open) => !open && setDraft(undefined)}>
-				<DialogContent className="flex max-h-[92dvh] w-[min(96vw,1080px)] max-w-none flex-col overflow-hidden p-0">
-					<DialogHeader className="border-b border-border/60 px-6 py-5">
+				<DialogContent className="flex h-[min(92dvh,820px)] w-[min(96vw,1280px)] max-h-[92dvh] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(96vw,1280px)]">
+					<DialogHeader className="shrink-0 border-b border-border/60 px-6 py-5 pr-12">
 						<DialogTitle>{draft?.source ? `${draft.source.name} 配置` : "新建智能体"}</DialogTitle>
 						<DialogDescription>配置名称、运行模型、思考强度、工具权限和智能体正文。</DialogDescription>
 					</DialogHeader>
 					{draft ? (
-						<div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-							<div className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)]">
-								<div className="space-y-4">
-									<label className="grid gap-2 text-sm font-medium">
-										范围
-										<select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={draft.scope} onChange={(event) => setDraft({ ...draft, scope: event.target.value as "user" | "project" })} disabled={Boolean(draft.source && draft.source.scope !== "builtin")}>
-											<option value="user">个人</option>
-											<option value="project">项目</option>
-										</select>
-									</label>
-									<label className="grid gap-2 text-sm font-medium">
-										名称
-										<Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="review-specialist" />
-									</label>
-									<label className="grid gap-2 text-sm font-medium">
-										描述
-										<Input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="说明该智能体负责的任务" />
-									</label>
-									<label className="grid gap-2 text-sm font-medium">
-										供应商
-										<select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value, model: "", thinkingLevel: "" })}>
-											<option value="">继承当前会话</option>
-											{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-										</select>
-									</label>
-									<label className="grid gap-2 text-sm font-medium">
-										模型
-										<select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value, thinkingLevel: "" })} disabled={!draft.provider && !draft.model}>
-											<option value="">继承当前会话</option>
-											{availableModels.map((model) => <option key={`${model.provider}:${model.id}`} value={model.id}>{model.name}</option>)}
-										</select>
-									</label>
-									<label className="grid gap-2 text-sm font-medium">
-										思考强度
-										<select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={draft.thinkingLevel} onChange={(event) => setDraft({ ...draft, thinkingLevel: event.target.value as WebThinkingLevel | "" })}>
-											<option value="">继承模型设置</option>
-											{thinkingLevels.map((level) => <option key={level} value={level}>{level}</option>)}
-										</select>
-									</label>
-									<fieldset className="grid gap-2">
-										<legend className="text-sm font-medium">工具权限</legend>
-										<p className="text-xs text-muted-foreground">不选择时允许全部工具。</p>
-										<div className="grid grid-cols-2 gap-2 rounded-lg border border-border/70 p-3">
-											{toolOptions.map((tool) => (
-												<label key={tool} className="flex items-center gap-2 text-sm">
-													<input type="checkbox" checked={draft.tools.includes(tool)} onChange={(event) => setDraft({ ...draft, tools: event.target.checked ? [...draft.tools, tool] : draft.tools.filter((candidate) => candidate !== tool) })} />
-													<span className="font-mono text-xs">{tool}</span>
-												</label>
-											))}
-										</div>
-									</fieldset>
-								</div>
-								<div className="min-w-0">
-									<MonacoMarkdownEditor disabled={state.subagentConfigsSaving} onChange={(content) => setDraft((current) => current ? { ...current, content } : current)} onSave={() => void save()} theme={state.theme} value={draft.content} ariaLabel="智能体正文" fileName={`${draft.name || "agent"}.md`} />
-								</div>
+						<div className="min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
+							<Tabs
+								className="flex h-full min-h-0 gap-3 lg:hidden"
+								value={mobileEditorTab}
+								onValueChange={(value) => setMobileEditorTab(value as "config" | "markdown")}
+							>
+								<TabsList className="grid h-9 w-full grid-cols-2">
+									<TabsTrigger value="config">配置</TabsTrigger>
+									<TabsTrigger value="markdown">Markdown</TabsTrigger>
+								</TabsList>
+								<TabsContent className="min-h-0 overflow-y-auto pr-1" value="config">
+									<AgentConfigurationFields
+										draft={draft}
+										providers={providers}
+										availableModels={availableModels}
+										thinkingLevels={thinkingLevels}
+										toolOptions={toolOptions}
+										onChange={setDraft}
+									/>
+								</TabsContent>
+								<TabsContent className="min-h-0 overflow-y-auto" value="markdown">
+									<AgentMarkdownPanel
+										draft={draft}
+										disabled={state.subagentConfigsSaving}
+										onChange={(content) => setDraft((current) => current ? { ...current, content } : current)}
+										onSave={() => void save()}
+										theme={state.theme}
+									/>
+								</TabsContent>
+							</Tabs>
+
+							<div className="hidden h-full min-h-0 gap-0 lg:grid lg:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
+								<AgentConfigurationFields
+									className="overflow-y-auto border-r border-border/60 pr-5"
+									draft={draft}
+									providers={providers}
+									availableModels={availableModels}
+									thinkingLevels={thinkingLevels}
+									toolOptions={toolOptions}
+									onChange={setDraft}
+								/>
+								<AgentMarkdownPanel
+									className="min-h-0 pl-5"
+									draft={draft}
+									disabled={state.subagentConfigsSaving}
+									onChange={(content) => setDraft((current) => current ? { ...current, content } : current)}
+									onSave={() => void save()}
+									theme={state.theme}
+								/>
 							</div>
 						</div>
 					) : null}
-					<div className="flex justify-end gap-2 border-t border-border/60 px-6 py-4">
+					<DialogFooter className="shrink-0 border-t border-border/60 px-6 py-4">
 						<Button variant="outline" onClick={() => setDraft(undefined)}>取消</Button>
 						<Button disabled={state.subagentConfigsSaving} onClick={() => void save()}>
 							{state.subagentConfigsSaving ? <Spinner className="size-4" /> : null}
 							保存
 						</Button>
-					</div>
+					</DialogFooter>
 				</DialogContent>
 			</Dialog>
 		</div>

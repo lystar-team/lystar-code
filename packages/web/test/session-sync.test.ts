@@ -3,6 +3,7 @@ import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
 	isSameSessionSnapshot,
+	isSameTranscriptHistory,
 	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	needsTranscriptRefreshForCommit,
@@ -53,6 +54,20 @@ describe("连接恢复状态边界", () => {
 		expect(runtimeHistoryChanged(undefined, snapshot)).toBe(false);
 		expect(runtimeHistoryChanged(snapshot, { ...snapshot, transcriptGeneration: "runtime-next" })).toBe(true);
 	});
+	it("同 generation 的 leaf 变化会被识别为新 Transcript 分支", () => {
+		expect(
+			isSameTranscriptHistory(
+				{ generation: "generation", leafId: "old-leaf" },
+				{ transcriptGeneration: "generation", leafId: "new-leaf" },
+			),
+		).toBe(false);
+		expect(
+			isSameTranscriptHistory(
+				{ generation: "generation", leafId: "same-leaf" },
+				{ transcriptGeneration: "generation", leafId: "same-leaf" },
+			),
+		).toBe(true);
+	});
 	it("旧快照不能覆盖新快照", () => {
 		const current = { id: "session", revision: 8 } as WebSessionSnapshot;
 		expect(isOlderSessionSnapshot(current, { ...current, revision: 7 })).toBe(true);
@@ -71,6 +86,43 @@ describe("连接恢复状态边界", () => {
 		expect(isSameSessionSnapshot(current, { ...current, revision: 9 })).toBe(true);
 		expect(isSameSessionSnapshot(current, { ...current, revision: 9, activity: "idle" })).toBe(false);
 	});
+	it("Task 状态或队列明细变化时不会把快照误判为重复", () => {
+		const activeStep = {
+			id: "step-1",
+			title: "检查状态",
+			status: "running" as const,
+			toolCallIds: [],
+			startedAt: 1,
+		};
+		const current = {
+			id: "session",
+			name: "测试会话",
+			activity: "running",
+			phase: "turn",
+			revision: 8,
+			transcriptGeneration: "generation",
+			transcriptRevision: 10,
+			queuedFollowUpCount: 1,
+			queuedFollowUpMessages: [{ id: "queue-1", text: "旧消息" }],
+			activeStep,
+		} as WebSessionSnapshot;
+
+		expect(
+			isSameSessionSnapshot(current, {
+				...current,
+				revision: 9,
+				activeStep: { ...activeStep, toolCallIds: ["read-1"] },
+			}),
+		).toBe(false);
+		expect(
+			isSameSessionSnapshot(current, {
+				...current,
+				revision: 9,
+				queuedFollowUpMessages: [{ id: "queue-1", text: "新消息" }],
+			}),
+		).toBe(false);
+	});
+
 	it("旧 bootstrap 不会把完成操作恢复成运行中", () => {
 		const completed = { operationId: "operation", updatedAt: 20, status: "completed" } as WebOperation;
 		const running = { ...completed, updatedAt: 10, status: "running" } as WebOperation;

@@ -56,6 +56,43 @@ describe("AgentStepController", () => {
 		expect(controller.activeStep).toBeUndefined();
 	});
 
+	it("只为增量提交返回与条目 ID 或工具 ID 相关的步骤快照", () => {
+		const root = mkdtempSync(join(tmpdir(), "agent-steps-index-"));
+		cleanupPaths.push(root);
+		const cwd = join(root, "project");
+		const sessionDir = join(root, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		const manager = SessionManager.create(cwd, sessionDir);
+		const controller = new AgentStepController(manager);
+		const step = controller.start("读取索引文件");
+		const assistantEntryId = manager.appendMessage({
+			role: "assistant",
+			content: [{ type: "toolCall", id: "read-indexed", name: "read", arguments: { path: "README.md" } }],
+			api: "anthropic-messages",
+			provider: "test",
+			model: "test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		});
+		controller.associateMessage(assistantEntryId);
+		controller.associateTool("read-indexed");
+		controller.finishActive("completed");
+		const assistantEntry = manager.getEntries().find((entry) => entry.id === assistantEntryId);
+		if (!assistantEntry) throw new Error("缺少 assistant 条目");
+
+		expect(controller.stepsForEntries([assistantEntry])).toEqual([
+			expect.objectContaining({ id: step.id, status: "completed", toolCallIds: ["read-indexed"] }),
+		]);
+	});
+
 	it("从已有自定义条目恢复活动步骤和工具归属", () => {
 		const root = mkdtempSync(join(tmpdir(), "agent-steps-restore-"));
 		cleanupPaths.push(root);

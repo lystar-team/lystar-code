@@ -253,7 +253,7 @@ export function Workbench({
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 	const [promptEditRequest, setPromptEditRequest] = useState<PromptEditRequest>();
-	const desktopLayout = useMediaQuery("(min-width: 1024px)");
+	const desktopLayout = useMediaQuery("(min-width: 768px), (horizontal-viewport-segments: 2)");
 	const currentSessions = currentProject?.sessions ?? [];
 	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
 	const connection = connectionPresentation(state);

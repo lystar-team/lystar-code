@@ -21,7 +21,7 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { type Api, type AuthResult, contentText, type Model, type WebSearchCallContent } from "@earendil-works/pi-ai";
+import { type Api, type AuthResult, contentText, type Model } from "@earendil-works/pi-ai";
 
 import {
 	type AgentSessionEvent,
@@ -163,6 +163,7 @@ import type {
 } from "./types.ts";
 import { probeUserNodeToolchain } from "./user-execution-environment.ts";
 import { projectAgentEvent, WebCompanionProtocolError, WebCompanionRuntime } from "./web-companion-runtime.ts";
+import { webSearchProgressFromCall, webSearchProgressSummary } from "./web-search-progress.ts";
 
 export { BUILTIN_SLASH_COMMANDS } from "@earendil-works/pi-coding-agent/core";
 
@@ -1243,19 +1244,6 @@ function truncateWithoutSplittingSurrogate(value: string, maxChars: number): str
 	return value.slice(0, end);
 }
 
-function webSearchProgressSummary(call: WebSearchCallContent): string {
-	switch (call.action.type) {
-		case "search":
-			return (
-				call.action.query?.trim() || call.action.queries?.find((query) => query.trim().length > 0) || "网页搜索"
-			);
-		case "open_page":
-			return call.action.url ? `打开 ${call.action.url}` : "打开网页";
-		case "find_in_page":
-			return call.action.url ? `查找 ${call.action.url}` : "查找网页内容";
-	}
-}
-
 function boundedStatus(value: unknown): string {
 	const text = typeof value === "string" ? value : JSON.stringify(value);
 	return text.length <= 1024 ? text : `${truncateWithoutSplittingSurrogate(text, 1021)}...`;
@@ -1338,7 +1326,8 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 					stream.type === "websearch_end") &&
 				event.message.role === "assistant"
 			) {
-				const summary = webSearchProgressSummary(stream.call);
+				const webSearch = webSearchProgressFromCall(stream.call);
+				const summary = webSearchProgressSummary(webSearch);
 				if (stream.type === "websearch_end") {
 					updates.push({
 						type: "tool_end",
@@ -1346,11 +1335,24 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 						name: "web_search",
 						status: stream.call.status === "failed" ? "error" : "success",
 						summary,
+						...(webSearch ? { webSearch } : {}),
 					});
 				} else if (stream.type === "websearch_start") {
-					updates.push({ type: "tool_start", toolCallId: stream.call.id, name: "web_search", summary });
+					updates.push({
+						type: "tool_start",
+						toolCallId: stream.call.id,
+						name: "web_search",
+						summary,
+						...(webSearch ? { webSearch } : {}),
+					});
 				} else {
-					updates.push({ type: "tool_update", toolCallId: stream.call.id, name: "web_search", summary });
+					updates.push({
+						type: "tool_update",
+						toolCallId: stream.call.id,
+						name: "web_search",
+						summary,
+						...(webSearch ? { webSearch } : {}),
+					});
 				}
 			} else if (
 				(stream.type === "toolcall_start" || stream.type === "toolcall_delta" || stream.type === "toolcall_end") &&
@@ -2206,13 +2208,16 @@ class CoreRuntimeSession implements RuntimeSession {
 		if (!hasTranscriptBeforeCommit && !hasCompletedEntry) return;
 		const storage = sessionGeneration(this.sessionPath, this.runtime.session.sessionId);
 		const fromRevision = this.lastTranscriptGeneration === storage.generation ? this.lastTranscriptRevision : 0;
+		const transcriptEntries = committed.filter(isTranscriptEntry);
+		const agentSteps = this.stepController.stepsForEntries(transcriptEntries);
 		this.committedEntryCount = entries.length;
 		this.lastTranscriptGeneration = storage.generation;
 		this.lastTranscriptRevision = storage.revision;
 		this.emit({
 			type: "entry_committed",
 			payload: jsonValue({
-				items: committed.filter(isTranscriptEntry).map(entryItem),
+				items: transcriptEntries.map(entryItem),
+				...(agentSteps.length > 0 ? { agentSteps } : {}),
 				transcriptGeneration: storage.generation,
 				fromRevision,
 				transcriptRevision: storage.revision,

@@ -169,6 +169,31 @@ describe("assistant transcript projection", () => {
 		expect(projected[2]?.view).toMatchObject({ type: "tool_result", callId: "read-1", stepId });
 	});
 
+	it("projects stepId from the session Task index when the Task entry is outside the batch", () => {
+		const step = {
+			id: "step-indexed",
+			title: "读取分页文件",
+			status: "completed" as const,
+			toolCallIds: ["read-indexed"],
+			messageEntryIds: [],
+			startedAt: 1,
+			endedAt: 2,
+		};
+		const items = projectTranscriptBatch(
+			[
+				assistant([{ type: "toolCall", id: "read-indexed", name: "read", arguments: { path: "README.md" } }]),
+				toolResult("read-result", "assistant-entry", "read-indexed", "read", "项目说明"),
+			],
+			[step],
+		);
+
+		expect(items[0]?.view).toMatchObject({
+			type: "tool_call",
+			calls: [{ id: "read-indexed", stepId: step.id }],
+		});
+		expect(items[1]?.view).toMatchObject({ type: "tool_result", callId: "read-indexed", stepId: step.id });
+	});
+
 	it("uses tool input for the result title and keeps output in detail", () => {
 		const items = projectTranscriptBatch([
 			assistant([

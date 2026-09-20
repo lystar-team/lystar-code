@@ -134,12 +134,12 @@ function SessionButtonComponent({
 					<HoverCard openDelay={140} closeDelay={80}>
 						<HoverCardTrigger asChild>
 							<Button
-								className="h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 !pl-8 text-left text-xs"
+								className="mobile-session-button h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 !pl-8 text-left text-xs"
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
 								<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
-								<span className="absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
+								<span className="mobile-session-status absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
 									{session.pinned ? (
 										<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
 									) : null}
@@ -236,7 +236,7 @@ function SessionButtonComponent({
 					</HoverCard>
 					<Button
 						aria-label={`删除会话：${title}`}
-						className="pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/session:pointer-events-auto group-hover/session:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+						className="mobile-hover-action pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/session:pointer-events-auto group-hover/session:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
 						draggable={false}
 						size="icon-sm"
 						variant="ghost"

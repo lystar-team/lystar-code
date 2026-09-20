@@ -36,6 +36,33 @@ describe("Web search tool card", () => {
 		expect(mergeWebSearchSummary("uni-app Canvas touch event", "网页搜索")).toBe("uni-app Canvas touch event");
 	});
 
+	it("renders structured live search data without a legacy summary", () => {
+		const markup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				initialOpen: true,
+				tools: [
+					{
+						id: "ws-live-1",
+						name: "web_search",
+						summary: "网页搜索",
+						state: "input-available",
+						webSearch: {
+							status: "searching",
+							action: "search",
+							query: "uni-app H5 Canvas touch event",
+							sources: [{ url: "https://uniapp.dcloud.net.cn/api/canvas", title: "uni-app Canvas 文档" }],
+						},
+					},
+				],
+			}),
+		);
+
+		expect(markup).toContain("正在搜索网页 uni-app H5 Canvas touch event");
+		expect(markup).toContain("uni-app Canvas 文档");
+		expect(markup).toContain('href="https://uniapp.dcloud.net.cn/api/canvas"');
+		expect(markup).toContain("来源 · 1");
+	});
+
 	it("keeps a search row expandable before sources return", () => {
 		const markup = renderToStaticMarkup(
 			createElement(ToolBatch, {
