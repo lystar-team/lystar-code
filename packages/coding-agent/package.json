@@ -7,7 +7,7 @@
 		"commandName": "lc",
 		"displayName": "LYStar Code",
 		"envPrefix": "PI",
-		"productVersion": "0.86.0-lystar.2",
+		"productVersion": "0.86.0-lystar.3",
 		"configDir": ".pi",
 		"releaseRepository": "lystar-team/lystar-code"
 	},
