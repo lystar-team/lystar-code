@@ -1031,7 +1031,11 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(isAbsolute(relative(join(agentDir, "sessions"), sessionPath))).toBe(false);
 		const firstCommitted = firstEvents.filter((event) => event.type === "entry_committed").map(eventPayload);
 		expect(firstCommitted).toHaveLength(1);
-		expect(firstCommitted[0].items.map((item) => item.payload.message?.role)).toEqual(["system", "user", "assistant"]);
+		expect(firstCommitted[0].items.map((item) => item.payload.message?.role)).toEqual([
+			"system",
+			"user",
+			"assistant",
+		]);
 		expect(firstCommitted[0].fromRevision).toBe(0);
 		const firstRevision = firstCommitted[0].transcriptRevision;
 		const firstGeneration = firstCommitted[0].transcriptGeneration;

@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.86.0-lystar.1] - 2026-09-20
 
 ### Fixed
 
