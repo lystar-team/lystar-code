@@ -242,6 +242,7 @@ function formatCurrentAction(toolName: string, args: unknown): string {
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 export type SubagentSessionEvent = JsonAgentSessionEvent | { type: "tool_result_end"; message: Message };
+export type SubagentRunListener = (snapshot: SubagentRunSnapshot, event?: SubagentSessionEvent) => void;
 
 export const SUBAGENT_RETENTION_MS = 60_000;
 
@@ -598,9 +599,22 @@ export class SubagentRunController {
 
 class SubagentRunRegistry {
 	private readonly controllers = new Map<string, SubagentRunController>();
+	private readonly eventUnsubscribers = new Map<string, () => void>();
+	private readonly listeners = new Set<SubagentRunListener>();
 
 	add(controller: SubagentRunController): void {
-		this.controllers.set(controller.result.agentId!, controller);
+		const agentId = controller.result.agentId!;
+		this.controllers.set(agentId, controller);
+		this.eventUnsubscribers.set(
+			agentId,
+			controller.subscribe((event) => {
+				queueMicrotask(() => {
+					if (this.controllers.get(agentId) !== controller) return;
+					this.notify(controller, event);
+				});
+			}),
+		);
+		this.notify(controller);
 	}
 
 	get(agentId: string): SubagentRunController | undefined {
@@ -611,13 +625,28 @@ class SubagentRunRegistry {
 		return [...this.controllers.values()].map((controller) => controller.snapshot);
 	}
 
+	subscribe(listener: SubagentRunListener): () => void {
+		this.listeners.add(listener);
+		for (const controller of this.controllers.values()) listener(controller.snapshot);
+		return () => this.listeners.delete(listener);
+	}
+
 	remove(agentId: string): void {
+		this.eventUnsubscribers.get(agentId)?.();
+		this.eventUnsubscribers.delete(agentId);
 		this.controllers.delete(agentId);
 	}
 
 	async disposeAll(): Promise<void> {
 		await Promise.all([...this.controllers.values()].map((controller) => controller.dispose()));
+		for (const unsubscribe of this.eventUnsubscribers.values()) unsubscribe();
+		this.eventUnsubscribers.clear();
 		this.controllers.clear();
+	}
+
+	private notify(controller: SubagentRunController, event?: SubagentSessionEvent): void {
+		const snapshot = controller.snapshot;
+		for (const listener of this.listeners) listener(snapshot, event);
 	}
 }
 
@@ -658,6 +687,10 @@ export function subscribeSubagent(
 	return currentSubagentRunRegistry?.get(agentId)?.subscribe(listener);
 }
 
+export function subscribeSubagentRuns(listener: SubagentRunListener): () => void {
+	return currentSubagentRunRegistry?.subscribe(listener) ?? (() => {});
+}
+
 export async function getLiveSubagentMessages(agentId: string): Promise<AgentMessage[] | undefined> {
 	const controller = currentSubagentRunRegistry?.get(agentId);
 	return controller ? await controller.getMessages() : undefined;
@@ -689,7 +722,7 @@ export async function continueSubagentSession(descriptor: SubagentSessionDescrip
 	const current = currentSubagentRunRegistry?.get(descriptor.agentId);
 	if (current) {
 		if (current.active) await current.steer(message);
-		else void current.prompt(message);
+		else await current.prompt(message);
 		return;
 	}
 	if (!currentSubagentRunRegistry) throw new Error(t("subagent.error.noActiveRegistry"));

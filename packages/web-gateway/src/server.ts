@@ -52,6 +52,9 @@ import {
 	type SessionSummary,
 	type SessionTreeNode,
 	type SettingSummary,
+	type SubagentConfig,
+	type SubagentSnapshot,
+	type ThinkingLevel,
 	type TranscriptItem,
 	type TranscriptPage,
 } from "@lystar/code-web-protocol";
@@ -328,6 +331,13 @@ type WebSessionProgressEvent = {
 	type: "session_progress";
 	sessionId: string;
 	progress: SessionProgress;
+};
+
+type WebSubagentUpdatedEvent = {
+	type: "subagent_updated";
+	sessionId: string;
+	snapshot: SubagentSnapshot;
+	progress?: SessionProgress[];
 };
 
 interface PendingProgressEvent {
@@ -3061,6 +3071,62 @@ export class WebGatewayServer {
 				return;
 			}
 		}
+		if (parts.length === 4 && parts[3] === "subagents" && request.method === "GET") {
+			const subagents = await client.request<SubagentSnapshot[]>({
+				command: "list_subagents",
+				sessionPath: session.path,
+			});
+			sendJson(response, 200, { subagents });
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "subagents" && request.method === "GET") {
+			const details = await client.request<{ transcript?: SubagentSnapshot; live?: SubagentSnapshot }>({
+				command: "read_subagent",
+				sessionPath: session.path,
+				agentId: parts[4],
+			});
+			if (!details.transcript && !details.live)
+				throw new HttpError(404, "subagent_not_found", "未找到属于当前会话的 Subagent");
+			sendJson(response, 200, details);
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "subagents" && parts[5] === "transcript" && request.method === "GET") {
+			const details = await client.request<{ transcript?: SubagentSnapshot; live?: SubagentSnapshot }>({
+				command: "read_subagent",
+				sessionPath: session.path,
+				agentId: parts[4],
+			});
+			const childSession = details.transcript?.session ?? details.live?.session;
+			if (!childSession?.sessionFile)
+				throw new HttpError(404, "subagent_transcript_not_found", "Subagent 会话记录不可读取");
+			if (childSession.parentSessionFile && childSession.parentSessionFile !== session.path)
+				throw new HttpError(404, "subagent_not_found", "Subagent 不属于当前会话");
+			const limitValue = Number(url.searchParams.get("limit") ?? "120");
+			const limit = Number.isInteger(limitValue) ? Math.min(200, Math.max(1, limitValue)) : 120;
+			const query = url.searchParams.get("search")?.trim();
+			if (query) {
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({
+						command: "search_transcript",
+						sessionPath: childSession.sessionFile,
+						query,
+						...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
+						limit: Math.min(100, limit),
+					}),
+				);
+			} else {
+				const page = await client.request<TranscriptPage>({
+					command: "read_transcript",
+					sessionPath: childSession.sessionFile,
+					...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
+					limit,
+				});
+				sendJson(response, 200, { ...page, items: page.items.map(publicTranscriptItem) });
+			}
+			return;
+		}
 		if (parts.length === 4 && parts[3] === "transcript" && request.method === "GET") {
 			const limitValue = Number(url.searchParams.get("limit") ?? "120");
 			const limit = Number.isInteger(limitValue) ? Math.min(200, Math.max(1, limitValue)) : 120;
@@ -3086,6 +3152,36 @@ export class WebGatewayServer {
 				});
 				sendJson(response, 200, { ...page, items: page.items.map(publicTranscriptItem) });
 			}
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "subagents" && parts[5] === "abort" && request.method === "POST") {
+			const lease = await this.requireLease(context, sessionId);
+			const result = await client.request<JsonValue>({
+				command: "abort_subagent",
+				sessionPath: session.path,
+				agentId: parts[4],
+				leaseId: lease.leaseId,
+				clientInstanceId: context.id,
+				clientRequestId: randomUUID(),
+			});
+			sendJson(response, 200, result);
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "subagents" && parts[5] === "continue" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const text = stringValue(body.text);
+			if (!text) throw new HttpError(400, "subagent_text_required", "继续 Subagent 需要输入内容");
+			const lease = await this.requireLease(context, sessionId);
+			const result = await client.request<JsonValue>({
+				command: "continue_subagent",
+				sessionPath: session.path,
+				agentId: parts[4],
+				text,
+				leaseId: lease.leaseId,
+				clientInstanceId: context.id,
+				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+			});
+			sendJson(response, 200, result);
 			return;
 		}
 		if (parts.length === 6 && parts[3] === "content" && parts[5] === "image" && request.method === "GET") {
@@ -3760,6 +3856,86 @@ export class WebGatewayServer {
 			throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
 		}
 
+		if (parts.length === 3 && parts[2] === "subagents") {
+			const projectId = stringValue(url.searchParams.get("projectId"));
+			if (!projectId) throw new HttpError(400, "project_required", "智能体配置需要当前项目");
+			const project = this.project(projectId);
+			const client = await this.getClient(context);
+			if (request.method === "GET") {
+				sendJson(response, 200, {
+					subagents: await client.request<SubagentConfig[]>({
+						command: "list_subagent_configs",
+						cwd: project.cwd,
+					}),
+				});
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const scope = body.scope === "user" || body.scope === "project" ? body.scope : undefined;
+				if (!scope) throw new HttpError(400, "subagent_scope_invalid", "智能体范围无效");
+				const name = stringValue(body.name);
+				const description = stringValue(body.description);
+				if (!name) throw new HttpError(400, "subagent_name_invalid", "智能体名称不能为空");
+				if (!description) throw new HttpError(400, "subagent_description_invalid", "智能体描述不能为空");
+				if (typeof body.content !== "string")
+					throw new HttpError(400, "subagent_content_invalid", "智能体内容必须是文本");
+				const tools = Array.isArray(body.tools)
+					? body.tools.filter((value): value is string => typeof value === "string" && value.length > 0)
+					: undefined;
+				const thinkingLevels: ThinkingLevel[] = [
+					"off",
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh",
+					"max",
+					"ultra",
+				];
+				const thinkingLevel = thinkingLevels.find((value) => value === body.thinkingLevel);
+				const subagents = await client.request<SubagentConfig[]>({
+					command: "save_subagent_config",
+					cwd: project.cwd,
+					scope,
+					...(typeof body.originalName === "string" ? { originalName: body.originalName } : {}),
+					name,
+					description,
+					...(typeof body.provider === "string" ? { provider: body.provider } : {}),
+					...(typeof body.model === "string" ? { model: body.model } : {}),
+					...(thinkingLevel ? { thinkingLevel } : {}),
+					...(tools ? { tools } : {}),
+					content: body.content,
+					...(typeof body.expectedHash === "string" ? { expectedHash: body.expectedHash } : {}),
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { subagents });
+				return;
+			}
+			if (request.method === "DELETE") {
+				const body = await parseJsonBody(request);
+				const scope = body.scope === "user" || body.scope === "project" ? body.scope : undefined;
+				if (!scope) throw new HttpError(400, "subagent_scope_invalid", "智能体范围无效");
+				const name = stringValue(body.name);
+				const expectedHash = stringValue(body.expectedHash);
+				if (!name || !expectedHash)
+					throw new HttpError(400, "subagent_delete_invalid", "删除智能体需要名称和文件版本");
+				const subagents = await client.request<SubagentConfig[]>({
+					command: "delete_subagent_config",
+					cwd: project.cwd,
+					scope,
+					name,
+					expectedHash,
+					clientInstanceId: context.id,
+					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+				});
+				sendJson(response, 200, { subagents });
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
+		}
+
 		if (parts.length === 3 && parts[2] === "host-instructions") {
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
@@ -3844,16 +4020,19 @@ export class WebGatewayServer {
 		}
 		if (context.sockets.size === 0) {
 			const projected = this.projectEvent(event);
-			if (projected?.type === "session_progress") {
+			if (projected?.type === "session_progress" || projected?.type === "subagent_updated") {
 				const sessionId = stringValue(projected.sessionId);
-				if (sessionId && context.resumeSessionIds.has(sessionId))
-					this.broadcastSessionProgress(context, projected as WebSessionProgressEvent);
+				if (sessionId && context.resumeSessionIds.has(sessionId)) {
+					if (projected.type === "session_progress")
+						this.broadcastSessionProgress(context, projected as WebSessionProgressEvent);
+					else this.recordSessionDetail(context, sessionId, projected);
+				}
 				return;
 			}
 			this.invalidateBootstrap(context);
 			return;
 		}
-		if (event.type !== "session_progress") this.invalidateBootstrap(context);
+		if (event.type !== "session_progress" && event.type !== "subagent_updated") this.invalidateBootstrap(context);
 		const projected = this.projectEvent(event);
 		if (!projected) {
 			this.invalidateBootstrap(context);
@@ -3888,7 +4067,11 @@ export class WebGatewayServer {
 			this.broadcast(context, projected);
 			return;
 		}
-		if (projected.type === "transcript_changed" || projected.type === "transcript_committed") {
+		if (
+			projected.type === "transcript_changed" ||
+			projected.type === "transcript_committed" ||
+			projected.type === "subagent_updated"
+		) {
 			const sessionId = typeof projected.sessionId === "string" ? projected.sessionId : undefined;
 			if (sessionId) this.recordSessionDetail(context, sessionId, projected);
 			return;
@@ -3958,6 +4141,17 @@ export class WebGatewayServer {
 		if (event.type === "session_progress") {
 			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
 			return sessionId ? { type: "session_progress", sessionId, progress: event.progress } : undefined;
+		}
+		if (event.type === "subagent_updated") {
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
+			if (!sessionId) return undefined;
+			const projected: WebSubagentUpdatedEvent = {
+				type: "subagent_updated",
+				sessionId,
+				snapshot: event.snapshot,
+				...(event.progress?.length ? { progress: event.progress } : {}),
+			};
+			return projected;
 		}
 		if (event.type === "operation_updated") {
 			const sessionId = this.sessionIdsByPath.get(event.operation.sessionPath);

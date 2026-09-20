@@ -252,4 +252,41 @@ describe("WebCompanionRuntime 协议协商", () => {
 			await runtime.dispose();
 		}
 	});
+
+	it("接管 Subagent 快照并投影实时文本增量", async () => {
+		const snapshot = {
+			runId: "run-1",
+			agentId: "run-1:1",
+			agent: "reviewer",
+			agentSource: "user",
+			task: "检查实现",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 2,
+			elapsedMs: 1,
+			controllable: true,
+		};
+		const tail = `${JSON.stringify({
+			type: "subagent_updated",
+			snapshot,
+			event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "子回复" } },
+		})}\n`;
+		const server = await serveSnapshot(baseSnapshot, tail);
+		const runtime = await WebCompanionRuntime.open(server.agentDir, server.sessionPath);
+		try {
+			const events: RuntimeEvent[] = [];
+			runtime.onEvent((event) => events.push(event));
+			expect(events).toEqual([
+				{
+					type: "subagent_updated",
+					payload: {
+						snapshot,
+						progress: [{ type: "assistant_delta", text: "子回复" }],
+					},
+				},
+			]);
+		} finally {
+			await runtime.dispose();
+		}
+	});
 });

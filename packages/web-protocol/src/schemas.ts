@@ -519,6 +519,23 @@ const TranscriptWebSearchSchema = StrictObject({
 	query: Type.Optional(TranscriptViewTextSchema),
 	sources: Type.Array(TranscriptWebSearchSourceSchema, { maxItems: 32 }),
 });
+const TranscriptSubagentRefSchema = StrictObject({
+	runId: Id,
+	agentId: Id,
+	agent: Type.String({ minLength: 1, maxLength: 4096 }),
+	task: TranscriptViewTextSchema,
+	state: Type.Optional(
+		Type.Union([
+			Type.Literal("queued"),
+			Type.Literal("running"),
+			Type.Literal("waiting"),
+			Type.Literal("succeeded"),
+			Type.Literal("failed"),
+			Type.Literal("cancelled"),
+		]),
+	),
+});
+export type TranscriptSubagentRef = Static<typeof TranscriptSubagentRefSchema>;
 
 // Web Runtime 投影是 Web client 的 transcript 输入；payload 用于协议内部完整回放。
 export const TranscriptViewItemSchema = Type.Union([
@@ -549,6 +566,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		contentRef: Type.Optional(Id),
 		diff: Type.Optional(ToolDiffSchema),
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+		subagents: Type.Optional(Type.Array(TranscriptSubagentRefSchema, { maxItems: 32 })),
 	}),
 	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),
 	StrictObject({ type: Type.Literal("custom"), text: TranscriptViewTextSchema }),
@@ -876,6 +894,26 @@ export const ProjectInstructionSchema = StrictObject({
 });
 export type ProjectInstruction = Static<typeof ProjectInstructionSchema>;
 
+export const SubagentConfigScopeSchema = Type.Union([
+	Type.Literal("builtin"),
+	Type.Literal("user"),
+	Type.Literal("project"),
+]);
+export type SubagentConfigScope = Static<typeof SubagentConfigScopeSchema>;
+export const SubagentConfigSchema = StrictObject({
+	name: Type.String({ minLength: 1, maxLength: 128 }),
+	description: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+	scope: SubagentConfigScopeSchema,
+	provider: Type.Optional(Id),
+	model: Type.Optional(Id),
+	thinkingLevel: Type.Optional(ThinkingLevelSchema),
+	tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
+	content: Type.String({ maxLength: 4 * 1024 * 1024 }),
+	editable: Type.Boolean(),
+	contentHash: Type.Optional(Id),
+});
+export type SubagentConfig = Static<typeof SubagentConfigSchema>;
+
 export const HarnessIdSchema = Type.Union([
 	Type.Literal("codex"),
 	Type.Literal("opencode"),
@@ -1120,6 +1158,9 @@ export const ListProjectInstructionsResultSchema = Type.Array(ProjectInstruction
 export const SaveProjectInstructionResultSchema = ListProjectInstructionsResultSchema;
 export const ListHostInstructionsResultSchema = Type.Array(ProjectInstructionSchema, { maxItems: 32 });
 export const SaveHostInstructionResultSchema = ListHostInstructionsResultSchema;
+export const ListSubagentConfigsResultSchema = Type.Array(SubagentConfigSchema, { maxItems: 1_000 });
+export const SaveSubagentConfigResultSchema = ListSubagentConfigsResultSchema;
+export const DeleteSubagentConfigResultSchema = ListSubagentConfigsResultSchema;
 export const UpdateStatusSchema = StrictObject({
 	currentVersion: Type.String({ minLength: 1, maxLength: 4096 }),
 	checkedAt: Type.Integer({ minimum: 0 }),
@@ -1337,6 +1378,9 @@ export const WorkspaceCommandResultSchemas = {
 	save_project_instruction: SaveProjectInstructionResultSchema,
 	list_host_instructions: ListHostInstructionsResultSchema,
 	save_host_instruction: SaveHostInstructionResultSchema,
+	list_subagent_configs: ListSubagentConfigsResultSchema,
+	save_subagent_config: SaveSubagentConfigResultSchema,
+	delete_subagent_config: DeleteSubagentConfigResultSchema,
 	get_git_status: GetGitStatusResultSchema,
 	get_git_diff: GetGitDiffResultSchema,
 	get_git_stats: GetGitStatsResultSchema,
@@ -1738,6 +1782,36 @@ export const CommandSchema = Type.Union([
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
+	StrictObject({ command: Type.Literal("list_subagent_configs"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		command: Type.Literal("save_subagent_config"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
+		cwd: Type.String({ minLength: 1 }),
+		scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
+		originalName: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+		name: Type.String({ minLength: 1, maxLength: 128 }),
+		description: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+		provider: Type.Optional(Id),
+		model: Type.Optional(Id),
+		thinkingLevel: Type.Optional(ThinkingLevelSchema),
+		tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
+		content: Type.String({ maxLength: 4 * 1024 * 1024 }),
+		expectedHash: Type.Optional(Id),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("delete_subagent_config"),
+		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
+		leaseId: Type.Optional(Id),
+		cwd: Type.String({ minLength: 1 }),
+		scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
+		name: Type.String({ minLength: 1, maxLength: 128 }),
+		expectedHash: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
 	StrictObject({ command: Type.Literal("list_directories"), path: Type.Optional(Type.String({ minLength: 1 })) }),
 	StrictObject({
 		command: Type.Literal("get_completions"),
@@ -2030,6 +2104,12 @@ export const ServerEventSchema = Type.Union([
 		type: Type.Literal("session_progress"),
 		sessionPath: Type.String({ minLength: 1 }),
 		progress: SessionProgressSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("subagent_updated"),
+		sessionPath: Type.String({ minLength: 1 }),
+		snapshot: SubagentSnapshotSchema,
+		progress: Type.Optional(Type.Array(SessionProgressSchema, { maxItems: 32 })),
 	}),
 	StrictObject({
 		type: Type.Literal("transcript_committed"),

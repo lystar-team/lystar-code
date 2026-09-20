@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { discoverHarnessAgentResources } from "./harness-agent-import.ts";
 
 export type HarnessId = "codex" | "opencode" | "claude-code";
 export type HarnessImportScope = "user" | "project";
@@ -33,6 +34,7 @@ export interface HarnessImportItem {
 	contentHash: string;
 	sourcePath: string;
 	targetPath: string;
+	generatedContent?: string;
 }
 
 export interface HarnessImportSource {
@@ -71,6 +73,8 @@ interface ResourceCandidate {
 	name: string;
 	description?: string;
 	referencedPaths?: string[];
+	content?: string;
+	warnings?: string[];
 }
 
 interface HarnessProfile {
@@ -82,6 +86,8 @@ interface HarnessProfile {
 	projectSkillRoots: string[];
 	userAgentRoots: string[];
 	projectAgentRoots: string[];
+	userAgentConfigFiles: string[];
+	projectAgentConfigFiles: string[];
 	userPromptRoots: string[];
 	projectPromptRoots: string[];
 	userInstructionFiles: string[];
@@ -136,6 +142,8 @@ function profilePaths(home: string, cwd: string): HarnessProfile[] {
 			projectSkillRoots: [join(cwd, ".codex", "skills")],
 			userAgentRoots: [join(home, ".codex", "agents")],
 			projectAgentRoots: [join(cwd, ".codex", "agents")],
+			userAgentConfigFiles: [join(home, ".codex", "config.toml")],
+			projectAgentConfigFiles: [join(cwd, ".codex", "config.toml")],
 			userPromptRoots: [join(home, ".codex", "prompts")],
 			projectPromptRoots: [join(cwd, ".codex", "prompts")],
 			userInstructionFiles: [join(home, ".codex", "AGENTS.md")],
@@ -149,6 +157,18 @@ function profilePaths(home: string, cwd: string): HarnessProfile[] {
 			projectSkillRoots: [join(cwd, ".opencode", "skills")],
 			userAgentRoots: [join(home, ".config", "opencode", "agents"), join(home, ".opencode", "agents")],
 			projectAgentRoots: [join(cwd, ".opencode", "agents")],
+			userAgentConfigFiles: [
+				join(home, ".config", "opencode", "opencode.json"),
+				join(home, ".config", "opencode", "opencode.jsonc"),
+				join(home, ".opencode", "opencode.json"),
+				join(home, ".opencode", "opencode.jsonc"),
+			],
+			projectAgentConfigFiles: [
+				join(cwd, "opencode.json"),
+				join(cwd, "opencode.jsonc"),
+				join(cwd, ".opencode", "opencode.json"),
+				join(cwd, ".opencode", "opencode.jsonc"),
+			],
 			userPromptRoots: [
 				join(home, ".config", "opencode", "commands"),
 				join(home, ".config", "opencode", "prompts"),
@@ -172,6 +192,8 @@ function profilePaths(home: string, cwd: string): HarnessProfile[] {
 			projectSkillRoots: [join(cwd, ".claude", "skills")],
 			userAgentRoots: [join(home, ".claude", "agents")],
 			projectAgentRoots: [join(cwd, ".claude", "agents")],
+			userAgentConfigFiles: [],
+			projectAgentConfigFiles: [],
 			userPromptRoots: [join(home, ".claude", "commands"), join(home, ".claude", "prompts")],
 			projectPromptRoots: [join(cwd, ".claude", "commands"), join(cwd, ".claude", "prompts")],
 			userInstructionFiles: [join(home, ".claude", "CLAUDE.md")],
@@ -413,35 +435,6 @@ function collectPromptFiles(root: string): string[] {
 	return result;
 }
 
-function collectAgentResources(root: string): string[] {
-	if (!existsSync(root) || !statSync(root).isDirectory()) return [];
-	const result: string[] = [];
-	const visit = (current: string, depth: number) => {
-		if (depth > MAX_SCAN_DEPTH || result.length >= MAX_RESOURCE_FILES) return;
-		try {
-			const entries = readdirSync(current, { withFileTypes: true, encoding: "utf8" });
-			if (
-				current !== root &&
-				entries.some((entry) => entry.isFile() && ["AGENT.MD", "AGENTS.MD"].includes(entry.name.toUpperCase()))
-			) {
-				result.push(current);
-				return;
-			}
-			for (const entry of entries) {
-				if (entry.name === ".git" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
-				const path = join(current, entry.name);
-				if (entry.isDirectory()) visit(path, depth + 1);
-				else if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") result.push(path);
-				if (result.length >= MAX_RESOURCE_FILES) return;
-			}
-		} catch {
-			return;
-		}
-	};
-	visit(root, 0);
-	return result;
-}
-
 function isImportableReferenceFile(path: string): boolean {
 	try {
 		const stat = statSync(path);
@@ -568,6 +561,7 @@ function collectCandidates(profile: HarnessProfile, scope: HarnessImportScope, c
 	const candidates: ResourceCandidate[] = [];
 	const skillRoots = scope === "user" ? profile.userSkillRoots : profile.projectSkillRoots;
 	const agentRoots = scope === "user" ? profile.userAgentRoots : profile.projectAgentRoots;
+	const agentConfigFiles = scope === "user" ? profile.userAgentConfigFiles : profile.projectAgentConfigFiles;
 	const promptRoots = scope === "user" ? profile.userPromptRoots : profile.projectPromptRoots;
 	const instructionFiles = scope === "user" ? profile.userInstructionFiles : [];
 	for (const root of skillRoots) {
@@ -582,10 +576,24 @@ function collectCandidates(profile: HarnessProfile, scope: HarnessImportScope, c
 			});
 		}
 	}
-	for (const root of agentRoots) {
-		for (const path of collectAgentResources(root)) {
-			candidates.push({ type: "agent", path, root, name: basename(path, extname(path)) });
-		}
+	const agentNames = new Set<string>();
+	for (const resource of discoverHarnessAgentResources({
+		harness: profile.harness,
+		agentRoots,
+		configFiles: agentConfigFiles,
+	})) {
+		if (agentNames.has(resource.name)) continue;
+		agentNames.add(resource.name);
+		candidates.push({
+			type: "agent",
+			path: resource.path,
+			root: resource.root,
+			name: resource.name,
+			description: resource.description,
+			content: resource.content,
+			warnings: resource.warnings,
+			referencedPaths: resource.referencedPaths,
+		});
 	}
 	for (const root of promptRoots) {
 		for (const path of collectPromptFiles(root)) {
@@ -639,8 +647,8 @@ function targetRelativePath(candidate: ResourceCandidate): string {
 		return `skills/${relativePath}`;
 	}
 	if (candidate.type === "agent") {
-		const relativePath = sourceRelativePath(candidate);
-		return `agents/${relativePath}`;
+		const fileName = candidate.name.trim().replaceAll("/", "-").replaceAll("\\", "-") || "agent";
+		return `agents/${fileName}.md`;
 	}
 	if (candidate.type === "prompt") return `prompts/${basename(candidate.path)}`;
 	if (candidate.type === "reference") return sourceRelativePath(candidate);
@@ -651,7 +659,8 @@ function targetRoot(agentDir: string, cwd: string, scope: HarnessImportScope): s
 	return scope === "user" ? agentDir : join(cwd, ".pi");
 }
 
-function hashResource(path: string): string {
+function hashResource(path: string, content?: string): string {
+	if (content !== undefined) return hashText(content);
 	return statSync(path).isDirectory() ? hashDirectory(path) : hashText(readFileSync(path, "utf8"));
 }
 
@@ -678,7 +687,7 @@ function createItem(
 		cwd,
 		agentDir,
 	});
-	const warnings: string[] = [];
+	const warnings: string[] = [...(candidate.warnings ?? [])];
 	if (candidate.type === "instruction") {
 		warnings.push("会完整覆盖 LYStar Code 的全局 AGENTS.md，来源 Harness 文件不会被修改");
 		if (candidate.referencedPaths?.length)
@@ -686,7 +695,10 @@ function createItem(
 	} else if (candidate.type === "prompt" && candidate.description === undefined) {
 		warnings.push("未发现提示词描述");
 	}
-	const rewriteCount = countResourcePathRewrites(candidate.path, rewrites);
+	const rewriteCount =
+		candidate.content === undefined
+			? countResourcePathRewrites(candidate.path, rewrites)
+			: rewriteText(candidate.content, rewrites).replacements;
 	if (rewriteCount > 0)
 		warnings.push(
 			`导入到 LYStar Code 时会改写 ${rewriteCount} 处 ${profile.label} 路径引用；原 Harness 文件不变，脚本执行权限会保留`,
@@ -703,9 +715,10 @@ function createItem(
 		targetRelativePath: targetRelative,
 		...(candidate.description ? { description: candidate.description } : {}),
 		warnings,
-		contentHash: hashResource(candidate.path),
+		contentHash: hashResource(candidate.path, candidate.content),
 		sourcePath: candidate.path,
 		targetPath,
+		...(candidate.content === undefined ? {} : { generatedContent: candidate.content }),
 	};
 }
 
@@ -720,12 +733,16 @@ export function discoverHarnessImports(options: { cwd: string; agentDir: string 
 			const candidates = collectCandidates(profile, scope, cwd);
 			const detected = sourceDetected(profile, scope, candidates);
 			const sourceItems = candidates.map((candidate) => createItem(profile, candidate, scope, agentDir, cwd));
-			const itemIdsBySourcePath = new Map(sourceItems.map((item) => [pathKey(item.sourcePath), item.id]));
 			const enrichedItems = sourceItems.map((item, index) => {
 				const referencedItemIds = [
 					...new Set(
 						(candidates[index]?.referencedPaths ?? [])
-							.map((path) => itemIdsBySourcePath.get(pathKey(path)))
+							.map((path) => {
+								const referencedIndex = candidates.findIndex(
+									(candidate) => pathKey(candidate.path) === pathKey(path) || isInside(candidate.path, path),
+								);
+								return referencedIndex >= 0 ? sourceItems[referencedIndex]?.id : undefined;
+							})
 							.filter((id): id is string => id !== undefined),
 					),
 				];
@@ -806,7 +823,7 @@ export function importHarnessResources(options: {
 	const preview = discoverHarnessImports({ cwd: options.cwd, agentDir: options.agentDir });
 	const selected = new Set(options.itemIds);
 	for (const item of preview.items) {
-		if (!selected.has(item.id) || item.resourceType !== "instruction") continue;
+		if (!selected.has(item.id)) continue;
 		for (const dependencyId of item.referencedItemIds ?? []) selected.add(dependencyId);
 	}
 	const selectedItems = preview.items.filter((candidate) => selected.has(candidate.id));
@@ -828,7 +845,10 @@ export function importHarnessResources(options: {
 				backups.set(item.targetPath, itemBackupPath);
 			}
 			rmSync(item.targetPath, { recursive: true, force: true });
-			if (statSync(item.sourcePath).isDirectory()) copyDirectory(item.sourcePath, item.targetPath, rewrites);
+			if (item.generatedContent !== undefined) {
+				mkdirSync(dirname(item.targetPath), { recursive: true });
+				writeFileSync(item.targetPath, rewriteText(item.generatedContent, rewrites).text, "utf8");
+			} else if (statSync(item.sourcePath).isDirectory()) copyDirectory(item.sourcePath, item.targetPath, rewrites);
 			else copyFile(item.sourcePath, item.targetPath, rewrites);
 			result.imported++;
 			result.items.push({ id: item.id, status: "imported" });

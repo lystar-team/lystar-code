@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, CircleHelp, KeyRound, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, BrainCircuit, CircleHelp, KeyRound, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { webApi } from "../../../adapters/host-protocol/api";
@@ -18,6 +18,7 @@ import { ModelSettings } from "./model-settings";
 import { SystemPermissionsSettings } from "./permissions";
 import { SecuritySettings } from "./security";
 import { SkillsSettings } from "./skills";
+import { SubagentSettings } from "./subagents";
 import { SystemSettings } from "./system";
 import type { WorkbenchActions } from "../types";
 
@@ -53,6 +54,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 		{ value: "instructions", label: "全局提示词", icon: <BookOpen className="size-4" />, section: "个人" },
 		{ value: "models", label: "模型与认证", icon: <Bot className="size-4" />, section: "工作区" },
 		{ value: "skills", label: "技能", icon: <WandSparkles className="size-4" />, section: "工作区" },
+		{ value: "subagents", label: "智能体", icon: <BrainCircuit className="size-4" />, section: "工作区" },
 		{ value: "imports", label: "迁移导入", icon: <ArrowDownToLine className="size-4" />, section: "工作区" },
 		{ value: "diagnostics", label: "诊断", icon: <CircleHelp className="size-4" />, section: "工作区" },
 		{ value: "system", label: "系统", icon: <Settings2 className="size-4" />, section: "系统" },
@@ -154,8 +156,10 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 								? "修改应用名称和 Logo，并保存到本机配置文件。"
 								: state.settingsTab === "instructions"
 												? "为所有项目的任务提供说明和上下文。"
-												: state.settingsTab === "skills"
-													? "查看和管理当前项目可用的 Skill。"
+											: state.settingsTab === "skills"
+												? "查看和管理当前项目可用的 Skill。"
+												: state.settingsTab === "subagents"
+													? "配置个人和项目范围的智能体。"
 													: state.settingsTab === "imports"
 														? `把其他 Harness 的资源导入 ${state.branding.name}。`
 												: state.settingsTab === "permissions"
@@ -191,6 +195,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="skills">
 								<SkillsSettings state={state} actions={actions} />
+							</TabsContent>
+							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="subagents">
+								<SubagentSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="imports">
 								<HarnessImportsSettings state={state} actions={actions} />

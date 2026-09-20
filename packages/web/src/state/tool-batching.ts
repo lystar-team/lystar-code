@@ -38,6 +38,12 @@ export function skillNameFromTool(tool: ToolBatchDescriptor): string | undefined
 	return skillNameFromPath(tool.summary);
 }
 
+export function mergeWebSearchSummary(previous: string | undefined, next: string | undefined): string {
+	const nextSummary = next?.trim();
+	if (nextSummary && nextSummary !== "网页搜索") return nextSummary;
+	return previous?.trim() || nextSummary || "网页搜索";
+}
+
 export function shouldJoinToolBatch(
 	previousTool: ToolBatchDescriptor | undefined,
 	nextTool: ToolBatchDescriptor,

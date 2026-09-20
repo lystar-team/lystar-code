@@ -4,10 +4,12 @@ import type {
 	FileResponse,
 	PromptAttachment,
 	PromptAttachmentPreview,
+	SubagentConfig,
 	UiRequestEvent,
 	WebModelProviderInput,
 	WebProject,
 	WebProviderModelInput,
+	WebThinkingLevel,
 } from "../../types";
 
 export interface PromptEditRequest {
@@ -39,6 +41,11 @@ export interface WorkbenchActions {
 	signOut: () => void;
 	setComposerMode: (mode: ComposerMode) => void;
 	loadEarlier: () => Promise<void>;
+	openSubagent: (agentId: string) => Promise<void>;
+	closeSubagent: () => void;
+	loadEarlierSubagent: () => Promise<void>;
+	abortSubagent: () => Promise<void>;
+	continueSubagent: (text: string) => Promise<void>;
 	loadTranscript: () => Promise<void>;
 	loadGitStatus: () => Promise<void>;
 	loadGitRepositoryStats: (repositoryPath?: string) => Promise<void>;
@@ -100,6 +107,20 @@ export interface WorkbenchActions {
 	restartDiagnosticService: (service: "gateway" | "runtime") => Promise<void>;
 	refreshHarnessImports: () => Promise<void>;
 	importHarnessResources: (itemIds: string[]) => Promise<void>;
+	refreshSubagentConfigs: () => Promise<void>;
+	saveSubagentConfig: (input: {
+		scope: "user" | "project";
+		originalName?: string;
+		name: string;
+		description: string;
+		provider?: string;
+		model?: string;
+		thinkingLevel?: WebThinkingLevel;
+		tools?: string[];
+		content: string;
+		expectedHash?: string;
+	}) => Promise<boolean>;
+	deleteSubagentConfig: (config: SubagentConfig) => Promise<boolean>;
 	toggleSkill: (skill: WorkbenchState["skills"][number]) => Promise<void>;
 	refreshHostInstructions: () => Promise<void>;
 	saveHostInstruction: (content: string, expectedHash?: string) => Promise<void>;

@@ -9,6 +9,7 @@ import {
 	getCurrentSubagentRuns,
 	type SubagentDetails,
 	type SubagentRunSnapshot,
+	subscribeSubagentRuns,
 } from "../extensions/subagent/index.ts";
 import { getBuiltinThemeNames } from "../modes/interactive/theme/theme.ts";
 import type { AgentSession } from "./agent-session.ts";
@@ -376,6 +377,7 @@ function listSubagents(session: AgentSession): CompanionSubagentSnapshot[] {
 	for (const snapshot of transcriptSubagents(session.sessionManager.getEntries()))
 		merged.set(`${snapshot.runId}:${snapshot.agentId}`, snapshot);
 	for (const snapshot of getCurrentSubagentRuns()) {
+		if (snapshot.session?.parentSessionFile !== session.sessionFile) continue;
 		const current = liveSubagent(snapshot);
 		merged.set(`${current.runId}:${current.agentId}`, current);
 	}
@@ -397,10 +399,12 @@ function readSubagent(
 	const transcript = transcriptSubagents(session.sessionManager.getEntries()).find(
 		(snapshot) => snapshot.agentId === agentId,
 	);
-	const live = getCurrentSubagentRuns().find((snapshot) => snapshot.agentId === agentId);
+	const live = getCurrentSubagentRuns().find(
+		(snapshot) => snapshot.agentId === agentId && snapshot.session?.parentSessionFile === session.sessionFile,
+	);
 	return {
 		...(transcript ? { transcript } : {}),
-		...(live && transcript?.runId === live.runId ? { live: liveSubagent(live) } : {}),
+		...(live && (!transcript || transcript.runId === live.runId) ? { live: liveSubagent(live) } : {}),
 	};
 }
 
@@ -430,6 +434,7 @@ export class WebCompanionServer {
 	private readonly readySockets = new Set<Socket>();
 	private server?: Server;
 	private unsubscribe?: () => void;
+	private unsubscribeSubagents?: () => void;
 	private endpoint?: string;
 	private committedEntryCount: number;
 	private readonly session: AgentSession;
@@ -478,6 +483,18 @@ export class WebCompanionServer {
 				}
 				this.scheduleSnapshotBroadcast();
 			});
+			this.unsubscribeSubagents = subscribeSubagentRuns((snapshot, event) => {
+				if (snapshot.session?.parentSessionFile !== sessionPath) return;
+				const progressEvent =
+					event && event.type !== "tool_result_end"
+						? companionProgressEvent(event as Parameters<typeof companionProgressEvent>[0])
+						: undefined;
+				this.broadcast({
+					type: "subagent_updated",
+					snapshot,
+					...(progressEvent ? { event: progressEvent } : {}),
+				});
+			});
 		} catch (error) {
 			await this.dispose();
 			throw error;
@@ -491,6 +508,8 @@ export class WebCompanionServer {
 	async dispose(): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		this.unsubscribeSubagents?.();
+		this.unsubscribeSubagents = undefined;
 		if (this.snapshotBroadcastTimer) clearTimeout(this.snapshotBroadcastTimer);
 		this.snapshotBroadcastTimer = undefined;
 		this.snapshotBroadcastPending = false;
@@ -848,24 +867,32 @@ export class WebCompanionServer {
 				return readSubagent(this.session, command.agentId);
 			case "abort_subagent": {
 				if (!command.agentId?.trim()) throw new Error("Subagent 标识不能为空");
-				if (!readSubagent(this.session, command.agentId).transcript)
+				const details = readSubagent(this.session, command.agentId);
+				if (!details.transcript && !details.live)
 					throw Object.assign(new Error("Subagent 不属于当前会话"), { code: "subagent_not_found" });
+				if (!details.live?.controllable)
+					throw Object.assign(new Error("Subagent 当前不可停止"), { code: "subagent_not_controllable" });
 				await abortSubagent(command.agentId);
 				return { changed: true };
 			}
 			case "continue_subagent": {
 				if (!command.agentId?.trim() || !command.text?.trim()) throw new Error("Subagent 参数不完整");
-				const transcript = readSubagent(this.session, command.agentId).transcript;
-				if (!transcript?.session)
+				const details = readSubagent(this.session, command.agentId);
+				const descriptor = details.transcript?.session
+					? details.transcript
+					: details.live?.session
+						? details.live
+						: (details.transcript ?? details.live);
+				if (!descriptor?.session)
 					throw Object.assign(new Error("Subagent 会话不可继续"), { code: "subagent_not_continuable" });
 				await continueSubagentSession(
 					{
 						agentId: command.agentId,
-						agent: transcript.agent,
-						agentSource: transcript.agentSource,
-						task: transcript.task,
+						agent: descriptor.agent,
+						agentSource: descriptor.agentSource,
+						task: descriptor.task,
 						agentScope: "both",
-						session: transcript.session,
+						session: descriptor.session,
 					},
 					command.text,
 				);

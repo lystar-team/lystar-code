@@ -34,6 +34,7 @@ import type {
 	SessionStateSnapshot,
 	SessionTreeNode,
 	SettingSummary,
+	SubagentConfig,
 	SubagentSnapshot,
 	ThinkingLevel,
 } from "@lystar/code-web-protocol";
@@ -41,7 +42,7 @@ import type {
 export type QueueAction = "remove" | "steer";
 
 export interface RuntimeEvent {
-	type: "progress" | "entry_committed" | "state_changed" | "ui_request" | "disconnected";
+	type: "progress" | "entry_committed" | "state_changed" | "subagent_updated" | "ui_request" | "disconnected";
 	payload: JsonValue | SessionProgress;
 }
 
@@ -238,6 +239,28 @@ export interface RuntimeAdapter {
 	logoutModelProvider(provider: string): Promise<ModelSummary[]>;
 	listSkills(cwd: string, onUiRequest: UiRequestHandler): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
 	listHarnessImports(cwd: string): HarnessImportPreview;
+	listSubagentConfigs(cwd: string): SubagentConfig[];
+	saveSubagentConfig(
+		cwd: string,
+		input: {
+			scope: "user" | "project";
+			originalName?: string;
+			name: string;
+			description: string;
+			provider?: string;
+			model?: string;
+			thinkingLevel?: ThinkingLevel;
+			tools?: string[];
+			content: string;
+			expectedHash?: string;
+		},
+		onUiRequest: UiRequestHandler,
+	): Promise<SubagentConfig[]>;
+	deleteSubagentConfig(
+		cwd: string,
+		input: { scope: "user" | "project"; name: string; expectedHash: string },
+		onUiRequest: UiRequestHandler,
+	): Promise<SubagentConfig[]>;
 	importHarnessResources(cwd: string, itemIds: string[], onUiRequest: UiRequestHandler): Promise<HarnessImportResult>;
 	setSkillEnabled(
 		cwd: string,

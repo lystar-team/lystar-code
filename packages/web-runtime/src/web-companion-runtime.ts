@@ -116,7 +116,23 @@ function isWebCompanionSnapshot(value: unknown): value is WebCompanionSnapshotWi
 	);
 }
 
-function projectAgentEvent(value: unknown): SessionProgress[] {
+function isSubagentSnapshot(value: unknown): value is SubagentSnapshot {
+	const item = record(value);
+	return (
+		item !== undefined &&
+		typeof item.runId === "string" &&
+		typeof item.agentId === "string" &&
+		typeof item.agent === "string" &&
+		typeof item.task === "string" &&
+		typeof item.state === "string" &&
+		typeof item.startedAt === "number" &&
+		typeof item.updatedAt === "number" &&
+		typeof item.elapsedMs === "number" &&
+		typeof item.controllable === "boolean"
+	);
+}
+
+export function projectAgentEvent(value: unknown): SessionProgress[] {
 	const event = record(value);
 	if (!event || typeof event.type !== "string") return [];
 	if (event.type === "message_start") {
@@ -791,6 +807,15 @@ export class WebCompanionRuntime implements RuntimeSession {
 				}
 				this.emit({ type: "progress", payload: progress });
 			}
+			return;
+		}
+		if (message.type === "subagent_updated") {
+			if (!isSubagentSnapshot(message.snapshot)) throw new Error("TUI 子会话快照无效");
+			const progress = projectAgentEvent(message.event);
+			this.emit({
+				type: "subagent_updated",
+				payload: { snapshot: message.snapshot, ...(progress.length ? { progress } : {}) } as unknown as JsonValue,
+			});
 			return;
 		}
 		if (message.type === "entry_committed") {

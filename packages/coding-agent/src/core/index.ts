@@ -20,6 +20,11 @@ export {
 } from "../config.ts";
 export { builtInExtensions } from "../extensions/index.ts";
 export {
+	type AgentDefinition,
+	type AgentDefinitionScope,
+	discoverAgentDefinitions,
+} from "../extensions/subagent/agents.ts";
+export {
 	abortSubagent,
 	continueSubagentSession,
 	getCurrentSubagentRuns,
@@ -28,6 +33,7 @@ export {
 	type SubagentRunSnapshot,
 	type SubagentSessionDescriptor,
 	type SubagentSessionRef,
+	subscribeSubagentRuns,
 } from "../extensions/subagent/index.ts";
 export { getBuiltinThemeNames } from "../modes/interactive/theme/theme.ts";
 export { getFullChangelogMarkdown } from "../utils/changelog.ts";
@@ -216,6 +222,14 @@ export {
 export { type LoadSkillsOptions, type LoadSkillsResult, loadSkills } from "./skills.ts";
 export { BUILTIN_SLASH_COMMANDS, type BuiltinSlashCommand } from "./slash-commands.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
+export {
+	formatSubagentModelReference,
+	parseSubagentMarkdown,
+	renderSubagentMarkdown,
+	SUBAGENT_THINKING_LEVELS,
+	type SubagentConfigInput,
+	type SubagentThinkingLevel,
+} from "./subagent-config.ts";
 export {
 	boundedText,
 	isDiffTool,

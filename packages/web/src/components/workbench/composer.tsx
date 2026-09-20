@@ -1,4 +1,4 @@
-import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Clock3, Pencil, Plus, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Clock3, LoaderCircle, Pencil, Plus, Square, Trash2, X } from "lucide-react";
 import { gsap } from "gsap";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
@@ -86,7 +86,9 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.readOnly === next.readOnly &&
 		previous.session === next.session &&
 		previous.sessionId === next.sessionId &&
-		previous.sessionReady === next.sessionReady
+		previous.sessionReady === next.sessionReady &&
+		previous.selectedSubagentId === next.selectedSubagentId &&
+		previous.subagents === next.subagents
 	);
 }
 
@@ -207,6 +209,10 @@ export const Composer = memo(function Composer({
 		() => state.queuedUserPrompts.filter((prompt) => prompt.delivery === "follow-up"),
 		[state.queuedUserPrompts],
 	);
+	const activeSubagents = useMemo(
+		() => state.subagents.filter((subagent) => ["queued", "running", "waiting"].includes(subagent.state)),
+		[state.subagents],
+	);
 	const selectedModel = state.modelOptions.find(
 		(model) => model.provider === state.session?.model?.provider && model.id === state.session?.model?.id,
 	);
@@ -257,6 +263,13 @@ export const Composer = memo(function Composer({
 										onAction={handleQueueAction}
 									/>
 								</GsapReveal>
+							) : null}
+							{activeSubagents.length ? (
+								<SubagentCapsules
+									subagents={activeSubagents}
+									selectedId={state.selectedSubagentId}
+									onOpen={(agentId) => void actions.openSubagent(agentId)}
+								/>
 							) : null}
 							{activeEditRequest ? (
 								<div
@@ -766,6 +779,38 @@ function ComposerEditAttachmentLoader({
 	}, [onStatus, request, requestKey]);
 
 	return null;
+}
+
+function SubagentCapsules({
+	subagents,
+	selectedId,
+	onOpen,
+}: {
+	subagents: WorkbenchState["subagents"];
+	selectedId?: string;
+	onOpen: (agentId: string) => void;
+}) {
+	return (
+		<div aria-label="正在工作的 Subagent" className="mb-2 flex min-w-0 gap-2 overflow-x-auto pb-0.5" role="list">
+			{subagents.map((subagent) => {
+				const waiting = subagent.state === "waiting";
+				return (
+					<button
+						aria-current={selectedId === subagent.agentId ? "true" : undefined}
+						className="flex min-w-0 max-w-[min(23rem,88vw)] shrink-0 items-center gap-2 rounded-full border border-border/70 bg-muted/20 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						key={`${subagent.runId}:${subagent.agentId}`}
+						onClick={() => onOpen(subagent.agentId)}
+						role="listitem"
+						type="button"
+					>
+						{waiting ? <Clock3 className="size-3.5 shrink-0 text-muted-foreground" /> : <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
+						<span className="truncate font-medium text-foreground">{subagent.agent}</span>
+						<span className="truncate text-muted-foreground">{subagent.currentAction || subagent.task}</span>
+					</button>
+				);
+			})}
+		</div>
+	);
 }
 
 function QueuedPromptList({

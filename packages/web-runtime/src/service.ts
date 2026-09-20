@@ -17,6 +17,7 @@ import {
 	type SessionStateSnapshot,
 	type SessionSummary,
 	type StartupInput,
+	type SubagentSnapshot,
 	type TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { ContentStore } from "./content-store.ts";
@@ -109,6 +110,9 @@ const WORKSPACE_COMMANDS = {
 	list_skills: true,
 	list_harness_imports: true,
 	import_harness_resources: true,
+	list_subagent_configs: true,
+	save_subagent_config: true,
+	delete_subagent_config: true,
 	set_skill_enabled: true,
 	list_project_instructions: true,
 	save_project_instruction: true,
@@ -1268,6 +1272,82 @@ export class WebRuntimeService {
 				);
 			case "list_harness_imports":
 				return jsonValue(this.adapter.listHarnessImports(canonicalProjectCwd(request.cwd)));
+			case "list_subagent_configs":
+				return jsonValue(this.adapter.listSubagentConfigs(canonicalProjectCwd(request.cwd)));
+			case "save_subagent_config": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: request.scope === "project" ? `project:${cwd}` : "host:subagents",
+					lockSessionPath: sessionPath,
+					payload: {
+						...(sessionPath ? { sessionPath } : {}),
+						cwd,
+						scope: request.scope,
+						...(request.originalName ? { originalName: request.originalName } : {}),
+						name: request.name,
+						description: request.description,
+						...(request.provider ? { provider: request.provider } : {}),
+						...(request.model ? { model: request.model } : {}),
+						...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
+						...(request.tools ? { tools: request.tools } : {}),
+						content: request.content,
+						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
+					},
+					run: async (operation) => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
+						const result = await this.adapter.saveSubagentConfig(
+							cwd,
+							{
+								scope: request.scope,
+								...(request.originalName ? { originalName: request.originalName } : {}),
+								name: request.name,
+								description: request.description,
+								...(request.provider ? { provider: request.provider } : {}),
+								...(request.model ? { model: request.model } : {}),
+								...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
+								...(request.tools ? { tools: request.tools } : {}),
+								content: request.content,
+								...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
+							},
+							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
+						);
+						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);
+						return jsonValue(result);
+					},
+				});
+			}
+			case "delete_subagent_config": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const sessionPath = this.mutationSessionPath(request);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: request.scope === "project" ? `project:${cwd}` : "host:subagents",
+					lockSessionPath: sessionPath,
+					payload: {
+						...(sessionPath ? { sessionPath } : {}),
+						cwd,
+						scope: request.scope,
+						name: request.name,
+						expectedHash: request.expectedHash,
+					},
+					run: async (operation) => {
+						const runtime = this.assertMutationSession(connection, request, cwd);
+						const result = await this.adapter.deleteSubagentConfig(
+							cwd,
+							{ scope: request.scope, name: request.name, expectedHash: request.expectedHash },
+							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
+						);
+						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);
+						return jsonValue(result);
+					},
+				});
+			}
 			case "import_harness_resources": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessionPath = this.mutationSessionPath(request);
@@ -2481,6 +2561,15 @@ export class WebRuntimeService {
 						fromRevision: payload.fromRevision,
 						toRevision: payload.transcriptRevision,
 						items: this.projectTranscriptItems(sessionPath, payload.items),
+					});
+				} else if (event.type === "subagent_updated") {
+					this.flushSessionProgress(sessionPath);
+					const payload = event.payload as { snapshot: SubagentSnapshot; progress?: SessionProgress[] };
+					void this.broadcast({
+						type: "subagent_updated",
+						sessionPath,
+						snapshot: payload.snapshot,
+						...(payload.progress?.length ? { progress: payload.progress } : {}),
 					});
 				} else {
 					this.enqueueSessionProgress(sessionPath, projectSessionProgress(event.payload));

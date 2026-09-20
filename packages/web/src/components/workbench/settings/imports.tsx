@@ -20,7 +20,7 @@ const resourceOrder: HarnessImportItem["resourceType"][] = ["instruction", "skil
 const resourceLabels: Record<HarnessImportItem["resourceType"], string> = {
 	instruction: "全局规则",
 	skill: "Skill",
-	agent: "子代理",
+	agent: "智能体",
 	prompt: "提示词",
 	reference: "引用文件",
 };
@@ -54,7 +54,7 @@ function resourceSummary(sources: HarnessImportSource[]): string {
 	);
 	const parts = ([
 		["Skill", totals.skills],
-		["子代理", totals.agents],
+		["智能体", totals.agents],
 		["提示词", totals.prompts],
 		["全局规则", totals.instructions],
 		["引用文件", totals.references],
@@ -67,7 +67,7 @@ function resourceSummary(sources: HarnessImportSource[]): string {
 function includeReferencedItems(selectedIds: Set<string>, items: HarnessImportItem[]): Set<string> {
 	const next = new Set(selectedIds);
 	for (const item of items) {
-		if (item.resourceType !== "instruction" || !next.has(item.id)) continue;
+		if (!next.has(item.id)) continue;
 		for (const referencedItemId of item.referencedItemIds ?? []) next.add(referencedItemId);
 	}
 	return next;
@@ -85,7 +85,7 @@ export function HarnessImportsSettings({ state, actions }: { state: WorkbenchSta
 	const requiredReferenceIds = useMemo(() => {
 		const required = new Set<string>();
 		for (const item of pendingItems) {
-			if (item.resourceType !== "instruction" || !selectedItemIds.has(item.id)) continue;
+			if (!selectedItemIds.has(item.id)) continue;
 			for (const referencedItemId of item.referencedItemIds ?? []) required.add(referencedItemId);
 		}
 		return required;
@@ -159,7 +159,7 @@ export function HarnessImportsSettings({ state, actions }: { state: WorkbenchSta
 					<Alert>
 						<AlertTitle>同名内容会被替换</AlertTitle>
 						<AlertDescription>
-							迁移会覆盖 {state.branding.name} 中的同名 Skill、子代理、提示词和引用文件。全局规则会完整覆盖 AGENTS.md，项目规则不会迁移，来源文件不会修改。覆盖前会自动备份现有内容。
+							迁移会覆盖 {state.branding.name} 中的同名 Skill、智能体、提示词和引用文件。全局规则会完整覆盖 AGENTS.md，项目规则不会迁移，来源文件不会修改。覆盖前会自动备份现有内容。
 						</AlertDescription>
 					</Alert>
 

@@ -31,6 +31,10 @@ import type {
 	SecuritySettingsResponse,
 	SystemPermissionsResponse,
 	SessionTreeResponse,
+	SubagentConfig,
+	SubagentConfigsResponse,
+	SubagentDetailsResponse,
+	SubagentsResponse,
 	SettingsResponse,
 	TranscriptResponse,
 	WebCompletionResult,
@@ -38,6 +42,7 @@ import type {
 	WebOperation,
 	WebProject,
 	WebSessionSnapshot,
+	WebThinkingLevel,
 	WebSessionSummary,
 } from "../../types.ts";
 
@@ -438,6 +443,44 @@ export class WebApi {
 		return this.request<TranscriptResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/transcript${query}`);
 	}
 
+	async subagents(sessionId: string): Promise<SubagentsResponse> {
+		return this.request<SubagentsResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/subagents`);
+	}
+
+	async subagent(sessionId: string, agentId: string): Promise<SubagentDetailsResponse> {
+		return this.request<SubagentDetailsResponse>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}`,
+		);
+	}
+
+	async subagentTranscript(
+		sessionId: string,
+		agentId: string,
+		options: { cursor?: string; limit?: number } = {},
+	): Promise<TranscriptResponse> {
+		const params = new URLSearchParams();
+		if (options.cursor) params.set("cursor", options.cursor);
+		if (options.limit) params.set("limit", String(options.limit));
+		const query = params.toString() ? `?${params}` : "";
+		return this.request<TranscriptResponse>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/transcript${query}`,
+		);
+	}
+
+	async abortSubagent(sessionId: string, agentId: string): Promise<void> {
+		await this.request(
+			`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/abort`,
+			{ method: "POST", body: JSON.stringify({ clientRequestId: createUuid() }) },
+		);
+	}
+
+	async continueSubagent(sessionId: string, agentId: string, text: string): Promise<void> {
+		await this.request(
+			`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/continue`,
+			{ method: "POST", body: JSON.stringify({ text, clientRequestId: createUuid() }) },
+		);
+	}
+
 	async uploadFile(input: { data: string; filename: string; mimeType: string }): Promise<FileUploadResponse> {
 		return this.request<FileUploadResponse>("/api/uploads/file", {
 			method: "POST",
@@ -671,6 +714,54 @@ export class WebApi {
 			{
 				method: "POST",
 				body: JSON.stringify({ itemIds, clientRequestId: createUuid() }),
+			},
+		);
+	}
+
+	async subagentConfigs(projectId: string): Promise<SubagentConfigsResponse> {
+		return this.request<SubagentConfigsResponse>(
+			`/api/settings/subagents?projectId=${encodeURIComponent(projectId)}`,
+		);
+	}
+
+	async saveSubagentConfig(
+		projectId: string,
+		input: {
+			scope: "user" | "project";
+			originalName?: string;
+			name: string;
+			description: string;
+			provider?: string;
+			model?: string;
+			thinkingLevel?: WebThinkingLevel;
+			tools?: string[];
+			content: string;
+			expectedHash?: string;
+		},
+	): Promise<SubagentConfigsResponse> {
+		return this.request<SubagentConfigsResponse>(
+			`/api/settings/subagents?projectId=${encodeURIComponent(projectId)}`,
+			{
+				method: "POST",
+				body: JSON.stringify({ ...input, clientRequestId: createUuid() }),
+			},
+		);
+	}
+
+	async deleteSubagentConfig(
+		projectId: string,
+		input: Pick<SubagentConfig, "name" | "contentHash"> & { scope: "user" | "project" },
+	): Promise<SubagentConfigsResponse> {
+		return this.request<SubagentConfigsResponse>(
+			`/api/settings/subagents?projectId=${encodeURIComponent(projectId)}`,
+			{
+				method: "DELETE",
+				body: JSON.stringify({
+					scope: input.scope,
+					name: input.name,
+					expectedHash: input.contentHash,
+					clientRequestId: createUuid(),
+				}),
 			},
 		);
 	}

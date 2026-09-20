@@ -176,6 +176,7 @@ export type WebCompanionServerMessage =
 	| { type: "bash_chunk"; requestId: string; chunk: string }
 	| { type: "snapshot"; snapshot: WebCompanionSnapshotWire }
 	| { type: "agent_event"; event: AgentSessionEvent }
+	| { type: "subagent_updated"; snapshot: unknown; event?: unknown }
 	| {
 			type: "entry_committed";
 			items: unknown[];

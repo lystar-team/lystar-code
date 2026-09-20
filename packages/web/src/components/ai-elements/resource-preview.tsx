@@ -140,7 +140,7 @@ function loadResourceImage(item: ResourceImageItem): Promise<string | undefined>
 	return entry.promise;
 }
 
-function useResourceImageSource(item: ResourceImageItem) {
+export function useResourceImageSource(item: ResourceImageItem) {
 	const [source, setSource] = useState(item.src);
 	const [loading, setLoading] = useState(!item.src && Boolean(item.path || (item.sessionId && item.contentRef)));
 	const [failed, setFailed] = useState(false);

@@ -4,14 +4,24 @@ import type { ThemeMode } from "../../../state/use-workbench";
 import { ensureMonacoLanguage, loadMonacoRuntime, setMonacoTheme } from "../monaco-runtime";
 
 interface MonacoMarkdownEditorProps {
+	ariaLabel?: string;
 	disabled: boolean;
+	fileName?: string;
 	onChange: (value: string) => void;
 	onSave: () => void;
 	theme: ThemeMode;
 	value: string;
 }
 
-export function MonacoMarkdownEditor({ disabled, onChange, onSave, theme, value }: MonacoMarkdownEditorProps) {
+export function MonacoMarkdownEditor({
+	ariaLabel = "全局 AGENTS.md 内容",
+	disabled,
+	fileName = "AGENTS.md",
+	onChange,
+	onSave,
+	theme,
+	value,
+}: MonacoMarkdownEditorProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor>();
 	const modelRef = useRef<Monaco.editor.ITextModel>();
@@ -39,11 +49,11 @@ export function MonacoMarkdownEditor({ disabled, onChange, onSave, theme, value 
 			const model = monaco.editor.createModel(
 				valueRef.current,
 				language,
-				monaco.Uri.parse(`inmemory://lystar-settings/${encodeURIComponent(modelId)}/AGENTS.md`),
+				monaco.Uri.parse(`inmemory://lystar-settings/${encodeURIComponent(modelId)}/${encodeURIComponent(fileName)}`),
 			);
 			const editor = monaco.editor.create(container, {
 				accessibilitySupport: "auto",
-				ariaLabel: "全局 AGENTS.md 内容",
+				ariaLabel,
 				automaticLayout: false,
 				bracketPairColorization: { enabled: true },
 				codeLens: false,
@@ -95,7 +105,7 @@ export function MonacoMarkdownEditor({ disabled, onChange, onSave, theme, value 
 			modelRef.current = undefined;
 			monacoRef.current = undefined;
 		};
-	}, [modelId]);
+	}, [ariaLabel, fileName, modelId]);
 
 	useEffect(() => {
 		const model = modelRef.current;

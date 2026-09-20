@@ -17,6 +17,7 @@ import subagentExtension, {
 	SubagentRunController,
 	type SubagentSessionDescriptor,
 	steerSubagent,
+	subscribeSubagentRuns,
 } from "../src/extensions/subagent/index.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
@@ -354,6 +355,49 @@ describe("built-in subagent extension", () => {
 		} finally {
 			process.argv[1] = originalScript;
 		}
+	});
+
+	it("notifies run subscribers until they unsubscribe and clears the registry on shutdown", async () => {
+		const extension = await loadSubagentExtension();
+		const tool = extension.tools.get("subagent")!.definition;
+		const script = writeFauxRpcScript();
+		const originalScript = process.argv[1];
+		process.argv[1] = script;
+		const notifications: string[] = [];
+		const unsubscribe = subscribeSubagentRuns((snapshot, event) => {
+			notifications.push(`${snapshot.agentId}:${event?.type ?? "snapshot"}`);
+		});
+		try {
+			const execution = tool.execute(
+				"subagent-subscription",
+				{ agent: "worker", task: "subscription" },
+				undefined,
+				undefined,
+				{
+					cwd: process.cwd(),
+					hasUI: false,
+					sessionManager: { getSessionFile: () => join(tempDirs.at(-1)!, "parent.jsonl") },
+				} as never,
+			);
+			await vi.waitFor(
+				() => expect(notifications.some((notification) => /:snapshot$/u.test(notification))).toBe(true),
+				{ timeout: 1000 },
+			);
+			await vi.waitFor(
+				() =>
+					expect(notifications.some((notification) => notification.endsWith(":tool_execution_start"))).toBe(true),
+				{ timeout: 1000 },
+			);
+			unsubscribe();
+			const countAfterUnsubscribe = notifications.length;
+			await execution;
+			expect(notifications).toHaveLength(countAfterUnsubscribe);
+		} finally {
+			unsubscribe();
+			process.argv[1] = originalScript;
+			await extension.handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" });
+		}
+		expect(getCurrentSubagentRuns()).toEqual([]);
 	});
 
 	it("resumes a completed subagent from the same persistent session after the RPC registry is recreated", async () => {

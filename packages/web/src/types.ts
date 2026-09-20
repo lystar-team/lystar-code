@@ -26,6 +26,8 @@ import type {
 	SessionSummary,
 	SessionTreeNode,
 	SettingSummary,
+	SubagentConfig,
+	SubagentSnapshot,
 	TranscriptItem,
 	TranscriptPage,
 } from "@lystar/code-web-protocol";
@@ -38,6 +40,8 @@ export type {
 	HarnessImportSource,
 	GitMutation,
 	ProjectInstruction,
+	SubagentConfig,
+	SubagentSnapshot,
 };
 
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
@@ -212,6 +216,13 @@ export type GatewayEvent =
 			seq?: number;
 	  }
 	| { type: "session_progress"; sessionId: string; progress: SessionProgress; seq?: number }
+	| {
+			type: "subagent_updated";
+			sessionId: string;
+			snapshot: SubagentSnapshot;
+			progress?: SessionProgress[];
+			seq?: number;
+	  }
 	| { type: "operation_updated"; operation: WebOperation; seq?: number }
 	| UiRequestEvent;
 
@@ -324,6 +335,19 @@ export type HarnessImportResultResponse = HarnessImportResult;
 
 export interface HostInstructionsResponse {
 	instructions: ProjectInstruction[];
+}
+
+export interface SubagentConfigsResponse {
+	subagents: SubagentConfig[];
+}
+
+export interface SubagentsResponse {
+	subagents: SubagentSnapshot[];
+}
+
+export interface SubagentDetailsResponse {
+	transcript?: SubagentSnapshot;
+	live?: SubagentSnapshot;
 }
 
 export interface SessionTreeResponse {

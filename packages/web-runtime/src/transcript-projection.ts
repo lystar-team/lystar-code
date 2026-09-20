@@ -4,6 +4,7 @@ import type {
 	ToolDiff,
 	TranscriptFile,
 	TranscriptItem,
+	TranscriptSubagentRef,
 	TranscriptViewItem,
 	TranscriptWebSearchSource,
 } from "@lystar/code-web-protocol";
@@ -88,6 +89,33 @@ export type TranscriptToolCallIndex = ReadonlyMap<string, TranscriptToolCallProj
 
 function record(value: JsonValue | undefined): JsonRecord | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
+function subagentReferences(details: JsonValue | undefined): TranscriptSubagentRef[] {
+	const source = record(details);
+	if (!Array.isArray(source?.results)) return [];
+	const states = new Set<TranscriptSubagentRef["state"]>([
+		"queued",
+		"running",
+		"waiting",
+		"succeeded",
+		"failed",
+		"cancelled",
+	]);
+	return source.results.flatMap((value) => {
+		const result = record(value);
+		const runId = typeof result?.runId === "string" ? result.runId : undefined;
+		const agentId = typeof result?.agentId === "string" ? result.agentId : undefined;
+		const agent = typeof result?.agent === "string" ? result.agent : undefined;
+		const task = typeof result?.task === "string" ? result.task : undefined;
+		if (!runId || !agentId || !agent || !task) return [];
+		const stateValue = result?.state;
+		const state =
+			typeof stateValue === "string" && states.has(stateValue as TranscriptSubagentRef["state"])
+				? (stateValue as TranscriptSubagentRef["state"])
+				: undefined;
+		return [{ runId, agentId, agent, task, ...(state ? { state } : {}) }];
+	});
 }
 
 function projectedAgentStep(payload: JsonRecord | undefined): AgentStep | undefined {
@@ -649,6 +677,7 @@ function projectTranscriptViews(
 		);
 		const diff = isError ? resultDiff : mergeToolDiff(call?.diff, resultDiff);
 		const summary = generatedImageSummary(name, call, entryMessage.details);
+		const subagents = name === "subagent" ? subagentReferences(entryMessage.details) : [];
 		return [
 			{
 				type: "tool_result",
@@ -661,6 +690,7 @@ function projectTranscriptViews(
 				...(contentRef(content) ? { contentRef: contentRef(content) } : {}),
 				...(diff ? { diff } : {}),
 				...(images.length > 0 ? { images } : {}),
+				...(subagents.length > 0 ? { subagents } : {}),
 			},
 		];
 	}

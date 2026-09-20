@@ -1,7 +1,7 @@
 "use client";
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
-import type { ToolDiff } from "@lystar/code-web-protocol";
+import type { ToolDiff, TranscriptSubagentRef } from "@lystar/code-web-protocol";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
@@ -35,7 +35,9 @@ import {
 	ResourceImageViewer,
 	type ResourceImageGenerationMetadata,
 	type ResourceImageItem,
+	useResourceImageSource,
 } from "./resource-preview";
+import { ImageGeneration, type ImageGenerationStatus } from "../agents/image-generation";
 import { skillNameFromTool } from "../../state/tool-batching";
 import { languageForPath } from "../workbench/file-language";
 import { Source } from "./sources";
@@ -57,6 +59,7 @@ export interface ToolBatchTool {
 	detail?: string;
 	sources?: Array<{ url: string; title?: string }>;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
+	subagents?: TranscriptSubagentRef[];
 	diff?: ToolDiff;
 	inputPreview?: boolean;
 }
@@ -75,6 +78,7 @@ export interface ToolBatchProps {
 	autoCollapseWhenComplete?: ToolBatchAutoCollapse;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
+	onOpenSubagent?: (agentId: string) => void;
 }
 
 function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
@@ -254,6 +258,29 @@ function webSearchTitle(summary: string): string {
 	return summary || "网页搜索";
 }
 
+function webSearchDetail(summary: string): { label: string; value: string } | undefined {
+	const parsed = parseToolSummary(summary);
+	if (parsed?.type === "webSearchCall") {
+		const action =
+			parsed.action && typeof parsed.action === "object" && !Array.isArray(parsed.action)
+				? (parsed.action as Record<string, unknown>)
+				: undefined;
+		if (action?.type === "search") {
+			const query =
+				typeof action.query === "string" && action.query.trim().length > 0
+					? action.query.trim()
+					: Array.isArray(action.queries)
+						? action.queries.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim()
+						: undefined;
+			return query ? { label: "搜索内容", value: query } : undefined;
+		}
+		if (action?.type === "open_page" && typeof action.url === "string") return { label: "打开网页", value: action.url };
+		if (action?.type === "find_in_page" && typeof action.url === "string") return { label: "查找网页内容", value: action.url };
+	}
+	const value = summary.trim();
+	return value && value !== "网页搜索" ? { label: "搜索内容", value } : undefined;
+}
+
 function toolTitle(tool: ToolBatchTool): string {
 	if (tool.name === "web_search") return webSearchTitle(tool.summary);
 	const parsed = parseToolSummary(tool.summary);
@@ -351,6 +378,8 @@ function batchTitle(tools: ToolBatchTool[]): string {
 export function toolRowTitle(tool: ToolBatchTool): string {
 	if (tool.name === "image_gen") {
 		if (tool.images?.length) return `已生成 ${tool.images.length} 张图片`;
+		if (tool.state === "input-available" || tool.state === "input-queued")
+			return toolRowActionLabel(tool.name, tool.state);
 		const title = toolTitle(tool);
 		const action =
 			tool.state === "output-error"
@@ -727,102 +756,133 @@ type ImageGenerationPresentation = ResourceImageGenerationMetadata & { filename?
 function imageGenerationPresentation(tool: ToolBatchTool): ImageGenerationPresentation {
 	const parsed = parseToolSummary(tool.summary);
 	const prompt = typeof parsed?.prompt === "string" ? parsed.prompt : undefined;
-	const model = typeof parsed?.model === "string" && parsed.model !== "auto" ? parsed.model : undefined;
+	const parsedModel = typeof parsed?.model === "string" ? parsed.model.trim() : "";
+	const model = parsedModel || undefined;
 	const filename = typeof parsed?.filename === "string" ? parsed.filename : undefined;
 	return { ...(prompt ? { prompt } : {}), ...(model ? { model } : {}), ...(filename ? { filename } : {}) };
 }
 
-function ImageGenerationToolResult({
-	tool,
-	sessionId,
-	onOpenPath,
-}: {
-	tool: ToolBatchTool;
-	sessionId?: string;
-	onOpenPath?: (path: string) => void;
-}) {
-	const [openIndex, setOpenIndex] = useState<number>();
-	const [promptOpen, setPromptOpen] = useState(false);
-	const [copiedPrompt, setCopiedPrompt] = useState(false);
-	const metadata = imageGenerationPresentation(tool);
-	const items: ResourceImageItem[] = (tool.images ?? []).map((image, index) => {
-		const filename = metadata.filename ?? image.alt ?? `generated-image-${index + 1}.png`;
-		return {
-			id: `${tool.id}:${image.contentRef}`,
-			sessionId,
-			contentRef: image.contentRef,
-			mimeType: image.mimeType,
-			alt: filename,
-			generation: { ...(metadata.model ? { model: metadata.model } : {}), ...(metadata.prompt ? { prompt: metadata.prompt } : {}) },
-		};
-	});
-	const copyPrompt = async () => {
-		if (!metadata.prompt || !navigator.clipboard?.writeText) return;
-		await navigator.clipboard.writeText(metadata.prompt);
-		setCopiedPrompt(true);
-	};
+function sameImageResource(previous: ResourceImageItem, next: ResourceImageItem): boolean {
 	return (
-		<div className="grid min-w-0 w-full gap-3">
-			<div className="flex min-h-7 items-center gap-1.5 px-1 py-0.5 font-mono text-[13px]">
-				<ImagesIcon className="size-4" />
-				<span>{`已生成 ${items.length} 张图片`}</span>
-				<CheckCircleIcon className="size-4 text-[var(--success)]" />
-			</div>
-			<div className="grid gap-5">
-				{items.map((item, index) => (
-					<div className="grid min-w-0 gap-2" key={item.id}>
-						<ResourceImage
-							sessionId={item.sessionId}
-							contentRef={item.contentRef}
-							alt={item.alt}
-							generation={item.generation}
-							className="w-full"
-							buttonClassName="w-full min-h-52 max-h-[32rem] rounded-lg bg-background"
-							imageClassName="max-h-[32rem] w-full object-contain"
-							onOpenPath={onOpenPath}
-							onPreview={() => setOpenIndex(index)}
-						/>
-						<div className="flex min-h-8 items-center justify-between gap-3">
-							<span
-								className="min-w-0 truncate text-sm"
-								title={metadata.model ?? item.alt ?? "图片"}
-							>
-								{metadata.model ?? item.alt ?? "图片"}
-							</span>
-							<Button className="h-8 shrink-0 gap-1 px-2 text-[13px]! font-normal leading-5!" onClick={() => setOpenIndex(index)} size="sm" type="button" variant="ghost">
-								<ExternalLinkIcon className="size-3.5" />查看大图
-							</Button>
-						</div>
-					</div>
-				))}
-			</div>
-			{metadata.model || metadata.prompt ? (
-				<div className="grid gap-3 border-t border-border pt-4 text-[13px] leading-5">
-					{metadata.model ? (
-						<div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2 max-sm:grid-cols-1 max-sm:gap-1">
-							<span className="text-muted-foreground">生成模型</span>
-							<span className="break-all font-mono">{metadata.model}</span>
-						</div>
-					) : null}
-					{metadata.prompt ? (
-						<div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2 max-sm:grid-cols-1 max-sm:gap-1">
-							<span className="text-muted-foreground">提示词</span>
-							<div className="grid min-w-0 gap-1.5">
-								<p className={cn("min-w-0 whitespace-pre-wrap break-words", !promptOpen && "line-clamp-4")}>{metadata.prompt}</p>
-								<div className="flex min-h-8 items-center justify-between gap-3">
-									{metadata.prompt.length > 240 ? (
-										<button className="w-fit text-xs text-brand hover:underline" onClick={() => setPromptOpen((value) => !value)} type="button">{promptOpen ? "收起提示词" : "展开提示词"}</button>
-									) : null}
-									<Button className="ml-auto h-8 shrink-0 gap-1 px-2 text-[13px]! font-normal leading-5! text-muted-foreground" onClick={() => void copyPrompt()} size="sm" type="button" variant="ghost">
-										<CopyIcon className="size-3.5" />{copiedPrompt ? "已复制" : "复制提示词"}
-									</Button>
-								</div>
-							</div>
-						</div>
-					) : null}
+		previous.id === next.id &&
+		previous.src === next.src &&
+		previous.path === next.path &&
+		previous.projectId === next.projectId &&
+		previous.sessionId === next.sessionId &&
+		previous.contentRef === next.contentRef &&
+		previous.alt === next.alt
+	);
+}
+
+const GeneratedImageFrame = memo(
+	function GeneratedImageFrame({
+		item,
+		status,
+		onOpen,
+	}: {
+		item: ResourceImageItem;
+		status: ImageGenerationStatus;
+		onOpen: () => void;
+	}) {
+		const { source, loading, failed } = useResourceImageSource(item);
+		const [aspectRatio, setAspectRatio] = useState<number>();
+		const label = item.alt ?? "生成图片";
+		// 媒体还没到位时沿用 beUI 的生成中框，让占位和真实状态共用同一个容器。
+		const frameStatus: ImageGenerationStatus = failed ? "error" : source ? status : loading ? "generating" : "error";
+		const statusText = failed ? "图片内容读取失败" : source ? undefined : loading ? "正在读取图片" : "没有图片内容";
+
+		return (
+			<ImageGeneration
+				aspectRatio={aspectRatio}
+				className="w-full max-w-[32rem]"
+				mediaClassName="[&_img]:object-contain"
+				onMediaClick={source ? onOpen : undefined}
+				size="fluid"
+				status={frameStatus}
+				statusText={statusText}
+			>
+				{source ? (
+					<img
+						alt={label}
+						className="size-full object-contain"
+						onLoad={(event) => {
+							const image = event.currentTarget;
+							if (image.naturalWidth && image.naturalHeight) setAspectRatio(image.naturalWidth / image.naturalHeight);
+						}}
+						src={source}
+					/>
+				) : null}
+			</ImageGeneration>
+		);
+	},
+	(previous, next) => previous.status === next.status && sameImageResource(previous.item, next.item),
+);
+
+function ImageGenerationDetails({
+	model,
+	prompt,
+	onOpen,
+}: {
+	model?: string;
+	prompt?: string;
+	onOpen?: () => void;
+}) {
+	return (
+		<div className="grid min-w-0 content-start gap-5 border-border/60 md:border-l md:pl-5">
+			{model ? (
+				<div className="grid min-w-0 gap-1.5">
+					<span className="text-xs text-muted-foreground">请求模型</span>
+					<span className="break-all font-mono text-sm text-foreground">{model}</span>
 				</div>
 			) : null}
-			<ResourceImageViewer items={items} open={openIndex !== undefined} initialIndex={openIndex ?? 0} onOpenChange={(nextOpen) => { if (!nextOpen) setOpenIndex(undefined); }} />
+			<div className="grid min-w-0 gap-1.5">
+				<span className="text-xs text-muted-foreground">提示词</span>
+				{prompt ? (
+					<p className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{prompt}</p>
+				) : (
+					<p className="text-sm leading-6 text-muted-foreground">未返回提示词</p>
+				)}
+			</div>
+			{onOpen ? (
+				<Button className="h-8 w-fit gap-1 px-2 text-[13px]! font-normal leading-5!" onClick={onOpen} size="sm" type="button" variant="ghost">
+					<ExternalLinkIcon className="size-3.5" />查看大图
+				</Button>
+			) : null}
+		</div>
+	);
+}
+
+function ImageGenerationToolResult({ tool, sessionId }: { tool: ToolBatchTool; sessionId?: string }) {
+	const [viewerIndex, setViewerIndex] = useState<number>();
+	const metadata = imageGenerationPresentation(tool);
+	const status = IMAGE_GENERATION_STATE[tool.state];
+	const items: ResourceImageItem[] = (tool.images ?? []).map((image, index) => ({
+		id: `${tool.id}:${image.contentRef}`,
+		sessionId,
+		contentRef: image.contentRef,
+		mimeType: image.mimeType,
+		alt: metadata.filename ?? image.alt ?? `生成图片 ${index + 1}`,
+		generation: {
+			...(metadata.model ? { model: metadata.model } : {}),
+			...(metadata.prompt ? { prompt: metadata.prompt } : {}),
+		},
+	}));
+
+	return (
+		<div className="grid min-w-0 w-full gap-6">
+			{items.map((item, index) => (
+				<div className="grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] md:items-start" key={item.id}>
+					<GeneratedImageFrame item={item} onOpen={() => setViewerIndex(index)} status={status} />
+					{status === "complete" ? (
+						<ImageGenerationDetails
+							model={metadata.model}
+							onOpen={() => setViewerIndex(index)}
+							prompt={metadata.prompt}
+						/>
+					) : null}
+				</div>
+			))}
+			<ResourceImageViewer items={items} open={viewerIndex !== undefined} initialIndex={viewerIndex ?? 0} onOpenChange={(nextOpen) => { if (!nextOpen) setViewerIndex(undefined); }} />
 		</div>
 	);
 }
@@ -863,40 +923,59 @@ function ImageToolGallery({
 	);
 }
 
-function ImageGenerationStatus({ tool }: { tool: ToolBatchTool }) {
-	const active = tool.state === "input-available" || tool.state === "input-queued";
-	const failed = tool.state === "output-error" || tool.state === "output-cancelled" || tool.state === "output-interrupted";
-	const text =
-		tool.detail?.trim() ||
-		(active ? "正在生成图片" : failed ? statusLabels[tool.state] : "图片结果正在写入会话");
-	return (
-		<div
-			className={cn(
-				"flex min-h-40 w-full flex-col items-center justify-center gap-3 rounded-xl border bg-muted/20 px-6 py-8 text-center",
-				failed && "border-destructive/30 bg-destructive/5",
-			)}
-			role={failed ? "alert" : "status"}
-		>
-			{active ? <LoaderCircleIcon className="size-6 animate-spin text-muted-foreground" /> : null}
-			<span className={cn("text-sm text-muted-foreground", failed && "text-destructive")}>{text}</span>
-		</div>
-	);
-}
+const IMAGE_GENERATION_STATE: Record<ToolBatchState, ImageGenerationStatus> = {
+	"input-available": "generating",
+	"input-queued": "queued",
+	"output-available": "complete",
+	"output-cancelled": "error",
+	"output-error": "error",
+	"output-interrupted": "error",
+};
+
+const ImageGenerationProgress = memo(
+	function ImageGenerationProgress({ tool }: { tool: ToolBatchTool }) {
+		const status = IMAGE_GENERATION_STATE[tool.state];
+		const detail = tool.detail?.trim();
+		const statusText = status === "error" ? detail || undefined : status === "complete" ? "图片结果正在写入会话" : undefined;
+		const metadata = status === "complete" ? imageGenerationPresentation(tool) : undefined;
+
+		return (
+			<div className={cn("grid min-w-0 gap-5", status === "complete" && "md:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] md:items-start")}>
+				<ImageGeneration className="w-full max-w-52" size="fluid" status={status} statusText={statusText} />
+				{metadata ? <ImageGenerationDetails model={metadata.model} prompt={metadata.prompt} /> : null}
+			</div>
+		);
+	},
+	(previous, next) => {
+		if (previous.tool.id !== next.tool.id || previous.tool.state !== next.tool.state) return false;
+		if (next.tool.state === "input-available" || next.tool.state === "input-queued") return true;
+		return previous.tool.summary === next.tool.summary && previous.tool.detail === next.tool.detail;
+	},
+);
 
 function WebSearchToolDetail({ tool }: { tool: ToolBatchTool }) {
 	const sources = tool.sources ?? [];
-	if (!sources.length) return null;
+	const detail = webSearchDetail(tool.summary);
+	const active = tool.state === "input-available" || tool.state === "input-queued";
 	return (
-		<div className="grid min-w-0 gap-1.5">
-			<div className="flex items-center gap-1 text-xs text-muted-foreground">
-				<SearchIcon className="size-3.5 shrink-0" />
-				<span>来源 · {sources.length}</span>
-			</div>
-			<div className="grid min-w-0 gap-1.5">
-				{sources.map((source) => (
-					<Source href={source.url} key={source.url} title={source.title} />
-				))}
-			</div>
+		<div className="grid min-w-0 gap-2">
+			{detail ? (
+				<div className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-2 text-xs leading-5 max-sm:grid-cols-1 max-sm:gap-0.5">
+					<span className="text-muted-foreground">{detail.label}</span>
+					<span className="min-w-0 break-words text-foreground">{detail.value}</span>
+				</div>
+			) : (
+				<div className="text-xs leading-5 text-muted-foreground">{active ? "搜索词尚未返回" : "本次搜索未返回搜索词"}</div>
+			)}
+			{sources.length ? (
+				<div className="grid min-w-0 gap-1.5">
+					{sources.map((source) => (
+						<Source href={source.url} key={source.url} title={source.title} />
+					))}
+				</div>
+			) : (
+				<div className="text-xs leading-5 text-muted-foreground">{active ? "来源尚未返回" : "本次搜索未返回网页来源"}</div>
+			)}
 		</div>
 	);
 }
@@ -942,14 +1021,47 @@ function CommandToolDetail({
 	);
 }
 
+function SubagentToolDetail({
+	tool,
+	onOpenSubagent,
+}: {
+	tool: ToolBatchTool;
+	onOpenSubagent?: (agentId: string) => void;
+}) {
+	return (
+		<div className="grid min-w-0 gap-2">
+			{(tool.subagents ?? []).map((subagent) => (
+				<Button
+					className="h-auto min-w-0 justify-start gap-2 rounded-lg px-2.5 py-2 text-left"
+					disabled={!onOpenSubagent}
+					key={`${subagent.runId}:${subagent.agentId}`}
+					onClick={() => onOpenSubagent?.(subagent.agentId)}
+					type="button"
+					variant="outline"
+				>
+					<span className="min-w-0 flex-1">
+						<span className="block truncate text-xs font-medium">{subagent.agent}</span>
+						<span className="mt-0.5 block truncate text-xs text-muted-foreground">{subagent.task}</span>
+					</span>
+					<span className="shrink-0 text-xs text-muted-foreground">
+						{subagent.state === "failed" ? "失败" : subagent.state === "cancelled" ? "已停止" : "查看"}
+					</span>
+				</Button>
+			))}
+		</div>
+	);
+}
+
 function ToolDetail({
 	tool,
 	sessionId,
 	onOpenPath,
+	onOpenSubagent,
 }: {
 	tool: ToolBatchTool;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
+	onOpenSubagent?: (agentId: string) => void;
 }) {
 	const plainText = tool.state === "input-available" || tool.state === "input-queued";
 	const title = toolTitle(tool);
@@ -962,8 +1074,11 @@ function ToolDetail({
 		/>
 	) : null;
 
+	if (tool.name === "subagent" && tool.subagents?.length) {
+		return <SubagentToolDetail tool={tool} onOpenSubagent={onOpenSubagent} />;
+	}
 	if (tool.name === "image_gen") {
-		return <div className="grid min-w-0 gap-2">{imagePreview ?? <ImageGenerationStatus tool={tool} />}</div>;
+		return <div className="grid min-w-0 gap-2">{imagePreview ?? <ImageGenerationProgress tool={tool} />}</div>;
 	}
 
 	if (tool.name === "web_search") return <WebSearchToolDetail tool={tool} />;
@@ -1035,6 +1150,7 @@ function ToolBatchRow({
 	tool,
 	sessionId,
 	onOpenPath,
+	onOpenSubagent,
 	className,
 	initialOpen = false,
 	open: controlledOpen,
@@ -1044,6 +1160,7 @@ function ToolBatchRow({
 	tool: ToolBatchTool;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
+	onOpenSubagent?: (agentId: string) => void;
 	className?: string;
 	initialOpen?: boolean;
 	open?: boolean;
@@ -1069,8 +1186,8 @@ function ToolBatchRow({
 		tool.name === "image_gen"
 			? true
 			: tool.name === "web_search"
-				? Boolean(tool.sources?.length)
-				: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length);
+				? true
+				: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || tool.sources?.length || tool.subagents?.length);
 
 	useEffect(() => {
 		if (
@@ -1089,6 +1206,13 @@ function ToolBatchRow({
 				<button
 					data-transcript-resize-anchor
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					onClick={(event) => {
+						const subagent = tool.subagents?.length === 1 ? tool.subagents[0] : undefined;
+						if (!subagent || !onOpenSubagent) return;
+						event.preventDefault();
+						event.stopPropagation();
+						onOpenSubagent(subagent.agentId);
+					}}
 					type="button"
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
@@ -1119,6 +1243,9 @@ function ToolBatchRow({
 						</span>
 					) : null}
 					<span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+						{tool.name === "web_search" && tool.sources?.length ? (
+							<span className="text-xs text-muted-foreground">来源 · {tool.sources.length}</span>
+						) : null}
 						{toolStatusIndicator(tool.state)}
 						{tool.state !== "output-available" ? (
 							<span className="text-xs text-muted-foreground">{statusLabels[tool.state]}</span>
@@ -1135,7 +1262,12 @@ function ToolBatchRow({
 				<GsapCollapsibleContent
 					open={open}
 					data-transcript-resize-anchor
-					className="min-w-0 max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain pb-0.5 pl-6 pr-0 pt-0"
+					className={cn(
+						"min-w-0 pb-0.5 pl-6 pr-0 pt-0",
+						tool.name === "image_gen"
+							? "overflow-visible"
+							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-contain",
+					)}
 					onClick={(event) => {
 						event.stopPropagation();
 						if (canCollapseFromContent(event)) setOpen(false);
@@ -1146,10 +1278,15 @@ function ToolBatchRow({
 						fallback={() => (
 							<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">
 								工具详情渲染失败，工具结果仍保留在会话记录中。
-							</div>
+						</div>
 						)}
 					>
-						<ToolDetail tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+						<ToolDetail
+							tool={tool}
+							sessionId={sessionId}
+							onOpenPath={onOpenPath}
+							onOpenSubagent={onOpenSubagent}
+						/>
 					</StabilityBoundary>
 				</GsapCollapsibleContent>
 			) : null}
@@ -1167,6 +1304,7 @@ export const ToolBatch = memo(function ToolBatch({
 	autoCollapseWhenComplete = false,
 	sessionId,
 	onOpenPath,
+	onOpenSubagent,
 	toolOpen,
 	onToolOpenChange,
 }: ToolBatchProps) {
@@ -1221,7 +1359,7 @@ export const ToolBatch = memo(function ToolBatch({
 		return (
 			<div className={cn("grid min-w-0 gap-5", className)}>
 				{tools.map((tool) => (
-					<ImageGenerationToolResult key={tool.id} tool={tool} sessionId={sessionId} onOpenPath={onOpenPath} />
+					<ImageGenerationToolResult key={tool.id} tool={tool} sessionId={sessionId} />
 				))}
 			</div>
 		);
@@ -1236,6 +1374,7 @@ export const ToolBatch = memo(function ToolBatch({
 						tool={tool}
 						sessionId={sessionId}
 						onOpenPath={onOpenPath}
+						onOpenSubagent={onOpenSubagent}
 						initialOpen={false}
 						open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
 						onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
@@ -1296,6 +1435,7 @@ export const ToolBatch = memo(function ToolBatch({
 				tool={tool}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
+				onOpenSubagent={onOpenSubagent}
 				initialOpen={
 					imageTool ||
 					imageGenerationTool ||
@@ -1353,6 +1493,7 @@ export const ToolBatch = memo(function ToolBatch({
 							tool={tool}
 							sessionId={sessionId}
 							onOpenPath={onOpenPath}
+							onOpenSubagent={onOpenSubagent}
 							open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
 							onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
 						/>

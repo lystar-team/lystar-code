@@ -16,7 +16,6 @@ import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { type LiveCompactionState } from "../../state/compaction-state";
 import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
-import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { PromptAttachmentPreview } from "../../types";
 import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
@@ -31,6 +30,40 @@ import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./tra
 import { PrependAnchoredConversationTranscript } from "./prepend-anchored-transcript";
 import { type ConversationTranscriptScrollState, DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
+
+export type ConversationState = {
+	sessionId?: string;
+	currentProjectId?: string;
+	loading: boolean;
+	connected: boolean;
+	sessionReady: boolean;
+	readOnly: boolean;
+	session?: Pick<NonNullable<WorkbenchState["session"]>, "activity">;
+	sessionError?: string;
+	transcript: WorkbenchState["transcript"];
+	transcriptPageLoaded: boolean;
+	transcriptLoading: boolean;
+	transcriptError?: string;
+	previousCursor?: string;
+	hasMorePrevious: boolean;
+	loadingEarlier: boolean;
+	pendingUserPrompts: WorkbenchState["pendingUserPrompts"];
+	queuedUserPrompts: WorkbenchState["queuedUserPrompts"];
+	promptSendTimes: WorkbenchState["promptSendTimes"];
+	promptScrollRequest?: number;
+	currentOperation?: WorkbenchState["currentOperation"];
+	liveTools: WorkbenchState["liveTools"];
+	liveSteps: WorkbenchState["liveSteps"];
+	liveTurnItems: WorkbenchState["liveTurnItems"];
+	liveCompaction?: WorkbenchState["liveCompaction"];
+	liveTurnId: number;
+};
+
+export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queueAction" | "showToast" | "loadEarlier"> & {
+	selectSession?: WorkbenchActions["selectSession"];
+	loadTranscript?: WorkbenchActions["loadTranscript"];
+	openSubagent?: WorkbenchActions["openSubagent"];
+};
 
 type MessageRenderItem = {
 	kind: "message";
@@ -336,12 +369,18 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 	if (previous.length !== next.length) return false;
 	return previous.every((tool, index) => {
 		const candidate = next[index];
+		const streamingImageGeneration =
+			candidate?.name === "image_gen" &&
+			tool.name === "image_gen" &&
+			(candidate.state === "input-available" || candidate.state === "input-queued") &&
+			(tool.state === "input-available" || tool.state === "input-queued");
 		return (
 			candidate?.id === tool.id &&
 			candidate.name === tool.name &&
-			candidate.summary === tool.summary &&
+			(streamingImageGeneration || candidate.summary === tool.summary) &&
 			candidate.state === tool.state &&
-			candidate.detail === tool.detail &&
+			(streamingImageGeneration || candidate.detail === tool.detail) &&
+			JSON.stringify(candidate.subagents) === JSON.stringify(tool.subagents) &&
 			candidate.inputPreview === tool.inputPreview &&
 			toolSourcesEqual(tool.sources, candidate.sources) &&
 			candidate.images === tool.images &&
@@ -1000,7 +1039,7 @@ export function buildConversationRenderItems(
 	return markCompletedTurnResults(withLive, responseActive, observedElapsed);
 }
 
-function isConversationResponseActive(state: WorkbenchState): boolean {
+function isConversationResponseActive(state: ConversationState): boolean {
 	return Boolean(
 		state.liveTurnItems.length ||
 		state.session?.activity === "running" ||
@@ -1014,14 +1053,22 @@ export function ConversationView({
 	actions,
 	sessionTitleText,
 	onEditPrompt,
+	allowPromptEditing = true,
 }: {
-	state: WorkbenchState;
-	actions: WorkbenchActions;
+	state: ConversationState;
+	actions: ConversationActions;
 	sessionTitleText: string;
 	onEditPrompt: (request: PromptEditRequest) => void;
+	allowPromptEditing?: boolean;
 }) {
 	const responseActive = isConversationResponseActive(state);
-	const canEditPrompts = canSendPrompt(state) && !hasActiveSessionWork(state) && state.queuedUserPrompts.length === 0;
+	const canEditPrompts =
+		allowPromptEditing &&
+		state.connected &&
+		state.sessionReady &&
+		!state.readOnly &&
+		!responseActive &&
+		state.queuedUserPrompts.length === 0;
 	const liveSteps = responseActive ? state.liveSteps : EMPTY_LIVE_STEPS;
 	const renderCacheRef = useRef(new Map<string, ConversationRenderCacheEntry>());
 	// 实时「已处理」每次跳动回报的秒数，按发送时刻归档，回合结束时供下方「本次耗时」复用。
@@ -1174,8 +1221,8 @@ function ConversationBody({
 	liveElapsedChange,
 	onEditPrompt,
 }: {
-	state: WorkbenchState;
-	actions: WorkbenchActions;
+	state: ConversationState;
+	actions: ConversationActions;
 	sessionTitleText: string;
 	renderItems: ConversationRenderItem[];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
@@ -1406,6 +1453,7 @@ function ConversationBody({
 	}, []);
 	const renderStateRef = useRef({ sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses });
 	renderStateRef.current = { sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses };
+	const openSubagent = actions.openSubagent;
 	const renderToolStack = useCallback(
 		(entry: TranscriptToolStackRenderItem) => {
 			const current = renderStateRef.current;
@@ -1429,6 +1477,7 @@ function ConversationBody({
 								onOpenChange={controlCollapsedState ? (open) => updateExpandedToolRow(tool.id, open) : undefined}
 								sessionId={current.sessionId}
 								onOpenPath={(path) => void openResource(path)}
+								onOpenSubagent={openSubagent}
 							/>
 						))}
 					</div>
@@ -1447,6 +1496,7 @@ function ConversationBody({
 					onToolOpenChange={controlCollapsedState ? updateExpandedToolRow : undefined}
 					sessionId={current.sessionId}
 					onOpenPath={(path) => void openResource(path)}
+					onOpenSubagent={openSubagent}
 				/>
 			);
 		},
@@ -1454,6 +1504,7 @@ function ConversationBody({
 			expandedToolBatches,
 			expandedToolRows,
 			openResource,
+			openSubagent,
 			updateExpandedToolBatch,
 			updateExpandedToolRow,
 		],
@@ -1739,7 +1790,11 @@ function ConversationBody({
 				<AgentErrorCard
 					title="会话信息加载失败"
 					message={state.sessionError}
-					onRetry={state.sessionId ? () => void actions.selectSession(state.sessionId!) : undefined}
+					onRetry={
+						state.sessionId && actions.selectSession
+							? () => void actions.selectSession?.(state.sessionId!)
+							: undefined
+					}
 				/>
 			) : initialTranscriptState === "loading" ? (
 				<div className="mx-auto grid w-full max-w-3xl gap-4 py-4" aria-live="polite" aria-busy="true">
@@ -1763,7 +1818,7 @@ function ConversationBody({
 				<AgentErrorCard
 					title="会话记录加载失败"
 					message={state.transcriptError ?? "无法读取会话记录"}
-					onRetry={() => void actions.loadTranscript()}
+					onRetry={actions.loadTranscript ? () => void actions.loadTranscript?.() : undefined}
 				/>
 			) : (
 				<ConversationEmptyState

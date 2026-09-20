@@ -5,6 +5,7 @@ import {
 	type Dirent,
 	existsSync,
 	fsyncSync,
+	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -40,6 +41,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 	DefaultPackageManager,
+	discoverAgentDefinitions,
 	discoverHarnessImports,
 	type ExtensionCommandContextActions,
 	type ExtensionUIContext,
@@ -74,6 +76,7 @@ import {
 	readSessionSnapshot,
 	removeModelsJsonModels,
 	removeModelsJsonProvider,
+	renderSubagentMarkdown,
 	renderTerminalRichText,
 	requestWebSessionHandoff,
 	resolveProjectTrusted,
@@ -90,6 +93,7 @@ import {
 	saveModelsJsonProvider,
 	saveModelsJsonSyncedModels,
 	setModelsJsonModelDisabled,
+	subscribeSubagentRuns,
 	VERSION,
 	WebCompanionServer,
 } from "@earendil-works/pi-coding-agent/core";
@@ -128,6 +132,7 @@ import type {
 	SessionStateSnapshot,
 	SessionTreeNode,
 	SettingSummary,
+	SubagentConfig,
 	SubagentSnapshot,
 	ThinkingLevel,
 	TranscriptItem,
@@ -157,7 +162,7 @@ import type {
 	UiRequestHandler,
 } from "./types.ts";
 import { probeUserNodeToolchain } from "./user-execution-environment.ts";
-import { WebCompanionProtocolError, WebCompanionRuntime } from "./web-companion-runtime.ts";
+import { projectAgentEvent, WebCompanionProtocolError, WebCompanionRuntime } from "./web-companion-runtime.ts";
 
 export { BUILTIN_SLASH_COMMANDS } from "@earendil-works/pi-coding-agent/core";
 
@@ -192,6 +197,7 @@ const GIT_EDITOR_CONTENT_MAX_BYTES = 2 * 1024 * 1024;
 const PROJECT_TEXT_EDITOR_MAX_BYTES = 2 * 1024 * 1024;
 const PROJECT_RESOURCE_MAX_BYTES = 32 * 1024 * 1024;
 const PROJECT_INSTRUCTION_NAMES = ["AGENTS.override.md", "AGENTS.md"] as const;
+const SUBAGENT_NAME_MAX_LENGTH = 128;
 const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
 	".bmp": "image/bmp",
 	".gif": "image/gif",
@@ -274,6 +280,21 @@ function canonicalExternalFile(input: string): string {
 	const path = realpathSync(input);
 	if (!statSync(path).isFile()) throw Object.assign(new Error("目标不是普通文件"), { code: "resource_not_file" });
 	return path;
+}
+
+function validSubagentName(value: string): string {
+	const name = value.trim();
+	if (
+		!name ||
+		name.length > SUBAGENT_NAME_MAX_LENGTH ||
+		name === "." ||
+		name === ".." ||
+		name.includes("/") ||
+		name.includes("\\") ||
+		name.includes("\0")
+	)
+		throw Object.assign(new Error("智能体名称无效"), { code: "subagent_name_invalid" });
+	return name;
 }
 
 function atomicWriteUtf8(path: string, content: string, mode?: number): void {
@@ -1588,6 +1609,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly stepController: AgentStepController;
 	private unsubscribe?: () => void;
 	private unsubscribeSteps?: () => void;
+	private unsubscribeSubagents?: () => void;
 	private stateRevision = 0;
 	private committedEntryCount = 0;
 	private lastTranscriptGeneration?: string;
@@ -1789,7 +1811,10 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	listSubagents(): SubagentSnapshot[] {
 		const committed = transcriptSubagents(this.runtime.session.sessionManager.getEntries());
-		const live = getCurrentSubagentRuns().map(liveSubagent);
+		const parentSessionPath = this.runtime.session.sessionFile;
+		const live = getCurrentSubagentRuns()
+			.filter((snapshot) => snapshot.session?.parentSessionFile === parentSessionPath)
+			.map(liveSubagent);
 		const merged = new Map<string, SubagentSnapshot>();
 		for (const snapshot of committed) merged.set(`${snapshot.runId}:${snapshot.agentId}`, snapshot);
 		for (const snapshot of live) merged.set(`${snapshot.runId}:${snapshot.agentId}`, snapshot);
@@ -1805,15 +1830,19 @@ class CoreRuntimeSession implements RuntimeSession {
 		const transcript = transcriptSubagents(this.runtime.session.sessionManager.getEntries()).find(
 			(snapshot) => snapshot.agentId === agentId,
 		);
-		const live = getCurrentSubagentRuns().find((snapshot) => snapshot.agentId === agentId);
+		const live = getCurrentSubagentRuns().find(
+			(snapshot) =>
+				snapshot.agentId === agentId && snapshot.session?.parentSessionFile === this.runtime.session.sessionFile,
+		);
 		return {
 			...(transcript ? { transcript } : {}),
-			...(live && transcript?.runId === live.runId ? { live: liveSubagent(live) } : {}),
+			...(live && (!transcript || transcript.runId === live.runId) ? { live: liveSubagent(live) } : {}),
 		};
 	}
 
 	async abortSubagent(agentId: string): Promise<void> {
-		if (!this.readSubagent(agentId).transcript)
+		const details = this.readSubagent(agentId);
+		if (!details.transcript && !details.live)
 			throw Object.assign(new Error("Subagent 不属于当前会话"), { code: "subagent_not_found" });
 		await abortSubagent(agentId);
 	}
@@ -2042,6 +2071,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.unsubscribe = undefined;
 		this.unsubscribeSteps?.();
 		this.unsubscribeSteps = undefined;
+		this.unsubscribeSubagents?.();
+		this.unsubscribeSubagents = undefined;
 		const companion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
@@ -2059,6 +2090,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.unsubscribe = undefined;
 		this.unsubscribeSteps?.();
 		this.unsubscribeSteps = undefined;
+		this.unsubscribeSubagents?.();
+		this.unsubscribeSubagents = undefined;
 		const previousCompanion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
@@ -2122,6 +2155,22 @@ class CoreRuntimeSession implements RuntimeSession {
 			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
+		const parentSessionPath = session.sessionFile;
+		if (parentSessionPath) {
+			this.unsubscribeSubagents = subscribeSubagentRuns((snapshot, event) => {
+				if (
+					this.disposed ||
+					this.runtime.session !== session ||
+					snapshot.session?.parentSessionFile !== parentSessionPath
+				)
+					return;
+				const progress = event ? projectAgentEvent(event) : [];
+				this.emit({
+					type: "subagent_updated",
+					payload: jsonValue({ snapshot, ...(progress.length ? { progress } : {}) }),
+				});
+			});
+		}
 		const companion = new WebCompanionServer(
 			session,
 			this.agentDir,
@@ -3000,9 +3049,109 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return {
 			sources: preview.sources,
 			items: preview.items.map(
-				({ sourcePath: _sourcePath, targetPath: _targetPath, contentHash: _contentHash, ...item }) => item,
+				({
+					sourcePath: _sourcePath,
+					targetPath: _targetPath,
+					contentHash: _contentHash,
+					generatedContent: _generatedContent,
+					...item
+				}) => item,
 			),
 		};
+	}
+
+	listSubagentConfigs(cwd: string): SubagentConfig[] {
+		return discoverAgentDefinitions(canonicalDirectory(cwd), this.agentDir).definitions.map((definition) => ({
+			name: definition.name,
+			description: definition.description,
+			scope: definition.scope,
+			...(definition.provider ? { provider: definition.provider } : {}),
+			...(definition.model ? { model: definition.model } : {}),
+			...(definition.thinkingLevel ? { thinkingLevel: definition.thinkingLevel } : {}),
+			...(definition.tools ? { tools: definition.tools } : {}),
+			content: definition.content,
+			editable: definition.editable,
+			...(definition.rawContent ? { contentHash: contentHash(definition.rawContent) } : {}),
+		}));
+	}
+
+	async saveSubagentConfig(
+		cwd: string,
+		input: {
+			scope: "user" | "project";
+			originalName?: string;
+			name: string;
+			description: string;
+			provider?: string;
+			model?: string;
+			thinkingLevel?: ThinkingLevel;
+			tools?: string[];
+			content: string;
+			expectedHash?: string;
+		},
+		onUiRequest: UiRequestHandler,
+	): Promise<SubagentConfig[]> {
+		const projectRoot = canonicalDirectory(cwd);
+		if (input.scope === "project") await this.createTrustedSettings(projectRoot, onUiRequest);
+		const root = input.scope === "user" ? canonicalDirectory(this.agentDir) : projectRoot;
+		const directory = input.scope === "user" ? join(root, "agents") : join(root, CONFIG_DIR_NAME, "agents");
+		mkdirSync(directory, { recursive: true });
+		const name = validSubagentName(input.name);
+		const originalName = validSubagentName(input.originalName ?? name);
+		const originalPath = join(directory, `${originalName}.md`);
+		const targetPath = join(directory, `${name}.md`);
+		if (existsSync(originalPath)) {
+			const currentHash = contentHash(readFileSync(originalPath, "utf8"));
+			if (!input.expectedHash || currentHash !== input.expectedHash)
+				throw Object.assign(new Error("智能体已被外部修改，请重新加载后再保存"), {
+					code: "subagent_conflict",
+					retryable: true,
+				});
+		} else if (input.expectedHash) {
+			throw Object.assign(new Error("智能体已被外部删除，请重新加载后再保存"), {
+				code: "subagent_conflict",
+				retryable: true,
+			});
+		}
+		if (targetPath !== originalPath && existsSync(targetPath))
+			throw Object.assign(new Error("同一范围内已存在同名智能体"), { code: "subagent_name_conflict" });
+		const description = input.description.trim();
+		if (!description) throw Object.assign(new Error("智能体描述不能为空"), { code: "subagent_description_invalid" });
+		if (input.provider && !input.model)
+			throw Object.assign(new Error("选择供应商后必须选择模型"), { code: "subagent_model_invalid" });
+		const rendered = renderSubagentMarkdown({
+			name,
+			description,
+			...(input.provider ? { provider: input.provider } : {}),
+			...(input.model ? { model: input.model } : {}),
+			...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
+			...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
+			content: input.content,
+		});
+		atomicWriteUtf8(targetPath, rendered);
+		if (targetPath !== originalPath && existsSync(originalPath)) unlinkSync(originalPath);
+		return this.listSubagentConfigs(projectRoot);
+	}
+
+	async deleteSubagentConfig(
+		cwd: string,
+		input: { scope: "user" | "project"; name: string; expectedHash: string },
+		onUiRequest: UiRequestHandler,
+	): Promise<SubagentConfig[]> {
+		const projectRoot = canonicalDirectory(cwd);
+		if (input.scope === "project") await this.createTrustedSettings(projectRoot, onUiRequest);
+		const root = input.scope === "user" ? canonicalDirectory(this.agentDir) : projectRoot;
+		const directory = input.scope === "user" ? join(root, "agents") : join(root, CONFIG_DIR_NAME, "agents");
+		const path = join(directory, `${validSubagentName(input.name)}.md`);
+		if (!existsSync(path)) throw Object.assign(new Error("智能体不存在"), { code: "subagent_not_found" });
+		const currentHash = contentHash(readFileSync(path, "utf8"));
+		if (currentHash !== input.expectedHash)
+			throw Object.assign(new Error("智能体已被外部修改，请重新加载后再删除"), {
+				code: "subagent_conflict",
+				retryable: true,
+			});
+		unlinkSync(path);
+		return this.listSubagentConfigs(projectRoot);
 	}
 
 	async importHarnessResources(

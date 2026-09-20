@@ -30,6 +30,9 @@ import type {
 	ProductBranding,
 	QueuedUserPrompt,
 	SecuritySettingsResponse,
+	SubagentConfig,
+	SubagentConfigsResponse,
+	SubagentSnapshot,
 	SystemPermissionsResponse,
 	UiRequestEvent,
 	WebLease,
@@ -37,6 +40,7 @@ import type {
 	WebOperation,
 	WebProject,
 	WebProviderModelInput,
+	WebThinkingLevel,
 	WebSessionSnapshot,
 	WebSessionSummary,
 	WebTranscriptItem,
@@ -81,7 +85,7 @@ import {
 	replaceSessionOperationSnapshots,
 	runtimeHistoryChanged,
 } from "./session-sync.ts";
-import { shouldJoinLiveToolBatch } from "./tool-batching.ts";
+import { mergeWebSearchSummary, shouldJoinLiveToolBatch } from "./tool-batching.ts";
 import {
 	mergeTranscriptEntries,
 	mergeTranscriptPage,
@@ -96,7 +100,7 @@ function browserNetworkOnline(): boolean {
 	return typeof navigator === "undefined" || navigator.onLine !== false;
 }
 
-export type InspectorMode = "runs" | "files" | "tree" | "git";
+export type InspectorMode = "runs" | "files" | "tree" | "git" | "subagent";
 export type ComposerMode = "prompt" | "steer" | "follow-up";
 export type ThemeMode = "system" | "light" | "dark";
 export type SettingsTab =
@@ -105,6 +109,7 @@ export type SettingsTab =
 	| "instructions"
 	| "skills"
 	| "models"
+	| "subagents"
 	| "imports"
 	| "diagnostics"
 	| "permissions"
@@ -315,7 +320,10 @@ function liveToolFromActivity(activity: ToolActivity, previous: LiveTool | undef
 		id: activity.toolCallId,
 		name: activity.name,
 		batchId,
-		summary: activity.summary || previous?.summary || activity.name,
+		summary:
+			activity.name === "web_search"
+				? mergeWebSearchSummary(previous?.summary, activity.summary)
+				: activity.summary || previous?.summary || activity.name,
 		state: activity.state,
 		status: toolActivityStatus(activity.state),
 		stepId: activity.stepId ?? previous?.stepId,
@@ -606,6 +614,10 @@ export interface WorkbenchState {
 	harnessImportsError?: string;
 	harnessImporting: boolean;
 	harnessImportResult?: HarnessImportResultResponse;
+	subagentConfigs: SubagentConfig[];
+	subagentConfigsLoading: boolean;
+	subagentConfigsSaving: boolean;
+	subagentConfigsError?: string;
 	modelOptions: Array<{
 		provider: string;
 		id: string;
@@ -663,6 +675,282 @@ export interface WorkbenchState {
 	toast?: string;
 	theme: ThemeMode;
 	composerMode: ComposerMode;
+	subagents: SubagentSnapshot[];
+	subagentsLoading: boolean;
+	subagentsError?: string;
+	selectedSubagentId?: string;
+	subagentViews: Record<string, SubagentConversationState>;
+}
+
+export interface SubagentConversationState {
+	snapshot: SubagentSnapshot;
+	transcript: WorkbenchTranscriptItem[];
+	transcriptPageLoaded: boolean;
+	transcriptLoading: boolean;
+	transcriptError?: string;
+	transcriptGeneration?: string;
+	transcriptRevision?: number;
+	transcriptLeafId?: string | null;
+	previousCursor?: string;
+	hasMorePrevious: boolean;
+	loadingEarlier: boolean;
+	toolActivityEpoch?: string;
+	toolActivityRevision?: number;
+	liveTools: Record<string, LiveTool>;
+	liveSteps: Record<string, AgentStep>;
+	liveTurnItems: LiveTurnItem[];
+	liveTurnId: number;
+	liveTurnStartRevision?: number;
+	liveTurnActive?: boolean;
+	liveCompaction?: LiveCompactionState;
+	statusText: string;
+}
+
+export function createSubagentConversationState(snapshot: SubagentSnapshot): SubagentConversationState {
+	return {
+		snapshot,
+		transcript: [],
+		transcriptPageLoaded: false,
+		transcriptLoading: false,
+		hasMorePrevious: false,
+		loadingEarlier: false,
+		liveTools: {},
+		liveSteps: {},
+		liveTurnItems: [],
+		liveTurnId: 0,
+		liveTurnActive: snapshot.state === "queued" || snapshot.state === "running" || snapshot.state === "waiting",
+		statusText: snapshot.currentAction ?? "",
+	};
+}
+
+export function mergeSubagentSnapshots(
+	current: readonly SubagentSnapshot[],
+	incoming: readonly SubagentSnapshot[],
+): SubagentSnapshot[] {
+	const byAgent = new Map(current.map((snapshot) => [snapshot.agentId, snapshot]));
+	for (const snapshot of incoming) {
+		const previous = byAgent.get(snapshot.agentId);
+		if (!previous || snapshot.runId !== previous.runId || snapshot.updatedAt >= previous.updatedAt)
+			byAgent.set(snapshot.agentId, snapshot);
+	}
+	return [...byAgent.values()].sort(
+		(left, right) =>
+			right.updatedAt - left.updatedAt ||
+			left.runId.localeCompare(right.runId) ||
+			left.agentId.localeCompare(right.agentId),
+	);
+}
+
+function subagentToolBatchId(
+	current: SubagentConversationState,
+	name: string,
+	summary: string,
+	stepId: string | undefined,
+	fallback: string,
+): string {
+	const last = current.liveTurnItems.at(-1);
+	if (last?.kind !== "tools" || last.turnId !== current.liveTurnId) return fallback;
+	const previousTool = current.liveTools[last.toolIds.at(-1) ?? ""];
+	if (previousTool?.stepId !== stepId) return fallback;
+	return shouldJoinLiveToolBatch(previousTool, { name, summary }, last.turnId, current.liveTurnId)
+		? last.batchId
+		: fallback;
+}
+
+export function applySubagentProgress(
+	current: SubagentConversationState,
+	progress: SessionProgress,
+	nextLiveItemId: () => string,
+	nextLiveToolId: () => string,
+): SubagentConversationState {
+	switch (progress.type) {
+		case "assistant_delta":
+			return {
+				...current,
+				liveTurnActive: true,
+				liveTurnItems: appendLiveTextBlock(
+					current.liveTurnItems,
+					"text",
+					progress.text,
+					nextLiveItemId(),
+					current.liveTurnId,
+					progress.stepId,
+				),
+				statusText: "正在生成回复",
+			};
+		case "thinking_delta":
+			return {
+				...current,
+				liveTurnActive: true,
+				liveTurnItems: appendLiveTextBlock(
+					current.liveTurnItems,
+					"thinking",
+					progress.text,
+					nextLiveItemId(),
+					current.liveTurnId,
+					progress.stepId,
+				),
+				statusText: "正在思考",
+			};
+		case "user_message": {
+				if (current.liveTurnItems.some((item) => item.kind === "user" && item.text === progress.text)) return current;
+				const id = nextLiveItemId();
+				return {
+					...current,
+					liveTurnItems: [
+						...current.liveTurnItems,
+						{
+							id,
+							kind: "user",
+							turnId: current.liveTurnId,
+							queueId: id,
+							text: progress.text,
+							displayText: progress.text || "附件消息",
+							attachments: [],
+							status: "processing",
+						},
+					],
+					statusText: "正在处理",
+				};
+			}
+		case "agent_step":
+			return {
+				...current,
+				liveTurnActive: true,
+				liveSteps: { ...current.liveSteps, [progress.step.id]: progress.step },
+				statusText: progress.step.status === "running" ? progress.step.title : current.statusText,
+			};
+		case "tool_state": {
+				if (
+					current.toolActivityEpoch === progress.activity.activityEpoch &&
+					(current.toolActivityRevision ?? -1) >= progress.activity.revision
+				)
+					return current;
+				const newEpoch = current.toolActivityEpoch !== progress.activity.activityEpoch;
+				const liveTools = newEpoch ? {} : current.liveTools;
+				const previous = liveTools[progress.activity.toolCallId];
+				const batchId =
+					previous?.batchId ??
+					subagentToolBatchId(
+						{ ...current, liveTools },
+						progress.activity.name,
+						progress.activity.summary,
+						progress.activity.stepId,
+						`subagent-tool:${nextLiveToolId()}`,
+					);
+				return {
+					...current,
+					toolActivityEpoch: progress.activity.activityEpoch,
+					toolActivityRevision: progress.activity.revision,
+					liveTools: {
+						...liveTools,
+						[progress.activity.toolCallId]: liveToolFromActivity(progress.activity, previous, batchId),
+					},
+					liveTurnItems: previous
+						? current.liveTurnItems
+						: appendLiveToolBlock(
+								newEpoch ? current.liveTurnItems.filter((item) => item.kind !== "tools") : current.liveTurnItems,
+								batchId,
+								progress.activity.toolCallId,
+								nextLiveItemId(),
+								current.liveTurnId,
+							),
+					statusText: toolActivityLabel(progress.activity),
+				};
+			}
+		case "tool_start":
+		case "tool_update":
+		case "tool_end": {
+			const previous = current.liveTools[progress.toolCallId];
+			if (progress.type === "tool_update" && previous && previous.status !== "running") return current;
+			const summary =
+				progress.name === "web_search"
+					? mergeWebSearchSummary(previous?.summary, progress.summary)
+					: progress.summary || previous?.summary || "正在执行";
+			const batchId =
+				previous?.batchId ??
+				subagentToolBatchId(current, progress.name, summary, progress.stepId, `subagent-tool:${nextLiveToolId()}`);
+			const status = progress.type === "tool_end" ? progress.status : "running";
+			return {
+				...current,
+				liveTools: {
+					...current.liveTools,
+					[progress.toolCallId]: {
+						id: progress.toolCallId,
+						name: progress.name,
+						batchId,
+						summary,
+						state: status === "success" ? "success" : status === "error" ? "error" : "running",
+						status,
+						stepId: progress.stepId ?? previous?.stepId,
+						result: progress.summary,
+						diff: mergeToolDiff(previous?.diff, progress.diff),
+					},
+				},
+				liveTurnItems: previous
+					? current.liveTurnItems
+					: appendLiveToolBlock(
+							current.liveTurnItems,
+							batchId,
+							progress.toolCallId,
+							nextLiveItemId(),
+							current.liveTurnId,
+						),
+				statusText: progress.type === "tool_end" ? `${progress.name} 已完成` : `正在执行 ${progress.name}`,
+			};
+		}
+		case "queue_update":
+			return {
+				...current,
+				statusText:
+					progress.steeringCount + progress.followUpCount > 0
+						? `队列中 ${progress.steeringCount + progress.followUpCount} 项`
+						: "正在处理",
+			};
+		case "phase":
+			return {
+				...current,
+				liveTurnId: progress.phase === "turn" ? current.liveTurnId + 1 : current.liveTurnId,
+				liveTurnActive:
+					progress.phase === "turn"
+						? true
+						: progress.phase === "idle" || progress.phase === "interrupted"
+							? false
+							: current.liveTurnActive,
+				liveTurnItems:
+					progress.phase === "turn"
+						? current.liveTurnItems.filter((item) => item.kind === "user")
+						: current.liveTurnItems,
+				liveSteps: progress.phase === "turn" ? {} : current.liveSteps,
+				liveTurnStartRevision: progress.phase === "turn" ? current.transcriptRevision : current.liveTurnStartRevision,
+				statusText:
+					progress.phase === "idle"
+						? ""
+						: progress.phase === "waiting_for_input"
+							? "等待输入"
+							: progress.phase === "compaction"
+								? "正在整理上下文"
+								: "正在处理",
+			};
+		case "compaction":
+			return {
+				...current,
+				liveCompaction: updateCompactionState(current.liveCompaction, progress, current.transcript),
+				statusText: progress.status === "running" ? "正在整理上下文" : progress.status === "completed" ? "上下文已整理" : "上下文整理已停止",
+			};
+		case "retry":
+			return {
+				...current,
+				liveCompaction: updateCompactionState(current.liveCompaction, progress, current.transcript),
+				statusText: progress.status === "running" ? "正在重试" : progress.status === "waiting" ? "等待重试" : "重试完成",
+			};
+		case "bash":
+			return { ...current, statusText: "正在运行命令" };
+		case "status":
+			return { ...current, statusText: progress.status };
+		case "usage":
+			return current;
+	}
 }
 
 type SessionDetailCache = Pick<
@@ -1218,6 +1506,12 @@ function initialState(): WorkbenchState {
 		hostInstructionSaving: false,
 		harnessImportsLoading: false,
 		harnessImporting: false,
+		subagentConfigs: [],
+		subagentConfigsLoading: false,
+		subagentConfigsSaving: false,
+		subagents: [],
+		subagentsLoading: false,
+		subagentViews: {},
 		modelOptions: [],
 		modelOptionProviders: [],
 		modelCatalogRevision: 0,
@@ -1248,6 +1542,9 @@ export function useWorkbench() {
 	const pendingTextFrameRef = useRef<number | undefined>(undefined);
 	const pendingTextTimeoutRef = useRef<number | undefined>(undefined);
 	const transcriptRequestRef = useRef(0);
+	const subagentRequestRef = useRef(0);
+	const subagentTranscriptRequestRef = useRef(new Map<string, number>());
+	const subagentTranscriptTimerRef = useRef(new Map<string, number>());
 	const fileRequestRef = useRef(0);
 	const directoryRequestRef = useRef(0);
 	const fileMetadataPromisesRef = useRef(new Map<string, Promise<void>>());
@@ -1629,6 +1926,219 @@ export function useWorkbench() {
 		[updateState],
 	);
 
+	const loadSubagents = useCallback(
+		async (sessionId = stateRef.current.sessionId) => {
+			if (!sessionId) return;
+			const requestId = ++subagentRequestRef.current;
+			updateState((current) =>
+				current.sessionId === sessionId
+					? { ...current, subagentsLoading: true, subagentsError: undefined }
+					: current,
+			);
+			try {
+				const result = await webApi.subagents(sessionId);
+				if (requestId !== subagentRequestRef.current || stateRef.current.sessionId !== sessionId) return;
+				updateState((current) => {
+					const subagents = mergeSubagentSnapshots([], result.subagents);
+					const subagentViews = { ...current.subagentViews };
+					for (const snapshot of subagents) {
+						const previous = subagentViews[snapshot.agentId];
+						subagentViews[snapshot.agentId] = previous
+							? {
+									...previous,
+									snapshot:
+										snapshot.updatedAt >= previous.snapshot.updatedAt ? snapshot : previous.snapshot,
+							  }
+							: createSubagentConversationState(snapshot);
+					}
+					return { ...current, subagents, subagentsLoading: false, subagentsError: undefined, subagentViews };
+				});
+			} catch (error) {
+				if (requestId !== subagentRequestRef.current || stateRef.current.sessionId !== sessionId) return;
+				updateState((current) =>
+					current.sessionId === sessionId
+						? { ...current, subagentsLoading: false, subagentsError: errorMessage(error) }
+						: current,
+				);
+				throw error;
+			}
+		},
+		[updateState],
+	);
+
+	const loadSubagentTranscript = useCallback(
+		async (agentId: string, sessionId = stateRef.current.sessionId, cursor?: string) => {
+			if (!sessionId) return;
+			const key = `${sessionId}:${agentId}`;
+			const requestId = (subagentTranscriptRequestRef.current.get(key) ?? 0) + 1;
+			subagentTranscriptRequestRef.current.set(key, requestId);
+			const existing = stateRef.current.subagentViews[agentId];
+			if (!existing) return;
+			updateState((current) => {
+				if (current.sessionId !== sessionId) return current;
+				const view = current.subagentViews[agentId];
+				if (!view) return current;
+				return {
+					...current,
+					subagentViews: {
+						...current.subagentViews,
+						[agentId]: {
+							...view,
+							transcriptLoading: !cursor,
+							loadingEarlier: Boolean(cursor),
+							transcriptError: undefined,
+						},
+					},
+				};
+			});
+			try {
+				const result = await webApi.subagentTranscript(sessionId, agentId, {
+					...(cursor ? { cursor } : {}),
+					limit: TRANSCRIPT_PAGE_SIZE,
+				});
+				if (
+					subagentTranscriptRequestRef.current.get(key) !== requestId ||
+					stateRef.current.sessionId !== sessionId
+				)
+					return;
+				updateState((current) => {
+					if (current.sessionId !== sessionId) return current;
+					const view = current.subagentViews[agentId];
+					if (!view) return current;
+					const sameHistory =
+						view.transcriptGeneration === undefined || view.transcriptGeneration === result.transcriptGeneration;
+					const transcriptWindow = mergeTranscriptPage(view, result, Boolean(cursor), sameHistory);
+					const updated: SubagentConversationState = {
+						...view,
+						...transcriptWindow,
+						transcriptLoading: false,
+						loadingEarlier: false,
+						transcriptError: undefined,
+						transcriptGeneration: result.transcriptGeneration,
+						transcriptRevision: sameHistory
+							? Math.max(view.transcriptRevision ?? 0, result.transcriptRevision)
+							: result.transcriptRevision,
+						transcriptLeafId: cursor ? view.transcriptLeafId : result.leafId,
+						...(sameHistory
+							? {}
+							: {
+									liveTools: {},
+									liveSteps: {},
+									liveTurnItems: [],
+									liveCompaction: undefined,
+							  }),
+					};
+					return {
+						...current,
+						subagentViews: {
+							...current.subagentViews,
+							[agentId]: {
+								...updated,
+								liveCompaction: reconcileCompactionState(updated.liveCompaction, updated.transcript),
+							},
+						},
+					};
+				});
+			} catch (error) {
+				if (
+					subagentTranscriptRequestRef.current.get(key) === requestId &&
+					stateRef.current.sessionId === sessionId
+				) {
+					updateState((current) => {
+						const view = current.subagentViews[agentId];
+						return current.sessionId !== sessionId || !view
+							? current
+							: {
+									...current,
+									subagentViews: {
+										...current.subagentViews,
+										[agentId]: {
+											...view,
+											transcriptLoading: false,
+											loadingEarlier: false,
+											transcriptError: errorMessage(error),
+										},
+									},
+							  };
+					});
+				}
+				throw error;
+			}
+		},
+		[updateState],
+	);
+
+	const loadEarlierSubagent = useCallback(
+		async (agentId: string) => {
+			const sessionId = stateRef.current.sessionId;
+			const view = stateRef.current.subagentViews[agentId];
+			if (!sessionId || !view || view.loadingEarlier || !view.hasMorePrevious || !view.previousCursor) return;
+			await loadSubagentTranscript(agentId, sessionId, view.previousCursor);
+		},
+		[loadSubagentTranscript],
+	);
+
+	const scheduleSubagentTranscriptRefresh = useCallback(
+		(agentId: string, sessionId = stateRef.current.sessionId) => {
+			if (!sessionId) return;
+			const key = `${sessionId}:${agentId}`;
+			const previous = subagentTranscriptTimerRef.current.get(key);
+			if (previous !== undefined) window.clearTimeout(previous);
+			const timer = window.setTimeout(() => {
+				subagentTranscriptTimerRef.current.delete(key);
+				void loadSubagentTranscript(agentId, sessionId).catch(() => {});
+			}, 140);
+			subagentTranscriptTimerRef.current.set(key, timer);
+		},
+		[loadSubagentTranscript],
+	);
+
+	const loadSubagent = useCallback(
+		async (agentId: string, sessionId = stateRef.current.sessionId) => {
+			if (!sessionId) return;
+			try {
+				const details = await webApi.subagent(sessionId, agentId);
+				const snapshot = details.live && details.transcript
+					? {
+							...details.transcript,
+							...details.live,
+							session: details.live.session ?? details.transcript.session,
+					  }
+					: details.live ?? details.transcript;
+				if (!snapshot) throw new Error("未找到属于当前会话的 Subagent");
+				if (stateRef.current.sessionId !== sessionId) return;
+				updateState((current) => {
+					const previous = current.subagentViews[agentId];
+					const view = previous ?? createSubagentConversationState(snapshot);
+					return {
+						...current,
+						subagents: mergeSubagentSnapshots(current.subagents, [snapshot]),
+						subagentViews: {
+							...current.subagentViews,
+							[agentId]: {
+								...view,
+								snapshot:
+									snapshot.updatedAt >= view.snapshot.updatedAt ? snapshot : view.snapshot,
+							},
+						},
+					};
+				});
+				if (snapshot.session) await loadSubagentTranscript(agentId, sessionId);
+			} catch (error) {
+				updateState((current) =>
+					current.sessionId === sessionId
+						? {
+								...current,
+								subagentsError: errorMessage(error),
+							}
+						: current,
+				);
+				throw error;
+			}
+		},
+		[loadSubagentTranscript, updateState],
+	);
+
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
 			if (!sessionId) return;
@@ -1720,7 +2230,10 @@ export function useWorkbench() {
 						return applyToolActivityState(current, progress.activity);
 					case "tool_start": {
 						const previous = current.liveTools[progress.toolCallId];
-						const summary = progress.summary ?? previous?.summary ?? "正在执行";
+						const summary =
+							progress.name === "web_search"
+								? mergeWebSearchSummary(previous?.summary, progress.summary)
+								: progress.summary ?? previous?.summary ?? "正在执行";
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
@@ -1761,7 +2274,10 @@ export function useWorkbench() {
 					case "tool_update": {
 						const previous = current.liveTools[progress.toolCallId];
 						if (previous && previous.status !== "running") return current;
-						const summary = progress.summary || previous?.summary || "正在执行";
+						const summary =
+							progress.name === "web_search"
+								? mergeWebSearchSummary(previous?.summary, progress.summary)
+								: progress.summary || previous?.summary || "正在执行";
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
@@ -1801,7 +2317,10 @@ export function useWorkbench() {
 					}
 					case "tool_end": {
 						const previous = current.liveTools[progress.toolCallId];
-						const summary = previous?.summary ?? progress.summary;
+						const summary =
+							progress.name === "web_search"
+								? mergeWebSearchSummary(previous?.summary, progress.summary)
+								: previous?.summary ?? progress.summary;
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
@@ -2072,6 +2591,7 @@ export function useWorkbench() {
 							loadSessionSnapshot(sessionId),
 							loadSessionOperations(sessionId),
 							loadTranscript(sessionId),
+							loadSubagents(sessionId),
 						]).catch((error) => showToast(errorMessage(error)));
 					}
 				})
@@ -2084,6 +2604,7 @@ export function useWorkbench() {
 			completeSessionSubscription,
 			loadSessionOperations,
 			loadSessionSnapshot,
+			loadSubagents,
 			loadTranscript,
 			showToast,
 			subscribeSessionAndWait,
@@ -2347,6 +2868,11 @@ export function useWorkbench() {
 								liveTurnItems: [],
 								liveTurnActive: false,
 								liveCompaction: undefined,
+								subagents: [],
+								subagentsLoading: false,
+								subagentsError: undefined,
+								selectedSubagentId: undefined,
+								subagentViews: {},
 								currentOperation: undefined,
 								statusText: "",
 							}
@@ -2403,6 +2929,38 @@ export function useWorkbench() {
 				});
 				if (refreshNeeded) scheduleTranscriptRefresh(event.sessionId);
 				else cancelScheduledTranscriptRefresh(event.sessionId);
+				return;
+			}
+			if (event.type === "subagent_updated") {
+				if (event.sessionId !== stateRef.current.sessionId) return;
+				const snapshot = event.snapshot;
+				updateState((current) => {
+					const previous = current.subagentViews[snapshot.agentId];
+					const base = previous ?? createSubagentConversationState(snapshot);
+					const snapshotIsNew =
+						snapshot.runId !== base.snapshot.runId || snapshot.updatedAt >= base.snapshot.updatedAt;
+					let view = snapshotIsNew ? { ...base, snapshot } : base;
+					for (const progress of event.progress ?? []) {
+						view = applySubagentProgress(
+							view,
+							progress,
+							() => `subagent-item:${liveTurnItemRef.current++}`,
+							() => `subagent-batch:${liveToolBatchRef.current++}`,
+						);
+					}
+					if (snapshot.state !== "queued" && snapshot.state !== "running" && snapshot.state !== "waiting") {
+						view = { ...view, liveTurnActive: false };
+					}
+					if (snapshot.currentAction) view = { ...view, statusText: snapshot.currentAction };
+					return {
+						...current,
+						subagents: mergeSubagentSnapshots(current.subagents, [snapshot]),
+						subagentViews: { ...current.subagentViews, [snapshot.agentId]: view },
+					};
+				});
+				if (stateRef.current.selectedSubagentId === snapshot.agentId) {
+					scheduleSubagentTranscriptRefresh(snapshot.agentId, event.sessionId);
+				}
 				return;
 			}
 			if (event.type === "session_progress") {
@@ -2565,6 +3123,7 @@ export function useWorkbench() {
 			flushPendingTextProgress,
 			loadTranscript,
 			refreshProjectSessions,
+			scheduleSubagentTranscriptRefresh,
 			restoreSelectedSessionSubscription,
 			scheduleTranscriptRefresh,
 			showToast,
@@ -2969,9 +3528,14 @@ export function useWorkbench() {
 								liveSteps: {},
 								liveTurnItems: [],
 								liveTurnActive: undefined,
-								liveTurnStartRevision: undefined,
-							}
-						: {}),
+											liveTurnStartRevision: undefined,
+											subagents: [],
+											subagentsLoading: false,
+											subagentsError: undefined,
+											selectedSubagentId: undefined,
+											subagentViews: {},
+										}
+								: {}),
 				pendingUserPrompts:
 					current.sessionId === sessionId ? current.pendingUserPrompts : (cached?.pendingUserPrompts ?? []),
 				queuedUserPrompts:
@@ -2982,14 +3546,23 @@ export function useWorkbench() {
 				statusText: cached ? "正在同步会话" : "正在打开会话",
 				currentOperation: operationForSessionSnapshot(current.operations, cached?.session),
 				liveCompaction: cached?.liveCompaction,
+				...(sessionChanged
+					? {
+							subagents: [],
+							subagentsLoading: false,
+							subagentsError: undefined,
+							selectedSubagentId: undefined,
+							subagentViews: {},
+					  }
+					: {}),
 				sessionTree: sessionChanged ? [] : current.sessionTree,
 				sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
 			}));
 			if (socket && previous.sessionId && previous.sessionId !== sessionId)
 				webApi.unsubscribeSession(socket, previous.sessionId);
-			const subscriptionPromise = socket
-				? subscribeSessionAndWait(sessionId)
-				: Promise.resolve<SessionSubscriptionResult>("timeout");
+							const subscriptionPromise = socket
+								? subscribeSessionAndWait(sessionId)
+								: Promise.resolve<SessionSubscriptionResult>("timeout");
 			if (
 				previous.sessionId &&
 				previous.sessionId !== sessionId &&
@@ -2998,7 +3571,9 @@ export function useWorkbench() {
 				void webApi.release(previous.sessionId).catch(() => {});
 			}
 			const transcriptPromise = loadTranscript(sessionId, undefined, true);
+			const subagentsPromise = loadSubagents(sessionId);
 			void transcriptPromise.catch(() => {});
+			void subagentsPromise.catch(() => {});
 			if (projectChanged && previous.inspectorOpen) {
 				const projectReviewRefresh =
 					previous.inspectorMode === "git"
@@ -3116,6 +3691,7 @@ export function useWorkbench() {
 		[
 			completeSessionSubscription,
 			loadSessionOperations,
+			loadSubagents,
 			loadTranscript,
 			showToast,
 			subscribeSessionAndWait,
@@ -3190,9 +3766,14 @@ export function useWorkbench() {
 				liveTurnStartRevision: undefined,
 				liveTools: {},
 				liveSteps: {},
-				liveTurnItems: [],
-				liveCompaction: undefined,
-				sessionTree: [],
+							liveTurnItems: [],
+							liveCompaction: undefined,
+							subagents: [],
+							subagentsLoading: false,
+							subagentsError: undefined,
+							selectedSubagentId: undefined,
+							subagentViews: {},
+							sessionTree: [],
 				sessionTreeLoading: false,
 			}));
 			try {
@@ -4627,6 +5208,100 @@ export function useWorkbench() {
 		}
 	}, [showToast, updateState]);
 
+	const refreshSubagentConfigs = useCallback(async () => {
+		const projectId = stateRef.current.currentProjectId;
+		if (!projectId) {
+			updateState((current) => ({
+				...current,
+				subagentConfigs: [],
+				subagentConfigsLoading: false,
+				subagentConfigsError: "请先选择一个项目",
+			}));
+			return;
+		}
+		updateState((current) => ({ ...current, subagentConfigsLoading: true, subagentConfigsError: undefined }));
+		try {
+			const result: SubagentConfigsResponse = await webApi.subagentConfigs(projectId);
+			updateState((current) => ({
+				...current,
+				subagentConfigs: result.subagents,
+				subagentConfigsLoading: false,
+				subagentConfigsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, subagentConfigsLoading: false, subagentConfigsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const saveSubagentConfig = useCallback(
+		async (input: {
+			scope: "user" | "project";
+			originalName?: string;
+			name: string;
+			description: string;
+			provider?: string;
+			model?: string;
+			thinkingLevel?: WebThinkingLevel;
+			tools?: string[];
+			content: string;
+			expectedHash?: string;
+		}): Promise<boolean> => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return false;
+			updateState((current) => ({ ...current, subagentConfigsSaving: true, subagentConfigsError: undefined }));
+			try {
+				const result = await webApi.saveSubagentConfig(projectId, input);
+				updateState((current) => ({
+					...current,
+					subagentConfigs: result.subagents,
+					subagentConfigsSaving: false,
+					subagentConfigsError: undefined,
+				}));
+				showToast("智能体已保存");
+				return true;
+			} catch (error) {
+				const message = errorMessage(error);
+				if ((error as { code?: string }).code === "subagent_conflict") await refreshSubagentConfigs();
+				updateState((current) => ({ ...current, subagentConfigsSaving: false, subagentConfigsError: message }));
+				showToast(message);
+				return false;
+			}
+		},
+		[refreshSubagentConfigs, showToast, updateState],
+	);
+
+	const deleteSubagentConfig = useCallback(
+		async (config: SubagentConfig): Promise<boolean> => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId || config.scope === "builtin" || !config.contentHash) return false;
+			updateState((current) => ({ ...current, subagentConfigsSaving: true, subagentConfigsError: undefined }));
+			try {
+				const result = await webApi.deleteSubagentConfig(projectId, {
+					name: config.name,
+					scope: config.scope,
+					contentHash: config.contentHash,
+				});
+				updateState((current) => ({
+					...current,
+					subagentConfigs: result.subagents,
+					subagentConfigsSaving: false,
+					subagentConfigsError: undefined,
+				}));
+				showToast("智能体已删除");
+				return true;
+			} catch (error) {
+				const message = errorMessage(error);
+				if ((error as { code?: string }).code === "subagent_conflict") await refreshSubagentConfigs();
+				updateState((current) => ({ ...current, subagentConfigsSaving: false, subagentConfigsError: message }));
+				showToast(message);
+				return false;
+			}
+		},
+		[refreshSubagentConfigs, showToast, updateState],
+	);
+
 	const importHarnessResources = useCallback(
 		async (itemIds: string[]) => {
 			const projectId = stateRef.current.currentProjectId;
@@ -4642,6 +5317,7 @@ export function useWorkbench() {
 				updateState((current) => ({ ...current, harnessImporting: false, harnessImportResult: result }));
 				await refreshHarnessImports();
 				await refreshSkills();
+				await refreshSubagentConfigs();
 				showToast(result.imported > 0 ? `已迁移 ${result.imported} 项资源` : "没有可迁移的资源");
 			} catch (error) {
 				const message = errorMessage(error);
@@ -4649,7 +5325,7 @@ export function useWorkbench() {
 				showToast(message);
 			}
 		},
-		[refreshHarnessImports, refreshSkills, showToast, updateState],
+		[refreshHarnessImports, refreshSkills, refreshSubagentConfigs, showToast, updateState],
 	);
 
 	const refreshSecuritySettings = useCallback(async () => {
@@ -4759,6 +5435,12 @@ export function useWorkbench() {
 			}
 			if (tab === "instructions") await refreshHostInstructions();
 			if (tab === "skills") await refreshSkills();
+			if (tab === "subagents") {
+				await Promise.all([
+					refreshSubagentConfigs(),
+					stateRef.current.modelOptions.length === 0 ? refreshModelSettings() : Promise.resolve(),
+				]);
+			}
 			if (tab === "imports") await refreshHarnessImports();
 			if (tab === "security") await refreshSecuritySettings();
 			if (tab === "diagnostics") {
@@ -4776,6 +5458,7 @@ export function useWorkbench() {
 			refreshModelSettings,
 			refreshSecuritySettings,
 			refreshSkills,
+			refreshSubagentConfigs,
 			refreshDiagnostics,
 			updateState,
 		],
@@ -4795,6 +5478,50 @@ export function useWorkbench() {
 		(composerMode: ComposerMode) => updateState((current) => ({ ...current, composerMode })),
 		[updateState],
 	);
+	const openSubagent = useCallback(
+		async (agentId: string) => {
+			const sessionId = stateRef.current.sessionId;
+			if (!sessionId) return;
+			updateState((current) => {
+				const snapshot = current.subagents.find((candidate) => candidate.agentId === agentId);
+				return {
+					...current,
+					inspectorOpen: true,
+					inspectorMode: "subagent",
+					selectedSubagentId: agentId,
+					subagentViews:
+						current.subagentViews[agentId] || !snapshot
+							? current.subagentViews
+							: { ...current.subagentViews, [agentId]: createSubagentConversationState(snapshot) },
+				};
+			});
+			try {
+				await loadSubagent(agentId, sessionId);
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[loadSubagent, showToast, updateState],
+	);
+	const closeSubagent = useCallback(
+		() => updateState((current) => ({ ...current, selectedSubagentId: undefined, inspectorMode: "runs" })),
+		[updateState],
+	);
+	const loadEarlierSubagentAction = useCallback(
+		async () => loadEarlierSubagent(stateRef.current.selectedSubagentId ?? ""),
+		[loadEarlierSubagent],
+	);
+	const abortSubagent = useCallback(async () => {
+		const current = stateRef.current;
+		if (!current.sessionId || !current.selectedSubagentId) return;
+		await webApi.abortSubagent(current.sessionId, current.selectedSubagentId);
+	}, []);
+	const continueSubagent = useCallback(async (text: string) => {
+		const current = stateRef.current;
+		const normalized = text.trim();
+		if (!current.sessionId || !current.selectedSubagentId || !normalized) return;
+		await webApi.continueSubagent(current.sessionId, current.selectedSubagentId, normalized);
+	}, []);
 	const respondUiRequest = useCallback(
 		async (request: UiRequestEvent, response: { value?: unknown; confirmed?: boolean; cancelled?: boolean }) => {
 			await webApi.uiResponse(request.id, response);
@@ -4833,6 +5560,11 @@ export function useWorkbench() {
 			closeSettings,
 			signOut,
 			setComposerMode,
+			openSubagent,
+			closeSubagent,
+			loadEarlierSubagent: loadEarlierSubagentAction,
+			abortSubagent,
+			continueSubagent,
 			loadEarlier,
 			loadTranscript,
 			loadGitStatus,
@@ -4886,6 +5618,9 @@ export function useWorkbench() {
 			restartDiagnosticService,
 			refreshHarnessImports,
 			importHarnessResources,
+			refreshSubagentConfigs,
+			saveSubagentConfig,
+			deleteSubagentConfig,
 			toggleSkill,
 			refreshHostInstructions,
 			saveHostInstruction,
@@ -4909,6 +5644,11 @@ export function useWorkbench() {
 			closeSettings,
 			signOut,
 			setComposerMode,
+			openSubagent,
+			closeSubagent,
+			loadEarlierSubagentAction,
+			abortSubagent,
+			continueSubagent,
 			loadEarlier,
 			loadTranscript,
 			loadGitStatus,
@@ -4962,6 +5702,9 @@ export function useWorkbench() {
 			restartDiagnosticService,
 			refreshHarnessImports,
 			importHarnessResources,
+			refreshSubagentConfigs,
+			saveSubagentConfig,
+			deleteSubagentConfig,
 			toggleSkill,
 			refreshHostInstructions,
 			saveHostInstruction,
@@ -5097,6 +5840,11 @@ export function useWorkbench() {
 		sendMessage,
 		queueAction,
 		abort,
+		openSubagent,
+		closeSubagent,
+		loadEarlierSubagent: loadEarlierSubagentAction,
+		abortSubagent,
+		continueSubagent,
 		deleteSession,
 		deleteSessions,
 		renameSession,
@@ -5119,6 +5867,9 @@ export function useWorkbench() {
 		toggleSkill,
 		refreshHarnessImports,
 		importHarnessResources,
+		refreshSubagentConfigs,
+		saveSubagentConfig,
+		deleteSubagentConfig,
 		refreshHostInstructions,
 		saveHostInstruction,
 		refreshModelSettings,
