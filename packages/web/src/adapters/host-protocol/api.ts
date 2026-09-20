@@ -481,10 +481,14 @@ export class WebApi {
 		);
 	}
 
-	async uploadFile(input: { data: string; filename: string; mimeType: string }): Promise<FileUploadResponse> {
+	async uploadFile(file: File): Promise<FileUploadResponse> {
 		return this.request<FileUploadResponse>("/api/uploads/file", {
 			method: "POST",
-			body: JSON.stringify(input),
+			headers: {
+				"Content-Type": file.type || "application/octet-stream",
+				"X-LYStar-File-Name": encodeURIComponent(file.name),
+			},
+			body: file,
 		});
 	}
 

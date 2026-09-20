@@ -25,12 +25,6 @@ import {
 import { formatModelDisplayName } from "./model-utils";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
 
-function base64FromDataUrl(url: string): string {
-	const separator = url.indexOf(",");
-	if (!url.startsWith("data:") || separator < 0) throw new Error("附件读取失败，请重新选择文件");
-	return url.slice(separator + 1);
-}
-
 function internalFileReference(path: string, filename: string | undefined, mimeType: string, index: number): string {
 	const displayName = filename || `附件 ${index + 1}`;
 	return `<file name="${path}" filename="${xmlAttribute(displayName)}" mimeType="${xmlAttribute(mimeType)}"></file>`;
@@ -296,11 +290,9 @@ export const Composer = memo(function Composer({
 								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[48px] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
 								globalDrop
 								multiple
-								maxFiles={8}
-								maxFileSize={8 * 1024 * 1024}
+								maxFileSize={1024 * 1024 * 1024}
 								onError={(error) => {
-									if (error.code === "max_files") actions.showToast("最多添加 8 个附件");
-									else if (error.code === "max_file_size") actions.showToast("单个附件不能超过 8 MB");
+									if (error.code === "max_file_size") actions.showToast("单个附件不能超过 1 GB");
 									else if (error.code === "accept") actions.showToast("不支持的文件类型");
 									else actions.showToast("附件类型不受支持");
 								}}
@@ -340,16 +332,11 @@ export const Composer = memo(function Composer({
 													: "follow-up"
 												: state.composerMode;
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
-										const uploadedFiles = await Promise.all(
-											files.map((file) =>
-												webApi.uploadFile({
-													data: base64FromDataUrl(file.url ?? ""),
-													filename: file.filename || "attachment",
-													mimeType: file.mediaType || "application/octet-stream",
-												}),
-											),
-										);
-										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
+										const uploadedFiles = [];
+										for (const file of files) {
+											if (!file.sourceFile) throw new Error("附件读取失败，请重新选择文件");
+											uploadedFiles.push(await webApi.uploadFile(file.sourceFile));
+										}
 										const promptText = uploadedFiles.length
 											? `${text}\n\n${uploadedFiles.map((file, index) => internalFileReference(file.path, files[index]?.filename, files[index]?.mediaType || file.mimeType, index)).join("\n")}`
 											: text;

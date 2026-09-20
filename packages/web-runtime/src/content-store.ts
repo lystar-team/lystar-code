@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import type { ContentChunk, ContentReference, JsonValue, TranscriptItem } from "@lystar/code-web-protocol";
 import { promptFileReferences, resolveSessionAttachmentPath } from "./session-attachments.ts";
 
@@ -162,6 +162,11 @@ export class ContentStore {
 			if (!reference.mimeType.startsWith("image/")) return [];
 			const path = resolveSessionAttachmentPath(sessionPath, reference.path);
 			if (!path) return [];
+			try {
+				if (statSync(path).size > MAX_CONTENT_BYTES) return [];
+			} catch {
+				return [];
+			}
 			let bytes: Buffer;
 			try {
 				bytes = readFileSync(path);

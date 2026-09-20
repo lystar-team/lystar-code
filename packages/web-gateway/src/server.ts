@@ -105,9 +105,7 @@ import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnaps
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_PREVIEW_BYTES = 8 * 1024 * 1024;
-const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
-const MAX_PROMPT_ATTACHMENTS = 8;
-const MAX_PROMPT_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
 const UPLOAD_CLEANUP_MS = 5 * 60 * 1000;
 const PROGRESS_BATCH_MS = 50;
@@ -153,31 +151,38 @@ function replacePromptFilePath(text: string, sourcePath: string, targetPath: str
 
 async function persistSessionAttachment(
 	sessionPath: string,
-	input: { bytes: Uint8Array; filename?: string; mimeType: string },
+	input: { sourcePath: string; contentHash: string; filename?: string; mimeType: string },
 ): Promise<{ path: string }> {
-	const bytes = Buffer.from(input.bytes);
-	const hash = contentHash(bytes);
 	const resolvedSessionPath = resolve(sessionPath);
 	const directory = join(
 		dirname(resolvedSessionPath),
 		".attachments",
 		basename(resolvedSessionPath, extname(resolvedSessionPath)),
 	);
-	const path = join(directory, `${hash}${uploadExtension(input.filename, input.mimeType)}`);
+	const path = join(directory, `${input.contentHash}${uploadExtension(input.filename, input.mimeType)}`);
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	try {
-		await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+		await rename(input.sourcePath, path);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		const existing = await readFile(path);
-		if (contentHash(existing) !== hash) {
-			const temporaryPath = join(directory, `.${hash}.${process.pid}.${randomUUID()}.tmp`);
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "EEXIST") {
+			await unlink(input.sourcePath).catch(() => {});
+		} else if (code === "EXDEV") {
+			const temporaryPath = join(directory, `.${input.contentHash}.${process.pid}.${randomUUID()}.tmp`);
 			try {
-				await writeFile(temporaryPath, bytes, { flag: "wx", mode: 0o600 });
-				await rename(temporaryPath, path);
+				await pipeline(
+					createReadStream(input.sourcePath),
+					createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }),
+				);
+				await rename(temporaryPath, path).catch((renameError: unknown) => {
+					if ((renameError as NodeJS.ErrnoException).code !== "EEXIST") throw renameError;
+				});
 			} finally {
 				await unlink(temporaryPath).catch(() => {});
 			}
+			await unlink(input.sourcePath).catch(() => {});
+		} else {
+			throw error;
 		}
 	}
 	return { path };
@@ -440,6 +445,7 @@ interface SessionListCache {
 
 interface UploadedFile {
 	byteLength: number;
+	contentHash: string;
 	expiresAt: number;
 	filename?: string;
 	mimeType: string;
@@ -1812,7 +1818,7 @@ export class WebGatewayServer {
 			const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
 			if (request.method === "OPTIONS") {
 				response.writeHead(204, {
-					"Access-Control-Allow-Headers": "Authorization, Content-Type, X-LYStar-Client-Id",
+					"Access-Control-Allow-Headers": "Authorization, Content-Type, X-LYStar-Client-Id, X-LYStar-File-Name",
 					"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 				});
 				response.end();
@@ -3411,27 +3417,78 @@ export class WebGatewayServer {
 	}
 
 	private async handleFileUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
-		const body = await parseJsonBody(request);
-		const filename = stringValue(body.filename);
-		const mimeType = stringValue(body.mimeType)?.trim() || "application/octet-stream";
-		const encoded = stringValue(body.data);
-		if (!encoded) throw new HttpError(400, "file_data_required", "文件内容不能为空");
-		const comma = encoded.startsWith("data:") ? encoded.indexOf(",") : -1;
-		const base64 = comma >= 0 ? encoded.slice(comma + 1) : encoded;
-		if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(base64) || base64.length % 4 === 1)
-			throw new HttpError(400, "file_data_invalid", "文件内容不是有效的 Base64 数据");
-		const bytes = Buffer.from(base64, "base64");
-		if (bytes.length === 0) throw new HttpError(400, "file_data_invalid", "文件内容不能为空");
-		if (bytes.length > MAX_UPLOAD_BYTES) throw new HttpError(413, "file_too_large", "单个文件不能超过 8 MB");
+		const contentType = String(request.headers["content-type"] ?? "")
+			.split(";", 1)[0]
+			.trim()
+			.toLowerCase();
+		if (contentType === "application/json" || contentType === "") {
+			const body = await parseJsonBody(request);
+			const filename = stringValue(body.filename);
+			const mimeType = stringValue(body.mimeType)?.trim() || "application/octet-stream";
+			const encoded = stringValue(body.data);
+			if (!encoded) throw new HttpError(400, "file_data_required", "文件内容不能为空");
+			const comma = encoded.startsWith("data:") ? encoded.indexOf(",") : -1;
+			const base64 = comma >= 0 ? encoded.slice(comma + 1) : encoded;
+			if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(base64) || base64.length % 4 === 1)
+				throw new HttpError(400, "file_data_invalid", "文件内容不是有效的 Base64 数据");
+			const bytes = Buffer.from(base64, "base64");
+			if (bytes.length === 0) throw new HttpError(400, "file_data_invalid", "文件内容不能为空");
+			if (bytes.length > MAX_UPLOAD_BYTES) throw new HttpError(413, "file_too_large", "单个文件不能超过 1 GB");
+			const path = join(tmpdir(), `lystar-web-upload-${randomUUID()}${uploadExtension(filename, mimeType)}`);
+			await writeFile(path, bytes, { mode: 0o600 });
+			this.uploadedFiles.set(path, {
+				contentHash: contentHash(bytes),
+				mimeType,
+				...(filename ? { filename } : {}),
+				byteLength: bytes.byteLength,
+				expiresAt: Date.now() + UPLOAD_TTL_MS,
+			});
+			sendJson(response, 201, { path, mimeType, byteLength: bytes.byteLength });
+			return;
+		}
+
+		const encodedFilename = request.headers["x-lystar-file-name"];
+		let filename: string | undefined;
+		if (typeof encodedFilename === "string" && encodedFilename.length > 0) {
+			try {
+				filename = decodeURIComponent(encodedFilename).trim() || undefined;
+			} catch {
+				throw new HttpError(400, "file_name_invalid", "文件名无效");
+			}
+		}
+		const mimeType = contentType || "application/octet-stream";
 		const path = join(tmpdir(), `lystar-web-upload-${randomUUID()}${uploadExtension(filename, mimeType)}`);
-		await writeFile(path, bytes, { mode: 0o600 });
+		let byteLength = 0;
+		const hash = createHash("sha256");
+		const limiter = new Transform({
+			transform(chunk: Buffer, _encoding, callback) {
+				byteLength += chunk.byteLength;
+				if (byteLength > MAX_UPLOAD_BYTES) {
+					callback(new HttpError(413, "file_too_large", "单个文件不能超过 1 GB"));
+					return;
+				}
+				hash.update(chunk);
+				callback(null, chunk);
+			},
+		});
+		try {
+			await pipeline(request, limiter, createWriteStream(path, { flags: "wx", mode: 0o600 }));
+		} catch (error) {
+			await unlink(path).catch(() => {});
+			throw error;
+		}
+		if (byteLength === 0) {
+			await unlink(path).catch(() => {});
+			throw new HttpError(400, "file_data_invalid", "文件内容不能为空");
+		}
 		this.uploadedFiles.set(path, {
+			contentHash: hash.digest("hex"),
 			mimeType,
 			...(filename ? { filename } : {}),
-			byteLength: bytes.byteLength,
+			byteLength,
 			expiresAt: Date.now() + UPLOAD_TTL_MS,
 		});
-		sendJson(response, 201, { path, mimeType, byteLength: bytes.byteLength });
+		sendJson(response, 201, { path, mimeType, byteLength });
 	}
 
 	private async cleanupUploadedFiles(force = false): Promise<void> {
@@ -3446,12 +3503,8 @@ export class WebGatewayServer {
 	private async persistUploadedFiles(sessionPath: string, value: unknown): Promise<PersistedUpload[]> {
 		if (value === undefined) return [];
 		if (!Array.isArray(value)) throw new HttpError(400, "file_attachments_invalid", "文件附件数据无效");
-		if (value.length > MAX_PROMPT_ATTACHMENTS) {
-			throw new HttpError(413, "too_many_file_attachments", `单条消息最多上传 ${MAX_PROMPT_ATTACHMENTS} 个附件`);
-		}
 		const persisted: PersistedUpload[] = [];
 		const seen = new Set<string>();
-		let totalBytes = 0;
 		for (const item of value) {
 			const attachment = object(item);
 			const sourcePath = stringValue(attachment?.path);
@@ -3462,10 +3515,6 @@ export class WebGatewayServer {
 			if (!upload || upload.expiresAt <= Date.now()) {
 				throw new HttpError(400, "file_attachment_expired", "文件附件已过期，请重新上传");
 			}
-			totalBytes += upload.byteLength;
-			if (totalBytes > MAX_PROMPT_ATTACHMENT_BYTES) {
-				throw new HttpError(413, "file_attachments_too_large", "单条消息附件总大小不能超过 32 MB");
-			}
 			upload.expiresAt = Date.now() + UPLOAD_TTL_MS;
 			let path = upload.persistedPath;
 			if (path) {
@@ -3475,16 +3524,14 @@ export class WebGatewayServer {
 			if (!path) {
 				const file = await stat(sourcePath).catch(() => undefined);
 				if (!file?.isFile()) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
-				const bytes = await readFile(sourcePath).catch(() => undefined);
-				if (!bytes) throw new HttpError(400, "file_attachment_missing", "文件附件不存在，请重新上传");
 				const artifact = await persistSessionAttachment(sessionPath, {
-					bytes,
+					sourcePath,
+					contentHash: upload.contentHash,
 					filename: upload.filename,
 					mimeType: upload.mimeType,
 				});
 				path = artifact.path;
 				upload.persistedPath = path;
-				await unlink(sourcePath).catch(() => {});
 			}
 			if (!path) throw new Error("Persisted attachment path is missing");
 			persisted.push({

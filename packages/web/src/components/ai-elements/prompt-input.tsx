@@ -99,18 +99,6 @@ const convertBlobUrlToDataUrl = async (url: string): Promise<string | null> => {
   }
 };
 
-const convertFileToDataUrl = (file: File): Promise<string | null> =>
-  // FileReader uses callback-based API, wrapping in Promise is necessary
-  // oxlint-disable-next-line eslint-plugin-promise(avoid-new)
-  new Promise((resolve) => {
-    const reader = new FileReader();
-    // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-    reader.onloadend = () => resolve(reader.result as string);
-    // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(file);
-  });
-
 const captureScreenshot = async (): Promise<File | null> => {
   if (
     typeof navigator === "undefined" ||
@@ -896,17 +884,10 @@ export const PromptInput = ({
         else addLocal(sourceFiles);
       };
 
-      // Start reading attachment data before releasing preview URLs, then clear the accepted draft immediately.
+      // Preserve the selected File before releasing preview URLs, then clear the accepted draft immediately.
       const convertedFilesPromise = Promise.all(
         submittedFiles.map(async ({ id, sourceFile, ...item }): Promise<PromptInputAttachment> => {
-          if (sourceFile) {
-            const dataUrl = await convertFileToDataUrl(sourceFile);
-            return {
-              ...item,
-              id,
-              url: dataUrl ?? item.url,
-            };
-          }
+          if (sourceFile) return { ...item, id, sourceFile };
           if (item.url?.startsWith("blob:")) {
             const dataUrl = await convertBlobUrlToDataUrl(item.url);
             return {

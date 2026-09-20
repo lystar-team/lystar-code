@@ -6,7 +6,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent/core";
 
 const SESSION_ATTACHMENT_DIRECTORY = ".attachments";
-const MAX_SESSION_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+const MAX_SESSION_ATTACHMENT_BYTES = 1024 * 1024 * 1024;
 const FILE_TAG_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
 const FILE_PATH_PATTERN = /\bname="([^"]*)"/u;
 const FILE_NAME_PATTERN = /\bfilename="([^"]*)"/u;
