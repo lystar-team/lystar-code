@@ -689,6 +689,7 @@ function projectTranscriptViews(
 	}
 	const entryMessage = message(item);
 	const role = entryMessage?.role;
+	if (role === "system") return [];
 	const content = entryMessage?.content ?? payload?.text;
 	const images = imageMetadata(content);
 	const files = fileMetadata(content);

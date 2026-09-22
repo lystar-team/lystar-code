@@ -43,6 +43,60 @@ import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 export const CURRENT_SESSION_VERSION = 3;
 const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
 
+export type SessionRelation = "collaboration" | "fork";
+export type SessionWorkspaceMode = "shared" | "worktree" | "patch";
+export type SessionWorkspaceStatus = "active" | "delivered" | "failed" | "released";
+
+export interface SessionWorkspaceSnapshot {
+	id: string;
+	mode: SessionWorkspaceMode;
+	projectCwd: string;
+	cwd: string;
+	status: SessionWorkspaceStatus;
+	repositoryRoot?: string;
+	baseCommit?: string;
+	branch?: string;
+	worktreePath?: string;
+	baselinePath?: string;
+	patchPath?: string;
+}
+
+export interface SessionCollaborationTask {
+	id: string;
+	description: string;
+	parentSessionId?: string;
+	createdAt: string;
+}
+
+export interface SessionCollaborationResult {
+	taskId: string;
+	outcome: SessionOutcome;
+	resultText?: string;
+	resultMessageId?: string;
+	error?: string;
+	completedAt: string;
+	workspace?: SessionWorkspaceSnapshot;
+	changedFiles?: string[];
+	deliveryCommit?: string;
+	patchPath?: string;
+}
+
+export const SESSION_COLLABORATION_RESULT_CUSTOM_TYPE = "lystar.collaboration.result";
+
+export interface SessionProfileSnapshot {
+	id: string;
+	name: string;
+	description: string;
+	scope: "builtin" | "user" | "project";
+	icon?: string;
+	model?: string;
+	thinkingLevel?: string;
+	tools?: string[];
+	skillNames?: string[];
+	systemPrompt?: string;
+	agentsInstructions?: string;
+}
+
 export interface SessionHeader {
 	type: "session";
 	version?: number; // v1 sessions don't have this
@@ -50,11 +104,19 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	relation?: SessionRelation;
+	profile?: SessionProfileSnapshot;
+	collaborationTask?: SessionCollaborationTask;
+	collaborationWorkspace?: SessionWorkspaceSnapshot;
 }
 
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	relation?: SessionRelation;
+	profile?: SessionProfileSnapshot;
+	collaborationTask?: SessionCollaborationTask;
+	collaborationWorkspace?: SessionWorkspaceSnapshot;
 	/** 在首条会话记录前持久化 Session 头。 */
 	persistHeader?: boolean;
 }
@@ -210,8 +272,11 @@ export interface SessionInfo {
 	cwd: string;
 	/** User-defined display name from session_info entries. */
 	name?: string;
-	/** Path to the parent session (if this session was forked). */
+	/** Path to the parent session, when this session was created from another session. */
 	parentSessionPath?: string;
+	relation?: SessionRelation;
+	profile?: SessionProfileSnapshot;
+	collaborationWorkspace?: SessionWorkspaceSnapshot;
 	created: Date;
 	modified: Date;
 	messageCount: number;
@@ -219,6 +284,8 @@ export interface SessionInfo {
 	allMessagesText: string;
 	/** Outcome inferred from the last committed user, assistant, Tool, or Bash message. */
 	lastOutcome?: SessionOutcome;
+	collaborationTask?: SessionCollaborationTask;
+	collaborationResult?: SessionCollaborationResult;
 }
 
 export interface SessionInfoCacheEntry {
@@ -930,6 +997,70 @@ function getMessageOutcome(message: AgentMessage): SessionOutcome | undefined {
 	}
 }
 
+function parseSessionWorkspaceSnapshot(value: unknown): SessionWorkspaceSnapshot | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const candidate = value as Record<string, unknown>;
+	if (
+		typeof candidate.id !== "string" ||
+		!candidate.id ||
+		(candidate.mode !== "shared" && candidate.mode !== "worktree" && candidate.mode !== "patch") ||
+		typeof candidate.projectCwd !== "string" ||
+		!candidate.projectCwd ||
+		typeof candidate.cwd !== "string" ||
+		!candidate.cwd ||
+		(candidate.status !== "active" &&
+			candidate.status !== "delivered" &&
+			candidate.status !== "failed" &&
+			candidate.status !== "released")
+	)
+		return undefined;
+	return {
+		id: candidate.id,
+		mode: candidate.mode,
+		projectCwd: candidate.projectCwd,
+		cwd: candidate.cwd,
+		status: candidate.status,
+		...(typeof candidate.repositoryRoot === "string" ? { repositoryRoot: candidate.repositoryRoot } : {}),
+		...(typeof candidate.baseCommit === "string" ? { baseCommit: candidate.baseCommit } : {}),
+		...(typeof candidate.branch === "string" ? { branch: candidate.branch } : {}),
+		...(typeof candidate.worktreePath === "string" ? { worktreePath: candidate.worktreePath } : {}),
+		...(typeof candidate.baselinePath === "string" ? { baselinePath: candidate.baselinePath } : {}),
+		...(typeof candidate.patchPath === "string" ? { patchPath: candidate.patchPath } : {}),
+	};
+}
+
+function parseSessionCollaborationResult(value: unknown): SessionCollaborationResult | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const candidate = value as Record<string, unknown>;
+	if (
+		typeof candidate.taskId !== "string" ||
+		!candidate.taskId ||
+		(candidate.outcome !== "completed" &&
+			candidate.outcome !== "failed" &&
+			candidate.outcome !== "aborted" &&
+			candidate.outcome !== "interrupted") ||
+		typeof candidate.completedAt !== "string" ||
+		!candidate.completedAt
+	)
+		return undefined;
+	const workspace = parseSessionWorkspaceSnapshot(candidate.workspace);
+	const changedFiles = Array.isArray(candidate.changedFiles)
+		? candidate.changedFiles.filter((path): path is string => typeof path === "string")
+		: undefined;
+	return {
+		taskId: candidate.taskId,
+		outcome: candidate.outcome,
+		...(typeof candidate.resultText === "string" ? { resultText: candidate.resultText } : {}),
+		...(typeof candidate.resultMessageId === "string" ? { resultMessageId: candidate.resultMessageId } : {}),
+		...(typeof candidate.error === "string" ? { error: candidate.error } : {}),
+		completedAt: candidate.completedAt,
+		...(workspace ? { workspace } : {}),
+		...(changedFiles ? { changedFiles } : {}),
+		...(typeof candidate.deliveryCommit === "string" ? { deliveryCommit: candidate.deliveryCommit } : {}),
+		...(typeof candidate.patchPath === "string" ? { patchPath: candidate.patchPath } : {}),
+	};
+}
+
 async function* readSessionInfoLines(
 	filePath: string,
 	signal?: AbortSignal,
@@ -1010,6 +1141,7 @@ async function buildSessionInfo(
 		let nameResolved = false;
 		let lastActivityTime: number | undefined;
 		let lastOutcome: SessionOutcome | undefined;
+		let collaborationResult: SessionCollaborationResult | undefined;
 
 		for await (const record of readSessionInfoLines(filePath, options.signal)) {
 			if ("toolResult" in record) {
@@ -1020,6 +1152,15 @@ async function buildSessionInfo(
 			}
 			const entry = parseSessionEntryLine(record.line);
 			if (!entry) continue;
+
+			if (entry.type === "custom" && entry.customType === SESSION_COLLABORATION_RESULT_CUSTOM_TYPE) {
+				const parsedResult = parseSessionCollaborationResult(entry.data);
+				if (parsedResult) collaborationResult = parsedResult;
+				const entryTime = new Date(entry.timestamp).getTime();
+				if (Number.isFinite(entryTime) && (!lastActivityTime || entryTime > lastActivityTime)) {
+					lastActivityTime = entryTime;
+				}
+			}
 
 			if (!header) {
 				if (entry.type !== "session") return null;
@@ -1060,6 +1201,9 @@ async function buildSessionInfo(
 
 		const cwd = typeof header.cwd === "string" ? header.cwd : "";
 		const parentSessionPath = header.parentSession;
+		const relation = header.relation;
+		const profile = header.profile;
+		const collaborationWorkspace = header.collaborationWorkspace;
 		const headerTime = typeof header.timestamp === "string" ? new Date(header.timestamp).getTime() : NaN;
 		const modified =
 			typeof lastActivityTime === "number" && lastActivityTime > 0
@@ -1074,12 +1218,17 @@ async function buildSessionInfo(
 			cwd,
 			name: metadataOnly && nameResolved ? (name ?? "") : name,
 			parentSessionPath,
+			relation,
+			profile,
+			...(collaborationWorkspace ? { collaborationWorkspace } : {}),
 			created: new Date(header.timestamp),
 			modified,
 			messageCount: metadataOnly ? 0 : messageCount,
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText: allMessages.join(" "),
 			...(lastOutcome ? { lastOutcome } : {}),
+			...(header.collaborationTask ? { collaborationTask: header.collaborationTask } : {}),
+			...(collaborationResult ? { collaborationResult } : {}),
 		};
 		options.cache?.entries.set(filePath, {
 			size: stats.size,
@@ -1446,6 +1595,10 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
+			relation: options?.relation,
+			profile: options?.profile,
+			collaborationTask: options?.collaborationTask,
+			collaborationWorkspace: options?.collaborationWorkspace,
 		};
 
 		if (!this.persist) {
@@ -1698,6 +1851,31 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/** Persist the latest result of a collaboration task. Returns entry id. */
+	appendCollaborationResult(result: SessionCollaborationResult): string {
+		return this.appendCustomEntry(SESSION_COLLABORATION_RESULT_CUSTOM_TYPE, result);
+	}
+
+	/** Read the collaboration task declared in the session header. */
+	getCollaborationTask(): SessionCollaborationTask | undefined {
+		return this.getHeader()?.collaborationTask;
+	}
+
+	/** Read the workspace declared in the session header. */
+	getCollaborationWorkspace(): SessionWorkspaceSnapshot | undefined {
+		return this.getHeader()?.collaborationWorkspace;
+	}
+
+	/** Read the latest persisted collaboration result. */
+	getCollaborationResult(): SessionCollaborationResult | undefined {
+		for (const entry of this.fileEntries.slice().reverse()) {
+			if (entry.type !== "custom" || entry.customType !== SESSION_COLLABORATION_RESULT_CUSTOM_TYPE) continue;
+			const result = parseSessionCollaborationResult(entry.data);
+			if (result) return result;
+		}
+		return undefined;
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */
@@ -2293,6 +2471,12 @@ export class SessionManager {
 			timestamp,
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
+			relation: "fork",
+			...(options?.profile
+				? { profile: options.profile }
+				: sourceSnapshot.header.profile
+					? { profile: sourceSnapshot.header.profile }
+					: {}),
 		};
 		const manager = new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
 		try {

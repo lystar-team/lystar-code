@@ -13,6 +13,7 @@ export type LiveRenderSource =
 	| { kind: "text"; id: string; parts: readonly string[] }
 	| { kind: "thinking"; id: string }
 	| { kind: "tools"; id: string; toolIds: readonly string[] }
+	| { kind: "compaction"; id: string }
 	| { kind: "user"; id: string };
 
 export type TranscriptRenderIdOverrides = ReadonlyMap<string, string>;

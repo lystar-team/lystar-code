@@ -136,8 +136,8 @@ async function executeWithFauxRpc(
 describe("built-in subagent extension", () => {
 	initTheme("dark");
 
-	it("is bundled as a hidden extension and registers its tool", async () => {
-		expect(builtInExtensions).toEqual(
+	it("is no longer bundled while the legacy extension remains directly loadable", async () => {
+		expect(builtInExtensions).not.toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ name: "subagent", factory: subagentExtension, hidden: true }),
 			]),

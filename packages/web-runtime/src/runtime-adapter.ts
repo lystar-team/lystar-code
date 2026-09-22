@@ -40,11 +40,13 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	createSessionsTool,
 	DefaultPackageManager,
 	discoverAgentDefinitions,
 	discoverHarnessImports,
 	type ExtensionCommandContextActions,
 	type ExtensionUIContext,
+	findSessionProfile,
 	formatVersionCheckError,
 	getAgentDir,
 	getBuiltinThemeNames,
@@ -80,10 +82,16 @@ import {
 	renderTerminalRichText,
 	requestWebSessionHandoff,
 	resolveProjectTrusted,
+	type SessionCollaborationResult,
+	type SessionCollaborationTask,
+	type SessionCoordinator,
 	type SessionEntry,
 	type SessionInfoCache,
 	SessionLockedError,
 	SessionManager,
+	type SessionProfile,
+	type SessionProfileSnapshot,
+	type SessionWorkspaceSnapshot,
 	SettingsManager,
 	type SubagentDetails,
 	type SubagentRunSnapshot,
@@ -282,6 +290,66 @@ function canonicalExternalFile(input: string): string {
 	if (!statSync(path).isFile()) throw Object.assign(new Error("目标不是普通文件"), { code: "resource_not_file" });
 	return path;
 }
+
+function resolveProfileModel(profile: SessionProfile | undefined, runtime: ModelRuntime): Model<any> | undefined {
+	const reference = profile?.model?.trim();
+	if (!reference) return undefined;
+	const separator = reference.indexOf("/");
+	if (separator <= 0) {
+		const matches = runtime.getAvailableSnapshot().filter((model) => model.id === reference);
+		if (matches.length === 1) return matches[0];
+		throw Object.assign(new Error(`智能体模型必须使用 provider/model 格式，或指定唯一模型 ID：${reference}`), {
+			code: matches.length === 0 ? "session_profile_model_not_found" : "session_profile_model_ambiguous",
+		});
+	}
+	if (separator === reference.length - 1) {
+		throw Object.assign(new Error(`智能体模型无效：${reference}`), { code: "session_profile_model_invalid" });
+	}
+	const model = runtime.getModel(reference.slice(0, separator), reference.slice(separator + 1));
+	if (!model) {
+		throw Object.assign(new Error(`未找到智能体模型：${reference}`), { code: "session_profile_model_not_found" });
+	}
+	return model;
+}
+
+function sessionProfileFromHeader(manager: SessionManager, cwd: string, agentDir: string): SessionProfile | undefined {
+	const profile = manager.getHeader()?.profile;
+	if (!profile) return undefined;
+	const current = findSessionProfile(cwd, profile.id, agentDir);
+	if (current) return current;
+	return {
+		id: profile.id,
+		name: profile.name,
+		description: profile.description,
+		...(profile.icon ? { icon: profile.icon } : {}),
+		...(profile.model ? { model: profile.model } : {}),
+		...(profile.thinkingLevel ? { thinkingLevel: profile.thinkingLevel as SessionProfile["thinkingLevel"] } : {}),
+		...(profile.tools ? { tools: [...profile.tools] } : {}),
+		...(profile.skillNames ? { skillNames: [...profile.skillNames] } : {}),
+		systemPrompt: profile.systemPrompt ?? "",
+		...(profile.agentsInstructions ? { agentsInstructions: profile.agentsInstructions } : {}),
+		scope: profile.scope,
+		sourcePath: "<session-profile>",
+	};
+}
+
+function sessionProfileSnapshot(profile: SessionProfile): SessionProfileSnapshot {
+	return {
+		id: profile.id,
+		name: profile.name,
+		description: profile.description,
+		scope: profile.scope,
+		...(profile.icon ? { icon: profile.icon } : {}),
+		...(profile.model ? { model: profile.model } : {}),
+		...(profile.thinkingLevel ? { thinkingLevel: profile.thinkingLevel } : {}),
+		...(profile.tools ? { tools: [...profile.tools] } : {}),
+		...(profile.skillNames ? { skillNames: [...profile.skillNames] } : {}),
+		...(profile.systemPrompt ? { systemPrompt: profile.systemPrompt } : {}),
+		...(profile.agentsInstructions ? { agentsInstructions: profile.agentsInstructions } : {}),
+	};
+}
+
+const READ_ONLY_SESSION_TOOLS = ["read", "sessions"] as const;
 
 function validSubagentName(value: string): string {
 	const name = value.trim();
@@ -1941,6 +2009,30 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.runtime.session.getLastAssistantText();
 	}
 
+	async recordCollaborationResult(result: SessionCollaborationResult): Promise<void> {
+		const latestAssistantMessageId = [...this.runtime.session.sessionManager.getEntries()]
+			.reverse()
+			.find((entry) => entry.type === "message" && entry.message.role === "assistant")?.id;
+		const persistedResult: SessionCollaborationResult = {
+			taskId: result.taskId,
+			outcome: result.outcome,
+			...(typeof result.resultText === "string" ? { resultText: result.resultText } : {}),
+			...(typeof result.resultMessageId === "string" || latestAssistantMessageId
+				? { resultMessageId: result.resultMessageId ?? latestAssistantMessageId }
+				: {}),
+			...(typeof result.error === "string" ? { error: result.error } : {}),
+			completedAt: result.completedAt,
+			...(result.workspace ? { workspace: result.workspace } : {}),
+			...(result.changedFiles ? { changedFiles: result.changedFiles } : {}),
+			...(result.deliveryCommit ? { deliveryCommit: result.deliveryCommit } : {}),
+			...(result.patchPath ? { patchPath: result.patchPath } : {}),
+		};
+		const previousResult = this.runtime.session.sessionManager.getCollaborationResult();
+		if (previousResult && JSON.stringify(previousResult) === JSON.stringify(persistedResult)) return;
+		this.runtime.session.sessionManager.appendCollaborationResult(persistedResult);
+		this.emitStateChanged();
+	}
+
 	async runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<JsonValue> {
 		const extensionResult = await this.runtime.session.extensionRunner.emitUserBash({
 			type: "user_bash",
@@ -2246,6 +2338,7 @@ export interface CodingAgentRuntimeAdapterOptions {
 	initialRuntime?: AgentSessionRuntime;
 	createRuntime?: CreateAgentSessionRuntimeFactory;
 	preferSessionOwnership?: boolean;
+	sessionCoordinator?: SessionCoordinator;
 }
 
 export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
@@ -2261,6 +2354,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private initialRuntime?: AgentSessionRuntime;
 	private initialRuntimeClaimed = false;
 	private readonly preferSessionOwnership: boolean;
+	private sessionCoordinator?: SessionCoordinator;
 
 	constructor(options: string | CodingAgentRuntimeAdapterOptions = getAgentDir()) {
 		if (typeof options === "string") {
@@ -2272,18 +2366,47 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		this.initialRuntime = options.initialRuntime;
 		this.createRuntimeFactory = options.createRuntime;
 		this.preferSessionOwnership = options.preferSessionOwnership === true;
+		this.sessionCoordinator = options.sessionCoordinator;
+	}
+
+	setSessionCoordinator(coordinator: SessionCoordinator): void {
+		this.sessionCoordinator = coordinator;
 	}
 
 	get hasClaimedInitialRuntime(): boolean {
 		return this.initialRuntimeClaimed;
 	}
 
-	async createSession(cwd: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
-		return this.createRuntime(
+	async createSession(
+		cwd: string,
+		onUiRequest: UiRequestHandler,
+		options?: {
+			parentSession?: string;
+			profileId?: string;
+			collaborationTask?: SessionCollaborationTask;
+			collaborationWorkspace?: SessionWorkspaceSnapshot;
+			sessionDir?: string;
+			readOnly?: boolean;
+		},
+	): Promise<RuntimeSession> {
+		const profile = options?.profileId ? findSessionProfile(cwd, options.profileId, this.agentDir) : undefined;
+		if (options?.profileId && !profile) {
+			throw Object.assign(new Error(`未找到智能体：${options.profileId}`), { code: "session_profile_not_found" });
+		}
+		const sessionManager = SessionManager.create(
 			cwd,
-			SessionManager.create(cwd, getDefaultSessionDir(cwd, this.agentDir), { persistHeader: true }),
-			onUiRequest,
+			options?.sessionDir ?? getDefaultSessionDir(cwd, this.agentDir),
+			{
+				persistHeader: true,
+				...(options?.parentSession
+					? { parentSession: options.parentSession, relation: "collaboration" as const }
+					: {}),
+				...(profile ? { profile: sessionProfileSnapshot(profile) } : {}),
+				...(options?.collaborationTask ? { collaborationTask: options.collaborationTask } : {}),
+				...(options?.collaborationWorkspace ? { collaborationWorkspace: options.collaborationWorkspace } : {}),
+			},
 		);
+		return this.createRuntime(cwd, sessionManager, onUiRequest, profile, options?.readOnly === true);
 	}
 
 	async openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
@@ -2295,7 +2418,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		try {
 			const manager = await SessionManager.openAsync(sessionPath);
 			await migrateLegacyWebAttachments(manager).catch(() => false);
-			return this.createRuntime(manager.getCwd(), manager, onUiRequest);
+			return this.createRuntime(
+				manager.getCwd(),
+				manager,
+				onUiRequest,
+				sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
+				manager.getCollaborationWorkspace()?.mode === "shared",
+			);
 		} catch (error) {
 			if (!(error instanceof SessionLockedError)) throw error;
 			let handoffError: Error | undefined;
@@ -2305,7 +2434,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 						try {
 							const manager = await SessionManager.openAsync(sessionPath);
 							await migrateLegacyWebAttachments(manager).catch(() => false);
-							return this.createRuntime(manager.getCwd(), manager, onUiRequest);
+							return this.createRuntime(
+								manager.getCwd(),
+								manager,
+								onUiRequest,
+								sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
+								manager.getCollaborationWorkspace()?.mode === "shared",
+							);
 						} catch (takeoverError) {
 							if (!(takeoverError instanceof SessionLockedError)) throw takeoverError;
 							handoffError = takeoverError;
@@ -2412,21 +2547,43 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				metadataOnly,
 			},
 		)
-			.then((sessions) =>
-				sessions.map<SessionSummaryBase>((session) => ({
+			.then((sessions) => {
+				const idsByPath = new Map(sessions.map((session) => [resolve(session.path), session.id]));
+				return sessions.map<SessionSummaryBase>((session) => ({
 					path: session.path,
 					id: session.id,
 					cwd: session.cwd,
 					...(session.name ? { name: session.name } : {}),
+					...(session.parentSessionPath && idsByPath.get(resolve(session.parentSessionPath))
+						? { parentId: idsByPath.get(resolve(session.parentSessionPath)) }
+						: {}),
+					...(session.relation ? { relation: session.relation } : {}),
+					...(session.profile
+						? {
+								profileId: session.profile.id,
+								profileName: session.profile.name,
+								...(session.profile.icon ? { profileIcon: session.profile.icon } : {}),
+							}
+						: {}),
+					...((session.collaborationResult?.workspace ?? session.collaborationWorkspace)
+						? { workspace: session.collaborationResult?.workspace ?? session.collaborationWorkspace }
+						: {}),
 					createdAt: session.created.getTime(),
 					updatedAt: session.modified.getTime(),
 					messageCount: session.messageCount,
 					firstMessage:
 						(session.firstMessage === "(no messages)" ? "" : promptDisplayText(session.firstMessage)) ||
 						"未命名会话",
-					activity: session.lastOutcome ?? "idle",
-				})),
-			)
+					activity: session.lastOutcome ?? session.collaborationResult?.outcome ?? "idle",
+					...(session.collaborationTask
+						? {
+								taskId: session.collaborationTask.id,
+								taskDescription: session.collaborationTask.description,
+							}
+						: {}),
+					...(session.collaborationResult ? { collaborationResult: session.collaborationResult } : {}),
+				}));
+			})
 			.then((sessions) => {
 				return sessions;
 			});
@@ -3070,10 +3227,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			name: definition.name,
 			description: definition.description,
 			scope: definition.scope,
+			...(definition.icon ? { icon: definition.icon } : {}),
 			...(definition.provider ? { provider: definition.provider } : {}),
 			...(definition.model ? { model: definition.model } : {}),
 			...(definition.thinkingLevel ? { thinkingLevel: definition.thinkingLevel } : {}),
 			...(definition.tools ? { tools: definition.tools } : {}),
+			...(definition.skillNames ? { skills: definition.skillNames } : {}),
 			content: definition.content,
 			editable: definition.editable,
 			...(definition.rawContent ? { contentHash: contentHash(definition.rawContent) } : {}),
@@ -3087,10 +3246,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			originalName?: string;
 			name: string;
 			description: string;
+			icon?: string;
 			provider?: string;
 			model?: string;
 			thinkingLevel?: ThinkingLevel;
 			tools?: string[];
+			skills?: string[];
 			content: string;
 			expectedHash?: string;
 		},
@@ -3127,10 +3288,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const rendered = renderSubagentMarkdown({
 			name,
 			description,
+			...(input.icon ? { icon: input.icon } : {}),
 			...(input.provider ? { provider: input.provider } : {}),
 			...(input.model ? { model: input.model } : {}),
 			...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
 			...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
+			...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
 			content: input.content,
 		});
 		atomicWriteUtf8(targetPath, rendered);
@@ -3891,6 +4054,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		cwd: string,
 		sessionManager: SessionManager,
 		onUiRequest: UiRequestHandler,
+		sessionProfile?: SessionProfile,
+		readOnly = false,
 	): Promise<RuntimeSession> {
 		const trustStore = new ProjectTrustStore(this.agentDir);
 		const stepController = new AgentStepController(sessionManager);
@@ -3900,7 +4065,15 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionManager: runtimeSessionManager,
 			sessionStartEvent,
 			projectTrustContext,
+			sessionProfile: runtimeSessionProfile,
 		}) => {
+			const effectiveProfile =
+				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
+			const activeTools = readOnly
+				? [...new Set([...(effectiveProfile?.tools ?? ["read"]), ...READ_ONLY_SESSION_TOOLS])].filter((tool) =>
+						READ_ONLY_SESSION_TOOLS.includes(tool as (typeof READ_ONLY_SESSION_TOOLS)[number]),
+					)
+				: effectiveProfile?.tools;
 			const hasTrustResources = hasTrustRequiringProjectResources(runtimeCwd);
 			const trusted = !hasTrustResources || trustStore.get(runtimeCwd) === true;
 			const settingsManager = SettingsManager.create(runtimeCwd, agentDir, { projectTrusted: trusted });
@@ -3911,6 +4084,36 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				modelRuntimeSignal: AbortSignal.timeout(15_000),
 				resourceLoaderOptions: {
 					extensionFactories: builtInExtensions,
+					...(effectiveProfile
+						? {
+								agentsFilesOverride: (base) => ({
+									agentsFiles: [
+										...base.agentsFiles,
+										...(effectiveProfile.agentsInstructions
+											? [
+													{
+														path: `${effectiveProfile.sourcePath}/AGENTS.md`,
+														content: effectiveProfile.agentsInstructions,
+													},
+												]
+											: []),
+									],
+								}),
+								appendSystemPromptOverride: (base) => [
+									...base,
+									...(effectiveProfile.systemPrompt ? [effectiveProfile.systemPrompt] : []),
+								],
+								skillsOverride: (base) =>
+									effectiveProfile.skillNames
+										? {
+												...base,
+												skills: base.skills.filter((skill) =>
+													effectiveProfile.skillNames?.includes(skill.name),
+												),
+											}
+										: base,
+							}
+						: {}),
 				},
 				resourceLoaderReloadOptions:
 					hasTrustResources && trustStore.get(runtimeCwd) === null
@@ -3936,7 +4139,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					services,
 					sessionManager: runtimeSessionManager,
 					sessionStartEvent,
-					customTools: createAgentStepTools(stepController),
+					model: resolveProfileModel(effectiveProfile, services.modelRuntime),
+					thinkingLevel: effectiveProfile?.thinkingLevel,
+					...(activeTools ? { tools: activeTools } : {}),
+					customTools: [
+						...createAgentStepTools(stepController),
+						createSessionsTool(() => this.sessionCoordinator),
+					],
 				})),
 				services,
 				diagnostics: services.diagnostics,
@@ -3953,6 +4162,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			agentDir: this.agentDir,
 			sessionManager,
 			projectTrustContext,
+			sessionProfile,
 		});
 		this.stepControllers.set(runtime, stepController);
 		return this.wrapRuntime(runtime, onUiRequest);

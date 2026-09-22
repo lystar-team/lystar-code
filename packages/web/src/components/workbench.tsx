@@ -1,16 +1,18 @@
 import { gsap } from "gsap";
 import { LoaderCircle, LogOut, Menu, PanelRight, Settings, X } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
 import { connectionPresentation, type ConnectionPresentation } from "../state/connection-recovery";
 import { StabilityBoundary, StabilityFallbackPanel } from "./stability-boundary";
 import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
 import type { WebProject, WebSessionSummary } from "../types";
+import { useRoomWorkspace, type RoomMemberSelection, type RoomProjectList } from "../state/use-room-workspace";
 import { Button } from "./ui/button";
 import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
+import { collaborationAlias, collaborationSessionsForSession } from "./workbench/collaboration-session";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./workbench/constants";
 import { ConversationView } from "./workbench/conversation";
 import {
@@ -23,6 +25,9 @@ import {
 import { FilePreviewDialog } from "./workbench/file-preview-dialog";
 import { InspectorDialog, InspectorPanel } from "./workbench/inspector";
 import { ProjectRail } from "./workbench/project-rail";
+import { RoomRail } from "./workbench/room-rail";
+import { RoomWorkspace } from "./workbench/room-workspace";
+import type { WorkspaceMode } from "./workbench/workspace-mode-switch";
 import { SettingsDialog } from "./workbench/settings";
 import { TokenGate } from "./workbench/token-gate";
 import type { PromptEditRequest, WorkbenchActions } from "./workbench/types";
@@ -55,6 +60,14 @@ function MobileProjectRailDialog({
 	onEditProject,
 	projects,
 	state,
+	workspaceMode,
+	onWorkspaceModeChange,
+	roomProjects,
+	roomsLoading,
+	roomsError,
+	selectedRoomId,
+	onSelectRoom,
+	onCreateRoom,
 }: {
 	actions: WorkbenchActions;
 	currentProject?: WebProject;
@@ -62,6 +75,14 @@ function MobileProjectRailDialog({
 	onEditProject: (project: WebProject) => void;
 	projects: WebProject[];
 	state: WorkbenchState;
+	workspaceMode: WorkspaceMode;
+	onWorkspaceModeChange: (mode: WorkspaceMode) => void;
+	roomProjects: RoomProjectList[];
+	roomsLoading: boolean;
+	roomsError?: string;
+	selectedRoomId?: string;
+	onSelectRoom: (projectId: string, roomId: string) => void;
+	onCreateRoom: (projectId: string, title: string, member: RoomMemberSelection) => Promise<void>;
 }) {
 	const [open, setOpen] = useState(false);
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -222,15 +243,33 @@ function MobileProjectRailDialog({
 						/>
 					)}
 				>
-					<ProjectRail
-						state={state}
-						actions={actions}
-						projects={projects}
-						currentProject={currentProject}
-						onAddProject={onAddProject}
-						onEditProject={onEditProject}
-						onNavigate={close}
-					/>
+					{workspaceMode === "rooms" ? (
+						<RoomRail
+							state={state}
+							actions={actions}
+							projects={projects}
+							roomProjects={roomProjects}
+							roomsLoading={roomsLoading}
+							roomsError={roomsError}
+							selectedRoomId={selectedRoomId}
+							onSelectRoom={(projectId, summary) => onSelectRoom(projectId, summary.room.id)}
+							onCreateRoom={onCreateRoom}
+							onModeChange={onWorkspaceModeChange}
+							onNavigate={close}
+						/>
+					) : (
+						<ProjectRail
+							state={state}
+							actions={actions}
+							projects={projects}
+							currentProject={currentProject}
+							onAddProject={onAddProject}
+							onEditProject={onEditProject}
+							onNavigate={close}
+							workspaceMode={workspaceMode}
+							onWorkspaceModeChange={onWorkspaceModeChange}
+						/>
+					)}
 				</StabilityBoundary>
 			</div>
 		</>
@@ -253,13 +292,38 @@ export function Workbench({
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 	const [promptEditRequest, setPromptEditRequest] = useState<PromptEditRequest>();
+	const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("sessions");
 	const desktopLayout = useMediaQuery("(min-width: 768px), (horizontal-viewport-segments: 2)");
 	const currentSessions = currentProject?.sessions ?? [];
 	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
+	const collaborationSessions = useMemo(
+		() =>
+			currentSessionSummary?.relation === "collaboration"
+				? []
+				: collaborationSessionsForSession(currentSessions, state.sessionId),
+		[currentSessionSummary?.relation, currentSessions, state.sessionId],
+	);
+	const roomWorkspace = useRoomWorkspace({
+		projects,
+		sessionId: state.sessionId,
+		onSelectSession: actions.selectSession,
+		refreshProjectSessions: actions.refreshProjectSessions,
+		showToast: actions.showToast,
+	});
+	const sendRoomPrompt = useCallback<WorkbenchActions["sendMessage"]>(
+		async (text, _mode, attachments) => {
+			if (attachments?.length) throw new Error("Room 消息暂不支持附件");
+			await roomWorkspace.sendRoomMessage(text);
+		},
+		[roomWorkspace.sendRoomMessage],
+	);
 	const connection = connectionPresentation(state);
 	const sessionTitleText = state.session
 		? resolvedSessionTitle(state.session, currentSessionSummary)
 		: currentProject?.name || "选择会话";
+	const roomProject = projects.find((project) => project.id === roomWorkspace.selectedRoomProjectId);
+	const viewTitle = workspaceMode === "rooms" ? roomWorkspace.selectedRoom?.room.title || "Room" : sessionTitleText;
+	const viewSubtitle = workspaceMode === "rooms" ? roomProject?.name || "选择项目" : currentProject?.name;
 
 	const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
 		if (event.button !== 0) return;
@@ -299,6 +363,22 @@ export function Workbench({
 		[state.sessionId],
 	);
 	const closePromptEdit = useCallback(() => setPromptEditRequest(undefined), []);
+	const handleWorkspaceModeChange = useCallback((mode: WorkspaceMode) => {
+		setWorkspaceMode(mode);
+	}, []);
+	const handleSelectRoom = useCallback(
+		(projectId: string, roomId: string) => {
+			const summary = roomWorkspace.roomProjects
+				.flatMap((entry) => (entry.project.id === projectId ? entry.rooms : []))
+				.find((candidate) => candidate.room.id === roomId);
+			if (summary) void roomWorkspace.selectRoom(projectId, summary);
+		},
+		[roomWorkspace.roomProjects, roomWorkspace.selectRoom],
+	);
+	const handleCreateRoom = useCallback(
+		(projectId: string, title: string, member: RoomMemberSelection) => roomWorkspace.createRoom(projectId, title, member),
+		[roomWorkspace.createRoom],
+	);
 
 	return (
 		<div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
@@ -320,14 +400,31 @@ export function Workbench({
 						/>
 					)}
 				>
-					<ProjectRail
-						state={state}
-						actions={actions}
-						projects={projects}
-						currentProject={currentProject}
-						onAddProject={openDirectory}
-						onEditProject={setEditingProject}
-					/>
+					{workspaceMode === "rooms" ? (
+						<RoomRail
+							state={state}
+							actions={actions}
+							projects={projects}
+							roomProjects={roomWorkspace.roomProjects}
+							roomsLoading={roomWorkspace.roomsLoading}
+							roomsError={roomWorkspace.roomsError}
+							selectedRoomId={roomWorkspace.selectedRoom?.room.id}
+							onSelectRoom={(projectId, summary) => handleSelectRoom(projectId, summary.room.id)}
+							onCreateRoom={handleCreateRoom}
+							onModeChange={handleWorkspaceModeChange}
+						/>
+					) : (
+						<ProjectRail
+							state={state}
+							actions={actions}
+							projects={projects}
+							currentProject={currentProject}
+							onAddProject={openDirectory}
+							onEditProject={setEditingProject}
+							workspaceMode={workspaceMode}
+							onWorkspaceModeChange={handleWorkspaceModeChange}
+						/>
+					)}
 				</StabilityBoundary>
 				<div
 					// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
@@ -361,18 +458,43 @@ export function Workbench({
 								currentProject={currentProject}
 								onAddProject={openDirectory}
 								onEditProject={setEditingProject}
+								workspaceMode={workspaceMode}
+								onWorkspaceModeChange={handleWorkspaceModeChange}
+								roomProjects={roomWorkspace.roomProjects}
+								roomsLoading={roomWorkspace.roomsLoading}
+								roomsError={roomWorkspace.roomsError}
+								selectedRoomId={roomWorkspace.selectedRoom?.room.id}
+								onSelectRoom={handleSelectRoom}
+								onCreateRoom={handleCreateRoom}
 							/>
 						)}
 						<GsapReveal animationKey={state.sessionId ?? "empty"} className="min-w-0" distance={8} duration={0.24}>
-							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">
-								{sessionTitleText}
-							</h1>
-							{currentProject ? (
-								<p className="truncate text-xs text-muted-foreground">{currentProject.name}</p>
-							) : null}
+							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">{viewTitle}</h1>
+							{viewSubtitle ? <p className="truncate text-xs text-muted-foreground">{viewSubtitle}</p> : null}
 						</GsapReveal>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
+						{workspaceMode === "rooms" && roomWorkspace.selectedRoom ? (
+							<div className="hidden items-center gap-2 sm:flex" aria-label="Room 成员">
+								<div className="flex -space-x-1">
+									{roomWorkspace.selectedRoom.members
+										.filter((member) => !member.leftAt)
+										.slice(0, 4)
+										.map((member) => (
+											<span
+												className="grid size-6 place-items-center rounded-full border-2 border-background bg-muted text-[9px] font-medium text-muted-foreground"
+												key={member.sessionId}
+												title={collaborationAlias(member.sessionId)}
+											>
+												{collaborationAlias(member.sessionId).slice(0, 1)}
+											</span>
+										))}
+								</div>
+								<span className="text-xs text-muted-foreground">
+									{roomWorkspace.selectedRoom.members.filter((member) => !member.leftAt).length} 位成员
+								</span>
+							</div>
+						) : null}
 						<span
 							className="hidden items-center gap-2 sm:inline-flex"
 							role="status"
@@ -446,12 +568,21 @@ export function Workbench({
 									distance={12}
 									duration={0.34}
 								>
-									<ConversationView
-										state={state}
-										actions={actions}
-										sessionTitleText={sessionTitleText}
-										onEditPrompt={beginPromptEdit}
-									/>
+									{workspaceMode === "rooms" ? (
+										<RoomWorkspace
+											state={state}
+											controller={roomWorkspace}
+											onModeChange={() => setWorkspaceMode("sessions")}
+										/>
+									) : (
+										<ConversationView
+											state={state}
+											actions={actions}
+											sessionTitleText={sessionTitleText}
+											collaborationSessions={collaborationSessions}
+											onEditPrompt={beginPromptEdit}
+										/>
+									)}
 								</GsapReveal>
 							</StabilityBoundary>
 						</div>
@@ -468,13 +599,28 @@ export function Workbench({
 							)}
 						>
 							<GsapReveal animationKey={state.sessionId ?? "empty"} className="w-full shrink-0" distance={8} duration={0.26}>
-								<Composer
-									state={state}
-									actions={actions}
-									editRequest={promptEditRequest}
-									onCancelEdit={closePromptEdit}
-									onEditComplete={closePromptEdit}
-								/>
+								{workspaceMode === "rooms" ? (
+									roomWorkspace.selectedRoom ? (
+										<Composer
+											state={state}
+											actions={actions}
+											sendMessageOverride={sendRoomPrompt}
+											roomMode
+											roomId={roomWorkspace.selectedRoom.room.id}
+											roomSending={roomWorkspace.roomSending}
+											onCancelEdit={closePromptEdit}
+											onEditComplete={closePromptEdit}
+										/>
+									) : null
+								) : (
+									<Composer
+										state={state}
+										actions={actions}
+										editRequest={promptEditRequest}
+										onCancelEdit={closePromptEdit}
+										onEditComplete={closePromptEdit}
+									/>
+								)}
 							</GsapReveal>
 						</StabilityBoundary>
 					</div>

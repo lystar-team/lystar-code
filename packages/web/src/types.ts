@@ -71,6 +71,71 @@ export interface WebProject {
 	sessions: WebSessionSummary[];
 }
 
+export type WebRoomMode = "direct" | "group";
+export type WebRoomRoute = "direct" | "broadcast" | "one_of_us";
+export type WebRoomMessageKind = "task" | "message" | "question" | "answer" | "status" | "result" | "system";
+
+export interface WebRoom {
+	id: string;
+	cwd: string;
+	title: string;
+	ownerSessionId: string;
+	mode: WebRoomMode;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface WebRoomMember {
+	roomId: string;
+	sessionId: string;
+	role: "owner" | "member";
+	joinedAt: string;
+	leftAt?: string;
+	lastReadSeq: number;
+}
+
+export interface WebRoomMessage {
+	id: string;
+	roomId: string;
+	seq: number;
+	senderSessionId: string;
+	targetSessionIds: string[];
+	route: WebRoomRoute;
+	kind: WebRoomMessageKind;
+	body: string;
+	taskId?: string;
+	replyToMessageId?: string;
+	basedOnSeq?: number;
+	idempotencyKey: string;
+	createdAt: string;
+}
+
+export interface WebRoomSummary {
+	room: WebRoom;
+	members: WebRoomMember[];
+	latestSeq: number;
+}
+
+export interface WebRoomCursor {
+	roomId: string;
+	sessionId: string;
+	lastReadSeq: number;
+}
+
+export interface WebRoomReadResponse {
+	summary: WebRoomSummary;
+	messages: WebRoomMessage[];
+	cursor: WebRoomCursor;
+	nextSeq?: number;
+}
+
+export interface WebRoomSendResponse {
+	message: WebRoomMessage;
+	deduplicated: boolean;
+	deliveredTo: string[];
+	errors: Array<{ sessionId: string; message: string }>;
+}
+
 export interface WebLease {
 	leaseId: string;
 	leaseGeneration: number;

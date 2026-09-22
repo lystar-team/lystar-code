@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { webApi } from "../adapters/host-protocol/api.ts";
+import { clearUncommittedUserPrompts } from "./chat-lifecycle.ts";
 import type { WebProject } from "../types.ts";
 import { errorMessage } from "./workbench-state.ts";
 import type { WorkbenchState } from "./workbench-types.ts";
@@ -46,11 +47,13 @@ export function useWorkbenchProjectActions({
 	const navigateTree = useCallback(
 		async (entryId: string) => {
 			const current = stateRef.current;
-			if (!current.sessionId || current.readOnly) return;
-			await webApi.navigateTree(current.sessionId, entryId);
+			const sessionId = current.sessionId;
+			if (!sessionId || current.readOnly) return;
+			await webApi.navigateTree(sessionId, entryId);
+			updateState((next) => (next.sessionId === sessionId ? clearUncommittedUserPrompts(next) : next));
 			await loadTranscript();
 		},
-		[loadTranscript],
+		[loadTranscript, updateState],
 	);
 
 	const loadProjectTrust = useCallback(async () => {

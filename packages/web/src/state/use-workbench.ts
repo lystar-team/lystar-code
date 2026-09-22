@@ -1346,6 +1346,7 @@ export function useWorkbench() {
 			setTheme,
 			setProjectTrust,
 			respondUiRequest,
+			refreshProjectSessions,
 			showToast,
 		}),
 		[
@@ -1430,6 +1431,7 @@ export function useWorkbench() {
 			setTheme,
 			setProjectTrust,
 			respondUiRequest,
+			refreshProjectSessions,
 			showToast,
 		],
 	);
@@ -1570,6 +1572,7 @@ export function useWorkbench() {
 		setSessionPinned,
 		fork,
 		reloadResources,
+		refreshProjectSessions,
 		compact,
 		exportSession,
 		updateModel,

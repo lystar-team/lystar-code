@@ -733,6 +733,7 @@ describe("conversation render items", () => {
 					status: "processing",
 				},
 				{ id: "live-read", kind: "tools", turnId: 1, batchId: "read-batch", toolIds: ["read-2"] },
+				{ id: "live-compaction:1", kind: "compaction", turnId: 1 },
 			],
 			{
 				"write-1": {
@@ -768,6 +769,41 @@ describe("conversation render items", () => {
 			{ kind: "message", key: "optimistic-user:queue-1", role: "user", text: "Thinking 保持外部" },
 			{ kind: "tool-stack", stepId: undefined, batches: [{ tools: [{ id: "read-2", stepId: undefined }] }] },
 			{ kind: "compaction", key: "live-compaction:1", live: true, state: { status: "running" } },
+		]);
+	});
+
+	it("按实时事件顺序把上下文压缩插入正在执行的 Agent Step", () => {
+		const step = {
+			id: "step-compaction",
+			title: "整理上下文",
+			status: "running" as const,
+			toolCallIds: [],
+			messageEntryIds: [],
+			startedAt: 1,
+		};
+		const rendered = appendLiveRenderItems(
+			[],
+			[
+				{ id: "before", kind: "text", parts: ["压缩前"], turnId: 1, stepId: step.id },
+				{ id: "live-compaction:1", kind: "compaction", turnId: 1, stepId: step.id },
+				{ id: "after", kind: "text", parts: ["压缩后"], turnId: 1, stepId: step.id },
+			],
+			{},
+			new Set(),
+			{ status: "running", reason: "threshold", summaryCountAtStart: 0 },
+			1,
+			{ [step.id]: step },
+		);
+
+		expect(rendered).toMatchObject([
+			{
+				kind: "agent-step",
+				items: [
+					{ kind: "message", key: "before", text: "压缩前" },
+					{ kind: "compaction", key: "live-compaction:1" },
+					{ kind: "message", key: "after", text: "压缩后" },
+				],
+			},
 		]);
 	});
 

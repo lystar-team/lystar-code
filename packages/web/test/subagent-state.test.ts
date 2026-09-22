@@ -79,6 +79,11 @@ describe("Subagent workbench state", () => {
 			step: { id: "step-1", title: "检查", status: "running", toolCallIds: [], startedAt: 1 },
 		});
 		next({ type: "tool_start", toolCallId: "tool-1", name: "read", summary: "README.md" });
+		next({ type: "phase", phase: "compaction" });
+		expect(state.liveTurnItems).toMatchObject([
+			{ kind: "tools" },
+			{ kind: "compaction", id: "live-compaction:0", stepId: "step-1" },
+		]);
 		next({ type: "compaction", status: "running", reason: "threshold" });
 		next({ type: "phase", phase: "turn" });
 

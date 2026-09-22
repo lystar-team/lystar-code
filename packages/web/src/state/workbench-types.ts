@@ -67,6 +67,7 @@ export type LiveTurnItem =
 	| { id: string; kind: "text"; parts: readonly string[]; turnId: number; stepId?: string }
 	| { id: string; kind: "thinking"; parts: readonly string[]; turnId: number; stepId?: string }
 	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] }
+	| { id: string; kind: "compaction"; turnId: number; stepId?: string }
 	| {
 			id: string;
 			kind: "user";

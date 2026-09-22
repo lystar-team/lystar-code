@@ -13,6 +13,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionLockedError, SessionManager } from "./session-manager.ts";
+import type { SessionProfile } from "./session-profile.ts";
 import { type SessionShareResult, shareSessionAsPrivateGist } from "./session-share.ts";
 import { requestWebSessionHandoff } from "./web-companion.ts";
 
@@ -40,6 +41,7 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
 	projectTrustContext?: ProjectTrustContext;
+	sessionProfile?: SessionProfile;
 }) => Promise<CreateAgentSessionRuntimeResult>;
 
 /**
@@ -520,6 +522,7 @@ export async function createAgentSessionRuntime(
 		sessionManager: SessionManager;
 		sessionStartEvent?: SessionStartEvent;
 		projectTrustContext?: ProjectTrustContext;
+		sessionProfile?: SessionProfile;
 		writerHandoff?: boolean;
 	},
 ): Promise<AgentSessionRuntime> {

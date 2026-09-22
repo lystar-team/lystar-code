@@ -2501,6 +2501,143 @@ export class WebGatewayServer {
 			});
 			return;
 		}
+		if (parts.length === 4 && parts[3] === "rooms") {
+			const client = await this.getClient(context);
+			if (request.method === "GET") {
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({ command: "room_project_list", cwd: project.cwd }),
+				);
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const sessionId = stringValue(body.sessionId);
+				if (!sessionId) throw new HttpError(400, "room_session_required", "创建 Room 需要指定会话");
+				const session = await this.resolveSession(context, sessionId);
+				if (session.projectId !== project.id)
+					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+				sendJson(
+					response,
+					201,
+					await client.request<JsonValue>({
+						command: "room_create",
+						cwd: project.cwd,
+						ownerSessionId: sessionId,
+						...(stringValue(body.title) ? { title: stringValue(body.title)! } : {}),
+						...(body.mode === "direct" || body.mode === "group" ? { mode: body.mode } : {}),
+					}),
+				);
+				return;
+			}
+		}
+		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "join" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const sessionId = stringValue(body.sessionId);
+			if (!sessionId) throw new HttpError(400, "room_session_required", "加入 Room 需要指定会话");
+			const session = await this.resolveSession(context, sessionId);
+			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+			const roomId = parts[4];
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<JsonValue>({
+					command: "room_join",
+					cwd: project.cwd,
+					roomId,
+					sessionId,
+				}),
+			);
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "leave" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const sessionId = stringValue(body.sessionId);
+			if (!sessionId) throw new HttpError(400, "room_session_required", "退出 Room 需要指定会话");
+			const session = await this.resolveSession(context, sessionId);
+			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request<JsonValue>({
+					command: "room_leave",
+					cwd: project.cwd,
+					roomId: parts[4],
+					sessionId,
+				}),
+			);
+			return;
+		}
+		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "messages") {
+			const roomId = parts[4];
+			const client = await this.getClient(context);
+			if (request.method === "GET") {
+				const sessionId = stringValue(url.searchParams.get("sessionId"));
+				if (!sessionId) throw new HttpError(400, "room_session_required", "读取 Room 消息需要指定会话");
+				const session = await this.resolveSession(context, sessionId);
+				if (session.projectId !== project.id)
+					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+				const afterSeqValue = url.searchParams.get("afterSeq");
+				const limitValue = url.searchParams.get("limit");
+				const afterSeq = afterSeqValue === null ? undefined : Number(afterSeqValue);
+				const limit = limitValue === null ? undefined : Number(limitValue);
+				if (afterSeq !== undefined && (!Number.isSafeInteger(afterSeq) || afterSeq < 0))
+					throw new HttpError(400, "room_after_seq_invalid", "Room 消息游标无效");
+				if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100))
+					throw new HttpError(400, "room_limit_invalid", "Room 消息数量无效");
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({
+						command: "room_read",
+						cwd: project.cwd,
+						roomId,
+						sessionId,
+						...(afterSeq !== undefined ? { afterSeq } : {}),
+						...(limit !== undefined ? { limit } : {}),
+					}),
+				);
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const senderSessionId = stringValue(body.senderSessionId);
+				if (!senderSessionId) throw new HttpError(400, "room_sender_required", "发送 Room 消息需要指定会话");
+				const session = await this.resolveSession(context, senderSessionId);
+				if (session.projectId !== project.id)
+					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+				const route = body.route;
+				if (route !== "direct" && route !== "broadcast" && route !== "one_of_us")
+					throw new HttpError(400, "room_route_invalid", "Room 消息路由无效");
+				const bodyText = stringValue(body.body);
+				if (!bodyText) throw new HttpError(400, "room_message_required", "Room 消息不能为空");
+				const kind = (["task", "message", "question", "answer", "status", "result", "system"] as const).find(
+					(candidate) => candidate === body.kind,
+				);
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({
+						command: "room_send",
+						cwd: project.cwd,
+						roomId,
+						senderSessionId,
+						route,
+						...(Array.isArray(body.targetSessionIds) ? { targetSessionIds: body.targetSessionIds } : {}),
+						...(kind ? { kind } : {}),
+						body: bodyText,
+						...(stringValue(body.taskId) ? { taskId: stringValue(body.taskId)! } : {}),
+						...(stringValue(body.replyToMessageId)
+							? { replyToMessageId: stringValue(body.replyToMessageId)! }
+							: {}),
+						...(Number.isSafeInteger(body.basedOnSeq) ? { basedOnSeq: body.basedOnSeq as number } : {}),
+						idempotencyKey: stringValue(body.idempotencyKey) ?? randomUUID(),
+					}),
+				);
+				return;
+			}
+		}
 		if (parts.length === 4 && parts[3] === "completions" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const text = typeof body.text === "string" ? body.text : "";
@@ -3006,6 +3143,7 @@ export class WebGatewayServer {
 			}>({
 				command: "create_session",
 				cwd: project.cwd,
+				...(typeof body.profileId === "string" ? { profileId: body.profileId } : {}),
 				clientInstanceId: context.id,
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			});
@@ -3960,6 +4098,10 @@ export class WebGatewayServer {
 				const tools = Array.isArray(body.tools)
 					? body.tools.filter((value): value is string => typeof value === "string" && value.length > 0)
 					: undefined;
+				const skills = Array.isArray(body.skills)
+					? body.skills.filter((value): value is string => typeof value === "string" && value.length > 0)
+					: undefined;
+				const icon = stringValue(body.icon);
 				const thinkingLevels: ThinkingLevel[] = [
 					"off",
 					"minimal",
@@ -3978,10 +4120,12 @@ export class WebGatewayServer {
 					...(typeof body.originalName === "string" ? { originalName: body.originalName } : {}),
 					name,
 					description,
+					...(icon ? { icon } : {}),
 					...(typeof body.provider === "string" ? { provider: body.provider } : {}),
 					...(typeof body.model === "string" ? { model: body.model } : {}),
 					...(thinkingLevel ? { thinkingLevel } : {}),
 					...(tools ? { tools } : {}),
+					...(skills ? { skills } : {}),
 					content: body.content,
 					...(typeof body.expectedHash === "string" ? { expectedHash: body.expectedHash } : {}),
 					clientInstanceId: context.id,

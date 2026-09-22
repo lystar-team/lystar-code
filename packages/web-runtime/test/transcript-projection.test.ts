@@ -15,6 +15,19 @@ function assistant(content: unknown, options: { stopReason?: string; errorMessag
 	} as TranscriptItem;
 }
 
+function system(content: unknown): TranscriptItem {
+	return {
+		entryId: "system-entry",
+		parentId: null,
+		timestamp: "2026-08-22T00:00:00Z",
+		kind: "message",
+		payload: {
+			type: "message",
+			message: { role: "system", content },
+		},
+	} as TranscriptItem;
+}
+
 function toolResult(
 	entryId: string,
 	parentId: string | null,
@@ -102,6 +115,18 @@ describe("assistant transcript projection", () => {
 			{ type: "assistant", text: "partial answer" },
 			{ type: "system", text: "请求失败：连接中断" },
 		]);
+	});
+
+	it("does not render model system messages as chat content", () => {
+		const technical = system([
+			{ type: "text", text: "You are an internal coding agent." },
+			{ type: "text", text: "Project instructions and tools" },
+		]);
+
+		expect(projectTranscriptItems(technical)).toEqual([]);
+		expect(
+			projectTranscriptBatch([technical, assistant([{ type: "text", text: "visible" }])]).map((item) => item.view),
+		).toEqual([{ type: "assistant", text: "visible" }]);
 	});
 
 	it("does not render session control entries as chat content", () => {

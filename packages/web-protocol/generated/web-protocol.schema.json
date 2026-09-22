@@ -119,6 +119,303 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "cwd",
+                    "ownerSessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_create"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "ownerSessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 256
+                    },
+                    "mode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "direct"
+                        },
+                        {
+                          "type": "string",
+                          "const": "group"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_list"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_project_list"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_join"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_leave"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "senderSessionId",
+                    "route",
+                    "body"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_send"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "senderSessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "route": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "direct"
+                        },
+                        {
+                          "type": "string",
+                          "const": "broadcast"
+                        },
+                        {
+                          "type": "string",
+                          "const": "one_of_us"
+                        }
+                      ]
+                    },
+                    "targetSessionIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "maxItems": 32
+                    },
+                    "kind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "task"
+                        },
+                        {
+                          "type": "string",
+                          "const": "message"
+                        },
+                        {
+                          "type": "string",
+                          "const": "question"
+                        },
+                        {
+                          "type": "string",
+                          "const": "answer"
+                        },
+                        {
+                          "type": "string",
+                          "const": "status"
+                        },
+                        {
+                          "type": "string",
+                          "const": "result"
+                        },
+                        {
+                          "type": "string",
+                          "const": "system"
+                        }
+                      ]
+                    },
+                    "body": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "replyToMessageId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "basedOnSeq": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "idempotencyKey": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_read"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "afterSeq": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
+                    },
+                    "markRead": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "sessionPath",
                     "limit"
                   ],
@@ -214,6 +511,11 @@
                     "cwd": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "profileId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     },
                     "clientInstanceId": {
                       "type": "string",
@@ -2119,6 +2421,11 @@
                       "minLength": 1,
                       "maxLength": 16384
                     },
+                    "icon": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "provider": {
                       "type": "string",
                       "minLength": 1,
@@ -2166,6 +2473,15 @@
                       ]
                     },
                     "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "maxItems": 128
+                    },
+                    "skills": {
                       "type": "array",
                       "items": {
                         "type": "string",
@@ -7731,6 +8047,11 @@
               }
             ]
           },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
           "provider": {
             "type": "string",
             "minLength": 1,
@@ -7778,6 +8099,15 @@
             ]
           },
           "tools": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "maxItems": 128
+          },
+          "skills": {
             "type": "array",
             "items": {
               "type": "string",
@@ -7841,6 +8171,11 @@
               }
             ]
           },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
           "provider": {
             "type": "string",
             "minLength": 1,
@@ -7888,6 +8223,15 @@
             ]
           },
           "tools": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "maxItems": 128
+          },
+          "skills": {
             "type": "array",
             "items": {
               "type": "string",
@@ -7951,6 +8295,11 @@
               }
             ]
           },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
           "provider": {
             "type": "string",
             "minLength": 1,
@@ -7998,6 +8347,15 @@
             ]
           },
           "tools": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "maxItems": 128
+          },
+          "skills": {
             "type": "array",
             "items": {
               "type": "string",

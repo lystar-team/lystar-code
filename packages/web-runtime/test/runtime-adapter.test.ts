@@ -727,6 +727,38 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(() => assertWorkspaceCommandResult("get_changelog", changelog)).not.toThrow();
 	});
 
+	it("does not duplicate identical collaboration result delivery", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-collaboration-result-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		let disposed = false;
+		cleanups.push(async () => {
+			if (!disposed) await runtime.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const result = {
+			taskId: "task-idempotent",
+			outcome: "completed" as const,
+			resultText: "已完成",
+			completedAt: "2026-09-21T00:00:00.000Z",
+		};
+
+		await runtime.recordCollaborationResult?.(result);
+		await runtime.recordCollaborationResult?.(result);
+		await runtime.dispose();
+		disposed = true;
+		const manager = SessionManager.open(runtime.sessionPath);
+		expect(
+			manager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "lystar.collaboration.result"),
+		).toHaveLength(1);
+	});
+
 	it("persists, exports, and restores bash when it is the first transcript entry", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-bash-"));
 		const agentDir = join(tempDir, "agent");

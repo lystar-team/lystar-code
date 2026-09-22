@@ -4,6 +4,7 @@ import {
 	applyPromptAccepted,
 	canSendPrompt,
 	clearsThinking,
+	clearUncommittedUserPrompts,
 	committedToolCallIds,
 	hasActiveSessionSnapshot,
 	hasActiveSessionWork,
@@ -388,6 +389,54 @@ describe("chat lifecycle", () => {
 			{ id: "prompt-2", text: "新任务", attachments: [] },
 		];
 		expect(reconcilePendingUserPrompts(pending, [user])).toEqual([pending[1]]);
+	});
+
+	it("终止或换分支时丢弃未落盘消息，但保留确认在队列中的跟进消息", () => {
+		const queued = {
+			id: "queue-1",
+			text: "补充任务",
+			displayText: "补充任务",
+			delivery: "follow-up" as const,
+			attachments: [],
+		};
+		const current = {
+			...liveState(),
+			pendingUserPrompts: [{ id: "prompt-1", text: "已取消任务", attachments: [] }],
+			queuedUserPrompts: [queued],
+			liveTurnItems: [
+				...liveState().liveTurnItems,
+				{
+					id: "live-cancelled",
+					kind: "user" as const,
+					turnId: 1,
+					queueId: "live-cancelled",
+					text: "已取消任务",
+					displayText: "已取消任务",
+					attachments: [],
+					status: "processing" as const,
+				},
+				{
+					id: "live-queued",
+					kind: "user" as const,
+					turnId: 1,
+					queueId: queued.id,
+					text: queued.text,
+					displayText: queued.displayText,
+					attachments: [],
+					status: "queued" as const,
+				},
+			],
+		};
+
+		const next = clearUncommittedUserPrompts(current);
+
+		expect(next.pendingUserPrompts).toEqual([]);
+		expect(next.liveTurnItems.map((item) => (item.kind === "user" ? item.queueId : item.kind))).toEqual([
+			"text",
+			"tools",
+			queued.id,
+		]);
+		expect(next.queuedUserPrompts).toEqual([queued]);
 	});
 
 	it("按运行时数量保留调整方向和完成后发送队列", () => {

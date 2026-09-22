@@ -41,6 +41,9 @@ import type {
 	WebLease,
 	WebOperation,
 	WebProject,
+	WebRoomReadResponse,
+	WebRoomSendResponse,
+	WebRoomSummary,
 	WebSessionSnapshot,
 	WebThinkingLevel,
 	WebSessionSummary,
@@ -210,6 +213,73 @@ export class WebApi {
 			{
 				method: "PATCH",
 				body: JSON.stringify({ sessionIds }),
+			},
+		);
+	}
+
+	async projectRooms(projectId: string): Promise<WebRoomSummary[]> {
+		return this.request<WebRoomSummary[]>(`/api/projects/${encodeURIComponent(projectId)}/rooms`);
+	}
+
+	async createRoom(
+		projectId: string,
+		sessionId: string,
+		input: { title?: string; mode?: "direct" | "group" } = {},
+	): Promise<WebRoomSummary> {
+		return this.request<WebRoomSummary>(`/api/projects/${encodeURIComponent(projectId)}/rooms`, {
+			method: "POST",
+			body: JSON.stringify({ sessionId, ...input }),
+		});
+	}
+
+	async joinRoom(projectId: string, roomId: string, sessionId: string): Promise<WebRoomSummary> {
+		return this.request<WebRoomSummary>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/join`,
+			{ method: "POST", body: JSON.stringify({ sessionId }) },
+		);
+	}
+
+	async leaveRoom(projectId: string, roomId: string, sessionId: string): Promise<WebRoomSummary> {
+		return this.request<WebRoomSummary>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/leave`,
+			{ method: "POST", body: JSON.stringify({ sessionId }) },
+		);
+	}
+
+	async roomMessages(
+		projectId: string,
+		roomId: string,
+		sessionId: string,
+		options: { afterSeq?: number; limit?: number; markRead?: boolean } = {},
+	): Promise<WebRoomReadResponse> {
+		const params = new URLSearchParams({ sessionId });
+		if (options.afterSeq !== undefined) params.set("afterSeq", String(options.afterSeq));
+		if (options.limit !== undefined) params.set("limit", String(options.limit));
+		if (options.markRead !== undefined) params.set("markRead", String(options.markRead));
+		return this.request<WebRoomReadResponse>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/messages?${params}`,
+		);
+	}
+
+	async sendRoomMessage(
+		projectId: string,
+		roomId: string,
+		input: {
+			senderSessionId: string;
+			route: "direct" | "broadcast" | "one_of_us";
+			targetSessionIds?: string[];
+			kind?: "task" | "message" | "question" | "answer" | "status" | "result" | "system";
+			body: string;
+			taskId?: string;
+			replyToMessageId?: string;
+			basedOnSeq?: number;
+		},
+	): Promise<WebRoomSendResponse> {
+		return this.request<WebRoomSendResponse>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/messages`,
+			{
+				method: "POST",
+				body: JSON.stringify({ ...input, idempotencyKey: createUuid() }),
 			},
 		);
 	}
@@ -409,10 +479,13 @@ export class WebApi {
 		});
 	}
 
-	async createSession(projectId: string): Promise<{ session: WebSessionSnapshot; lease: WebLease }> {
+	async createSession(
+		projectId: string,
+		profileId?: string,
+	): Promise<{ session: WebSessionSnapshot; lease: WebLease }> {
 		return this.request<{ session: WebSessionSnapshot; lease: WebLease }>("/api/sessions", {
 			method: "POST",
-			body: JSON.stringify({ projectId }),
+			body: JSON.stringify({ projectId, ...(profileId ? { profileId } : {}) }),
 		});
 	}
 
@@ -733,12 +806,14 @@ export class WebApi {
 		input: {
 			scope: "user" | "project";
 			originalName?: string;
-			name: string;
-			description: string;
-			provider?: string;
-			model?: string;
+		name: string;
+		description: string;
+		icon?: string;
+		provider?: string;
+		model?: string;
 			thinkingLevel?: WebThinkingLevel;
 			tools?: string[];
+			skills?: string[];
 			content: string;
 			expectedHash?: string;
 		},

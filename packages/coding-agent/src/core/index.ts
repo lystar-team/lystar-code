@@ -195,6 +195,17 @@ export {
 	type RichTextRenderResult,
 	renderTerminalRichText,
 } from "./rich-text-renderer.ts";
+export type {
+	SessionCoordinator,
+	SessionCoordinatorCreateInput,
+	SessionCoordinatorCreateResult,
+	SessionCoordinatorOutcome,
+	SessionCoordinatorProfile,
+	SessionCoordinatorResult,
+	SessionCoordinatorSummary,
+	SessionCoordinatorTask,
+	SessionSendMode,
+} from "./session-coordinator.ts";
 export {
 	type FileEntry,
 	getDefaultSessionDir,
@@ -202,6 +213,8 @@ export {
 	type ReadOnlySessionSnapshot,
 	type ReadonlySessionManager,
 	readSessionSnapshot,
+	type SessionCollaborationResult,
+	type SessionCollaborationTask,
 	type SessionContext,
 	type SessionEntry,
 	type SessionHeader,
@@ -213,12 +226,38 @@ export {
 	SessionLockedError,
 	SessionManager,
 	type SessionOutcome,
+	type SessionProfileSnapshot,
+	type SessionRelation,
+	type SessionWorkspaceMode,
+	type SessionWorkspaceSnapshot,
+	type SessionWorkspaceStatus,
 } from "./session-manager.ts";
+export {
+	discoverSessionProfiles,
+	findSessionProfile,
+	type SessionProfile,
+} from "./session-profile.ts";
+export type {
+	SessionRoom,
+	SessionRoomApi,
+	SessionRoomCursor,
+	SessionRoomDeliveryError,
+	SessionRoomMember,
+	SessionRoomMemberRole,
+	SessionRoomMessage,
+	SessionRoomMessageKind,
+	SessionRoomMode,
+	SessionRoomReadResult,
+	SessionRoomRoute,
+	SessionRoomSendResult,
+	SessionRoomSummary,
+} from "./session-room.ts";
 export {
 	SessionShareError,
 	type SessionShareResult,
 	shareSessionAsPrivateGist,
 } from "./session-share.ts";
+export { createSessionsTool } from "./session-tool.ts";
 export {
 	type DefaultProjectTrust,
 	type Settings,

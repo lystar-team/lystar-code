@@ -193,6 +193,16 @@ export function reconcilePendingUserPrompts(
 	return pending.filter((prompt) => !matchedIds.has(prompt.id));
 }
 
+/** 丢弃终止或换分支后仍未落盘的用户消息，同时保留运行时仍确认在队列中的跟进消息。 */
+export function clearUncommittedUserPrompts(current: WorkbenchState): WorkbenchState {
+	const queuedPromptIds = new Set(current.queuedUserPrompts.map((prompt) => prompt.id));
+	const liveTurnItems = current.liveTurnItems.filter(
+		(item) => item.kind !== "user" || queuedPromptIds.has(item.queueId),
+	);
+	if (current.pendingUserPrompts.length === 0 && liveTurnItems.length === current.liveTurnItems.length) return current;
+	return { ...current, pendingUserPrompts: [], liveTurnItems };
+}
+
 export function reconcileQueuedUserPromptCounts(
 	pending: readonly QueuedUserPrompt[],
 	steeringCount: number,

@@ -247,10 +247,12 @@ export function useWorkbenchSettingsActions({
 			originalName?: string;
 			name: string;
 			description: string;
+			icon?: string;
 			provider?: string;
 			model?: string;
 			thinkingLevel?: WebThinkingLevel;
 			tools?: string[];
+			skills?: string[];
 			content: string;
 			expectedHash?: string;
 		}): Promise<boolean> => {
@@ -444,6 +446,7 @@ export function useWorkbenchSettingsActions({
 			if (tab === "subagents") {
 				await Promise.all([
 					refreshSubagentConfigs(),
+					refreshSkills(),
 					stateRef.current.modelOptions.length === 0 ? refreshModelSettings() : Promise.resolve(),
 				]);
 			}

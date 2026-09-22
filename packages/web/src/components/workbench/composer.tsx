@@ -59,6 +59,10 @@ async function transcriptAttachmentFile(
 type ComposerProps = {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
+	sendMessageOverride?: WorkbenchActions["sendMessage"];
+	roomMode?: boolean;
+	roomId?: string;
+	roomSending?: boolean;
 	editRequest?: PromptEditRequest;
 	onCancelEdit: () => void;
 	onEditComplete: () => void;
@@ -89,6 +93,10 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boolean {
 	return (
 		composerStateEqual(previous.state, next.state) &&
+		previous.sendMessageOverride === next.sendMessageOverride &&
+		previous.roomMode === next.roomMode &&
+		previous.roomId === next.roomId &&
+		previous.roomSending === next.roomSending &&
 		previous.editRequest === next.editRequest &&
 		previous.onCancelEdit === next.onCancelEdit &&
 		previous.onEditComplete === next.onEditComplete
@@ -98,6 +106,10 @@ function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boole
 export const Composer = memo(function Composer({
 	state,
 	actions,
+	sendMessageOverride,
+	roomMode = false,
+	roomId,
+	roomSending = false,
 	editRequest,
 	onCancelEdit,
 	onEditComplete,
@@ -107,7 +119,7 @@ export const Composer = memo(function Composer({
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
 	const [queueActionId, setQueueActionId] = useState<string>();
 	const [editAttachmentStatus, setEditAttachmentStatus] = useState<EditAttachmentStatus>();
-	const activeEditRequest = editRequest?.sessionId === state.sessionId ? editRequest : undefined;
+	const activeEditRequest = !roomMode && editRequest?.sessionId === state.sessionId ? editRequest : undefined;
 	const editRequestRef = useRef(activeEditRequest);
 	editRequestRef.current = activeEditRequest;
 	const submittingSessionIdsRef = useRef(new Set<string>());
@@ -157,18 +169,19 @@ export const Composer = memo(function Composer({
 		};
 	}, []);
 	const inputSessionId = state.sessionId;
+	const inputScopeKey = roomMode ? (roomId ? `room:${roomId}` : undefined) : inputSessionId ? `session:${inputSessionId}` : undefined;
 	const handleInputChange = useCallback(
 		(value: string) => {
-			if (!inputSessionId || activeEditRequest) return;
-			if (value) draftBySessionRef.current.set(inputSessionId, value);
-			else draftBySessionRef.current.delete(inputSessionId);
+			if (!inputScopeKey || activeEditRequest) return;
+			if (value) draftBySessionRef.current.set(inputScopeKey, value);
+			else draftBySessionRef.current.delete(inputScopeKey);
 		},
-		[activeEditRequest, inputSessionId],
+		[activeEditRequest, inputScopeKey],
 	);
 	const initialInput = activeEditRequest
 		? activeEditRequest.text
-		: inputSessionId
-			? (draftBySessionRef.current.get(inputSessionId) ?? "")
+		: inputScopeKey
+			? (draftBySessionRef.current.get(inputScopeKey) ?? "")
 			: "";
 	const editRequestKey = activeEditRequest ? `${activeEditRequest.sessionId}:${activeEditRequest.entryId}` : undefined;
 	const matchingEditAttachmentStatus =
@@ -186,9 +199,9 @@ export const Composer = memo(function Composer({
 		setCommandDialog(undefined);
 		setModelSelectorOpen(false);
 		setQueueActionId(undefined);
-	}, [editRequestKey, state.sessionId]);
-	const disabled = !canSendPrompt(state);
-	const stopping = !disabled && hasActiveSessionWork(state);
+	}, [editRequestKey, roomId, roomMode, state.sessionId]);
+	const disabled = roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state);
+	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
 	const handleQueueAction = async (queueId: string, action: "remove" | "steer") => {
 		setQueueActionId(queueId);
 		try {
@@ -233,14 +246,14 @@ export const Composer = memo(function Composer({
 		<div className="shrink-0 bg-background px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] sm:px-8">
 			<div className="mx-auto w-full max-w-[var(--conversation-width)]">
 				<PromptInputProvider
-					key={`${inputSessionId ?? "no-session"}:${editRequestKey ?? "draft"}`}
+					key={`${inputScopeKey ?? "no-session"}:${editRequestKey ?? "draft"}`}
 					initialInput={initialInput}
 					onInputChange={handleInputChange}
 				>
 					<PromptCompletionProvider
-						disabled={disabled}
+						disabled={disabled || roomMode}
 						onError={(error) => actions.showToast(error instanceof Error ? error.message : String(error))}
-						projectId={state.currentProjectId}
+						projectId={roomMode ? undefined : state.currentProjectId}
 						sessionId={state.sessionId}
 					>
 						<div className="relative" ref={promptAnimationScopeRef}>
@@ -306,12 +319,12 @@ export const Composer = memo(function Composer({
 									submittingSessionIdsRef.current.add(submissionSessionId);
 									playPromptSubmitFeedback(submitMode ?? "prompt");
 									try {
-										const command = submissionEditRequest
+										const command = roomMode || submissionEditRequest
 											? undefined
 											: await resolveComposerCommand(text, (token, cursor) => {
-													if (!state.currentProjectId) throw new Error("请先选择项目");
-													return webApi.completions(state.currentProjectId, token, cursor, submissionSessionId);
-												});
+												if (!state.currentProjectId) throw new Error("请先选择项目");
+												return webApi.completions(state.currentProjectId, token, cursor, submissionSessionId);
+											});
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										if (command) {
 											if (files.length) throw new Error("内置命令不接受附件，请移除附件后执行");
@@ -324,13 +337,16 @@ export const Composer = memo(function Composer({
 											});
 											return;
 										}
-										const mode = submissionEditRequest
+										if (roomMode && files.length) throw new Error("Room 消息暂不支持附件");
+										const mode = roomMode
 											? "prompt"
-											: stopping
-												? submitMode === "steer"
-													? "steer"
-													: "follow-up"
-												: state.composerMode;
+											: submissionEditRequest
+												? "prompt"
+												: stopping
+													? submitMode === "steer"
+														? "steer"
+														: "follow-up"
+													: state.composerMode;
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										const uploadedFiles = [];
 										for (const file of files) {
@@ -356,7 +372,7 @@ export const Composer = memo(function Composer({
 											await actions.navigateTree(submissionEditRequest.entryId);
 											if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										}
-										await actions.sendMessage(
+										await (sendMessageOverride ?? actions.sendMessage)(
 											promptText,
 											mode,
 											uploadedFiles.map(({ path, mimeType }) => ({ path, mimeType })),
@@ -386,22 +402,26 @@ export const Composer = memo(function Composer({
 									<PromptCompletionTextarea
 										autoFocus={Boolean(activeEditRequest)}
 										placeholder={
-											state.sessionId && !state.sessionReady
-												? "正在同步会话"
-												: disabled
-													? "当前会话不可写"
-													: "描述你想完成的工作…"
+											roomMode
+												? roomSending
+													? "正在等待 Room 回复…"
+													: "发送消息给 Room 中的 Agent…"
+												: state.sessionId && !state.sessionReady
+													? "正在同步会话"
+													: disabled
+														? "当前会话不可写"
+														: "描述你想完成的工作…"
 										}
 										disabled={disabled}
 									/>
 								</PromptInputBody>
 								<PromptInputFooter className="items-center !pb-2">
 									<PromptInputTools className="shrink-0">
-										<FileUploadButton disabled={disabled || editAttachmentState === "loading"} />
-									</PromptInputTools>
-									<PromptInputTools className="min-w-0 flex-1 justify-end gap-1">
-										<ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />
-										<ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
+									<FileUploadButton disabled={disabled || roomMode || editAttachmentState === "loading"} />
+								</PromptInputTools>
+								<PromptInputTools className="min-w-0 flex-1 justify-end gap-1">
+									{roomMode ? <span className="px-2 text-xs text-muted-foreground">Room 协作</span> : <ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />}
+									{roomMode ? null : <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
 											<ModelSelectorTrigger asChild>
 												<PromptInputButton
 													className="data-[state=open]:bg-accent"
@@ -444,8 +464,8 @@ export const Composer = memo(function Composer({
 													))}
 												</ModelSelectorList>
 											</ModelSelectorContent>
-										</ModelSelector>
-										{selectedModel?.reasoning ? (
+										</ModelSelector>}
+										{!roomMode && selectedModel?.reasoning ? (
 											<PromptInputSelect
 												value={selectedVisibleThinkingLevel(
 													state.session?.thinkingLevel ?? "off",
@@ -476,6 +496,8 @@ export const Composer = memo(function Composer({
 										<ComposerSubmitActions
 											disabled={disabled}
 											onAbort={() => void actions.abort()}
+											roomMode={roomMode}
+											sending={roomSending}
 											stopping={stopping}
 											submitDisabled={
 												disabled ||
@@ -500,11 +522,13 @@ export const Composer = memo(function Composer({
 type ComposerSubmitActionsProps = {
 	disabled: boolean;
 	onAbort: () => void;
+	roomMode: boolean;
+	sending: boolean;
 	stopping: boolean;
 	submitDisabled: boolean;
 };
 
-function ComposerSubmitActions({ disabled, onAbort, stopping, submitDisabled }: ComposerSubmitActionsProps) {
+function ComposerSubmitActions({ disabled, onAbort, roomMode, sending, stopping, submitDisabled }: ComposerSubmitActionsProps) {
 	const { textInput } = usePromptInputController();
 	const [modeOpen, setModeOpen] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -512,11 +536,11 @@ function ComposerSubmitActions({ disabled, onAbort, stopping, submitDisabled }: 
 	const actionInitializedRef = useRef(false);
 	const popoverOpenedRef = useRef(false);
 	const hasText = Boolean(textInput.value.trim());
-	const mode = !stopping ? "send" : hasText ? "choice" : "stop";
+	const mode = roomMode ? (sending ? "sending" : "send") : !stopping ? "send" : hasText ? "choice" : "stop";
 
 	useEffect(() => {
-		if (!stopping || !hasText || submitDisabled) setModeOpen(false);
-	}, [hasText, stopping, submitDisabled]);
+		if (roomMode || !stopping || !hasText || submitDisabled) setModeOpen(false);
+	}, [hasText, roomMode, stopping, submitDisabled]);
 
 	const submitActiveMode = useCallback(
 		(mode: "steer" | "follow-up") => {
@@ -636,7 +660,16 @@ function ComposerSubmitActions({ disabled, onAbort, stopping, submitDisabled }: 
 	}, [mode, modeOpen]);
 
 	const controls =
-		mode === "send" ? (
+		mode === "sending" ? (
+			<PromptInputButton
+				className="size-10 rounded-full border border-border"
+				disabled
+				data-active-prompt-anchor
+				aria-label="正在发送"
+			>
+				<LoaderCircle className="size-4 animate-spin" />
+			</PromptInputButton>
+		) : mode === "send" ? (
 			<PromptInputSubmit
 				className="size-10 rounded-full bg-foreground text-background hover:bg-foreground/90 hover:text-background"
 				status="ready"

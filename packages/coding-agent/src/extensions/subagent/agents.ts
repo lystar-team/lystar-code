@@ -28,10 +28,12 @@ export interface AgentConfig {
 export interface AgentDefinition {
 	name: string;
 	description: string;
+	icon?: string;
 	provider?: string;
 	model?: string;
 	thinkingLevel?: SubagentThinkingLevel;
 	tools?: string[];
+	skillNames?: string[];
 	content: string;
 	scope: AgentDefinitionScope;
 	editable: boolean;
@@ -96,10 +98,12 @@ function loadAgentDefinitionsFromDir(dir: string, scope: "user" | "project"): Ag
 		agents.push({
 			name: parsed.name,
 			description: parsed.description,
+			...(parsed.icon ? { icon: parsed.icon } : {}),
 			...(parsed.provider ? { provider: parsed.provider } : {}),
 			...(parsed.model ? { model: parsed.model } : {}),
 			...(parsed.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
 			...(parsed.tools ? { tools: parsed.tools } : {}),
+			...(parsed.skills ? { skillNames: parsed.skills } : {}),
 			content: parsed.content,
 			scope,
 			editable: true,

@@ -1,4 +1,10 @@
 import type {
+	SessionCollaborationResult,
+	SessionCollaborationTask,
+	SessionCoordinator,
+	SessionWorkspaceSnapshot,
+} from "@earendil-works/pi-coding-agent/core";
+import type {
 	AuthType,
 	ChangelogResult,
 	ClipboardImageReadResult,
@@ -81,6 +87,7 @@ export interface RuntimeSessionAsyncControls {
 	listSubagentsAsync?(): Promise<SubagentSnapshot[]>;
 	readSubagentAsync?(agentId: string): Promise<{ transcript?: SubagentSnapshot; live?: SubagentSnapshot }>;
 	getLastAssistantTextAsync?(): Promise<string | undefined>;
+	recordCollaborationResult?(result: SessionCollaborationResult): Promise<void>;
 }
 
 export interface RuntimeSession extends RuntimeSessionAsyncControls {
@@ -134,11 +141,20 @@ export interface SessionSummaryBase {
 	id: string;
 	cwd: string;
 	name?: string;
+	parentId?: string;
+	relation?: "collaboration" | "fork";
+	profileId?: string;
+	profileName?: string;
+	profileIcon?: string;
 	createdAt: number;
 	updatedAt: number;
 	messageCount: number;
 	firstMessage: string;
 	activity: SessionActivity;
+	workspace?: SessionWorkspaceSnapshot;
+	taskId?: string;
+	taskDescription?: string;
+	collaborationResult?: SessionCollaborationResult;
 }
 
 export interface ModelSummary {
@@ -214,7 +230,19 @@ export interface SkillSummary {
 }
 
 export interface RuntimeAdapter {
-	createSession(cwd: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
+	createSession(
+		cwd: string,
+		onUiRequest: UiRequestHandler,
+		options?: {
+			parentSession?: string;
+			profileId?: string;
+			collaborationTask?: SessionCollaborationTask;
+			collaborationWorkspace?: SessionWorkspaceSnapshot;
+			sessionDir?: string;
+			readOnly?: boolean;
+		},
+	): Promise<RuntimeSession>;
+	setSessionCoordinator?(coordinator: SessionCoordinator): void;
 	openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
 	inspectSession(sessionPath: string): SessionStateSnapshot;
 	inspectSessionActivity?(sessionPath: string): Promise<SessionActivity | undefined>;
@@ -247,10 +275,12 @@ export interface RuntimeAdapter {
 			originalName?: string;
 			name: string;
 			description: string;
+			icon?: string;
 			provider?: string;
 			model?: string;
 			thinkingLevel?: ThinkingLevel;
 			tools?: string[];
+			skills?: string[];
 			content: string;
 			expectedHash?: string;
 		},

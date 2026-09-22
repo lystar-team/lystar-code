@@ -7,10 +7,12 @@ export type SubagentThinkingLevel = (typeof SUBAGENT_THINKING_LEVELS)[number];
 export interface SubagentConfigInput {
 	name: string;
 	description: string;
+	icon?: string;
 	provider?: string;
 	model?: string;
 	thinkingLevel?: SubagentThinkingLevel;
 	tools?: string[];
+	skills?: string[];
 	content: string;
 }
 
@@ -47,6 +49,12 @@ export function normalizeSubagentTools(value: unknown): string[] | undefined {
 		.map(([tool]) => tool.trim())
 		.filter(Boolean);
 	return tools.length > 0 ? [...new Set(tools)] : undefined;
+}
+
+export function normalizeSubagentSkills(value: unknown): string[] | undefined {
+	const values = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : [];
+	const skills = values.map(stringValue).filter((skill): skill is string => skill !== undefined);
+	return skills.length > 0 ? [...new Set(skills)] : undefined;
 }
 
 export function parseSubagentModelReference(reference: string | undefined): {
@@ -95,24 +103,30 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 	const description = stringValue(frontmatter.description);
 	if (!name || !description) return undefined;
 	const modelReference = stringValue(frontmatter.model);
+	const tools = normalizeSubagentTools(frontmatter.tools);
+	const skills = normalizeSubagentSkills(frontmatter.skills);
 	return {
 		name,
 		description,
+		...(stringValue(frontmatter.icon) ? { icon: stringValue(frontmatter.icon) } : {}),
 		...parseSubagentModelReference(modelReference),
 		...(modelReference ? { modelReference } : {}),
-		...(normalizeSubagentTools(frontmatter.tools) ? { tools: normalizeSubagentTools(frontmatter.tools) } : {}),
+		...(tools ? { tools } : {}),
+		...(skills ? { skills } : {}),
 		content: body.trim(),
 	};
 }
 
 export function renderSubagentMarkdown(input: SubagentConfigInput): string {
 	const modelReference = formatSubagentModelReference(input);
-	const frontmatter: Record<string, string> = {
+	const frontmatter: Record<string, unknown> = {
 		name: input.name.trim(),
 		description: input.description.trim(),
 	};
+	if (input.icon?.trim()) frontmatter.icon = input.icon.trim();
 	if (modelReference) frontmatter.model = modelReference;
 	if (input.tools && input.tools.length > 0) frontmatter.tools = [...new Set(input.tools)].join(", ");
+	if (input.skills && input.skills.length > 0) frontmatter.skills = [...new Set(input.skills)];
 	const yaml = stringifyYaml(frontmatter, { lineWidth: 0 }).trimEnd();
 	const body = input.content.trim();
 	return `---\n${yaml}\n---\n${body ? `\n${body}\n` : ""}`;

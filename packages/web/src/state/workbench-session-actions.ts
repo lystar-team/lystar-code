@@ -9,6 +9,7 @@ import type {
 import {
 	applyPromptAccepted,
 	canSendPrompt,
+	clearUncommittedUserPrompts,
 	hasActiveSessionWork,
 	promptDisplayText,
 	removeQueuedUserPrompt,
@@ -763,9 +764,12 @@ export function useWorkbenchSessionActions({
 
 	const abort = useCallback(async () => {
 		const current = stateRef.current;
-		if (!current.sessionId) return;
-		await webApi.abort(current.sessionId, current.currentOperation?.operationId);
-	}, []);
+		const sessionId = current.sessionId;
+		if (!sessionId) return;
+		await webApi.abort(sessionId, current.currentOperation?.operationId);
+		updateState((next) => (next.sessionId === sessionId ? clearUncommittedUserPrompts(next) : next));
+		scheduleTranscriptRefresh(sessionId);
+	}, [scheduleTranscriptRefresh, updateState]);
 
 	const renameSession = useCallback(
 		async (sessionId: string, name: string) => {

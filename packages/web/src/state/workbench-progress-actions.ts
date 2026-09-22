@@ -11,9 +11,11 @@ import {
 	appendLiveTextBlock,
 	appendLiveToolBlock,
 	applyToolActivityState,
+	ensureLiveCompactionMarker,
 	markLiveUserPromptProcessing,
 	mergeToolDiff,
 	nextLiveToolBatchId,
+	runningAgentStepId,
 } from "./workbench-live-state.ts";
 import { mergeWebSearchToolSummary } from "./tool-batching.ts";
 import { gitCredentialAuthorizationMessageFromProgress, sessionActivityFromProgress } from "./workbench-state.ts";
@@ -281,6 +283,14 @@ export function useWorkbenchProgressActions({
 								: progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
 									? undefined
 									: current.liveCompaction;
+						const liveTurnItems =
+							progress.phase === "turn"
+								? current.liveTurnItems.filter((item) => item.kind === "user")
+								: progress.phase === "compaction"
+									? ensureLiveCompactionMarker(current.liveTurnItems, current.liveTurnId, runningAgentStepId(current.liveSteps))
+									: progress.phase === "idle" || progress.phase === "interrupted"
+										? current.liveTurnItems.filter((item) => item.kind !== "compaction")
+										: current.liveTurnItems;
 						return {
 							...current,
 							liveCompaction,
@@ -289,15 +299,15 @@ export function useWorkbenchProgressActions({
 								? {
 										liveTurnStartRevision: current.transcriptRevision,
 										liveTurnActive: true,
-										liveTurnItems: current.liveTurnItems.filter((item) => item.kind === "user"),
+										liveTurnItems,
 										liveTools: {},
 										toolActivityEpoch: undefined,
 										toolActivityRevision: undefined,
 										liveSteps: {},
-									}
+								  }
 								: progress.phase === "idle" || progress.phase === "interrupted"
-									? { liveTurnActive: false }
-									: {}),
+									? { liveTurnActive: false, liveTurnItems }
+									: { liveTurnItems }),
 							statusText:
 								progress.phase === "idle"
 									? ""

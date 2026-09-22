@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseSubagentMarkdown } from "@earendil-works/pi-coding-agent/core";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseSubagentMarkdown } from "../../coding-agent/src/core/subagent-config.ts";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 
 describe("subagent config adapter", () => {
@@ -27,10 +27,12 @@ describe("subagent config adapter", () => {
 				scope: "user",
 				name: "reviewer",
 				description: "Review code",
+				icon: "code",
 				provider: "openai",
 				model: "gpt-5",
 				thinkingLevel: "high",
 				tools: ["read", "grep"],
+				skills: ["review", "codegraph"],
 				content: "Review the requested changes.",
 			},
 			ui,
@@ -40,10 +42,12 @@ describe("subagent config adapter", () => {
 		expect(
 			parseSubagentMarkdown(readFileSync(join(agentDir, "agents", "reviewer.md"), "utf8"), "reviewer"),
 		).toMatchObject({
+			icon: "code",
 			provider: "openai",
 			model: "gpt-5",
 			thinkingLevel: "high",
 			tools: ["read", "grep"],
+			skills: ["review", "codegraph"],
 			content: "Review the requested changes.",
 		});
 

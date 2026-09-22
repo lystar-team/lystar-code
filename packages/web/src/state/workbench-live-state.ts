@@ -59,6 +59,19 @@ export function appendLiveToolBlock(
 	return [...items, { id, kind: "tools", turnId, batchId, toolIds: [toolCallId] }];
 }
 
+export function ensureLiveCompactionMarker(
+	items: LiveTurnItem[],
+	turnId: number,
+	stepId?: string,
+): LiveTurnItem[] {
+	const markerId = `live-compaction:${turnId}`;
+	const existingIndex = items.findIndex((item) => item.kind === "compaction" && item.id === markerId);
+	if (existingIndex < 0) return [...items, { id: markerId, kind: "compaction", turnId, ...(stepId ? { stepId } : {}) }];
+	const existing = items[existingIndex];
+	if (existing?.kind !== "compaction" || existing.stepId || !stepId) return items;
+	return [...items.slice(0, existingIndex), { ...existing, stepId }, ...items.slice(existingIndex + 1)];
+}
+
 export function runningAgentStepId(steps: Readonly<Record<string, AgentStep>>): string | undefined {
 	const runningSteps = Object.values(steps).filter((step) => step.status === "running");
 	return runningSteps.length === 1 ? runningSteps[0]?.id : undefined;
@@ -367,15 +380,19 @@ export function restoreRuntimeActivities(current: WorkbenchState, snapshot: WebS
 		: hasActiveSessionSnapshot(snapshot)
 			? Object.fromEntries(Object.entries(current.liveSteps ?? {}).filter(([, step]) => step.status !== "running"))
 			: {};
+	const liveCompaction = restoreCompactionState(current.liveCompaction, snapshot.phase, current.transcript);
 	const next = {
 		...current,
 		queuedUserPrompts,
 		liveSteps,
-		liveTurnItems,
+		liveTurnItems:
+			liveCompaction && snapshot.phase === "compaction"
+				? ensureLiveCompactionMarker(liveTurnItems, current.liveTurnId, runningAgentStepId(liveSteps))
+				: liveTurnItems,
 		pendingUserPrompts: (current.pendingUserPrompts ?? []).filter(
 			(prompt) => !prompt.queueId || !queuedPromptIds.has(prompt.queueId),
 		),
-		liveCompaction: restoreCompactionState(current.liveCompaction, snapshot.phase, current.transcript),
+		liveCompaction,
 		...(hasActiveSessionSnapshot(snapshot) ? {} : { liveTurnActive: false }),
 	};
 	return restoreToolActivities(next, snapshot);
@@ -586,7 +603,21 @@ export function applySubagentProgress(
 						? `队列中 ${progress.steeringCount + progress.followUpCount} 项`
 						: "正在处理",
 			};
-		case "phase":
+		case "phase": {
+			const liveCompaction =
+				progress.phase === "compaction"
+					? restoreCompactionState(current.liveCompaction, progress.phase, current.transcript)
+					: progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
+						? undefined
+						: current.liveCompaction;
+			const liveTurnItems =
+				progress.phase === "turn"
+					? current.liveTurnItems.filter((item) => item.kind === "user")
+					: progress.phase === "compaction"
+						? ensureLiveCompactionMarker(current.liveTurnItems, current.liveTurnId, runningAgentStepId(current.liveSteps))
+						: progress.phase === "idle" || progress.phase === "interrupted"
+							? current.liveTurnItems.filter((item) => item.kind !== "compaction")
+							: current.liveTurnItems;
 			return {
 				...current,
 				liveTurnId: progress.phase === "turn" ? current.liveTurnId + 1 : current.liveTurnId,
@@ -596,10 +627,7 @@ export function applySubagentProgress(
 						: progress.phase === "idle" || progress.phase === "interrupted"
 							? false
 							: current.liveTurnActive,
-				liveTurnItems:
-					progress.phase === "turn"
-						? current.liveTurnItems.filter((item) => item.kind === "user")
-						: current.liveTurnItems,
+				liveTurnItems,
 				...(progress.phase === "turn"
 					? {
 							liveTools: {},
@@ -609,10 +637,7 @@ export function applySubagentProgress(
 					  }
 					: {}),
 				liveTurnStartRevision: progress.phase === "turn" ? current.transcriptRevision : current.liveTurnStartRevision,
-				liveCompaction:
-					progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
-						? undefined
-						: current.liveCompaction,
+				liveCompaction,
 				statusText:
 					progress.phase === "idle"
 						? ""
@@ -622,6 +647,7 @@ export function applySubagentProgress(
 								? "正在整理上下文"
 								: "正在处理",
 			};
+		}
 		case "compaction":
 			return {
 				...current,

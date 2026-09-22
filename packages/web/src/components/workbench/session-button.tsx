@@ -14,6 +14,12 @@ import {
 } from "../ui/context-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { Input } from "../ui/input";
+import {
+	collaborationAgentIconForSession,
+	collaborationAgentType,
+	collaborationAlias,
+	isCollaborationSession,
+} from "./collaboration-session";
 
 const SESSION_TITLE_MAX_LENGTH = 40;
 
@@ -92,6 +98,10 @@ function SessionButtonComponent({
 	const [renameDraft, setRenameDraft] = useState(title);
 	const relativeTime = formatSessionAge(session.updatedAt);
 	const absoluteTime = formatSessionDate(session.updatedAt);
+	const collaboration = isCollaborationSession(session);
+	const AgentIcon = collaborationAgentIconForSession(session);
+	const alias = collaborationAlias(session.id);
+	const agentType = collaborationAgentType(session);
 
 	useEffect(() => {
 		if (!editingTitle) setRenameDraft(title);
@@ -125,7 +135,7 @@ function SessionButtonComponent({
 						dropPosition === "after" &&
 							"after:pointer-events-none after:absolute after:right-0 after:-bottom-1 after:left-0 after:z-10 after:h-0.5 after:rounded-full after:bg-border",
 					)}
-					draggable
+					draggable={!collaboration}
 					onDragStart={onDragStart}
 					onDragOver={onDragOver}
 					onDrop={onDrop}
@@ -134,11 +144,24 @@ function SessionButtonComponent({
 					<HoverCard openDelay={140} closeDelay={80}>
 						<HoverCardTrigger asChild>
 							<Button
-								className="mobile-session-button h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 !pl-8 text-left text-xs"
+								className={cn(
+									"mobile-session-button h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 text-left text-xs",
+									collaboration ? "!pl-10" : "!pl-8",
+								)}
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
-								<span className="project-list-item-label min-w-0 flex-1 truncate">{displayTitle}</span>
+								{collaboration ? <AgentIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /> : null}
+								<span className="project-list-item-label min-w-0 flex-1 truncate">
+									{collaboration ? (
+										<>
+											<span className="font-medium text-foreground">{alias}</span>
+											<span className="text-muted-foreground"> · {displayTitle}</span>
+										</>
+									) : (
+										displayTitle
+									)}
+								</span>
 								<span className="mobile-session-status absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
 									{session.pinned ? (
 										<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
@@ -223,6 +246,12 @@ function SessionButtonComponent({
 									</div>
 								</div>
 							<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
+								{collaboration ? (
+									<div className="flex min-w-0 items-center gap-2">
+										<AgentIcon className="size-3.5 shrink-0" />
+										<span className="truncate">{alias} · {agentType}</span>
+									</div>
+								) : null}
 								<div className="flex min-w-0 items-center gap-2">
 									<Folder className="size-3.5 shrink-0" />
 									<span className="truncate">{projectName}</span>

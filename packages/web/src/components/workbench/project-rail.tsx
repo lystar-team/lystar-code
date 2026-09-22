@@ -55,6 +55,7 @@ import { SessionButton, type SessionButtonProps } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
 import { VirtualizedSessionList } from "./virtualized-session-list";
+import { WorkspaceModeSwitch, type WorkspaceMode } from "./workspace-mode-switch";
 
 const SESSION_PAGE_SIZE = 7;
 
@@ -86,6 +87,8 @@ type ProjectRailProps = {
 	onAddProject: () => void;
 	onEditProject: (project: WebProject) => void;
 	onNavigate?: () => void;
+	workspaceMode: WorkspaceMode;
+	onWorkspaceModeChange: (mode: WorkspaceMode) => void;
 };
 
 function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProps): boolean {
@@ -96,6 +99,8 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 		previous.onAddProject === next.onAddProject &&
 		previous.onEditProject === next.onEditProject &&
 		previous.onNavigate === next.onNavigate &&
+		previous.workspaceMode === next.workspaceMode &&
+		previous.onWorkspaceModeChange === next.onWorkspaceModeChange &&
 		previous.state.connected === next.state.connected &&
 		previous.state.currentProjectId === next.state.currentProjectId &&
 		previous.state.loading === next.state.loading &&
@@ -117,10 +122,27 @@ function dropPosition(event: ReactDragEvent<HTMLElement>): DropPosition {
 }
 
 function orderedSessions(project: WebProject): WebSessionSummary[] {
-	return [
+	const base = [
 		...project.sessions.filter((session) => session.pinned),
 		...project.sessions.filter((session) => !session.pinned),
 	];
+	const childrenByParent = new Map<string, WebSessionSummary[]>();
+	for (const session of base) {
+		if (session.relation !== "collaboration" || !session.parentId) continue;
+		childrenByParent.set(session.parentId, [...(childrenByParent.get(session.parentId) ?? []), session]);
+	}
+	const nested: WebSessionSummary[] = [];
+	const included = new Set<string>();
+	for (const session of base) {
+		if (session.relation === "collaboration" && session.parentId) continue;
+		nested.push(session);
+		included.add(session.id);
+		for (const child of childrenByParent.get(session.id) ?? []) {
+			nested.push(child);
+			included.add(child.id);
+		}
+	}
+	return [...nested, ...base.filter((session) => !included.has(session.id))];
 }
 
 function sessionItemKey(session: WebSessionSummary): string {
@@ -156,6 +178,8 @@ export const ProjectRail = memo(function ProjectRail({
 	onAddProject,
 	onEditProject,
 	onNavigate,
+	workspaceMode,
+	onWorkspaceModeChange,
 }: ProjectRailProps) {
 	const [query, setQuery] = useState("");
 	const [showArchived, setShowArchived] = useState(false);
@@ -1123,6 +1147,9 @@ export const ProjectRail = memo(function ProjectRail({
 						<FolderPlus className="size-4" />
 					</Button>
 				</div>
+			</div>
+			<div className="px-3 pb-3">
+				<WorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
 			</div>
 			<div className="px-3 pb-3">
 				<Button

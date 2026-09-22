@@ -17,7 +17,7 @@ import { type LiveCompactionState } from "../../state/compaction-state";
 import { agentStepsFromIndex } from "../../state/session-timeline";
 import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
-import type { PromptAttachmentPreview } from "../../types";
+import type { PromptAttachmentPreview, WebSessionSummary } from "../../types";
 import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
@@ -31,6 +31,7 @@ import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./tra
 import { PrependAnchoredConversationTranscript } from "./prepend-anchored-transcript";
 import { type ConversationTranscriptScrollState, DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
+import { CollaborationFeed } from "./collaboration-feed";
 
 export type ConversationState = {
 	sessionId?: string;
@@ -774,6 +775,22 @@ export function buildPersistedRenderItems(
 	);
 }
 
+function updateLiveCompactionRenderItem(
+	items: Array<ConversationContentRenderItem | AgentStepChildRenderItem>,
+	key: string,
+	state: LiveCompactionState,
+): boolean {
+	for (const entry of items) {
+		if (entry.kind === "compaction" && entry.key === key) {
+			entry.live = true;
+			entry.state = state;
+			return true;
+		}
+		if (entry.kind === "agent-step" && updateLiveCompactionRenderItem(entry.items, key, state)) return true;
+	}
+	return false;
+}
+
 export function appendLiveRenderItems(
 	rendered: ConversationContentRenderItem[],
 	liveItems: readonly LiveTurnItem[],
@@ -825,6 +842,14 @@ export function appendLiveRenderItems(
 			continue;
 		}
 		if (item.kind === "thinking") continue;
+		if (item.kind === "compaction") {
+			if (item.turnId !== liveTurnId || !liveCompaction) continue;
+			const compaction: CompactionRenderItem = { kind: "compaction", key: item.id, live: true, state: liveCompaction };
+			if (updateLiveCompactionRenderItem(next, item.id, liveCompaction)) continue;
+			if (item.stepId && appendStepItem(item.stepId, compaction)) continue;
+			next.push(compaction);
+			continue;
+		}
 		if (item.kind === "text") {
 			const text = item.parts.join("");
 			if (!text.trim() || hasRenderItemKey(item.id)) continue;
@@ -880,16 +905,6 @@ export function appendLiveRenderItems(
 			existing.step = step;
 		} else {
 			next.push({ kind: "agent-step", key, live: true, step, items: [] });
-		}
-	}
-	if (liveCompaction) {
-		const key = `live-compaction:${liveTurnId}`;
-		const existingIndex = next.findIndex((entry) => entry.kind === "compaction" && entry.key === key);
-		if (existingIndex >= 0 && next[existingIndex]?.kind === "compaction") {
-			next[existingIndex] = { ...next[existingIndex], live: true, state: liveCompaction };
-		} else if (!hasRenderItemKey(key)) {
-			const compaction: CompactionRenderItem = { kind: "compaction", key, live: true, state: liveCompaction };
-			next.push(compaction);
 		}
 	}
 	return next;
@@ -1049,12 +1064,14 @@ export function ConversationView({
 	actions,
 	sessionTitleText,
 	onEditPrompt,
+	collaborationSessions = [],
 	allowPromptEditing = true,
 }: {
 	state: ConversationState;
 	actions: ConversationActions;
 	sessionTitleText: string;
 	onEditPrompt: (request: PromptEditRequest) => void;
+	collaborationSessions?: WebSessionSummary[];
 	allowPromptEditing?: boolean;
 }) {
 	const responseActive = isConversationResponseActive(state);
@@ -1206,6 +1223,7 @@ export function ConversationView({
 					toolStatuses={toolIndex.statuses}
 					liveElapsedChange={recordLiveElapsed}
 					onEditPrompt={onEditPrompt}
+					collaborationSessions={collaborationSessions}
 				/>
 			</Conversation>
 		</>
@@ -1220,6 +1238,7 @@ function ConversationBody({
 	toolStatuses,
 	liveElapsedChange,
 	onEditPrompt,
+	collaborationSessions,
 }: {
 	state: ConversationState;
 	actions: ConversationActions;
@@ -1228,6 +1247,7 @@ function ConversationBody({
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
 	liveElapsedChange: (sentAt: number, seconds: number) => void;
 	onEditPrompt: (request: PromptEditRequest) => void;
+	collaborationSessions: WebSessionSummary[];
 }) {
 	const responseActive = isConversationResponseActive(state);
 	const thinkingText = activeThinkingText(state.liveTurnItems);
@@ -1741,7 +1761,16 @@ function ConversationBody({
 					loadingEarlier={state.loadingEarlier}
 					getKey={transcriptItemKey}
 					estimateHeight={estimateTranscriptItemHeight}
-					footer={<ThinkingBlock text={thinkingText} />}
+					footer={
+						<div className="grid gap-3">
+							<CollaborationFeed
+								sessions={collaborationSessions}
+								onOpenSession={(sessionId) => void actions.selectSession?.(sessionId)}
+								onOpenPath={openResource}
+							/>
+							<ThinkingBlock text={thinkingText} />
+						</div>
+					}
 					gap={transcriptGap}
 					header={historyStatus}
 					renderItem={renderConversationItem}

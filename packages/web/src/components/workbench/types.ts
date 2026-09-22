@@ -84,6 +84,7 @@ export interface WorkbenchActions {
 	setSessionPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 	fork: (entryId: string) => Promise<void>;
 	reloadResources: () => Promise<void>;
+	refreshProjectSessions: (projectId: string) => Promise<void>;
 	compact: (customInstructions?: string) => Promise<void>;
 	exportSession: () => Promise<void>;
 	updateModel: (provider: string, id: string) => Promise<void>;
@@ -113,10 +114,12 @@ export interface WorkbenchActions {
 		originalName?: string;
 		name: string;
 		description: string;
+		icon?: string;
 		provider?: string;
 		model?: string;
 		thinkingLevel?: WebThinkingLevel;
 		tools?: string[];
+		skills?: string[];
 		content: string;
 		expectedHash?: string;
 	}) => Promise<boolean>;

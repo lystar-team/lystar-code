@@ -7,8 +7,10 @@ import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../ui/dialog";
 import { Input } from "../../ui/input";
 import { Spinner } from "../../ui/spinner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
 import type { WorkbenchActions } from "../types";
+import { AGENT_ICON_OPTIONS } from "../collaboration-session";
 import type { WorkbenchState } from "../../../state/use-workbench";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor";
 import { SettingSection } from "./shared";
@@ -23,6 +25,7 @@ function AgentConfigurationFields({
 	availableModels,
 	thinkingLevels,
 	toolOptions,
+	skillOptions,
 	onChange,
 }: {
 	className?: string;
@@ -31,6 +34,7 @@ function AgentConfigurationFields({
 	availableModels: readonly AgentModelOption[];
 	thinkingLevels: readonly WebThinkingLevel[];
 	toolOptions: readonly string[];
+	skillOptions: Readonly<WorkbenchState["skills"]>;
 	onChange: (draft: AgentDraft) => void;
 }) {
 	return (
@@ -51,6 +55,19 @@ function AgentConfigurationFields({
 					<label className="grid gap-2 text-sm font-medium">
 						描述
 						<Input value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} placeholder="说明该智能体负责的任务" />
+					</label>
+					<label className="grid gap-2 text-sm font-medium" htmlFor="agent-icon">
+						图标
+						<Select value={draft.icon} onValueChange={(icon) => onChange({ ...draft, icon })}>
+							<SelectTrigger id="agent-icon" className="w-full">
+								<SelectValue placeholder="选择图标" />
+							</SelectTrigger>
+							<SelectContent>
+								{AGENT_ICON_OPTIONS.map((option) => (
+									<SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
 					</label>
 				</div>
 			</SettingSection>
@@ -97,6 +114,44 @@ function AgentConfigurationFields({
 							</label>
 						))}
 					</div>
+				</div>
+			</SettingSection>
+
+			<SettingSection title="Skill">
+				<div className="grid gap-2">
+					<div className="flex items-center justify-between gap-3">
+						<p className="text-xs text-muted-foreground">不选择时沿用项目可用 Skill；选择后只加载勾选项。</p>
+						<span className="shrink-0 text-xs text-muted-foreground">
+							{draft.skills.length ? `已选择 ${draft.skills.length}/${skillOptions.length}` : "沿用项目配置"}
+						</span>
+					</div>
+					{skillOptions.length ? (
+						<div className="grid gap-2 rounded-lg border border-border/70 p-3">
+							{skillOptions.map((skill) => (
+								<label key={skill.name} className="flex items-start gap-2 text-sm">
+									<input
+										className="mt-0.5"
+										type="checkbox"
+										checked={draft.skills.includes(skill.name)}
+										onChange={(event) =>
+											onChange({
+											...draft,
+											skills: event.target.checked
+												? [...draft.skills, skill.name]
+												: draft.skills.filter((candidate) => candidate !== skill.name),
+										})
+										}
+									/>
+									<span className="min-w-0">
+										<span className="block font-medium">{skill.name}</span>
+										<span className="block truncate text-xs text-muted-foreground">{skill.description}</span>
+									</span>
+								</label>
+							))}
+						</div>
+					) : (
+						<div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">当前项目没有可选 Skill</div>
+					)}
 				</div>
 			</SettingSection>
 		</div>
@@ -149,6 +204,8 @@ interface AgentDraft {
 	model: string;
 	thinkingLevel: WebThinkingLevel | "";
 	tools: string[];
+	skills: string[];
+	icon: string;
 	content: string;
 }
 
@@ -168,6 +225,8 @@ function draftFor(config?: SubagentConfig): AgentDraft {
 		model: config?.model ?? "",
 		thinkingLevel: config?.thinkingLevel ?? "",
 		tools: config?.tools ?? [],
+		skills: config?.skills ?? [],
+		icon: config?.icon ?? "general",
 		content: config?.content ?? "",
 	};
 }
@@ -203,6 +262,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 		? THINKING_LEVELS.filter((level) => selectedModel.supportedThinkingLevels.includes(level))
 		: THINKING_LEVELS;
 	const toolOptions = [...new Set([...DEFAULT_TOOLS, ...(draft?.tools ?? [])])];
+	const skillOptions = state.skills.filter((skill) => skill.eligible && skill.enabled);
 
 	const openDraft = (config?: SubagentConfig) => {
 		setDraft(draftFor(config));
@@ -229,7 +289,9 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 			...(draft.provider ? { provider: draft.provider } : {}),
 			...(draft.model ? { model: draft.model } : {}),
 			...(draft.thinkingLevel ? { thinkingLevel: draft.thinkingLevel } : {}),
+			...(draft.icon ? { icon: draft.icon } : {}),
 			...(draft.tools.length > 0 ? { tools: draft.tools } : {}),
+			...(draft.skills.length > 0 ? { skills: draft.skills } : {}),
 			content: draft.content,
 			...(draft.source?.contentHash ? { expectedHash: draft.source.contentHash } : {}),
 		});
@@ -327,6 +389,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 										availableModels={availableModels}
 										thinkingLevels={thinkingLevels}
 										toolOptions={toolOptions}
+										skillOptions={skillOptions}
 										onChange={setDraft}
 									/>
 								</TabsContent>
@@ -349,6 +412,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 									availableModels={availableModels}
 									thinkingLevels={thinkingLevels}
 									toolOptions={toolOptions}
+									skillOptions={skillOptions}
 									onChange={setDraft}
 								/>
 								<AgentMarkdownPanel

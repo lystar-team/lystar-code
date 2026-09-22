@@ -326,7 +326,9 @@ export function useWorkbenchStreamActions({
 			if (event.type === "session_stream") {
 				if (event.sessionId !== stateRef.current.sessionId) return;
 				updateState((current) => {
-					const retained = current.liveTurnItems.filter((item) => item.kind === "tools" || item.kind === "user");
+					const retained = current.liveTurnItems.filter(
+						(item) => item.kind === "tools" || item.kind === "user" || item.kind === "compaction",
+					);
 					const tools = retained.filter((item) => item.kind === "tools");
 					let items: LiveTurnItem[] = retained;
 					if (event.thinking)

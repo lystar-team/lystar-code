@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- 新增协作会话工作区元数据，支持 `shared`、`worktree` 和 `patch` 模式，结果可携带变更文件、交付 Commit 和补丁路径。
+- 新增 Room 协作通信层，支持成员、消息、Cursor、direct、broadcast、one-of-us 路由、幂等键和 JSONL 重启恢复。
+
 ## [0.86.0-lystar.4] - 2026-09-20
 
 ### Fixed

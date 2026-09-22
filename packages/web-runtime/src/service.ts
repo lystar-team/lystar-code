@@ -2,6 +2,19 @@ import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+	discoverSessionProfiles,
+	readSessionSnapshot,
+	type SessionCollaborationResult,
+	type SessionCoordinator,
+	type SessionCoordinatorProfile,
+	type SessionCoordinatorResult,
+	type SessionCoordinatorSummary,
+	type SessionRoomMessage,
+	type SessionSendMode,
+	type SessionWorkspaceMode,
+	type SessionWorkspaceSnapshot,
+} from "@earendil-works/pi-coding-agent/core";
+import {
 	type AgentStep,
 	assertWorkspaceCommandResult,
 	type Capability,
@@ -21,11 +34,14 @@ import {
 	type SubagentSnapshot,
 	type TranscriptItem,
 } from "@lystar/code-web-protocol";
+import { CollaborationWorkspaceManager } from "./collaboration-workspace.ts";
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
 import { WebSessionHandoffServer } from "./session-handoff-server.ts";
+import { SessionRoomCoordinator } from "./session-room-coordinator.ts";
+import { SessionRoomStore } from "./session-room-store.ts";
 import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
@@ -407,6 +423,8 @@ export class WebRuntimeService {
 	private readonly leases = new LeaseManager();
 	private readonly transcriptReader = new TranscriptReader();
 	private readonly contentStore = new ContentStore();
+	private readonly collaborationWorkspaces: CollaborationWorkspaceManager;
+	private readonly roomCoordinator: SessionRoomCoordinator;
 	private readonly journal: OperationJournal;
 	private readonly adapter: RuntimeAdapter;
 	private readonly capabilities: Capability[];
@@ -418,6 +436,9 @@ export class WebRuntimeService {
 	private readonly sessionHandoffHosts = new Map<string, SessionHandoffHost>();
 	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
 	private readonly sessionsInHandoff = new Set<string>();
+	private readonly coordinatorTasks = new Map<string, Promise<SessionCoordinatorResult | undefined>>();
+	private readonly coordinatorDemand = new Set<string>();
+	private readonly roomDeliveryDemand = new Set<string>();
 	private readonly sessionsBeingDeleted = new Set<string>();
 	private modelCatalogRevision = 1;
 	private readonly sessionWatchers = new Map<string, FSWatcher>();
@@ -440,6 +461,13 @@ export class WebRuntimeService {
 	) {
 		this.adapter = adapter;
 		this.agentDir = options.agentDir;
+		this.collaborationWorkspaces = new CollaborationWorkspaceManager(this.agentDir);
+		this.roomCoordinator = new SessionRoomCoordinator({
+			store: new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl")),
+			getAvailability: (cwd, sessionId) => this.getSessionRoomAvailability(cwd, sessionId),
+			deliver: (input) => this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message),
+		});
+		this.adapter.setSessionCoordinator?.(this.createSessionCoordinator());
 		this.persistent = options.persistent === true;
 		this.startupInput = options.startupInput;
 		this.startupSessionPath = options.startupSessionPath
@@ -454,6 +482,441 @@ export class WebRuntimeService {
 		}
 		this.contentCleanupTimer = setInterval(() => this.contentStore.evictExpired(), CONTENT_CLEANUP_INTERVAL_MS);
 		this.contentCleanupTimer.unref?.();
+	}
+
+	private createSessionCoordinator(): SessionCoordinator {
+		return {
+			room: this.roomCoordinator.api(),
+			create: (input) => this.createCoordinatorSession(input),
+			send: (input) => this.sendCoordinatorMessage(input),
+			wait: (input) => this.waitForCoordinatorSessions(input),
+			list: (input) => this.listCoordinatorSessions(input),
+			profiles: (input) => this.listCoordinatorProfiles(input),
+			stop: (input) => this.stopCoordinatorSession(input),
+		};
+	}
+
+	private coordinatorUiHandler(sessionPath?: string): UiRequestHandler {
+		return this.createUiRequestHandler(() => `session-coordinator:${sessionPath ?? "pending"}`, sessionPath);
+	}
+
+	private coordinatorSummary(
+		base: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>[number],
+		runtime?: RuntimeSession,
+	): SessionCoordinatorSummary {
+		const snapshot = runtime?.getSnapshot("available");
+		const activity =
+			snapshot && isActiveSessionActivity(snapshot.activity)
+				? snapshot.activity
+				: base.activity !== "idle"
+					? base.activity
+					: (base.collaborationResult?.outcome ?? base.activity);
+		return {
+			id: base.id,
+			...(base.name ? { name: base.name } : {}),
+			cwd: base.cwd,
+			...(base.parentId ? { parentId: base.parentId } : {}),
+			...(base.profileId ? { profileId: base.profileId } : {}),
+			...(base.profileName ? { profileName: base.profileName } : {}),
+			...(base.profileIcon ? { profileIcon: base.profileIcon } : {}),
+			activity,
+			messageCount: base.messageCount,
+			firstMessage: base.firstMessage,
+			...(base.workspace ? { workspace: base.workspace } : {}),
+			...(base.taskId ? { taskId: base.taskId } : {}),
+			...(base.taskDescription ? { taskDescription: base.taskDescription } : {}),
+			...(base.collaborationResult ? { result: { ...base.collaborationResult, sessionId: base.id } } : {}),
+		};
+	}
+
+	private async findCoordinatorSession(
+		cwd: string,
+		sessionId: string,
+	): Promise<{ base: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>[number]; path: string }> {
+		const sessions = await this.adapter.listSessions(cwd);
+		const session = sessions.find((item) => item.id === sessionId);
+		if (!session) throw Object.assign(new Error(`未找到会话：${sessionId}`), { code: "session_not_found" });
+		return { base: session, path: canonicalSessionPath(session.path) };
+	}
+
+	private async persistCoordinatorResult(runtime: RuntimeSession, result: SessionCollaborationResult): Promise<void> {
+		if (!runtime.recordCollaborationResult) {
+			throw Object.assign(new Error("当前会话运行时不支持持久化协作结果"), {
+				code: "session_result_persistence_unavailable",
+				retryable: true,
+			});
+		}
+		await runtime.recordCollaborationResult(result);
+	}
+
+	private async runCoordinatorPrompt(
+		runtime: RuntimeSession,
+		taskId: string,
+		text: string,
+		workspace?: SessionWorkspaceSnapshot,
+	): Promise<SessionCoordinatorResult> {
+		const snapshot = runtime.getSnapshot("available");
+		let promptSucceeded = false;
+		let errorMessage: string | undefined;
+		try {
+			await runtime.prompt(text);
+			promptSucceeded = true;
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		}
+
+		const sessions = await this.adapter.listSessions(workspace?.projectCwd ?? snapshot.cwd);
+		const base = sessions.find(
+			(session) => canonicalSessionPath(session.path) === canonicalSessionPath(runtime.sessionPath),
+		);
+		const outcome: SessionCoordinatorResult["outcome"] = promptSucceeded
+			? base?.activity === "completed" ||
+				base?.activity === "failed" ||
+				base?.activity === "aborted" ||
+				base?.activity === "interrupted"
+				? base.activity
+				: "completed"
+			: base?.activity === "failed" || base?.activity === "aborted" || base?.activity === "interrupted"
+				? base.activity
+				: "failed";
+		const resultText = promptSucceeded
+			? runtime.getLastAssistantTextAsync
+				? await runtime.getLastAssistantTextAsync()
+				: runtime.getLastAssistantText()
+			: undefined;
+		let delivery: Awaited<ReturnType<CollaborationWorkspaceManager["collect"]>> | undefined;
+		if (workspace) {
+			try {
+				delivery = await this.collaborationWorkspaces.collect(workspace, outcome);
+			} catch (error) {
+				const deliveryError = error instanceof Error ? error.message : String(error);
+				errorMessage = [errorMessage, `工作区交付失败：${deliveryError}`].filter(Boolean).join("\n");
+			}
+		}
+		const result: SessionCoordinatorResult = {
+			taskId,
+			sessionId: snapshot.id,
+			outcome,
+			...(resultText ? { resultText } : {}),
+			...(errorMessage ? { error: errorMessage } : {}),
+			completedAt: new Date().toISOString(),
+			...(delivery
+				? {
+						workspace: delivery.workspace,
+						changedFiles: delivery.changedFiles,
+						...(delivery.deliveryCommit ? { deliveryCommit: delivery.deliveryCommit } : {}),
+						...(delivery.patchPath ? { patchPath: delivery.patchPath } : {}),
+					}
+				: {}),
+		};
+		await this.persistCoordinatorResult(runtime, result);
+		return result;
+	}
+
+	private async recoverCoordinatorTask(
+		found: Awaited<ReturnType<WebRuntimeService["findCoordinatorSession"]>>,
+	): Promise<void> {
+		if (!found.base.taskId || found.base.collaborationResult) return;
+		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
+		if (found.base.activity === "running" || found.base.activity === "waiting_for_input") {
+			await runtime.abort();
+		}
+		const outcome: SessionCoordinatorResult["outcome"] =
+			found.base.activity === "completed" ||
+			found.base.activity === "failed" ||
+			found.base.activity === "aborted" ||
+			found.base.activity === "interrupted"
+				? found.base.activity
+				: "interrupted";
+		const resultText = runtime.getLastAssistantTextAsync
+			? await runtime.getLastAssistantTextAsync()
+			: runtime.getLastAssistantText();
+		let delivery: Awaited<ReturnType<CollaborationWorkspaceManager["collect"]>> | undefined;
+		let errorMessage = outcome === "interrupted" ? "Runtime 重启后任务未完成" : undefined;
+		if (found.base.workspace) {
+			try {
+				delivery = await this.collaborationWorkspaces.collect(found.base.workspace, outcome);
+			} catch (error) {
+				const deliveryError = error instanceof Error ? error.message : String(error);
+				errorMessage = [errorMessage, `工作区交付失败：${deliveryError}`].filter(Boolean).join("\n");
+			}
+		}
+		await this.persistCoordinatorResult(runtime, {
+			taskId: found.base.taskId,
+			outcome,
+			...(resultText ? { resultText } : {}),
+			...(errorMessage ? { error: errorMessage } : {}),
+			completedAt: new Date().toISOString(),
+			...(delivery
+				? {
+						workspace: delivery.workspace,
+						changedFiles: delivery.changedFiles,
+						...(delivery.deliveryCommit ? { deliveryCommit: delivery.deliveryCommit } : {}),
+						...(delivery.patchPath ? { patchPath: delivery.patchPath } : {}),
+					}
+				: {}),
+		});
+	}
+
+	private trackCoordinatorTask(sessionPath: string, task: Promise<SessionCoordinatorResult | undefined>): void {
+		this.coordinatorDemand.add(sessionPath);
+		const tracked = task.finally(async () => {
+			if (this.coordinatorTasks.get(sessionPath) !== tracked) return;
+			this.coordinatorTasks.delete(sessionPath);
+			this.coordinatorDemand.delete(sessionPath);
+			const runtime = this.runtimes.get(sessionPath);
+			if (runtime) {
+				await this.sendSessionSnapshots(runtime);
+				await this.broadcast({ type: "transcript_changed", sessionPath });
+				await this.broadcast({ type: "sessions_changed", cwd: runtime.getSnapshot("available").cwd });
+			}
+			await this.disposeRuntimeIfUnused(sessionPath);
+		});
+		this.coordinatorTasks.set(sessionPath, tracked);
+		void tracked.catch(() => {});
+	}
+
+	private async createCoordinatorSession(
+		input: Parameters<SessionCoordinator["create"]>[0],
+	): Promise<Awaited<ReturnType<SessionCoordinator["create"]>>> {
+		const profileId = input.profileId;
+		const taskText = input.task?.trim();
+		if (input.workspaceMode && !taskText) {
+			throw Object.assign(new Error("指定工作区模式时必须提供任务"), {
+				code: "workspace_task_required",
+				retryable: false,
+			});
+		}
+		const collaborationTask = taskText
+			? {
+					id: randomUUID(),
+					description: taskText,
+					...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+					createdAt: new Date().toISOString(),
+				}
+			: undefined;
+		const workspaceMode: SessionWorkspaceMode | undefined = collaborationTask
+			? (input.workspaceMode ?? "worktree")
+			: undefined;
+		const workspace = workspaceMode
+			? await this.collaborationWorkspaces.create(input.cwd, workspaceMode, randomUUID())
+			: undefined;
+		let runtime: RuntimeSession;
+		try {
+			runtime = await this.adapter.createSession(workspace?.cwd ?? input.cwd, this.coordinatorUiHandler(), {
+				parentSession: input.parentSessionFile,
+				...(profileId ? { profileId } : {}),
+				...(collaborationTask ? { collaborationTask } : {}),
+				...(workspace ? { collaborationWorkspace: workspace } : {}),
+				...(this.adapter.getSessionDirectory ? { sessionDir: this.adapter.getSessionDirectory(input.cwd) } : {}),
+				...(workspace?.mode === "shared" ? { readOnly: true } : {}),
+			});
+		} catch (error) {
+			if (workspace) await this.collaborationWorkspaces.release(workspace).catch(() => {});
+			throw error;
+		}
+		const sessionPath = canonicalSessionPath(runtime.sessionPath);
+		this.attachRuntime(runtime);
+		await this.ensureSessionHandoffServer(runtime);
+		if (collaborationTask) {
+			this.trackCoordinatorTask(
+				sessionPath,
+				this.runCoordinatorPrompt(runtime, collaborationTask.id, collaborationTask.description, workspace),
+			);
+		}
+		const sessions = await this.adapter.listSessions(input.cwd);
+		const base = sessions.find((item) => canonicalSessionPath(item.path) === sessionPath);
+		if (!base) throw new Error("新建会话未出现在会话列表中");
+		await this.broadcast({ type: "sessions_changed", cwd: input.cwd });
+		return {
+			session: this.coordinatorSummary(base, runtime),
+			accepted: true,
+			...(collaborationTask ? { taskId: collaborationTask.id } : {}),
+		};
+	}
+
+	private getSessionRoomAvailability(_cwd: string, sessionId: string): SessionActivity | undefined {
+		for (const runtime of this.runtimes.values()) {
+			const snapshot = runtime.getSnapshot("available");
+			if (snapshot.id === sessionId) return snapshot.activity;
+		}
+		return undefined;
+	}
+
+	private async deliverSessionRoomMessage(
+		cwd: string,
+		targetSessionId: string,
+		message: SessionRoomMessage,
+	): Promise<void> {
+		if (message.kind === "answer") return;
+		const found = await this.findCoordinatorSession(cwd, targetSessionId);
+		const sessionPath = canonicalSessionPath(found.path);
+		this.roomDeliveryDemand.add(sessionPath);
+		try {
+			const runtime = await this.ensureRuntime(sessionPath, this.coordinatorUiHandler(sessionPath));
+			const text = SessionRoomCoordinator.formatMessageForSession(message);
+			const activity = runtime.getSnapshot("available").activity;
+			if (activity === "running") await runtime.steer(text);
+			else if (activity === "waiting_for_input") await runtime.followUp(text);
+			else await runtime.prompt(text);
+			await this.waitForRuntimeIdle(runtime, 10 * 60 * 1000);
+			await this.sendSessionSnapshots(runtime);
+			const replyText = runtime.getLastAssistantTextAsync
+				? await runtime.getLastAssistantTextAsync()
+				: runtime.getLastAssistantText();
+			if (!replyText?.trim()) return;
+			await this.roomCoordinator.api().send({
+				cwd,
+				roomId: message.roomId,
+				senderSessionId: targetSessionId,
+				route: "direct",
+				targetSessionIds: [message.senderSessionId],
+				kind: "answer",
+				body: replyText.trim(),
+				...(message.taskId ? { taskId: message.taskId } : {}),
+				replyToMessageId: message.id,
+				basedOnSeq: message.seq,
+				idempotencyKey: `room-answer:${message.id}:${targetSessionId}`,
+			});
+		} finally {
+			this.roomDeliveryDemand.delete(sessionPath);
+			await this.disposeRuntimeIfUnused(sessionPath);
+		}
+	}
+
+	private async sendCoordinatorMessage(
+		input: Parameters<SessionCoordinator["send"]>[0],
+	): Promise<SessionCoordinatorSummary> {
+		const found = await this.findCoordinatorSession(input.cwd, input.sessionId);
+		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
+		const mode: SessionSendMode = input.mode ?? "auto";
+		if (mode === "steer" || (mode === "auto" && runtime.getSnapshot("available").activity === "running")) {
+			await runtime.steer(input.text);
+		} else if (
+			mode === "follow_up" ||
+			(mode === "auto" && runtime.getSnapshot("available").activity === "waiting_for_input")
+		) {
+			await runtime.followUp(input.text);
+		} else {
+			const task = found.base.taskId
+				? this.runCoordinatorPrompt(runtime, found.base.taskId, input.text, found.base.workspace)
+				: runtime.prompt(input.text).then(() => undefined);
+			this.trackCoordinatorTask(found.path, task);
+		}
+		await this.sendSessionSnapshots(runtime);
+		return this.coordinatorSummary(found.base, runtime);
+	}
+
+	private async waitForRuntimeIdle(runtime: RuntimeSession, timeoutMs: number): Promise<void> {
+		const terminal = new Set(["idle", "completed", "failed", "aborted", "interrupted"]);
+		if (terminal.has(runtime.getSnapshot("available").activity)) return;
+		await new Promise<void>((resolvePromise, rejectPromise) => {
+			let settled = false;
+			const finish = (error?: Error) => {
+				if (settled) return;
+				settled = true;
+				unsubscribe();
+				clearTimeout(timer);
+				if (error) rejectPromise(error);
+				else resolvePromise();
+			};
+			const unsubscribe = runtime.onEvent(() => {
+				if (terminal.has(runtime.getSnapshot("available").activity)) finish();
+			});
+			const timer = setTimeout(
+				() =>
+					finish(Object.assign(new Error("等待会话完成超时"), { code: "session_wait_timeout", retryable: true })),
+				timeoutMs,
+			);
+		});
+	}
+
+	private async waitForCoordinatorTask(
+		task: Promise<SessionCoordinatorResult | undefined>,
+		timeoutMs: number,
+	): Promise<void> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				task,
+				new Promise<void>((_, reject) => {
+					timer = setTimeout(
+						() =>
+							reject(
+								Object.assign(new Error("等待会话完成超时"), { code: "session_wait_timeout", retryable: true }),
+							),
+						timeoutMs,
+					);
+				}),
+			]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	}
+
+	private async waitForCoordinatorSessions(
+		input: Parameters<SessionCoordinator["wait"]>[0],
+	): Promise<SessionCoordinatorSummary[]> {
+		const timeoutMs = input.timeoutMs ?? 10 * 60 * 1000;
+		const found = await Promise.all(
+			input.sessionIds.map((sessionId) => this.findCoordinatorSession(input.cwd, sessionId)),
+		);
+		await Promise.all(
+			found.map(async (item) => {
+				const task = this.coordinatorTasks.get(item.path);
+				if (task) {
+					await this.waitForCoordinatorTask(task, timeoutMs);
+					return;
+				}
+				if (item.base.taskId && !item.base.collaborationResult) {
+					await this.recoverCoordinatorTask(item);
+					return;
+				}
+				const runtime = this.runtimes.get(item.path);
+				if (runtime) await this.waitForRuntimeIdle(runtime, timeoutMs);
+			}),
+		);
+		const refreshed = await this.adapter.listSessions(input.cwd);
+		const byId = new Map(refreshed.map((session) => [session.id, session]));
+		return input.sessionIds.map((sessionId) => {
+			const base = byId.get(sessionId);
+			if (!base) throw Object.assign(new Error(`未找到会话：${sessionId}`), { code: "session_not_found" });
+			return this.coordinatorSummary(base, this.runtimes.get(canonicalSessionPath(base.path)));
+		});
+	}
+
+	private async listCoordinatorSessions(
+		input: Parameters<SessionCoordinator["list"]>[0],
+	): Promise<SessionCoordinatorSummary[]> {
+		const sessions = await this.adapter.listSessions(input.cwd);
+		return sessions
+			.filter((session) => !input.parentSessionId || session.parentId === input.parentSessionId)
+			.map((session) => this.coordinatorSummary(session, this.runtimes.get(canonicalSessionPath(session.path))));
+	}
+
+	private async listCoordinatorProfiles(input: { cwd: string }): Promise<SessionCoordinatorProfile[]> {
+		return discoverSessionProfiles(input.cwd, this.agentDir).map((profile) => ({
+			id: profile.id,
+			name: profile.name,
+			description: profile.description,
+			scope: profile.scope,
+			...(profile.icon ? { icon: profile.icon } : {}),
+		}));
+	}
+
+	private async stopCoordinatorSession(
+		input: Parameters<SessionCoordinator["stop"]>[0],
+	): Promise<SessionCoordinatorSummary> {
+		const found = await this.findCoordinatorSession(input.cwd, input.sessionId);
+		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
+		const task = this.coordinatorTasks.get(found.path);
+		await runtime.abort();
+		if (task) await task.catch(() => {});
+		if (!task && found.base.taskId && !found.base.collaborationResult) await this.recoverCoordinatorTask(found);
+		await this.sendSessionSnapshots(runtime);
+		const refreshed = await this.adapter.listSessions(input.cwd);
+		const base = refreshed.find((session) => session.id === input.sessionId) ?? found.base;
+		return this.coordinatorSummary(base, runtime);
 	}
 
 	createConnection(send: (message: ServerMessage) => Promise<void>): {
@@ -500,6 +963,17 @@ export class WebRuntimeService {
 
 	async dispose(): Promise<void> {
 		this.disposed = true;
+		const coordinatorTasks = [...this.coordinatorTasks.values()];
+		this.roomDeliveryDemand.clear();
+		await Promise.allSettled(
+			[...this.coordinatorTasks.keys()].map(async (sessionPath) => {
+				const runtime = this.runtimes.get(sessionPath);
+				if (runtime) await runtime.abort();
+			}),
+		);
+		await Promise.allSettled(coordinatorTasks);
+		this.coordinatorTasks.clear();
+		this.coordinatorDemand.clear();
 		if (this.sessionRefreshTimer) clearTimeout(this.sessionRefreshTimer);
 		if (this.sessionFallbackTimer) clearTimeout(this.sessionFallbackTimer);
 		for (const watcher of this.sessionWatchers.values()) watcher.close();
@@ -665,6 +1139,67 @@ export class WebRuntimeService {
 				const query = request.query.toLowerCase();
 				return sessions.filter((session) => JSON.stringify(session).toLowerCase().includes(query));
 			}
+			case "room_create":
+				return jsonValue(
+					await this.roomCoordinator.api().create({
+						cwd: canonicalProjectCwd(request.cwd),
+						ownerSessionId: request.ownerSessionId,
+						...(request.title !== undefined ? { title: request.title } : {}),
+						...(request.mode !== undefined ? { mode: request.mode } : {}),
+					}),
+				);
+			case "room_list":
+				return jsonValue(
+					await this.roomCoordinator.api().list({
+						cwd: canonicalProjectCwd(request.cwd),
+						sessionId: request.sessionId,
+					}),
+				);
+			case "room_project_list":
+				return jsonValue(await this.roomCoordinator.api().listAll({ cwd: canonicalProjectCwd(request.cwd) }));
+			case "room_join":
+				return jsonValue(
+					await this.roomCoordinator.api().join({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						sessionId: request.sessionId,
+					}),
+				);
+			case "room_leave":
+				return jsonValue(
+					await this.roomCoordinator.api().leave({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						sessionId: request.sessionId,
+					}),
+				);
+			case "room_send":
+				return jsonValue(
+					await this.roomCoordinator.api().send({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						senderSessionId: request.senderSessionId,
+						route: request.route,
+						...(request.targetSessionIds ? { targetSessionIds: request.targetSessionIds } : {}),
+						...(request.kind ? { kind: request.kind } : {}),
+						body: request.body,
+						...(request.taskId ? { taskId: request.taskId } : {}),
+						...(request.replyToMessageId ? { replyToMessageId: request.replyToMessageId } : {}),
+						...(request.basedOnSeq !== undefined ? { basedOnSeq: request.basedOnSeq } : {}),
+						...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+					}),
+				);
+			case "room_read":
+				return jsonValue(
+					await this.roomCoordinator.api().read({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						sessionId: request.sessionId,
+						...(request.afterSeq !== undefined ? { afterSeq: request.afterSeq } : {}),
+						...(request.limit !== undefined ? { limit: request.limit } : {}),
+						...(request.markRead !== undefined ? { markRead: request.markRead } : {}),
+					}),
+				);
 			case "read_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				const page = await this.transcriptReader.read(sessionPath, {
@@ -696,7 +1231,7 @@ export class WebRuntimeService {
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `session-collection:${cwd}`,
-					payload: { cwd },
+					payload: { cwd, ...(request.profileId ? { profileId: request.profileId } : {}) },
 					run: async () => {
 						let sessionPath: string | undefined;
 						const controlOperationId = `control:${request.clientInstanceId}`;
@@ -710,6 +1245,7 @@ export class WebRuntimeService {
 								() => sessionPath,
 								request.clientInstanceId,
 							),
+							request.profileId ? { profileId: request.profileId } : undefined,
 						);
 						sessionPath = canonicalSessionPath(runtime.sessionPath);
 						let lease: ReturnType<LeaseManager["acquire"]> | undefined;
@@ -1324,6 +1860,8 @@ export class WebRuntimeService {
 						...(request.model ? { model: request.model } : {}),
 						...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 						...(request.tools ? { tools: request.tools } : {}),
+						...(request.skills ? { skills: request.skills } : {}),
+						...(request.icon ? { icon: request.icon } : {}),
 						content: request.content,
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 					},
@@ -1340,6 +1878,8 @@ export class WebRuntimeService {
 								...(request.model ? { model: request.model } : {}),
 								...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 								...(request.tools ? { tools: request.tools } : {}),
+								...(request.skills ? { skills: request.skills } : {}),
+								...(request.icon ? { icon: request.icon } : {}),
 								content: request.content,
 								...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 							},
@@ -1996,8 +2536,20 @@ export class WebRuntimeService {
 				const sessionPath = canonicalSessionPath(session.path);
 				const latestOperation = this.latestOperation(sessionPath);
 				return {
-					...session,
 					path: sessionPath,
+					id: session.id,
+					cwd: session.cwd,
+					...(session.name ? { name: session.name } : {}),
+					...(session.parentId ? { parentId: session.parentId } : {}),
+					...(session.relation ? { relation: session.relation } : {}),
+					...(session.profileId ? { profileId: session.profileId } : {}),
+					...(session.profileName ? { profileName: session.profileName } : {}),
+					...(session.profileIcon ? { profileIcon: session.profileIcon } : {}),
+					...(session.workspace ? { workspace: session.workspace } : {}),
+					createdAt: session.createdAt,
+					updatedAt: session.updatedAt,
+					messageCount: session.messageCount,
+					firstMessage: session.firstMessage,
 					activity: await this.resolveSessionActivity(sessionPath, session.activity, latestOperation, connection),
 					writeAccess: this.sessionWriteAccess(sessionPath, connection),
 					...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
@@ -2078,6 +2630,13 @@ export class WebRuntimeService {
 				});
 			}
 			if (!existsSync(sessionPath)) throw Object.assign(new Error("未找到会话"), { code: "not_found" });
+			let workspace: SessionWorkspaceSnapshot | undefined;
+			try {
+				workspace = readSessionSnapshot(sessionPath).header.collaborationWorkspace;
+			} catch {
+				workspace = undefined;
+			}
+			if (workspace) await this.collaborationWorkspaces.release(workspace);
 			await this.adapter.deleteSession(sessionPath);
 			await this.broadcast({ type: "session_removed", sessionPath });
 		} finally {
@@ -2972,6 +3531,8 @@ export class WebRuntimeService {
 
 	private runtimeHasDemand(sessionPath: string, runtime: RuntimeSession | undefined): boolean {
 		return (
+			this.coordinatorDemand.has(sessionPath) ||
+			this.roomDeliveryDemand.has(sessionPath) ||
 			this.leases.has(sessionPath) ||
 			this.activeOperationBySession.has(sessionPath) ||
 			runtime?.hasExternalClients?.() === true
