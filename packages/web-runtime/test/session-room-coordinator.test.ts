@@ -25,8 +25,8 @@ describe("SessionRoomCoordinator", () => {
 		});
 		const api = coordinator.api();
 		const created = await api.create({ cwd: root, ownerSessionId: "owner", title: "协作测试" });
-		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-a" });
-		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-b" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-a", profileId: "worker-a" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-b", profileId: "worker-b" });
 
 		const sent = await api.send({
 			cwd: root,
@@ -57,6 +57,74 @@ describe("SessionRoomCoordinator", () => {
 		expect(read.cursor).toEqual({ roomId: created.room.id, sessionId: "member-b", lastReadSeq: 1 });
 	});
 
+	it("broadcasts a user prompt to every active Room Agent, including the current session", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-user-broadcast-"));
+		tempDirs.push(root);
+		const deliveries: SessionRoomDeliveryInput[] = [];
+		const coordinator = new SessionRoomCoordinator({
+			store: new SessionRoomStore(join(root, "rooms.jsonl")),
+			deliver: async (input) => {
+				deliveries.push(input);
+			},
+		});
+		const api = coordinator.api();
+		const created = await api.create({ cwd: root, ownerSessionId: "owner" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-a", profileId: "worker-a" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-b", profileId: "worker-b" });
+
+		const sent = await api.send({
+			cwd: root,
+			roomId: created.room.id,
+			senderSessionId: "owner",
+			senderType: "user",
+			route: "broadcast",
+			body: "请分别回复",
+		});
+
+		expect(sent.message.senderType).toBe("user");
+		expect([...sent.deliveredTo].sort()).toEqual(["member-a", "member-b", "owner"]);
+		await expect
+			.poll(() => deliveries.map((delivery) => delivery.targetSessionId).sort())
+			.toEqual(["member-a", "member-b", "owner"]);
+		const ownerRead = await api.read({ cwd: root, roomId: created.room.id, sessionId: "owner", markRead: false });
+		expect(ownerRead.messages[0]).toMatchObject({ senderSessionId: "owner", senderType: "user", body: "请分别回复" });
+	});
+
+	it("persists Room attachments, keeps them out of the visible body, and deduplicates retries", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-attachments-"));
+		tempDirs.push(root);
+		const storePath = join(root, "rooms.jsonl");
+		const coordinator = new SessionRoomCoordinator({
+			store: new SessionRoomStore(storePath),
+			deliver: async () => {},
+		});
+		const api = coordinator.api();
+		const created = await api.create({ cwd: root, ownerSessionId: "owner" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member", profileId: "worker" });
+		const attachments = [{ path: join(root, "notes.md"), filename: 'notes".md', mimeType: "text/markdown" }];
+		const input = {
+			cwd: root,
+			roomId: created.room.id,
+			senderSessionId: "owner",
+			senderType: "user" as const,
+			route: "direct" as const,
+			targetSessionIds: ["member"],
+			body: "请查看附件",
+			attachments,
+			idempotencyKey: "upload-1",
+		};
+		const sent = await api.send(input);
+		expect((await api.send(input)).deduplicated).toBe(true);
+		expect(sent.message.body).toBe("请查看附件");
+		expect(sent.message.attachments).toEqual(attachments);
+		expect(SessionRoomCoordinator.formatMessageForSession(sent.message)).toContain('filename="notes&quot;.md"');
+		const reloaded = new SessionRoomStore(storePath);
+		expect(reloaded.readMessages(created.room.id, "member", 0, 10).messages[0]?.attachments).toEqual(attachments);
+		await expect(api.send({ ...input, attachments: [], idempotencyKey: "upload-1" })).rejects.toMatchObject({
+			code: "room_idempotency_conflict",
+		});
+	});
+
 	it("returns after persisting a message without waiting for Agent completion", async () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-room-async-send-"));
 		tempDirs.push(root);
@@ -79,7 +147,7 @@ describe("SessionRoomCoordinator", () => {
 		});
 		const api = coordinator.api();
 		const created = await api.create({ cwd: root, ownerSessionId: "owner" });
-		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member", profileId: "worker" });
 
 		const sent = await api.send({
 			cwd: root,
@@ -93,6 +161,43 @@ describe("SessionRoomCoordinator", () => {
 		await deliveryStartedPromise;
 		releaseDelivery();
 		await deliveryFinished;
+	});
+
+	it("persists task capability leases and rejects them on non-task messages", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-capabilities-"));
+		tempDirs.push(root);
+		const coordinator = new SessionRoomCoordinator({
+			store: new SessionRoomStore(join(root, "rooms.jsonl")),
+			deliver: async () => {},
+		});
+		const api = coordinator.api();
+		const created = await api.create({ cwd: root, ownerSessionId: "owner" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member", profileId: "worker" });
+
+		const sent = await api.send({
+			cwd: root,
+			roomId: created.room.id,
+			senderSessionId: "owner",
+			route: "direct",
+			targetSessionIds: ["member"],
+			kind: "task",
+			body: "读取状态",
+			capabilities: { allowedTools: ["read"], readRoots: [root], shell: "disabled" },
+		});
+
+		expect(sent.message.capabilities).toEqual({ allowedTools: ["read"], readRoots: [root], shell: "disabled" });
+		await expect(
+			api.send({
+				cwd: root,
+				roomId: created.room.id,
+				senderSessionId: "owner",
+				route: "direct",
+				targetSessionIds: ["member"],
+				kind: "message",
+				body: "普通消息",
+				capabilities: { allowedTools: ["read"] },
+			}),
+		).rejects.toMatchObject({ code: "room_capabilities_kind_invalid" });
 	});
 
 	it("rejects broadcast messages when the Room has no other member", async () => {
@@ -128,8 +233,8 @@ describe("SessionRoomCoordinator", () => {
 		});
 		const api = coordinator.api();
 		const created = await api.create({ cwd: root, ownerSessionId: "owner" });
-		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-a" });
-		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-b" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-a", profileId: "worker-a" });
+		await api.join({ cwd: root, roomId: created.room.id, sessionId: "member-b", profileId: "worker-b" });
 
 		const sent = await api.send({
 			cwd: root,

@@ -14,8 +14,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type {
 	Agent,
 	AgentContext,
@@ -96,6 +96,7 @@ import {
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
 	type SessionCompactFailedEvent,
+	type SessionShutdownEvent,
 	type SessionStartEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
@@ -108,7 +109,13 @@ import {
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
-import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import {
+	type AgentCapabilityLease,
+	type AgentInputOrigin,
+	type AgentTurnContext,
+	type AgentTurnResult,
+	rootOriginOf,
+} from "./input-origin.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -157,6 +164,14 @@ import {
 	getUsageCostBreakdown,
 	type UsageCostBreakdownEntry,
 } from "./usage-totals.ts";
+
+function resolveCapabilityPath(cwd: string, candidate: string): string {
+	const resolved = resolve(cwd, candidate);
+	let existing = resolved;
+	while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+	if (!existsSync(existing)) return resolved;
+	return join(realpathSync(existing), relative(existing, resolved));
+}
 
 const TOOL_RECOVERY_GUIDANCE_PREFIX = "[LYSTAR_TOOL_RECOVERY_GUIDANCE]";
 
@@ -215,7 +230,7 @@ export type AgentSessionEvent =
 			messages: AgentMessage[];
 			willRetry: boolean;
 	  }
-	| { type: "agent_settled" }
+	| { type: "agent_settled"; turn: AgentTurnContext }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -297,6 +312,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Defer startup and shutdown extension events until a non-Room client uses the session. */
+	deferExtensionLifecycle?: boolean;
 	/** Global config directory used by local recovery diagnostics and ledger storage. */
 	agentDir?: string;
 	/** Optional refiner override; assist/auto use the current model when omitted. */
@@ -328,6 +345,14 @@ export interface PromptOptions {
 	queueId?: string;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
+	/** Structured task origin. User callers omit this; Room and extension callers provide it. */
+	origin?: AgentInputOrigin;
+	/** Stable identifier supplied by structured callers, such as a Room message ID. */
+	inputId?: string;
+	/** Per-turn tool lease. When present, it is enforced after extension prompt handlers. */
+	activeToolNames?: readonly string[];
+	/** Per-turn capability lease enforced before tool execution. */
+	capabilities?: AgentCapabilityLease;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
 }
@@ -452,6 +477,9 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
+	private _activeTurnContext?: AgentTurnContext;
+	private _lastTurnResult?: AgentTurnResult;
+	private _activeCapabilityLease?: AgentCapabilityLease;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -463,6 +491,9 @@ export class AgentSession {
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	private _extensionLifecycleDeferred: boolean;
+	private _extensionLifecycleActive: boolean;
+	private _extensionLifecycleActivation?: Promise<void>;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -543,6 +574,8 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._extensionLifecycleDeferred = config.deferExtensionLifecycle === true;
+		this._extensionLifecycleActive = !this._extensionLifecycleDeferred;
 		this._sessionLockCompromiseUnsubscriber = this.sessionManager.onLockCompromised(() => {
 			this.abortRetry();
 			this.abortCompaction();
@@ -640,6 +673,26 @@ export class AgentSession {
 		}
 	}
 
+	private _capabilityViolation(toolName: string, args: Record<string, unknown>): string | undefined {
+		const lease = this._activeCapabilityLease;
+		if (!lease) return undefined;
+		if (!lease.allowedTools.includes(toolName)) return `当前 Turn 不允许使用工具：${toolName}`;
+		if (["bash", "powershell"].includes(toolName) && lease.shell) {
+			return lease.shell === "disabled" ? "当前 Turn 已禁用 Shell" : "当前运行时没有可用的 Shell 沙箱";
+		}
+		const pathValue = typeof args.path === "string" ? args.path : undefined;
+		if (!pathValue) return undefined;
+		const resolvedPath = resolveCapabilityPath(this._cwd, pathValue);
+		const roots = ["read", "grep", "find", "ls"].includes(toolName) ? lease.readRoots : lease.writeRoots;
+		if (!roots || roots.length === 0) return `工具路径没有对应的能力租约：${pathValue}`;
+		const insideRoot = roots.some((root) => {
+			const resolvedRoot = resolveCapabilityPath(this._cwd, root);
+			const suffix = relative(resolvedRoot, resolvedPath);
+			return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`));
+		});
+		return insideRoot ? undefined : `工具路径超出当前 Turn 的能力租约：${pathValue}`;
+	}
+
 	/**
 	 * Install tool hooks once on the Agent instance.
 	 *
@@ -650,6 +703,8 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			const capabilityViolation = this._capabilityViolation(toolCall.name, args as Record<string, unknown>);
+			if (capabilityViolation) return { block: true, reason: capabilityViolation, terminate: true };
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;
@@ -1028,9 +1083,27 @@ export class AgentSession {
 	private async _emitAgentSettled(): Promise<void> {
 		this._cacheWarmer?.onAgentSettled();
 		this._isAgentRunActive = false;
+		const turn = this._activeTurnContext;
+		if (!turn) {
+			this._resolveIdleWaitIfIdle();
+			return;
+		}
 		try {
-			await this._extensionRunner.emit({ type: "agent_settled" });
-			this._emit({ type: "agent_settled" });
+			await this._extensionRunner.emit({ type: "agent_settled", turn });
+			const lastAssistant = this._findLastAssistantMessage();
+			const finalText = this.getLastAssistantText();
+			const outcome =
+				this._agentRunAbortRequested || lastAssistant?.stopReason === "aborted"
+					? "aborted"
+					: lastAssistant?.stopReason === "error"
+						? "failed"
+						: "completed";
+			this._lastTurnResult = {
+				...turn,
+				outcome,
+				...(finalText ? { finalText } : {}),
+			};
+			this._emit({ type: "agent_settled", turn });
 		} finally {
 			this._resolveIdleWaitIfIdle();
 		}
@@ -1386,6 +1459,11 @@ export class AgentSession {
 		return !this._isAgentRunActive && !this.isCompacting;
 	}
 
+	/** Return the completed result for a specific structured turn. */
+	getTurnResult(turnId: string): AgentTurnResult | undefined {
+		return this._lastTurnResult?.turnId === turnId ? this._lastTurnResult : undefined;
+	}
+
 	/** Current effective system prompt, including changes not yet sent to the model. */
 	get systemPrompt(): string {
 		return buildSystemPrompt(this._runSystemPromptOptions ?? this._baseSystemPromptOptions);
@@ -1691,13 +1769,14 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		source: InputSource,
-		streamingBehavior?: "steer" | "followUp",
+		streamingBehavior: "steer" | "followUp" | undefined,
+		turn: AgentTurnContext,
 	): Promise<{ text: string; images: ImageContent[] | undefined } | undefined> {
 		if (!this._extensionRunner.hasHandlers("input")) {
 			return { text, images };
 		}
 
-		const inputResult = await this._extensionRunner.emitInput(text, images, source, streamingBehavior);
+		const inputResult = await this._extensionRunner.emitInput(text, images, source, streamingBehavior, turn);
 		if (inputResult.action === "handled") {
 			return undefined;
 		}
@@ -1717,11 +1796,26 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		await this.promptWithOrigin(text, options);
+	}
+
+	async promptWithOrigin(text: string, options?: PromptOptions): Promise<AgentTurnContext | undefined> {
+		const roomInput = options?.origin !== undefined && rootOriginOf(options.origin) === "room";
+		const expandPromptTemplates = !roomInput && (options?.expandPromptTemplates ?? true);
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
+		let turn: AgentTurnContext | undefined;
+		let ownsTurn = false;
+		const previousActiveToolNames = options?.activeToolNames ? this.getActiveToolNames() : undefined;
+		const previousCapabilityLease = options?.capabilities ? this._activeCapabilityLease : undefined;
 
 		try {
+			if (roomInput && (this._activeTurnContext || this.isStreaming)) {
+				throw new Error("当前会话仍在处理上一条消息，请稍后重试");
+			}
+			if (!roomInput && this._activeTurnContext?.rootOrigin === "room") {
+				throw new Error("当前会话正在处理 Room 消息，请稍后重试");
+			}
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
@@ -1739,16 +1833,40 @@ export class AgentSession {
 				);
 			}
 
+			turn = this._activeTurnContext ?? {
+				turnId: randomUUID(),
+				inputId: options?.inputId ?? randomUUID(),
+				origin:
+					options?.origin ??
+					({
+						type: "user",
+						channel: options?.source === "rpc" ? "rpc" : "interactive",
+					} satisfies AgentInputOrigin),
+				rootOrigin: rootOriginOf(
+					options?.origin ?? { type: "user", channel: options?.source === "rpc" ? "rpc" : "interactive" },
+				),
+			};
+			ownsTurn = this._activeTurnContext === undefined;
+			if (ownsTurn) {
+				this._activeTurnContext = turn;
+				this._activeCapabilityLease = options?.capabilities;
+			}
+
 			// Emit input event for extension interception (before skill/template expansion)
 			const processedInput = await this._runInputHandlers(
 				text,
 				options?.images,
 				options?.source ?? "interactive",
 				this.isStreaming ? options?.streamingBehavior : undefined,
+				turn,
 			);
 			if (!processedInput) {
 				preflightResult?.(true);
-				return;
+				if (ownsTurn) {
+					this._activeTurnContext = undefined;
+					this._activeCapabilityLease = previousCapabilityLease;
+				}
+				return turn;
 			}
 			const { text: currentText, images: currentImages } = processedInput;
 
@@ -1772,7 +1890,11 @@ export class AgentSession {
 					await this._queueSteer(expandedText, currentImages, options.queueId);
 				}
 				preflightResult?.(true);
-				return;
+				if (ownsTurn) {
+					this._activeTurnContext = undefined;
+					this._activeCapabilityLease = previousCapabilityLease;
+				}
+				return turn;
 			}
 
 			// Flush any pending bash and custom messages before the new prompt
@@ -1832,6 +1954,7 @@ export class AgentSession {
 				expandedText,
 				currentImages,
 				this._baseSystemPromptOptions,
+				turn,
 			);
 			// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
 			// which updates the live loadout instead. An explicit edit wins; otherwise the live
@@ -1840,6 +1963,13 @@ export class AgentSession {
 				result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
 				result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
 			if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+			const toolLease = options?.capabilities?.allowedTools ?? options?.activeToolNames;
+			if (toolLease) {
+				const allowed = new Set(toolLease);
+				result.systemPromptOptions.selectedTools = result.systemPromptOptions.selectedTools.filter((name) =>
+					allowed.has(name),
+				);
+			}
 			for (const msg of result.messages) {
 				messages.push({
 					role: "custom",
@@ -1865,15 +1995,32 @@ export class AgentSession {
 			);
 		} catch (error) {
 			preflightResult?.(false);
+			if (ownsTurn) {
+				this._activeTurnContext = undefined;
+				this._activeCapabilityLease = previousCapabilityLease;
+			}
 			throw error;
 		}
 
 		if (!messages) {
-			return;
+			if (ownsTurn) {
+				this._activeTurnContext = undefined;
+				this._activeCapabilityLease = previousCapabilityLease;
+			}
+			return turn;
 		}
 
 		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+		try {
+			await this._runAgentPrompt(messages);
+			return turn;
+		} finally {
+			if (previousActiveToolNames) this.setActiveToolsByName([...previousActiveToolNames]);
+			if (ownsTurn) {
+				this._activeTurnContext = undefined;
+				this._activeCapabilityLease = previousCapabilityLease;
+			}
+		}
 	}
 
 	/**
@@ -1943,6 +2090,9 @@ export class AgentSession {
 		source: InputSource,
 		requestedQueueId?: string,
 	): Promise<void> {
+		if (this._activeTurnContext?.rootOrigin === "room") {
+			throw new Error("当前会话正在处理 Room 消息，请稍后重试");
+		}
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
@@ -1952,6 +2102,12 @@ export class AgentSession {
 			images,
 			source,
 			this.isStreaming ? behavior : undefined,
+			this._activeTurnContext ?? {
+				turnId: randomUUID(),
+				inputId: requestedQueueId ?? randomUUID(),
+				origin: { type: "user", channel: source === "rpc" ? "rpc" : "interactive" },
+				rootOrigin: "user",
+			},
 		);
 		if (!processedInput) return;
 
@@ -2070,7 +2226,11 @@ export class AgentSession {
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			origin?: AgentInputOrigin;
+		},
 	): Promise<void> {
 		const appMessage = {
 			role: "custom" as const,
@@ -2090,7 +2250,22 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
-			await this._runAgentPrompt(appMessage);
+			const previousTurn = this._activeTurnContext;
+			const turn = options.origin
+				? {
+						turnId: randomUUID(),
+						inputId: randomUUID(),
+						origin: options.origin,
+						rootOrigin: rootOriginOf(options.origin),
+					}
+				: previousTurn;
+			if (!turn) throw new Error("扩展触发的 Agent Turn 缺少来源上下文");
+			this._activeTurnContext = turn;
+			try {
+				await this._runAgentPrompt(appMessage);
+			} finally {
+				this._activeTurnContext = previousTurn;
+			}
 		} else if (this.isStreaming) {
 			// Appending now would put the message between an assistant tool call and its
 			// result, which providers that validate message order reject on replay. Defer
@@ -3130,8 +3305,43 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._extensionRunner.emit(this._sessionStartEvent);
-		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		if (!this._extensionLifecycleDeferred) {
+			await this.emitSessionStart(this._sessionStartEvent);
+		}
+	}
+
+	async activateExtensionLifecycle(): Promise<void> {
+		if (!this._extensionLifecycleDeferred) return;
+		if (this._extensionLifecycleActivation) return this._extensionLifecycleActivation;
+		const activation = (async () => {
+			await this.waitForIdle();
+			this._extensionLifecycleDeferred = false;
+			this._extensionLifecycleActive = true;
+			try {
+				await this.emitSessionStart(this._sessionStartEvent);
+			} catch (error) {
+				this._extensionLifecycleDeferred = true;
+				this._extensionLifecycleActive = false;
+				throw error;
+			}
+		})();
+		this._extensionLifecycleActivation = activation;
+		try {
+			await activation;
+		} finally {
+			if (this._extensionLifecycleActivation === activation) this._extensionLifecycleActivation = undefined;
+		}
+	}
+
+	async emitSessionShutdownEvent(event: SessionShutdownEvent): Promise<void> {
+		if (!this._extensionLifecycleActive) return;
+		if (this._extensionRunner.hasHandlers("session_shutdown")) await this._extensionRunner.emit(event);
+	}
+
+	private async emitSessionStart(event: SessionStartEvent): Promise<void> {
+		await this._extensionRunner.emit(event);
+		await this.extendResourcesFromExtensions(event.reason === "reload" ? "reload" : "startup");
+		this._extensionLifecycleActive = true;
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -3238,8 +3448,8 @@ export class AgentSession {
 
 		runner.bindCore(
 			{
-				sendMessage: (message, options) => {
-					this.sendCustomMessage(message, options).catch((err) => {
+				sendMessage: (message, options, origin) => {
+					this.sendCustomMessage(message, { ...options, ...(origin ? { origin } : {}) }).catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
 							event: "send_message",
@@ -3316,6 +3526,7 @@ export class AgentSession {
 				},
 				getSystemPrompt: () => this.systemPrompt,
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getCurrentTurn: () => this._activeTurnContext,
 			},
 			{
 				registerProvider: (name, config) => {
@@ -3491,7 +3702,7 @@ export class AgentSession {
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
-		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
+		await this.emitSessionShutdownEvent({ type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
 		this.syncQueueModesFromSettings();
@@ -3508,10 +3719,9 @@ export class AgentSession {
 			this._extensionCommandContextActions ||
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
-		if (hasBindings) {
+		if (hasBindings && !this._extensionLifecycleDeferred) {
 			await options?.beforeSessionStart?.();
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
-			await this.extendResourcesFromExtensions("reload");
+			await this.emitSessionStart({ type: "session_start", reason: "reload" });
 		}
 	}
 

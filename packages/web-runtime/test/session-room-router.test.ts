@@ -47,6 +47,38 @@ describe("session room routing", () => {
 		).toEqual(["first", "second"]);
 	});
 
+	it("lets a user message reach every active Agent, including the current session", () => {
+		expect(
+			resolveSessionRoomTargets({
+				route: "broadcast",
+				senderSessionId: "owner",
+				senderType: "user",
+				members,
+			}),
+		).toEqual(["owner", "first", "second"]);
+	});
+
+	it("supports user-selected direct and multi-Agent targets", () => {
+		expect(
+			resolveSessionRoomTargets({
+				route: "direct",
+				senderSessionId: "owner",
+				senderType: "user",
+				targetSessionIds: ["owner"],
+				members,
+			}),
+		).toEqual(["owner"]);
+		expect(
+			resolveSessionRoomTargets({
+				route: "broadcast",
+				senderSessionId: "owner",
+				senderType: "user",
+				targetSessionIds: ["second", "first"],
+				members,
+			}),
+		).toEqual(["first", "second"]);
+	});
+
 	it("selects the available member for one-of-us routing", () => {
 		expect(
 			resolveSessionRoomTargets({

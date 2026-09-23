@@ -253,6 +253,7 @@ export function useWorkbenchSettingsActions({
 			thinkingLevel?: WebThinkingLevel;
 			tools?: string[];
 			skills?: string[];
+			tags?: string[];
 			content: string;
 			expectedHash?: string;
 		}): Promise<boolean> => {

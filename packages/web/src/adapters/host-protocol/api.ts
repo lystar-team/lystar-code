@@ -41,6 +41,7 @@ import type {
 	WebLease,
 	WebOperation,
 	WebProject,
+	WebRoomCapabilityLease,
 	WebRoomReadResponse,
 	WebRoomSendResponse,
 	WebRoomSummary,
@@ -232,10 +233,15 @@ export class WebApi {
 		});
 	}
 
-	async joinRoom(projectId: string, roomId: string, sessionId: string): Promise<WebRoomSummary> {
+	async joinRoom(
+		projectId: string,
+		roomId: string,
+		sessionId: string,
+		identity: { nickname?: string; profileId?: string; profileName?: string; profileIcon?: string } = {},
+	): Promise<WebRoomSummary> {
 		return this.request<WebRoomSummary>(
 			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/join`,
-			{ method: "POST", body: JSON.stringify({ sessionId }) },
+			{ method: "POST", body: JSON.stringify({ sessionId, ...identity }) },
 		);
 	}
 
@@ -266,11 +272,14 @@ export class WebApi {
 		roomId: string,
 		input: {
 			senderSessionId: string;
+			senderType?: "agent" | "user";
 			route: "direct" | "broadcast" | "one_of_us";
 			targetSessionIds?: string[];
 			kind?: "task" | "message" | "question" | "answer" | "status" | "result" | "system";
 			body: string;
+			attachments?: Array<{ path: string; mimeType: string; filename: string }>;
 			taskId?: string;
+			capabilities?: WebRoomCapabilityLease;
 			replyToMessageId?: string;
 			basedOnSeq?: number;
 		},
@@ -814,6 +823,7 @@ export class WebApi {
 			thinkingLevel?: WebThinkingLevel;
 			tools?: string[];
 			skills?: string[];
+			tags?: string[];
 			content: string;
 			expectedHash?: string;
 		},

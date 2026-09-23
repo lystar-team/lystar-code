@@ -50,4 +50,34 @@ describe("#5998 blocked tool termination", () => {
 			harness.session.messages.find((message) => message.role === "toolResult" && message.isError),
 		).toBeDefined();
 	});
+
+	it("enforces a structured capability lease before tool execution", async () => {
+		let executed = false;
+		const echoTool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo text back",
+			parameters: Type.Object({ text: Type.String() }),
+			execute: async () => {
+				executed = true;
+				return { content: [{ type: "text", text: "unexpected" }], details: null };
+			},
+		};
+		const harness = await createHarness({ tools: [echoTool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+		]);
+
+		const turn = await harness.session.promptWithOrigin("执行工具", {
+			capabilities: { allowedTools: ["read"], readRoots: [harness.tempDir], shell: "disabled" },
+		});
+
+		expect(turn).toBeDefined();
+		expect(executed).toBe(false);
+		expect(harness.session.getTurnResult(turn!.turnId)).toMatchObject({
+			inputId: turn!.inputId,
+			outcome: "failed",
+		});
+	});
 });

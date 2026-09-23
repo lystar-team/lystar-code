@@ -23,6 +23,7 @@ import type {
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
+	ExtensionHandlerOptions,
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MarkdownTransformer,
@@ -191,6 +192,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			for (const unsubscribe of eventBusUnsubscribers) unsubscribe();
 			eventBusUnsubscribers.clear();
 		},
+		getCurrentTurn: () => undefined,
 		trackEventBusSubscription: (unsubscribe) => {
 			let active = true;
 			const trackedUnsubscribe = () => {
@@ -254,9 +256,11 @@ function createExtensionAPI(
 
 	const api = {
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): () => void {
+		on(event: string, handler: HandlerFn, options?: ExtensionHandlerOptions): () => void {
 			assertActive();
-			const registeredHandler: HandlerFn = (...args) => handler(...args);
+			const registeredHandler: HandlerFn = Object.assign((...args: unknown[]) => handler(...args), {
+				scope: options?.scope,
+			});
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);
 			extension.handlers.set(event, list);
@@ -351,7 +355,17 @@ function createExtensionAPI(
 		// Action methods - delegate to shared runtime
 		sendMessage(message, options): void {
 			assertActive();
-			runtime.sendMessage(message, options);
+			const parentTurn = runtime.getCurrentTurn();
+			const origin = parentTurn
+				? {
+						type: "extension" as const,
+						extensionId: extension.resolvedPath,
+						purpose: `message:${message.customType}`,
+						parentTurnId: parentTurn.turnId,
+						rootOrigin: parentTurn.rootOrigin,
+					}
+				: undefined;
+			runtime.sendMessage(message, options, origin);
 		},
 
 		sendUserMessage(content, options): void {

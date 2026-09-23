@@ -1,5 +1,8 @@
+import type { AgentCapabilityLease } from "./input-origin.ts";
+
 export type SessionRoomMode = "direct" | "group";
 export type SessionRoomRoute = "direct" | "broadcast" | "one_of_us";
+export type SessionRoomSenderType = "agent" | "user";
 export type SessionRoomMessageKind = "task" | "message" | "question" | "answer" | "status" | "result" | "system";
 export type SessionRoomMemberRole = "owner" | "member";
 
@@ -20,6 +23,10 @@ export interface SessionRoomMember {
 	joinedAt: string;
 	leftAt?: string;
 	lastReadSeq: number;
+	nickname?: string;
+	profileId?: string;
+	profileName?: string;
+	profileIcon?: string;
 }
 
 export interface SessionRoomCursor {
@@ -28,16 +35,25 @@ export interface SessionRoomCursor {
 	lastReadSeq: number;
 }
 
+export interface SessionRoomAttachment {
+	path: string;
+	filename: string;
+	mimeType: string;
+}
+
 export interface SessionRoomMessage {
 	id: string;
 	roomId: string;
 	seq: number;
 	senderSessionId: string;
+	senderType: SessionRoomSenderType;
 	targetSessionIds: readonly string[];
 	route: SessionRoomRoute;
 	kind: SessionRoomMessageKind;
 	body: string;
+	attachments?: readonly SessionRoomAttachment[];
 	taskId?: string;
+	capabilities?: AgentCapabilityLease;
 	replyToMessageId?: string;
 	basedOnSeq?: number;
 	idempotencyKey: string;
@@ -76,7 +92,15 @@ export interface SessionRoomApi {
 		title?: string;
 		mode?: SessionRoomMode;
 	}): Promise<SessionRoomSummary>;
-	join(input: { cwd: string; roomId: string; sessionId: string }): Promise<SessionRoomSummary>;
+	join(input: {
+		cwd: string;
+		roomId: string;
+		sessionId: string;
+		nickname?: string;
+		profileId?: string;
+		profileName?: string;
+		profileIcon?: string;
+	}): Promise<SessionRoomSummary>;
 	leave(input: { cwd: string; roomId: string; sessionId: string }): Promise<SessionRoomSummary>;
 	list(input: { cwd: string; sessionId: string }): Promise<SessionRoomSummary[]>;
 	listAll(input: { cwd: string }): Promise<SessionRoomSummary[]>;
@@ -84,11 +108,14 @@ export interface SessionRoomApi {
 		cwd: string;
 		roomId: string;
 		senderSessionId: string;
+		senderType?: SessionRoomSenderType;
 		route: SessionRoomRoute;
 		targetSessionIds?: readonly string[];
 		kind?: SessionRoomMessageKind;
 		body: string;
+		attachments?: readonly SessionRoomAttachment[];
 		taskId?: string;
+		capabilities?: AgentCapabilityLease;
 		replyToMessageId?: string;
 		basedOnSeq?: number;
 		idempotencyKey?: string;

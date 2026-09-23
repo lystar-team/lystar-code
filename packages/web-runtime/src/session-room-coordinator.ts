@@ -41,7 +41,15 @@ function checkedLimit(limit: number | undefined): number {
 }
 
 function formatRoomMessage(message: SessionRoomMessage): string {
-	return `[Room ${message.roomId} #${message.seq} ${message.kind} from ${message.senderSessionId}]\n${message.body}`;
+	if (!message.attachments?.length) return message.body;
+	const attribute = (value: string) =>
+		value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+	return `${message.body}\n\n${message.attachments
+		.map(
+			({ path, filename, mimeType }) =>
+				`<file name="${attribute(path)}" filename="${attribute(filename)}" mimeType="${attribute(mimeType)}"></file>`,
+		)
+		.join("\n")}`;
 }
 
 export class SessionRoomCoordinator {
@@ -92,6 +100,12 @@ export class SessionRoomCoordinator {
 	private async join(input: Parameters<SessionRoomApi["join"]>[0]): Promise<SessionRoomSummary> {
 		const room = this.store.room(input.roomId);
 		if (resolve(input.cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		const existing = this.store
+			.members(input.roomId)
+			.find((member) => member.sessionId === input.sessionId && !member.leftAt);
+		const isNewAgent = !existing && input.sessionId !== room.ownerSessionId;
+		if (isNewAgent && !input.profileId?.trim())
+			throw roomError("Room 新成员必须来自智能体配置", "room_profile_required");
 		const now = new Date().toISOString();
 		return this.store.joinMember({
 			roomId: input.roomId,
@@ -99,6 +113,10 @@ export class SessionRoomCoordinator {
 			role: "member",
 			joinedAt: now,
 			lastReadSeq: 0,
+			...(input.nickname?.trim() ? { nickname: input.nickname.trim() } : {}),
+			...(input.profileId?.trim() ? { profileId: input.profileId.trim() } : {}),
+			...(input.profileName?.trim() ? { profileName: input.profileName.trim() } : {}),
+			...(input.profileIcon?.trim() ? { profileIcon: input.profileIcon.trim() } : {}),
 		});
 	}
 
@@ -126,22 +144,39 @@ export class SessionRoomCoordinator {
 			const value = this.getAvailability(cwd, member.sessionId);
 			if (value) availability.set(member.sessionId, value);
 		}
+		const senderType = input.senderType ?? "agent";
 		const targets = resolveSessionRoomTargets({
 			route: input.route,
 			senderSessionId: input.senderSessionId,
+			senderType,
 			targetSessionIds: input.targetSessionIds,
 			members,
 			availability,
 		});
 		if (targets.length === 0) throw roomError("Room 没有其他成员可响应", "room_no_targets");
+		if (input.capabilities && input.kind !== "task") {
+			throw roomError("只有 Room task 可以携带能力租约", "room_capabilities_kind_invalid");
+		}
+		const capabilities = input.capabilities
+			? {
+					...input.capabilities,
+					allowedTools: [...new Set(input.capabilities.allowedTools)].slice(0, 32),
+				}
+			: undefined;
+		if (capabilities && capabilities.allowedTools.length === 0) {
+			throw roomError("Room task 的能力租约不能为空", "room_capabilities_empty");
+		}
 		const draft: SessionRoomMessageDraft = {
 			roomId: input.roomId,
 			senderSessionId: input.senderSessionId,
+			senderType,
 			targetSessionIds: targets,
 			route: input.route,
 			kind: input.kind ?? "message",
 			body: checkedBody(input.body),
+			...(input.attachments?.length ? { attachments: input.attachments } : {}),
 			...(input.taskId ? { taskId: input.taskId } : {}),
+			...(capabilities ? { capabilities } : {}),
 			...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
 			...(input.basedOnSeq !== undefined ? { basedOnSeq: input.basedOnSeq } : {}),
 			idempotencyKey: input.idempotencyKey?.trim() || randomUUID(),
@@ -190,6 +225,7 @@ export class SessionRoomCoordinator {
 		this.store.appendMessage({
 			roomId: message.roomId,
 			senderSessionId: targetSessionId,
+			senderType: "agent",
 			targetSessionIds: [message.senderSessionId],
 			route: "direct",
 			kind: "system",

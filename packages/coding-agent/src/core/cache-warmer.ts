@@ -136,6 +136,8 @@ export interface CacheWarmRequest {
 	model: Model<Api>;
 	context: Context;
 	options: ModelsSimpleStreamOptions;
+	/** Room requests keep cache warming but do not invoke Extension decision handlers. */
+	skipExtensionDecision?: boolean;
 }
 
 interface ActiveRun extends CacheWarmRequest {
@@ -294,16 +296,18 @@ export class CacheWarmer {
 		const decision = this.evaluate(run);
 		const { warmCost, missCost, continuationProbability } = decision;
 		let action = decision.action;
-		try {
-			action = await this.decide({
-				type: "cache_warming_decision",
-				warmCost,
-				missCost,
-				continuationProbability,
-				action,
-			});
-		} catch {
-			// Extension failures fall back to pi's own decision.
+		if (!run.skipExtensionDecision) {
+			try {
+				action = await this.decide({
+					type: "cache_warming_decision",
+					warmCost,
+					missCost,
+					continuationProbability,
+					action,
+				});
+			} catch {
+				// Extension failures fall back to pi's own decision.
+			}
 		}
 		if (!this.validateRun(run)) return;
 		const extensionOverride = action !== decision.action;

@@ -89,6 +89,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Defer startup and shutdown extension events until a non-Room client uses the session. */
+	deferExtensionLifecycle?: boolean;
 	/** Optional offline proposal callback. Normal creation leaves this undefined. */
 	toolRecoveryRefiner?: ToolRecoveryRefiner;
 	/** Explicit user corrections that may be included in sanitized refiner input. */
@@ -320,6 +322,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	);
 	const buildRequestOptions = (
 		requestModel: Model<any>,
+		roomTurn: boolean,
 		options: ModelsSimpleStreamOptions = {},
 	): ModelsSimpleStreamOptions => {
 		const providerRetrySettings = settingsManager.getProviderRetrySettings();
@@ -339,7 +342,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					options.sessionId,
 					requestHeaders,
 				);
-				return headerRunner?.hasHandlers("before_provider_headers")
+				return !roomTurn && headerRunner?.hasHandlers("before_provider_headers")
 					? headerRunner.emitBeforeProviderHeaders(headers ?? {})
 					: (headers ?? {});
 			},
@@ -382,14 +385,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
-			const requestOptions = buildRequestOptions(model, options);
+			const roomTurn = extensionRunnerRef.current?.createContext().currentTurn?.rootOrigin === "room";
+			const requestOptions = buildRequestOptions(model, roomTurn, options);
 			// Compaction and summaries use their own routing ids; only session requests
 			// replace the cache entry, so warming restarts from them. Keep warming while
 			// the current transcript still extends the request's prefix. Agent state may
 			// shallow-copy the messages array or refresh the model object without changing
 			// the provider request, so top-level object identity is not a valid cache key.
 			if (options?.sessionId === sessionManager.getSessionId()) {
-				cacheWarmer.start({ model, context, options: requestOptions }, cacheContextIsCurrent(model));
+				cacheWarmer.start(
+					{ model, context, options: requestOptions, skipExtensionDecision: roomTurn },
+					cacheContextIsCurrent(model),
+				);
 			}
 			return modelRuntime.streamSimple(model, context, requestOptions);
 		},
@@ -437,6 +444,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		deferExtensionLifecycle: options.deferExtensionLifecycle,
 		toolRecoveryRefiner: options.toolRecoveryRefiner,
 		getToolRecoveryUserCorrections: options.getToolRecoveryUserCorrections,
 		toolRecoverySafeRefreshRegistry: options.toolRecoverySafeRefreshRegistry,

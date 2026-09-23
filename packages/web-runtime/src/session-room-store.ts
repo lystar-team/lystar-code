@@ -33,10 +33,13 @@ function messageMatchesDraft(message: SessionRoomMessage, draft: SessionRoomMess
 	return (
 		message.targetSessionIds.length === draft.targetSessionIds.length &&
 		message.targetSessionIds.every((target, index) => target === draft.targetSessionIds[index]) &&
+		message.senderType === (draft.senderType ?? "agent") &&
 		message.route === draft.route &&
 		message.kind === draft.kind &&
 		message.body === draft.body &&
+		JSON.stringify(message.attachments ?? []) === JSON.stringify(draft.attachments ?? []) &&
 		message.taskId === draft.taskId &&
+		JSON.stringify(message.capabilities ?? null) === JSON.stringify(draft.capabilities ?? null) &&
 		message.replyToMessageId === draft.replyToMessageId &&
 		message.basedOnSeq === draft.basedOnSeq
 	);
@@ -71,11 +74,14 @@ function parseJournalRecord(line: string): RoomJournalRecord {
 export interface SessionRoomMessageDraft {
 	roomId: string;
 	senderSessionId: string;
+	senderType?: SessionRoomMessage["senderType"];
 	targetSessionIds: readonly string[];
 	route: SessionRoomMessage["route"];
 	kind: SessionRoomMessage["kind"];
 	body: string;
+	attachments?: SessionRoomMessage["attachments"];
 	taskId?: string;
+	capabilities?: SessionRoomMessage["capabilities"];
 	replyToMessageId?: string;
 	basedOnSeq?: number;
 	idempotencyKey: string;
@@ -169,11 +175,14 @@ export class SessionRoomStore {
 			seq: (roomMessages.at(-1)?.seq ?? 0) + 1,
 			roomId: draft.roomId,
 			senderSessionId: draft.senderSessionId,
+			senderType: draft.senderType ?? "agent",
 			targetSessionIds: [...draft.targetSessionIds],
 			route: draft.route,
 			kind: draft.kind,
 			body: draft.body,
+			...(draft.attachments?.length ? { attachments: clone(draft.attachments) } : {}),
 			...(draft.taskId ? { taskId: draft.taskId } : {}),
+			...(draft.capabilities ? { capabilities: clone(draft.capabilities) } : {}),
 			...(draft.replyToMessageId ? { replyToMessageId: draft.replyToMessageId } : {}),
 			...(draft.basedOnSeq !== undefined ? { basedOnSeq: draft.basedOnSeq } : {}),
 			idempotencyKey: draft.idempotencyKey,
@@ -303,15 +312,19 @@ export class SessionRoomStore {
 				return;
 			}
 			case "message_appended": {
+				const message = {
+					...record.message,
+					senderType: record.message.senderType ?? "agent",
+				};
 				let messages = this.messages.get(record.message.roomId);
 				if (!messages) {
 					messages = [];
 					this.messages.set(record.message.roomId, messages);
 				}
-				messages.push(clone(record.message));
+				messages.push(clone(message));
 				this.idempotency.set(
-					`${record.message.roomId}:${record.message.senderSessionId}:${record.message.idempotencyKey}`,
-					clone(record.message),
+					`${message.roomId}:${message.senderSessionId}:${message.idempotencyKey}`,
+					clone(message),
 				);
 				return;
 			}

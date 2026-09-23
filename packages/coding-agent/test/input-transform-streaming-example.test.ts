@@ -27,7 +27,24 @@ function setup(execResult: ExecResult) {
 	const ctx = {} as ExtensionContext;
 
 	function emit(text: string, streamingBehavior?: "steer" | "followUp") {
-		return handler!({ type: "input", text, source: "interactive", streamingBehavior }, ctx);
+		const turn = {
+			turnId: "test-turn",
+			inputId: "test-input",
+			origin: { type: "user" as const, channel: "interactive" as const },
+			rootOrigin: "user" as const,
+		};
+		return handler!(
+			{
+				type: "input",
+				inputId: turn.inputId,
+				origin: turn.origin,
+				turn,
+				text,
+				source: "interactive",
+				streamingBehavior,
+			},
+			ctx,
+		);
 	}
 
 	return { emit, exec };

@@ -24,8 +24,12 @@ import { promisify } from "node:util";
 import { type Api, type AuthResult, contentText, type Model } from "@earendil-works/pi-ai";
 
 import {
+	type AgentCapabilityLease,
+	type AgentInputOrigin,
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
+	type AgentTurnContext,
+	type AgentTurnResult,
 	APP_TITLE,
 	type AuthEvent,
 	type AuthPrompt,
@@ -82,6 +86,7 @@ import {
 	renderTerminalRichText,
 	requestWebSessionHandoff,
 	resolveProjectTrusted,
+	rootOriginOf,
 	type SessionCollaborationResult,
 	type SessionCollaborationTask,
 	type SessionCoordinator,
@@ -162,6 +167,7 @@ import type {
 	RichTextRenderRequest,
 	RuntimeAdapter,
 	RuntimeEvent,
+	RuntimePromptReservation,
 	RuntimeSession,
 	SessionSummaryBase,
 	SkillSummary,
@@ -1688,6 +1694,9 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly agentDir: string;
 	private companion?: WebCompanionServer;
 	private externalClientCount = 0;
+	private pendingTurnInputs = 0;
+	private turnInputQueue: Promise<void> = Promise.resolve();
+	private readonly activePromptOperations = new Set<Promise<AgentTurnContext | undefined>>();
 
 	constructor(
 		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
@@ -1935,20 +1944,162 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async prompt(text: string, images?: Array<{ data: string; mimeType: string }>, _queueId?: string): Promise<void> {
+		await this.promptWithOrigin(text, images, { inputId: randomUUID(), origin: { type: "user", channel: "rpc" } });
+	}
+
+	async promptWithOrigin(
+		text: string,
+		images: Array<{ data: string; mimeType: string }> | undefined,
+		options: {
+			inputId: string;
+			origin: AgentInputOrigin;
+			activeToolNames?: readonly string[];
+			capabilities?: AgentCapabilityLease;
+		},
+	): Promise<AgentTurnContext | undefined> {
+		const currentTurn = this.runtime.session.extensionRunner.createContext().currentTurn;
+		if (
+			this.pendingTurnInputs > 0 ||
+			(currentTurn !== undefined && currentTurn.rootOrigin !== rootOriginOf(options.origin))
+		) {
+			return this.enqueuePromptWithOrigin(text, images, options);
+		}
+		return this.trackPromptOperation(this.executePromptWithOrigin(text, images, options));
+	}
+
+	private enqueuePromptWithOrigin(
+		text: string,
+		images: Array<{ data: string; mimeType: string }> | undefined,
+		options: {
+			inputId: string;
+			origin: AgentInputOrigin;
+			activeToolNames?: readonly string[];
+			capabilities?: AgentCapabilityLease;
+		},
+	): Promise<AgentTurnContext | undefined> {
+		return this.reservePromptWithOrigin(options).submit(text, images);
+	}
+
+	reservePromptWithOrigin(options: {
+		inputId: string;
+		origin: AgentInputOrigin;
+		activeToolNames?: readonly string[];
+		capabilities?: AgentCapabilityLease;
+	}): RuntimePromptReservation {
+		this.pendingTurnInputs++;
+		let resolveInput!: (
+			input: { text: string; images?: Array<{ data: string; mimeType: string }> } | undefined,
+		) => void;
+		const inputReady = new Promise<{ text: string; images?: Array<{ data: string; mimeType: string }> } | undefined>(
+			(resolve) => {
+				resolveInput = resolve;
+			},
+		);
+		const execution = this.turnInputQueue
+			.catch(() => {})
+			.then(async () => {
+				const input = await inputReady;
+				if (!input) return undefined;
+				await Promise.allSettled([...this.activePromptOperations]);
+				await this.runtime.session.waitForIdle();
+				return this.trackPromptOperation(this.executePromptWithOrigin(input.text, input.images, options));
+			});
+		this.turnInputQueue = execution.then(
+			() => undefined,
+			() => undefined,
+		);
+		void execution
+			.finally(() => {
+				this.pendingTurnInputs--;
+			})
+			.catch(() => {});
+		let settled = false;
+		return {
+			submit: (text, images) => {
+				if (settled) return Promise.reject(new Error("Turn 输入预约已结束"));
+				settled = true;
+				resolveInput({ text, ...(images ? { images } : {}) });
+				return execution;
+			},
+			cancel: () => {
+				if (settled) return;
+				settled = true;
+				resolveInput(undefined);
+			},
+		};
+	}
+
+	private trackPromptOperation(promise: Promise<AgentTurnContext | undefined>): Promise<AgentTurnContext | undefined> {
+		this.activePromptOperations.add(promise);
+		void promise.then(
+			() => this.activePromptOperations.delete(promise),
+			() => this.activePromptOperations.delete(promise),
+		);
+		return promise;
+	}
+
+	private async executePromptWithOrigin(
+		text: string,
+		images: Array<{ data: string; mimeType: string }> | undefined,
+		options: {
+			inputId: string;
+			origin: AgentInputOrigin;
+			activeToolNames?: readonly string[];
+			capabilities?: AgentCapabilityLease;
+		},
+	): Promise<AgentTurnContext | undefined> {
 		const entryCount = this.runtime.session.sessionManager.getEntries().length;
-		await this.runtime.session.prompt(text, {
-			images: contentImages(images),
-			source: "rpc",
-			streamingBehavior: "followUp",
-			...(_queueId ? { queueId: _queueId } : {}),
+		const previousToolNames = this.runtime.session.getActiveToolNames();
+		if (options.activeToolNames) this.runtime.session.setActiveToolsByName([...options.activeToolNames]);
+		let turn: AgentTurnContext | undefined;
+		try {
+			turn = await this.runtime.session.promptWithOrigin(text, {
+				images: contentImages(images),
+				source: "rpc",
+				streamingBehavior: "followUp",
+				inputId: options.inputId,
+				origin: options.origin,
+				...(options.capabilities ? { capabilities: options.capabilities } : {}),
+			});
+			await this.runtime.session.waitForIdle();
+			const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
+			if (error) throw new Error(error);
+			this.emitCommittedEntries();
+			return turn;
+		} finally {
+			if (options.activeToolNames) this.runtime.session.setActiveToolsByName(previousToolNames);
+		}
+	}
+
+	async activateExtensionLifecycle(): Promise<void> {
+		await this.turnInputQueue;
+		await Promise.allSettled([...this.activePromptOperations]);
+		await this.runtime.activateExtensionLifecycle();
+	}
+
+	private hasPendingRoomBoundary(): boolean {
+		return (
+			this.pendingTurnInputs > 0 ||
+			this.runtime.session.extensionRunner.createContext().currentTurn?.rootOrigin === "room"
+		);
+	}
+
+	private async promptUserAfterRoomBoundary(
+		text: string,
+		images: Array<{ data: string; mimeType: string }> | undefined,
+		inputId: string,
+	): Promise<void> {
+		await this.promptWithOrigin(text, images, {
+			inputId,
+			origin: { type: "user", channel: "rpc" },
 		});
-		await this.runtime.session.waitForIdle();
-		const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
-		if (error) throw new Error(error);
-		this.emitCommittedEntries();
 	}
 
 	async steer(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void> {
+		if (this.hasPendingRoomBoundary()) {
+			await this.promptUserAfterRoomBoundary(text, images, queueId ?? randomUUID());
+			return;
+		}
 		if (this.isRegisteredExtensionCommand(text)) {
 			await this.runtime.session.prompt(text, { images: contentImages(images), source: "rpc" });
 			this.emitStateChanged();
@@ -1959,6 +2110,10 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async followUp(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void> {
+		if (this.hasPendingRoomBoundary()) {
+			await this.promptUserAfterRoomBoundary(text, images, queueId ?? randomUUID());
+			return;
+		}
 		if (this.isRegisteredExtensionCommand(text)) {
 			await this.runtime.session.prompt(text, { images: contentImages(images), source: "rpc" });
 			this.emitStateChanged();
@@ -2007,6 +2162,10 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	getLastAssistantText(): string | undefined {
 		return this.runtime.session.getLastAssistantText();
+	}
+
+	async getTurnResultAsync(turnId: string): Promise<AgentTurnResult | undefined> {
+		return this.runtime.session.getTurnResult(turnId);
 	}
 
 	async recordCollaborationResult(result: SessionCollaborationResult): Promise<void> {
@@ -2409,7 +2568,11 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return this.createRuntime(cwd, sessionManager, onUiRequest, profile, options?.readOnly === true);
 	}
 
-	async openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
+	async openSession(
+		sessionPath: string,
+		onUiRequest: UiRequestHandler,
+		options: { deferExtensionLifecycle?: boolean } = {},
+	): Promise<RuntimeSession> {
 		const initialRuntime = this.takeInitialRuntime(sessionPath);
 		if (initialRuntime) {
 			await migrateLegacyWebAttachments(initialRuntime.session.sessionManager).catch(() => false);
@@ -2424,6 +2587,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				onUiRequest,
 				sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
 				manager.getCollaborationWorkspace()?.mode === "shared",
+				options.deferExtensionLifecycle === true,
 			);
 		} catch (error) {
 			if (!(error instanceof SessionLockedError)) throw error;
@@ -2440,6 +2604,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 								onUiRequest,
 								sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
 								manager.getCollaborationWorkspace()?.mode === "shared",
+								options.deferExtensionLifecycle === true,
 							);
 						} catch (takeoverError) {
 							if (!(takeoverError instanceof SessionLockedError)) throw takeoverError;
@@ -3227,6 +3392,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			name: definition.name,
 			description: definition.description,
 			scope: definition.scope,
+			...(definition.tags ? { tags: definition.tags } : {}),
 			...(definition.icon ? { icon: definition.icon } : {}),
 			...(definition.provider ? { provider: definition.provider } : {}),
 			...(definition.model ? { model: definition.model } : {}),
@@ -3252,6 +3418,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			thinkingLevel?: ThinkingLevel;
 			tools?: string[];
 			skills?: string[];
+			tags?: string[];
 			content: string;
 			expectedHash?: string;
 		},
@@ -3294,6 +3461,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
 			...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
 			...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
+			...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
 			content: input.content,
 		});
 		atomicWriteUtf8(targetPath, rendered);
@@ -4056,6 +4224,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		onUiRequest: UiRequestHandler,
 		sessionProfile?: SessionProfile,
 		readOnly = false,
+		deferExtensionLifecycle = false,
 	): Promise<RuntimeSession> {
 		const trustStore = new ProjectTrustStore(this.agentDir);
 		const stepController = new AgentStepController(sessionManager);
@@ -4066,6 +4235,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionStartEvent,
 			projectTrustContext,
 			sessionProfile: runtimeSessionProfile,
+			deferExtensionLifecycle: deferRuntimeExtensionLifecycle,
 		}) => {
 			const effectiveProfile =
 				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
@@ -4139,6 +4309,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					services,
 					sessionManager: runtimeSessionManager,
 					sessionStartEvent,
+					deferExtensionLifecycle: deferRuntimeExtensionLifecycle,
 					model: resolveProfileModel(effectiveProfile, services.modelRuntime),
 					thinkingLevel: effectiveProfile?.thinkingLevel,
 					...(activeTools ? { tools: activeTools } : {}),
@@ -4163,6 +4334,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionManager,
 			projectTrustContext,
 			sessionProfile,
+			deferExtensionLifecycle,
 		});
 		this.stepControllers.set(runtime, stepController);
 		return this.wrapRuntime(runtime, onUiRequest);

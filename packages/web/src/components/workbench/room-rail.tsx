@@ -1,8 +1,8 @@
-import { ChevronDown, FolderTree, LogOut, Plus, Search, SunMoon } from "lucide-react";
+import { ChevronDown, FolderTree, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { cn } from "../../lib/utils";
-import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
+import { type WorkbenchState } from "../../state/use-workbench";
 import type { RoomMemberSelection, RoomProjectList } from "../../state/use-room-workspace";
 import type { SubagentConfig, WebProject, WebRoomSummary } from "../../types";
 import { BrandLogo } from "../brand-logo";
@@ -11,8 +11,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/colla
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "../ui/select";
-import { ProductUpdateControl } from "./product-update-control";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { AgentProfileCard } from "./agent-profile-card";
+import { RailFooter } from "./rail-footer";
 import type { WorkbenchActions } from "./types";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "./workspace-mode-switch";
 
@@ -48,16 +49,12 @@ export function RoomRail({
 	const [query, setQuery] = useState("");
 	const [createOpen, setCreateOpen] = useState(false);
 	const [createProjectId, setCreateProjectId] = useState(state.currentProjectId ?? projects[0]?.id ?? "");
-	const [createMemberSelection, setCreateMemberSelection] = useState("");
+	const [createProfileId, setCreateProfileId] = useState("");
 	const [createTitle, setCreateTitle] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [agentProfiles, setAgentProfiles] = useState<SubagentConfig[]>([]);
 	const [agentProfilesLoading, setAgentProfilesLoading] = useState(false);
 	const [agentProfilesError, setAgentProfilesError] = useState<string>();
-	const createProject = projects.find((project) => project.id === createProjectId);
-	const createOwnerSessionId =
-		createProject?.sessions.find((session) => session.id === state.sessionId)?.id ?? createProject?.sessions[0]?.id;
-	const createMemberCandidates = createProject?.sessions.filter((session) => session.id !== createOwnerSessionId) ?? [];
 	const effectiveAgentProfiles = useMemo(
 		() => [...new Map(agentProfiles.map((profile) => [profile.name, profile])).values()],
 		[agentProfiles],
@@ -86,9 +83,11 @@ export function RoomRail({
 		setAgentProfilesError(undefined);
 		void webApi
 			.subagentConfigs(createProjectId)
-			.then((response) => {
-				if (!cancelled) setAgentProfiles(response.subagents);
-			})
+				.then((response) => {
+					if (cancelled) return;
+					setAgentProfiles(response.subagents);
+					setCreateProfileId((current) => current || response.subagents[0]?.name || "");
+				})
 			.catch((error) => {
 				if (cancelled) return;
 				setAgentProfiles([]);
@@ -104,26 +103,21 @@ export function RoomRail({
 
 	const openCreateDialog = () => {
 		const projectId = state.currentProjectId ?? projects[0]?.id ?? "";
-		const project = projects.find((candidate) => candidate.id === projectId);
-		const ownerSessionId = project?.sessions.find((session) => session.id === state.sessionId)?.id ?? project?.sessions[0]?.id;
 		setCreateProjectId(projectId);
-		const firstMemberSessionId = project?.sessions.find((session) => session.id !== ownerSessionId)?.id;
-		setCreateMemberSelection(firstMemberSessionId ? `session:${firstMemberSessionId}` : "");
+		setCreateProfileId("");
 		setCreateTitle("");
 		setCreateOpen(true);
 	};
 
 	const submitCreate = async () => {
-		if (!onCreateRoom || !createProjectId || !createMemberSelection || !createTitle.trim()) return;
-		const separator = createMemberSelection.indexOf(":");
-		const kind = separator > 0 ? createMemberSelection.slice(0, separator) : "";
-		const value = separator > 0 ? createMemberSelection.slice(separator + 1) : "";
-		const member = kind === "session" && value && createMemberCandidates.some((session) => session.id === value)
-			? { sessionId: value }
-			: kind === "profile" && value && effectiveAgentProfiles.some((profile) => profile.name === value)
-				? { profileId: value }
-				: undefined;
-		if (!member) return;
+		if (!onCreateRoom || !createProjectId || !createProfileId || !createTitle.trim()) return;
+		const profile = effectiveAgentProfiles.find((candidate) => candidate.name === createProfileId);
+		if (!profile) return;
+		const member = {
+			profileId: profile.name,
+			profileName: profile.name,
+			...(profile.icon ? { profileIcon: profile.icon } : {}),
+		};
 		setCreating(true);
 		try {
 			await onCreateRoom(createProjectId, createTitle.trim(), member);
@@ -179,26 +173,25 @@ export function RoomRail({
 						<span>{roomProjects.reduce((count, entry) => count + entry.rooms.length, 0)}</span>
 					</div>
 					{roomsLoading ? (
-						<div className="px-2 py-8 text-center text-sm text-muted-foreground">正在加载 Room</div>
+						<div className="px-2 py-8 text-center text-[13px] text-muted-foreground">正在加载 Room</div>
 					) : roomsError ? (
-						<div className="px-2 py-8 text-center text-sm text-destructive">{roomsError}</div>
+						<div className="px-2 py-8 text-center text-[13px] text-destructive">{roomsError}</div>
 					) : filteredProjects.length ? (
-						<div className="grid gap-1">
+						<div className="grid gap-0.5">
 							{filteredProjects.map(({ project, rooms }) => {
 								const open = openProjects.has(project.id) || Boolean(normalizedQuery);
 								return (
 									<Collapsible key={project.id} open={open} onOpenChange={() => toggleProject(project.id)}>
 										<CollapsibleTrigger asChild>
-											<Button className="h-9 w-full justify-start gap-2 px-2 text-xs" variant="ghost">
+											<Button className="h-8 w-full justify-start gap-2 px-2 text-xs" variant="ghost">
 												<ChevronDown className={cn("size-3.5 shrink-0 transition-transform", !open && "-rotate-90")} />
 												<FolderTree className="size-4 shrink-0 text-muted-foreground" />
-												<span className="min-w-0 flex-1 truncate text-left font-medium">{project.name}</span>
+															<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">{project.name}</span>
 												<span className="text-[11px] text-muted-foreground">{rooms.length}</span>
 											</Button>
 										</CollapsibleTrigger>
 										<CollapsibleContent>
-											<div className="ml-2 grid gap-0.5 border-l border-border/60 pl-2">
-												<div className="px-2 py-1 text-[11px] text-muted-foreground">{project.path}</div>
+											<div className="mt-0.5 ml-2 grid gap-0.5 border-l border-border/60 pl-2">
 												{rooms.map((summary) => {
 													const selected = selectedRoomId === summary.room.id;
 											return (
@@ -213,10 +206,10 @@ export function RoomRail({
 															type="button"
 														>
 															<span className="flex min-w-0 items-center gap-2">
-																<span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40" aria-hidden="true" />
-																<span className="min-w-0 truncate text-[13px] font-medium">{summary.room.title}</span>
+															<span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+															<span className="project-list-item-label min-w-0 truncate font-medium">{summary.room.title}</span>
 															</span>
-															<span className="truncate pl-3.5 text-[11px] text-muted-foreground">{roomPreview(summary)}</span>
+															<span className="project-list-item-label truncate pl-3.5 text-muted-foreground">{roomPreview(summary)}</span>
 														</button>
 													);
 												})}
@@ -227,43 +220,28 @@ export function RoomRail({
 							})}
 						</div>
 					) : (
-						<div className="px-2 py-8 text-center text-sm text-muted-foreground">
+						<div className="px-2 py-8 text-center text-[13px] text-muted-foreground">
 							{roomProjects.length ? "没有匹配 Room" : "当前还没有 Room"}
 						</div>
 					)}
 				</div>
 			</ScrollArea>
-			<div className="grid shrink-0 gap-1 border-t p-3">
-				<div className="flex min-w-0 items-center gap-2">
-					<Button className="min-w-0 flex-1 justify-start gap-2" variant="ghost" onClick={() => void actions.openSettings("appearance")}>
-						<SunMoon className="size-4 shrink-0" />
-						<span className="truncate">偏好设置</span>
-					</Button>
-					<ProductUpdateControl />
-				</div>
-				<Button className="justify-start gap-2" variant="ghost" onClick={actions.signOut}>
-					<LogOut className="size-4" />
-					<span>退出</span>
-				</Button>
-			</div>
+			<RailFooter actions={actions} />
 			<Dialog open={createOpen} onOpenChange={setCreateOpen}>
 				<DialogContent>
-					<DialogHeader>
-						<DialogTitle>新建 Room</DialogTitle>
-						<DialogDescription>Room 会归属于选中的项目。可加入已有会话，也可按智能体配置新建成员。</DialogDescription>
-					</DialogHeader>
+				<DialogHeader>
+					<DialogTitle>新建 Room</DialogTitle>
+					<DialogDescription>Room 会归属于选中的项目。选择一个智能体配置作为首个协作成员。</DialogDescription>
+				</DialogHeader>
 					<div className="grid gap-4 py-2">
 						<label className="grid gap-2 text-sm font-medium" htmlFor="room-project">
 							项目
 							<Select
-								value={createProjectId}
-								onValueChange={(projectId) => {
-									const project = projects.find((candidate) => candidate.id === projectId);
-									const ownerSessionId = project?.sessions.find((session) => session.id === state.sessionId)?.id ?? project?.sessions[0]?.id;
-									setCreateProjectId(projectId);
-									const firstMemberSessionId = project?.sessions.find((session) => session.id !== ownerSessionId)?.id;
-									setCreateMemberSelection(firstMemberSessionId ? `session:${firstMemberSessionId}` : "");
-								}}
+														value={createProjectId}
+														onValueChange={(projectId) => {
+															setCreateProjectId(projectId);
+															setCreateProfileId("");
+														}}
 							>
 								<SelectTrigger id="room-project" className="w-full">
 									<SelectValue placeholder="选择项目" />
@@ -285,47 +263,32 @@ export function RoomRail({
 								onChange={(event) => setCreateTitle(event.target.value)}
 							/>
 						</label>
-						<label className="grid gap-2 text-sm font-medium" htmlFor="room-member">
-							Agent 成员
-							<Select
-								value={createMemberSelection}
-								disabled={agentProfilesLoading && !createMemberCandidates.length}
-								onValueChange={setCreateMemberSelection}
-							>
-								<SelectTrigger id="room-member" className="w-full">
-									<SelectValue placeholder="选择 Agent" />
-								</SelectTrigger>
-								<SelectContent>
-									{createMemberCandidates.length ? (
-										<SelectGroup>
-											<SelectLabel>已有会话</SelectLabel>
-											{createMemberCandidates.map((session) => (
-												<SelectItem key={session.id} value={`session:${session.id}`}>
-													{sessionTitle(session)}
-												</SelectItem>
-											))}
-										</SelectGroup>
-									) : null}
-									{effectiveAgentProfiles.length ? (
-										<SelectGroup>
-											<SelectLabel>按配置新建</SelectLabel>
-											{effectiveAgentProfiles.map((profile) => (
-												<SelectItem key={`${profile.scope}:${profile.name}`} value={`profile:${profile.name}`}>
-													{profile.name} · {profile.description}
-												</SelectItem>
-											))}
-										</SelectGroup>
-									) : null}
-								</SelectContent>
-							</Select>
-							<span className="text-xs font-normal text-muted-foreground">
-								{agentProfilesLoading ? "正在加载智能体配置" : agentProfilesError ?? "可加入已有会话，也可按配置新建智能体"}
-							</span>
-						</label>
+						<div className="grid gap-2 text-sm font-medium">
+							<span>首个协作智能体</span>
+							{agentProfilesLoading ? (
+								<div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">正在加载智能体配置</div>
+							) : effectiveAgentProfiles.length ? (
+								<div className="grid max-h-72 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+									{effectiveAgentProfiles.map((profile) => (
+										<AgentProfileCard
+											key={`${profile.scope}:${profile.name}`}
+											profile={profile}
+											selected={createProfileId === profile.name}
+											onClick={() => setCreateProfileId(profile.name)}
+										/>
+									))}
+								</div>
+							) : (
+								<div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
+									{agentProfilesError ?? "当前项目没有可用的智能体配置"}
+								</div>
+							)}
+							<span className="text-xs font-normal text-muted-foreground">昵称会在智能体加入 Room 后从昵称库分配。</span>
+						</div>
 					</div>
 					<DialogFooter>
 						<Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-						<Button disabled={creating || !createProjectId || !createMemberSelection || !createTitle.trim()} onClick={() => void submitCreate()}>
+						<Button disabled={creating || !createProjectId || !createProfileId || !createTitle.trim()} onClick={() => void submitCreate()}>
 							{creating ? "创建中…" : "创建 Room"}
 						</Button>
 					</DialogFooter>

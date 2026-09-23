@@ -100,6 +100,8 @@ export {
 	type ExtensionFactory,
 	type ExtensionFlag,
 	type ExtensionHandler,
+	type ExtensionHandlerOptions,
+	type ExtensionHandlerScope,
 	ExtensionRunner,
 	type ExtensionShortcut,
 	type ExtensionUIContext,
@@ -138,6 +140,16 @@ export {
 	type HarnessResourceType,
 	importHarnessResources,
 } from "./harness-resource-import.ts";
+export {
+	type AgentCapabilityLease,
+	type AgentInputChannel,
+	type AgentInputOrigin,
+	type AgentRoomMessageKind,
+	type AgentRootOrigin,
+	type AgentTurnContext,
+	type AgentTurnResult,
+	rootOriginOf,
+} from "./input-origin.ts";
 export {
 	getLystarSetting,
 	getLystarSettingsForUi,
@@ -240,6 +252,7 @@ export {
 export type {
 	SessionRoom,
 	SessionRoomApi,
+	SessionRoomAttachment,
 	SessionRoomCursor,
 	SessionRoomDeliveryError,
 	SessionRoomMember,
@@ -249,6 +262,7 @@ export type {
 	SessionRoomMode,
 	SessionRoomReadResult,
 	SessionRoomRoute,
+	SessionRoomSenderType,
 	SessionRoomSendResult,
 	SessionRoomSummary,
 } from "./session-room.ts";

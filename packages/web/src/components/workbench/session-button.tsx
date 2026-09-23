@@ -15,7 +15,7 @@ import {
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { Input } from "../ui/input";
 import {
-	collaborationAgentIconForSession,
+	AgentIdentityIcon,
 	collaborationAgentType,
 	collaborationAlias,
 	isCollaborationSession,
@@ -99,7 +99,6 @@ function SessionButtonComponent({
 	const relativeTime = formatSessionAge(session.updatedAt);
 	const absoluteTime = formatSessionDate(session.updatedAt);
 	const collaboration = isCollaborationSession(session);
-	const AgentIcon = collaborationAgentIconForSession(session);
 	const alias = collaborationAlias(session.id);
 	const agentType = collaborationAgentType(session);
 
@@ -151,7 +150,7 @@ function SessionButtonComponent({
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
-								{collaboration ? <AgentIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /> : null}
+								{collaboration ? <AgentIdentityIcon session={session} className="size-3.5 shrink-0 object-contain text-muted-foreground" /> : null}
 								<span className="project-list-item-label min-w-0 flex-1 truncate">
 									{collaboration ? (
 										<>
@@ -248,7 +247,7 @@ function SessionButtonComponent({
 							<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
 								{collaboration ? (
 									<div className="flex min-w-0 items-center gap-2">
-										<AgentIcon className="size-3.5 shrink-0" />
+										<AgentIdentityIcon session={session} className="size-3.5 shrink-0 object-contain" />
 										<span className="truncate">{alias} · {agentType}</span>
 									</div>
 								) : null}

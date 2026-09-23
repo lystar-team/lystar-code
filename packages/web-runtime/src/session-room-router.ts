@@ -1,4 +1,4 @@
-import type { SessionRoomMember, SessionRoomRoute } from "@earendil-works/pi-coding-agent/core";
+import type { SessionRoomMember, SessionRoomRoute, SessionRoomSenderType } from "@earendil-works/pi-coding-agent/core";
 
 export type SessionRoomAvailability =
 	| "idle"
@@ -13,6 +13,7 @@ export type SessionRoomAvailability =
 export interface SessionRoomRoutingInput {
 	route: SessionRoomRoute;
 	senderSessionId: string;
+	senderType?: SessionRoomSenderType;
 	targetSessionIds?: readonly string[];
 	members: readonly SessionRoomMember[];
 	availability?: ReadonlyMap<string, SessionRoomAvailability>;
@@ -53,9 +54,10 @@ function availabilityRank(availability: SessionRoomAvailability | undefined): nu
 function assertActiveTarget(
 	targetSessionId: string,
 	senderSessionId: string,
+	senderType: SessionRoomSenderType,
 	members: readonly SessionRoomMember[],
 ): void {
-	if (targetSessionId === senderSessionId) {
+	if (targetSessionId === senderSessionId && senderType !== "user") {
 		throw routingError("Room 消息不能定向发送给发送者自己", "room_target_sender");
 	}
 	const target = members.find((member) => member.sessionId === targetSessionId && member.leftAt === undefined);
@@ -65,26 +67,33 @@ function assertActiveTarget(
 export function resolveSessionRoomTargets(input: SessionRoomRoutingInput): string[] {
 	const active = activeMembers(input.members);
 	const requested = uniqueTargetIds(input.targetSessionIds);
+	const senderType = input.senderType ?? "agent";
 	if (input.route === "direct") {
 		if (requested.length !== 1) {
 			throw routingError("direct 路由必须指定一个目标成员", "room_direct_target_required");
 		}
-		assertActiveTarget(requested[0], input.senderSessionId, active);
+		assertActiveTarget(requested[0], input.senderSessionId, senderType, active);
 		return requested;
 	}
 	if (input.route === "broadcast") {
-		return active
-			.filter((member) => member.sessionId !== input.senderSessionId)
-			.sort(
-				(left, right) =>
-					left.joinedAt.localeCompare(right.joinedAt) || left.sessionId.localeCompare(right.sessionId),
-			)
-			.map((member) => member.sessionId);
+		const candidates =
+			requested.length > 0
+				? requested
+				: active
+						.filter((member) => senderType === "user" || member.sessionId !== input.senderSessionId)
+						.map((member) => member.sessionId);
+		for (const sessionId of candidates) assertActiveTarget(sessionId, input.senderSessionId, senderType, active);
+		const memberById = new Map(active.map((member) => [member.sessionId, member]));
+		return candidates.sort(
+			(left, right) =>
+				(memberById.get(left)?.joinedAt ?? "").localeCompare(memberById.get(right)?.joinedAt ?? "") ||
+				left.localeCompare(right),
+		);
 	}
 	const candidates = (requested.length > 0 ? requested : active.map((member) => member.sessionId)).filter(
-		(sessionId) => sessionId !== input.senderSessionId,
+		(sessionId) => senderType === "user" || sessionId !== input.senderSessionId,
 	);
-	for (const sessionId of candidates) assertActiveTarget(sessionId, input.senderSessionId, active);
+	for (const sessionId of candidates) assertActiveTarget(sessionId, input.senderSessionId, senderType, active);
 	if (candidates.length === 0) throw routingError("one-of-us 路由没有可用成员", "room_one_of_us_target_required");
 	const memberById = new Map(active.map((member) => [member.sessionId, member]));
 	candidates.sort((left, right) => {

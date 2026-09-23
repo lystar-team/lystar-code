@@ -2547,6 +2547,10 @@ export class WebGatewayServer {
 					cwd: project.cwd,
 					roomId,
 					sessionId,
+					...(stringValue(body.nickname) ? { nickname: stringValue(body.nickname)! } : {}),
+					...(stringValue(body.profileId) ? { profileId: stringValue(body.profileId)! } : {}),
+					...(stringValue(body.profileName) ? { profileName: stringValue(body.profileName)! } : {}),
+					...(stringValue(body.profileIcon) ? { profileIcon: stringValue(body.profileIcon)! } : {}),
 				}),
 			);
 			return;
@@ -2610,7 +2614,9 @@ export class WebGatewayServer {
 				const route = body.route;
 				if (route !== "direct" && route !== "broadcast" && route !== "one_of_us")
 					throw new HttpError(400, "room_route_invalid", "Room 消息路由无效");
-				const bodyText = stringValue(body.body);
+				const senderType = body.senderType === "user" || body.senderType === "agent" ? body.senderType : "agent";
+				const attachments = await this.persistUploadedFiles(session.path, body.attachments);
+				const bodyText = stringValue(body.body) ?? (attachments.length ? "发送了附件" : undefined);
 				if (!bodyText) throw new HttpError(400, "room_message_required", "Room 消息不能为空");
 				const kind = (["task", "message", "question", "answer", "status", "result", "system"] as const).find(
 					(candidate) => candidate === body.kind,
@@ -2623,10 +2629,20 @@ export class WebGatewayServer {
 						cwd: project.cwd,
 						roomId,
 						senderSessionId,
+						senderType,
 						route,
 						...(Array.isArray(body.targetSessionIds) ? { targetSessionIds: body.targetSessionIds } : {}),
 						...(kind ? { kind } : {}),
 						body: bodyText,
+						...(attachments.length
+							? {
+									attachments: attachments.map(({ path, filename, mimeType }) => ({
+										path,
+										filename,
+										mimeType,
+									})),
+								}
+							: {}),
 						...(stringValue(body.taskId) ? { taskId: stringValue(body.taskId)! } : {}),
 						...(stringValue(body.replyToMessageId)
 							? { replyToMessageId: stringValue(body.replyToMessageId)! }
@@ -4101,6 +4117,15 @@ export class WebGatewayServer {
 				const skills = Array.isArray(body.skills)
 					? body.skills.filter((value): value is string => typeof value === "string" && value.length > 0)
 					: undefined;
+				const tags = Array.isArray(body.tags)
+					? [
+							...new Set(
+								body.tags
+									.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+									.map((value) => value.trim()),
+							),
+						]
+					: undefined;
 				const icon = stringValue(body.icon);
 				const thinkingLevels: ThinkingLevel[] = [
 					"off",
@@ -4126,6 +4151,7 @@ export class WebGatewayServer {
 					...(thinkingLevel ? { thinkingLevel } : {}),
 					...(tools ? { tools } : {}),
 					...(skills ? { skills } : {}),
+					...(tags ? { tags } : {}),
 					content: body.content,
 					...(typeof body.expectedHash === "string" ? { expectedHash: body.expectedHash } : {}),
 					clientInstanceId: context.id,

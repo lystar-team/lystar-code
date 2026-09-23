@@ -33,6 +33,7 @@ describe("subagent config adapter", () => {
 				thinkingLevel: "high",
 				tools: ["read", "grep"],
 				skills: ["review", "codegraph"],
+				tags: ["审查", "回归", "安全"],
 				content: "Review the requested changes.",
 			},
 			ui,
@@ -48,6 +49,7 @@ describe("subagent config adapter", () => {
 			thinkingLevel: "high",
 			tools: ["read", "grep"],
 			skills: ["review", "codegraph"],
+			tags: ["审查", "回归", "安全"],
 			content: "Review the requested changes.",
 		});
 

@@ -29,6 +29,13 @@ interface RouteInternals {
 		context: TestContext,
 		parts: string[],
 	): Promise<void>;
+	handleSettings(
+		request: IncomingMessage,
+		response: ServerResponse,
+		url: URL,
+		context: TestContext,
+		parts: string[],
+	): Promise<void>;
 }
 
 function responseCapture(): {
@@ -56,6 +63,63 @@ function request(method: string, body?: Record<string, unknown>): IncomingMessag
 	value.headers = {};
 	return value;
 }
+
+test("Settings 智能体路由转发并清理标签", async (t) => {
+	const tempDir = await mkdtemp(join(tmpdir(), "web-settings-subagent-tags-"));
+	const agentDir = join(tempDir, "agent");
+	const cwd = join(tempDir, "project");
+	await mkdir(cwd, { recursive: true });
+	const server = new WebGatewayServer({
+		host: "127.0.0.1",
+		port: 0,
+		agentDir,
+		runtimeEndpoint: join(agentDir, "host.sock"),
+		token: "test-token",
+		tokenPath: join(agentDir, "token"),
+		allowedHosts: ["127.0.0.1"],
+		staticDir: agentDir,
+		manageRuntime: false,
+	});
+	t.after(async () => {
+		await server.close();
+		await rm(tempDir, { recursive: true, force: true });
+	});
+	const routes = server as unknown as RouteInternals;
+	await routes.registry.load();
+	const project = await routes.registry.add({ id: "project-one", cwd, name: "Project One" });
+	const context: TestContext = { id: "browser-one", leases: new Map() };
+	const commands: Command[] = [];
+	routes.getClient = async () => ({
+		request: async <T>(command: Command): Promise<T> => {
+			commands.push(command);
+			return [] as T;
+		},
+	});
+
+	const response = responseCapture();
+	await routes.handleSettings(
+		request("POST", {
+			scope: "user",
+			name: "designer",
+			description: "负责设计和原型",
+			tags: ["开发", " 设计 ", "", "开发"],
+			content: "完成设计任务",
+			clientRequestId: "request-one",
+		}),
+		response.response,
+		new URL(`http://localhost/api/settings/subagents?projectId=${project.id}`),
+		context,
+		["api", "settings", "subagents"],
+	);
+
+	assert.equal(response.result().status, 200);
+	const command = commands[0];
+	assert.equal(command?.command, "save_subagent_config");
+	if (command?.command === "save_subagent_config") {
+		assert.deepEqual(command.tags, ["开发", "设计"]);
+		assert.equal(command.clientRequestId, "request-one");
+	}
+});
 
 test("Subagent 会话路由复用父会话归属和控制 Lease", async (t) => {
 	const tempDir = await mkdtemp(join(tmpdir(), "web-subagent-routes-"));

@@ -12,7 +12,12 @@ const WorkspaceText = Type.String({ maxLength: 1024 * 1024 });
 const StrictObject = <const T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 	Type.Object(properties, { additionalProperties: false });
 const TimestampSchema = Type.Integer({ minimum: 0 });
-
+const RoomCapabilityLeaseSchema = StrictObject({
+	allowedTools: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 32 }),
+	readRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
+	writeRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
+	shell: Type.Optional(Type.Union([Type.Literal("disabled"), Type.Literal("sandboxed")])),
+});
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 const JsonValueRecursiveSchema = Type.Cyclic(
 	{
@@ -962,6 +967,7 @@ export const SubagentConfigSchema = StrictObject({
 	thinkingLevel: Type.Optional(ThinkingLevelSchema),
 	tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 	skills: Type.Optional(Type.Array(Id, { maxItems: 128 })),
+	tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 12 })),
 	content: Type.String({ maxLength: 4 * 1024 * 1024 }),
 	editable: Type.Boolean(),
 	contentHash: Type.Optional(Id),
@@ -1057,6 +1063,7 @@ export const CompletionItemSchema = StrictObject({
 		Type.Literal("file"),
 		Type.Literal("directory"),
 		Type.Literal("skill"),
+		Type.Literal("agent"),
 		Type.Literal("prompt"),
 		Type.Literal("extension"),
 		Type.Literal("command"),
@@ -1545,6 +1552,10 @@ export const CommandSchema = Type.Union([
 		cwd: Type.String({ minLength: 1 }),
 		roomId: Id,
 		sessionId: Id,
+		nickname: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+		profileId: Type.Optional(Id),
+		profileName: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+		profileIcon: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 	}),
 	StrictObject({
 		command: Type.Literal("room_leave"),
@@ -1557,6 +1568,7 @@ export const CommandSchema = Type.Union([
 		cwd: Type.String({ minLength: 1 }),
 		roomId: Id,
 		senderSessionId: Id,
+		senderType: Type.Optional(Type.Union([Type.Literal("agent"), Type.Literal("user")])),
 		route: Type.Union([Type.Literal("direct"), Type.Literal("broadcast"), Type.Literal("one_of_us")]),
 		targetSessionIds: Type.Optional(Type.Array(Id, { maxItems: 32 })),
 		kind: Type.Optional(
@@ -1571,7 +1583,18 @@ export const CommandSchema = Type.Union([
 			]),
 		),
 		body: Type.String({ minLength: 1, maxLength: 64 * 1024 }),
+		attachments: Type.Optional(
+			Type.Array(
+				StrictObject({
+					path: Type.String({ minLength: 1, maxLength: 4096 }),
+					filename: Type.String({ minLength: 1, maxLength: 4096 }),
+					mimeType: Type.String({ minLength: 1, maxLength: 256 }),
+				}),
+				{ maxItems: 32 },
+			),
+		),
 		taskId: Type.Optional(Id),
+		capabilities: Type.Optional(RoomCapabilityLeaseSchema),
 		replyToMessageId: Type.Optional(Id),
 		basedOnSeq: Type.Optional(Type.Integer({ minimum: 0 })),
 		idempotencyKey: Type.Optional(Id),
@@ -1914,6 +1937,7 @@ export const CommandSchema = Type.Union([
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 		skills: Type.Optional(Type.Array(Id, { maxItems: 128 })),
+		tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 12 })),
 		content: Type.String({ maxLength: 4 * 1024 * 1024 }),
 		expectedHash: Type.Optional(Id),
 		clientInstanceId: Id,

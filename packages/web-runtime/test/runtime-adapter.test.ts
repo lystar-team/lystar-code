@@ -928,6 +928,106 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect((await new CodingAgentRuntimeAdapter(agentDir).listSessions(cwd))[0]).toMatchObject({ name: "自动标题" });
 	});
 
+	it("queues ordinary input behind an active Room turn without sharing its turn context", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-room-turn-queue-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const faux = registerFauxProvider();
+		let releaseRoom!: () => void;
+		let signalRoomStarted!: () => void;
+		let userResponseStarted = false;
+		const roomResponseStarted = new Promise<void>((resolve) => {
+			signalRoomStarted = resolve;
+		});
+		const roomResponseGate = new Promise<void>((resolve) => {
+			releaseRoom = resolve;
+		});
+		faux.setResponses([
+			async () => {
+				signalRoomStarted();
+				await roomResponseGate;
+				return fauxAssistantMessage("Room 已完成");
+			},
+			fauxAssistantMessage("普通输入标题"),
+			async () => {
+				userResponseStarted = true;
+				return fauxAssistantMessage("普通输入已完成");
+			},
+		]);
+		const model = faux.getModel();
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[model.provider]: {
+						baseUrl: model.baseUrl,
+						apiKey: "faux-key",
+						api: faux.api,
+						models: [
+							{
+								id: model.id,
+								name: model.name,
+								reasoning: model.reasoning,
+								input: model.input,
+								cost: model.cost,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+							},
+						],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: model.provider,
+				defaultModel: model.id,
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+			}),
+		);
+
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			releaseRoom();
+			await runtime?.dispose();
+			faux.unregister();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await new CodingAgentRuntimeAdapter(agentDir).createSession(cwd, async () => ({ cancelled: true }));
+
+		const roomPrompt = runtime.promptWithOrigin!("Room 输入", undefined, {
+			inputId: "room-message-1",
+			origin: {
+				type: "room",
+				roomId: "room-1",
+				messageId: "room-message-1",
+				seq: 1,
+				kind: "task",
+				senderSessionId: "sender",
+			},
+			activeToolNames: [],
+			capabilities: { allowedTools: [], readRoots: [], writeRoots: [], shell: "disabled" },
+		});
+		await roomResponseStarted;
+		const userPrompt = runtime.promptWithOrigin!("普通输入", undefined, {
+			inputId: "user-message-1",
+			origin: { type: "user", channel: "rpc" },
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(userResponseStarted).toBe(false);
+
+		releaseRoom();
+		const [roomTurn, userTurn] = await Promise.all([roomPrompt, userPrompt]);
+		expect(roomTurn?.rootOrigin).toBe("room");
+		expect(userTurn?.rootOrigin).toBe("user");
+		expect(userTurn?.turnId).not.toBe(roomTurn?.turnId);
+		expect(userResponseStarted).toBe(true);
+		expect(runtime.getSessionInfo().messages.total).toBeGreaterThanOrEqual(5);
+	});
+
 	it("refreshes an existing session ModelRuntime after Web adds a provider model", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-model-refresh-"));
 		const agentDir = join(tempDir, "agent");

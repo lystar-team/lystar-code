@@ -73,7 +73,15 @@ export interface WebProject {
 
 export type WebRoomMode = "direct" | "group";
 export type WebRoomRoute = "direct" | "broadcast" | "one_of_us";
+export type WebRoomSenderType = "agent" | "user";
 export type WebRoomMessageKind = "task" | "message" | "question" | "answer" | "status" | "result" | "system";
+
+export interface WebRoomCapabilityLease {
+	allowedTools: string[];
+	readRoots?: string[];
+	writeRoots?: string[];
+	shell?: "disabled" | "sandboxed";
+}
 
 export interface WebRoom {
 	id: string;
@@ -92,6 +100,10 @@ export interface WebRoomMember {
 	joinedAt: string;
 	leftAt?: string;
 	lastReadSeq: number;
+	nickname?: string;
+	profileId?: string;
+	profileName?: string;
+	profileIcon?: string;
 }
 
 export interface WebRoomMessage {
@@ -99,11 +111,14 @@ export interface WebRoomMessage {
 	roomId: string;
 	seq: number;
 	senderSessionId: string;
+	senderType: WebRoomSenderType;
 	targetSessionIds: string[];
 	route: WebRoomRoute;
 	kind: WebRoomMessageKind;
 	body: string;
+	attachments?: Array<{ path: string; filename: string; mimeType: string }>;
 	taskId?: string;
+	capabilities?: WebRoomCapabilityLease;
 	replyToMessageId?: string;
 	basedOnSeq?: number;
 	idempotencyKey: string;

@@ -12,7 +12,7 @@ import { useRoomWorkspace, type RoomMemberSelection, type RoomProjectList } from
 import { Button } from "./ui/button";
 import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
-import { collaborationAlias, collaborationSessionsForSession } from "./workbench/collaboration-session";
+import { AgentIdentityIcon, collaborationAlias, collaborationSessionsForSession } from "./workbench/collaboration-session";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./workbench/constants";
 import { ConversationView } from "./workbench/conversation";
 import {
@@ -310,10 +310,19 @@ export function Workbench({
 		refreshProjectSessions: actions.refreshProjectSessions,
 		showToast: actions.showToast,
 	});
+	const roomMentionCompletionItems = useMemo(
+		() => roomWorkspace.roomMentionItems.map(({ item }) => item),
+		[roomWorkspace.roomMentionItems],
+	);
 	const sendRoomPrompt = useCallback<WorkbenchActions["sendMessage"]>(
-		async (text, _mode, attachments) => {
-			if (attachments?.length) throw new Error("Room 消息暂不支持附件");
-			await roomWorkspace.sendRoomMessage(text);
+		async (text, _mode, attachments, attachmentPreviews) => {
+			await roomWorkspace.sendRoomMessage(
+				text,
+				attachments?.map((attachment, index) => ({
+					...attachment,
+					filename: attachmentPreviews?.[index]?.filename ?? `附件 ${index + 1}`,
+				})),
+			);
 		},
 		[roomWorkspace.sendRoomMessage],
 	);
@@ -480,15 +489,19 @@ export function Workbench({
 									{roomWorkspace.selectedRoom.members
 										.filter((member) => !member.leftAt)
 										.slice(0, 4)
-										.map((member) => (
-											<span
-												className="grid size-6 place-items-center rounded-full border-2 border-background bg-muted text-[9px] font-medium text-muted-foreground"
-												key={member.sessionId}
-												title={collaborationAlias(member.sessionId)}
-											>
-												{collaborationAlias(member.sessionId).slice(0, 1)}
-											</span>
-										))}
+										.map((member) => {
+											const session = roomProject?.sessions.find((candidate) => candidate.id === member.sessionId);
+											const nickname = member.role === "owner" ? "你" : member.nickname?.trim() || collaborationAlias(member.sessionId);
+											return (
+												<span
+													className="grid size-6 place-items-center overflow-hidden rounded-full border-2 border-background bg-muted text-muted-foreground"
+													key={member.sessionId}
+													title={member.profileName ? `${nickname} · ${member.profileName}` : nickname}
+												>
+													<AgentIdentityIcon member={member} session={session} className="size-3.5 object-contain" />
+												</span>
+											);
+										})}
 								</div>
 								<span className="text-xs text-muted-foreground">
 									{roomWorkspace.selectedRoom.members.filter((member) => !member.leftAt).length} 位成员
@@ -608,6 +621,7 @@ export function Workbench({
 											roomMode
 											roomId={roomWorkspace.selectedRoom.room.id}
 											roomSending={roomWorkspace.roomSending}
+											roomMentionItems={roomMentionCompletionItems}
 											onCancelEdit={closePromptEdit}
 											onEditComplete={closePromptEdit}
 										/>

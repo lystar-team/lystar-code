@@ -120,6 +120,7 @@ export interface WorkbenchActions {
 		thinkingLevel?: WebThinkingLevel;
 		tools?: string[];
 		skills?: string[];
+		tags?: string[];
 		content: string;
 		expectedHash?: string;
 	}) => Promise<boolean>;

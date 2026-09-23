@@ -179,6 +179,17 @@ describe("cache warming", () => {
 		warmer.cancel();
 	});
 
+	it("preserves cache warming for Room requests without invoking delayed Extension decisions", async () => {
+		vi.useFakeTimers();
+		const room = fakeRuntime({ decide: () => "stop", branch: branchWithPrompt(400_000) });
+		room.warmer.start({ ...request(), skipExtensionDecision: true }, current);
+		room.warmer.onAgentSettled();
+		await vi.advanceTimersByTimeAsync(270_000);
+		expect(room.events).toEqual([]);
+		expect(room.calls).toHaveLength(1);
+		room.warmer.cancel();
+	});
+
 	it("applies economic decisions and extension overrides", async () => {
 		vi.useFakeTimers();
 		const unprofitable = fakeRuntime({ branch: branchWithPrompt(5_000) });

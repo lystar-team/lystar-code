@@ -9,7 +9,6 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "./extensions/index.ts";
-import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionLockedError, SessionManager } from "./session-manager.ts";
@@ -40,6 +39,7 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	agentDir: string;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
+	deferExtensionLifecycle?: boolean;
 	projectTrustContext?: ProjectTrustContext;
 	sessionProfile?: SessionProfile;
 }) => Promise<CreateAgentSessionRuntimeResult>;
@@ -126,6 +126,7 @@ export class AgentSessionRuntime {
 	private _services: AgentSessionServices;
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private readonly writerHandoff: boolean;
+	private extensionLifecycleDeferred: boolean;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
 
@@ -136,11 +137,13 @@ export class AgentSessionRuntime {
 		_diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		_modelFallbackMessage?: string,
 		writerHandoff = false,
+		extensionLifecycleDeferred = false,
 	) {
 		this._session = _session;
 		this._services = _services;
 		this.createRuntime = createRuntime;
 		this.writerHandoff = writerHandoff;
+		this.extensionLifecycleDeferred = extensionLifecycleDeferred;
 		this._diagnostics = _diagnostics;
 		this._modelFallbackMessage = _modelFallbackMessage;
 	}
@@ -219,13 +222,19 @@ export class AgentSessionRuntime {
 		// Settle any active response first so the aborted turn (including tool
 		// results) is persisted to the outgoing session before it is replaced.
 		await abortBeforeDispose(this.session);
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
+		await this.session.emitSessionShutdownEvent({
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
 		});
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
+	}
+
+	async activateExtensionLifecycle(): Promise<void> {
+		if (!this.extensionLifecycleDeferred) return;
+		await this.session.activateExtensionLifecycle();
+		this.extensionLifecycleDeferred = false;
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -299,6 +308,7 @@ export class AgentSessionRuntime {
 			agentDir: this.services.agentDir,
 			sessionManager,
 			sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+			deferExtensionLifecycle: this.extensionLifecycleDeferred,
 			projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
 		});
 		await this.commitReplacement(result, "resume", sessionManager.getSessionFile(), options?.withSession);
@@ -329,6 +339,7 @@ export class AgentSessionRuntime {
 			agentDir: this.services.agentDir,
 			sessionManager,
 			sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+			deferExtensionLifecycle: this.extensionLifecycleDeferred,
 		});
 		if (options?.setup) {
 			try {
@@ -385,6 +396,7 @@ export class AgentSessionRuntime {
 					agentDir: this.services.agentDir,
 					sessionManager,
 					sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+					deferExtensionLifecycle: this.extensionLifecycleDeferred,
 				});
 				await this.commitReplacement(result, "fork", sessionManager.getSessionFile(), options?.withSession);
 				return { cancelled: false, selectedText };
@@ -406,6 +418,7 @@ export class AgentSessionRuntime {
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+				deferExtensionLifecycle: this.extensionLifecycleDeferred,
 			});
 			await this.commitReplacement(result, "fork", sessionManager.getSessionFile(), options?.withSession);
 			return { cancelled: false, selectedText };
@@ -424,6 +437,7 @@ export class AgentSessionRuntime {
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+				deferExtensionLifecycle: this.extensionLifecycleDeferred,
 			}),
 		);
 		await this.finishSessionReplacement(options?.withSession);
@@ -484,6 +498,7 @@ export class AgentSessionRuntime {
 			agentDir: this.services.agentDir,
 			sessionManager,
 			sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+			deferExtensionLifecycle: this.extensionLifecycleDeferred,
 		});
 		await this.commitReplacement(result, "resume", sessionManager.getSessionFile());
 		return { cancelled: false };
@@ -499,7 +514,7 @@ export class AgentSessionRuntime {
 
 	async dispose(): Promise<void> {
 		await abortBeforeDispose(this.session);
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
+		await this.session.emitSessionShutdownEvent({
 			type: "session_shutdown",
 			reason: "quit",
 		});
@@ -521,6 +536,7 @@ export async function createAgentSessionRuntime(
 		agentDir: string;
 		sessionManager: SessionManager;
 		sessionStartEvent?: SessionStartEvent;
+		deferExtensionLifecycle?: boolean;
 		projectTrustContext?: ProjectTrustContext;
 		sessionProfile?: SessionProfile;
 		writerHandoff?: boolean;
@@ -536,6 +552,7 @@ export async function createAgentSessionRuntime(
 			result.diagnostics,
 			result.modelFallbackMessage,
 			options.writerHandoff === true,
+			options.deferExtensionLifecycle === true,
 		);
 	} catch (error) {
 		options.sessionManager.dispose();

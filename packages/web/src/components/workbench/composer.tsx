@@ -24,6 +24,7 @@ import {
 } from "./constants";
 import { formatModelDisplayName } from "./model-utils";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
+import type { WebCompletionResult } from "../../types";
 
 function internalFileReference(path: string, filename: string | undefined, mimeType: string, index: number): string {
 	const displayName = filename || `附件 ${index + 1}`;
@@ -63,6 +64,7 @@ type ComposerProps = {
 	roomMode?: boolean;
 	roomId?: string;
 	roomSending?: boolean;
+	roomMentionItems?: WebCompletionResult["items"];
 	editRequest?: PromptEditRequest;
 	onCancelEdit: () => void;
 	onEditComplete: () => void;
@@ -97,6 +99,7 @@ function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boole
 		previous.roomMode === next.roomMode &&
 		previous.roomId === next.roomId &&
 		previous.roomSending === next.roomSending &&
+		previous.roomMentionItems === next.roomMentionItems &&
 		previous.editRequest === next.editRequest &&
 		previous.onCancelEdit === next.onCancelEdit &&
 		previous.onEditComplete === next.onEditComplete
@@ -110,6 +113,7 @@ export const Composer = memo(function Composer({
 	roomMode = false,
 	roomId,
 	roomSending = false,
+	roomMentionItems = [],
 	editRequest,
 	onCancelEdit,
 	onEditComplete,
@@ -202,6 +206,24 @@ export const Composer = memo(function Composer({
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
 	const disabled = roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state);
 	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
+	const getPromptCompletions = useCallback(
+		async (text: string, cursor: number): Promise<WebCompletionResult> => {
+			if (!state.currentProjectId) return { prefixStart: cursor, prefixEnd: cursor, items: [] };
+			const result = await webApi.completions(state.currentProjectId, text, cursor, state.sessionId);
+			if (!roomMode) return result;
+			const before = text.slice(0, cursor);
+			const match = /(?:^|\\s)(@[^\\s]*)$/u.exec(before);
+			if (!match) return result;
+			const query = match[1] ?? "@";
+			const roomItems = roomMentionItems.filter((item) => item.value.toLowerCase().startsWith(query.toLowerCase()));
+			return {
+				prefixStart: cursor - query.length,
+				prefixEnd: cursor,
+				items: [...roomItems, ...result.items.filter((item) => item.kind !== "agent")],
+			};
+		},
+		[roomMentionItems, roomMode, state.currentProjectId, state.sessionId],
+	);
 	const handleQueueAction = async (queueId: string, action: "remove" | "steer") => {
 		setQueueActionId(queueId);
 		try {
@@ -251,9 +273,10 @@ export const Composer = memo(function Composer({
 					onInputChange={handleInputChange}
 				>
 					<PromptCompletionProvider
-						disabled={disabled || roomMode}
+						disabled={disabled}
+						getCompletions={roomMode ? getPromptCompletions : undefined}
 						onError={(error) => actions.showToast(error instanceof Error ? error.message : String(error))}
-						projectId={roomMode ? undefined : state.currentProjectId}
+						projectId={state.currentProjectId}
 						sessionId={state.sessionId}
 					>
 						<div className="relative" ref={promptAnimationScopeRef}>
@@ -337,7 +360,6 @@ export const Composer = memo(function Composer({
 											});
 											return;
 										}
-										if (roomMode && files.length) throw new Error("Room 消息暂不支持附件");
 										const mode = roomMode
 											? "prompt"
 											: submissionEditRequest
@@ -353,7 +375,7 @@ export const Composer = memo(function Composer({
 											if (!file.sourceFile) throw new Error("附件读取失败，请重新选择文件");
 											uploadedFiles.push(await webApi.uploadFile(file.sourceFile));
 										}
-										const promptText = uploadedFiles.length
+										const promptText = !roomMode && uploadedFiles.length
 											? `${text}\n\n${uploadedFiles.map((file, index) => internalFileReference(file.path, files[index]?.filename, files[index]?.mediaType || file.mimeType, index)).join("\n")}`
 											: text;
 										const attachmentPreviews = uploadedFiles.map((image, index) => ({
@@ -417,7 +439,7 @@ export const Composer = memo(function Composer({
 								</PromptInputBody>
 								<PromptInputFooter className="items-center !pb-2">
 									<PromptInputTools className="shrink-0">
-									<FileUploadButton disabled={disabled || roomMode || editAttachmentState === "loading"} />
+									<FileUploadButton disabled={disabled || editAttachmentState === "loading"} />
 								</PromptInputTools>
 								<PromptInputTools className="min-w-0 flex-1 justify-end gap-1">
 									{roomMode ? <span className="px-2 text-xs text-muted-foreground">Room 协作</span> : <ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />}

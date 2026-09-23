@@ -18,6 +18,7 @@ export type AgentDefinitionScope = "builtin" | "user" | "project";
 export interface AgentConfig {
 	name: string;
 	description: string;
+	tags?: string[];
 	tools?: string[];
 	model?: string;
 	systemPrompt: string;
@@ -32,6 +33,7 @@ export interface AgentDefinition {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: SubagentThinkingLevel;
+	tags?: string[];
 	tools?: string[];
 	skillNames?: string[];
 	content: string;
@@ -50,6 +52,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
 	{
 		name: "research-specialist",
 		description: "只读调查代码、配置和文档，向主代理返回简洁证据",
+		tags: ["调研", "代码", "文档", "只读"],
 		tools: ["read", "grep", "find", "ls"],
 		systemPrompt: `你是只读研究子代理。严格按任务范围调查代码、配置和文档，不修改文件。先定位入口和调用关系，再读取关键实现；结论必须给出准确路径和证据，无法确认时说明缺口。最终返回简洁、可供主代理继续工作的结果。`,
 		source: "builtin",
@@ -58,6 +61,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
 	{
 		name: "review-specialist",
 		description: "只读审查正确性、回归、安全风险和验证缺口",
+		tags: ["审查", "回归", "安全", "验证"],
 		tools: ["read", "grep", "find", "ls"],
 		systemPrompt: `你是只读审查子代理。独立检查任务范围内的正确性、行为回归、安全风险和验证缺口，不修改文件。问题按严重程度排序，每条写清路径、触发条件和影响；没有发现问题时明确说明剩余验证边界。`,
 		source: "builtin",
@@ -66,6 +70,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
 	{
 		name: "worker",
 		description: "在明确文件范围内完成一个实现单元并运行必要验证",
+		tags: ["开发", "实现", "验证"],
 		systemPrompt: `你是实现子代理。只完成任务卡分配的单个工作单元，在指定文件范围内实现和验证。保留其他人的改动，不派发其他代理，不执行破坏性 Git 操作。优先复用现有能力，修正责任位置上的根因，最终只报告实际改动、验证结果和未完成事项。`,
 		source: "builtin",
 		filePath: "<builtin:worker>",
@@ -98,6 +103,7 @@ function loadAgentDefinitionsFromDir(dir: string, scope: "user" | "project"): Ag
 		agents.push({
 			name: parsed.name,
 			description: parsed.description,
+			...(parsed.tags ? { tags: parsed.tags } : {}),
 			...(parsed.icon ? { icon: parsed.icon } : {}),
 			...(parsed.provider ? { provider: parsed.provider } : {}),
 			...(parsed.model ? { model: parsed.model } : {}),
@@ -137,6 +143,7 @@ function builtinDefinitions(): AgentDefinition[] {
 	return BUILTIN_AGENTS.map((agent) => ({
 		name: agent.name,
 		description: agent.description,
+		...(agent.tags ? { tags: agent.tags } : {}),
 		...parseBuiltinModel(agent.model),
 		...(agent.tools ? { tools: agent.tools } : {}),
 		content: agent.systemPrompt,
@@ -183,6 +190,7 @@ function toAgentConfig(definition: AgentDefinition): AgentConfig {
 	return {
 		name: definition.name,
 		description: definition.description,
+		...(definition.tags ? { tags: definition.tags } : {}),
 		...(definition.tools ? { tools: definition.tools } : {}),
 		...(definition.model
 			? {

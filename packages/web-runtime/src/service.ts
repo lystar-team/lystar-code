@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
 	discoverSessionProfiles,
 	readSessionSnapshot,
@@ -40,6 +40,7 @@ import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
 import { WebSessionHandoffServer } from "./session-handoff-server.ts";
+import { roomAttachmentInput } from "./session-room-attachments.ts";
 import { SessionRoomCoordinator } from "./session-room-coordinator.ts";
 import { SessionRoomStore } from "./session-room-store.ts";
 import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
@@ -82,6 +83,22 @@ const MAX_OPERATION_MESSAGE_LENGTH = 16 * 1024;
 const SESSION_HANDOFF_RECONNECT_INTERVAL_MS = 100;
 const SESSION_HANDOFF_RECONNECT_TIMEOUT_MS = 60_000;
 const SESSION_HANDOFF_LOCAL_FALLBACK_MS = 5_000;
+const ROOM_READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
+const ROOM_ALLOWED_TOOL_NAMES = new Set([...ROOM_READ_ONLY_TOOL_NAMES, "edit", "write"]);
+const ROOM_WRITE_TOOL_NAMES = new Set(["edit", "write"]);
+
+function resolveCapabilityPath(candidate: string): string {
+	const resolved = resolve(candidate);
+	let existing = resolved;
+	while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+	if (!existsSync(existing)) return resolved;
+	return join(realpathSync(existing), relative(existing, resolved));
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+	const suffix = relative(resolveCapabilityPath(root), resolveCapabilityPath(candidate));
+	return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`));
+}
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const BOOTSTRAP_OPERATION_LIMIT = 200;
@@ -439,6 +456,7 @@ export class WebRuntimeService {
 	private readonly coordinatorTasks = new Map<string, Promise<SessionCoordinatorResult | undefined>>();
 	private readonly coordinatorDemand = new Set<string>();
 	private readonly roomDeliveryDemand = new Set<string>();
+	private readonly roomDeliveryQueues = new Map<string, Promise<void>>();
 	private readonly sessionsBeingDeleted = new Set<string>();
 	private modelCatalogRevision = 1;
 	private readonly sessionWatchers = new Map<string, FSWatcher>();
@@ -748,39 +766,123 @@ export class WebRuntimeService {
 		targetSessionId: string,
 		message: SessionRoomMessage,
 	): Promise<void> {
-		if (message.kind === "answer") return;
+		if (!["task", "message", "question"].includes(message.kind)) return;
 		const found = await this.findCoordinatorSession(cwd, targetSessionId);
 		const sessionPath = canonicalSessionPath(found.path);
+		const previousDelivery = this.roomDeliveryQueues.get(sessionPath);
+		let releaseDelivery!: () => void;
+		const delivery = new Promise<void>((resolve) => {
+			releaseDelivery = resolve;
+		});
+		this.roomDeliveryQueues.set(sessionPath, delivery);
 		this.roomDeliveryDemand.add(sessionPath);
 		try {
-			const runtime = await this.ensureRuntime(sessionPath, this.coordinatorUiHandler(sessionPath));
-			const text = SessionRoomCoordinator.formatMessageForSession(message);
-			const activity = runtime.getSnapshot("available").activity;
-			if (activity === "running") await runtime.steer(text);
-			else if (activity === "waiting_for_input") await runtime.followUp(text);
-			else await runtime.prompt(text);
-			await this.waitForRuntimeIdle(runtime, 10 * 60 * 1000);
-			await this.sendSessionSnapshots(runtime);
-			const replyText = runtime.getLastAssistantTextAsync
-				? await runtime.getLastAssistantTextAsync()
-				: runtime.getLastAssistantText();
-			if (!replyText?.trim()) return;
-			await this.roomCoordinator.api().send({
-				cwd,
-				roomId: message.roomId,
-				senderSessionId: targetSessionId,
-				route: "direct",
-				targetSessionIds: [message.senderSessionId],
-				kind: "answer",
-				body: replyText.trim(),
-				...(message.taskId ? { taskId: message.taskId } : {}),
-				replyToMessageId: message.id,
-				basedOnSeq: message.seq,
-				idempotencyKey: `room-answer:${message.id}:${targetSessionId}`,
+			await previousDelivery;
+			const runtime = await this.ensureRuntime(sessionPath, this.coordinatorUiHandler(sessionPath), {
+				deferExtensionLifecycle: true,
 			});
+			if (!runtime.promptWithOrigin) {
+				throw Object.assign(new Error("当前 Room 成员运行时不支持结构化输入"), {
+					code: "room_structured_input_unsupported",
+				});
+			}
+			const origin = {
+				type: "room" as const,
+				roomId: message.roomId,
+				messageId: message.id,
+				seq: message.seq,
+				kind: message.kind,
+				senderSessionId: message.senderSessionId,
+				...(message.taskId ? { taskId: message.taskId } : {}),
+			};
+			const runtimeCwd = runtime.getSnapshot("available").cwd;
+			const capabilities =
+				message.kind === "task"
+					? (message.capabilities ?? {
+							allowedTools: ROOM_READ_ONLY_TOOL_NAMES,
+							readRoots: [runtimeCwd],
+							shell: "disabled" as const,
+						})
+					: {
+							allowedTools: [] as const,
+							readRoots: [] as const,
+							writeRoots: [] as const,
+							shell: "disabled" as const,
+						};
+			if (
+				message.kind === "task" &&
+				[...capabilities.allowedTools].some((tool) => !ROOM_ALLOWED_TOOL_NAMES.has(tool))
+			) {
+				throw Object.assign(new Error("Room task 只能使用受控文件工具"), {
+					code: "room_tool_not_allowed",
+				});
+			}
+			const readRoots = capabilities.readRoots ?? [];
+			if (readRoots.some((root) => !isPathWithin(runtimeCwd, resolve(runtimeCwd, root)))) {
+				throw Object.assign(new Error("Room task 的读取根目录超出成员会话工作区"), {
+					code: "room_read_capability_requires_workspace",
+				});
+			}
+			if (
+				message.kind === "task" &&
+				[...capabilities.allowedTools].some((tool) => ROOM_WRITE_TOOL_NAMES.has(tool))
+			) {
+				const workspaceCwd = found.base.workspace?.cwd;
+				if (
+					!workspaceCwd ||
+					!capabilities.writeRoots?.length ||
+					!capabilities.writeRoots.every((root) => isPathWithin(workspaceCwd, resolve(workspaceCwd, root)))
+				) {
+					throw Object.assign(new Error("Room task 的写能力必须绑定隔离工作区和写入根目录"), {
+						code: "room_write_capability_requires_workspace",
+					});
+				}
+			}
+			const promptOptions = {
+				inputId: message.id,
+				origin,
+				activeToolNames: capabilities.allowedTools,
+				capabilities,
+			};
+			const reservation = runtime.reservePromptWithOrigin?.(promptOptions);
+			try {
+				const attachmentInput = await roomAttachmentInput(message);
+				const turn = reservation
+					? await reservation.submit(attachmentInput.text, attachmentInput.images)
+					: await runtime.promptWithOrigin(attachmentInput.text, attachmentInput.images, promptOptions);
+				if (!turn) return;
+				await this.waitForRuntimeIdle(runtime, 10 * 60 * 1000);
+				await this.sendSessionSnapshots(runtime);
+				const result = runtime.getTurnResultAsync ? await runtime.getTurnResultAsync(turn.turnId) : undefined;
+				if (!result || result.inputId !== message.id || result.turnId !== turn.turnId) {
+					throw Object.assign(new Error("Room 回复没有绑定到当前输入 Turn"), {
+						code: "room_turn_result_mismatch",
+					});
+				}
+				if (!result.finalText?.trim()) return;
+				await this.roomCoordinator.api().send({
+					cwd,
+					roomId: message.roomId,
+					senderSessionId: targetSessionId,
+					route: "direct",
+					targetSessionIds: [message.senderSessionId],
+					kind: "answer",
+					body: result.finalText.trim(),
+					...(message.taskId ? { taskId: message.taskId } : {}),
+					replyToMessageId: message.id,
+					basedOnSeq: message.seq,
+					idempotencyKey: `room-answer:${message.id}:${targetSessionId}`,
+				});
+			} finally {
+				reservation?.cancel();
+			}
 		} finally {
-			this.roomDeliveryDemand.delete(sessionPath);
-			await this.disposeRuntimeIfUnused(sessionPath);
+			releaseDelivery();
+			if (this.roomDeliveryQueues.get(sessionPath) === delivery) {
+				this.roomDeliveryQueues.delete(sessionPath);
+				this.roomDeliveryDemand.delete(sessionPath);
+				await this.disposeRuntimeIfUnused(sessionPath);
+			}
 		}
 	}
 
@@ -1163,6 +1265,10 @@ export class WebRuntimeService {
 						cwd: canonicalProjectCwd(request.cwd),
 						roomId: request.roomId,
 						sessionId: request.sessionId,
+						...(request.nickname ? { nickname: request.nickname } : {}),
+						...(request.profileId ? { profileId: request.profileId } : {}),
+						...(request.profileName ? { profileName: request.profileName } : {}),
+						...(request.profileIcon ? { profileIcon: request.profileIcon } : {}),
 					}),
 				);
 			case "room_leave":
@@ -1179,11 +1285,14 @@ export class WebRuntimeService {
 						cwd: canonicalProjectCwd(request.cwd),
 						roomId: request.roomId,
 						senderSessionId: request.senderSessionId,
+						...(request.senderType ? { senderType: request.senderType } : {}),
 						route: request.route,
 						...(request.targetSessionIds ? { targetSessionIds: request.targetSessionIds } : {}),
 						...(request.kind ? { kind: request.kind } : {}),
 						body: request.body,
+						...(request.attachments?.length ? { attachments: request.attachments } : {}),
 						...(request.taskId ? { taskId: request.taskId } : {}),
+						...(request.capabilities ? { capabilities: request.capabilities } : {}),
 						...(request.replyToMessageId ? { replyToMessageId: request.replyToMessageId } : {}),
 						...(request.basedOnSeq !== undefined ? { basedOnSeq: request.basedOnSeq } : {}),
 						...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
@@ -1861,6 +1970,7 @@ export class WebRuntimeService {
 						...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 						...(request.tools ? { tools: request.tools } : {}),
 						...(request.skills ? { skills: request.skills } : {}),
+						...(request.tags ? { tags: request.tags } : {}),
 						...(request.icon ? { icon: request.icon } : {}),
 						content: request.content,
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
@@ -1879,6 +1989,7 @@ export class WebRuntimeService {
 								...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 								...(request.tools ? { tools: request.tools } : {}),
 								...(request.skills ? { skills: request.skills } : {}),
+								...(request.tags ? { tags: request.tags } : {}),
 								...(request.icon ? { icon: request.icon } : {}),
 								content: request.content,
 								...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
@@ -2764,6 +2875,7 @@ export class WebRuntimeService {
 								() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
 								sessionPath,
 							),
+							{ deferExtensionLifecycle: this.isRoomOnlyRuntimeDemand(sessionPath, runtime) },
 						).catch(() => {
 							if (runtime && this.runtimes.get(sessionPath) === runtime) void this.sendSessionSnapshots(runtime);
 						});
@@ -3311,7 +3423,11 @@ export class WebRuntimeService {
 		);
 	}
 
-	private async ensureRuntime(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
+	private async ensureRuntime(
+		sessionPath: string,
+		onUiRequest: UiRequestHandler,
+		options: { deferExtensionLifecycle?: boolean } = {},
+	): Promise<RuntimeSession> {
 		if (this.disposed) throw new Error("Web Runtime 已关闭");
 		if (this.sessionsInHandoff.has(sessionPath)) {
 			throw Object.assign(new Error("会话正在交给 TUI，请稍后重试"), {
@@ -3320,7 +3436,11 @@ export class WebRuntimeService {
 			});
 		}
 		const pending = this.runtimeOpenings.get(sessionPath);
-		if (pending) return pending;
+		if (pending) {
+			const runtime = await pending;
+			if (!options.deferExtensionLifecycle) await runtime.activateExtensionLifecycle?.();
+			return runtime;
+		}
 		const opening = Promise.resolve().then(async () => {
 			const current = this.runtimes.get(sessionPath);
 			if (
@@ -3331,7 +3451,9 @@ export class WebRuntimeService {
 				await this.ensureSessionHandoffServer(current);
 				return current;
 			}
-			const replacement = await this.adapter.openSession(sessionPath, onUiRequest);
+			const replacement = await this.adapter.openSession(sessionPath, onUiRequest, {
+				deferExtensionLifecycle: options.deferExtensionLifecycle === true,
+			});
 			if (
 				this.disposed ||
 				canonicalSessionPath(replacement.sessionPath) !== sessionPath ||
@@ -3357,7 +3479,9 @@ export class WebRuntimeService {
 		});
 		this.runtimeOpenings.set(sessionPath, opening);
 		try {
-			return await opening;
+			const runtime = await opening;
+			if (!options.deferExtensionLifecycle) await runtime.activateExtensionLifecycle?.();
+			return runtime;
 		} finally {
 			if (this.runtimeOpenings.get(sessionPath) === opening) this.runtimeOpenings.delete(sessionPath);
 		}
@@ -3521,12 +3645,23 @@ export class WebRuntimeService {
 						() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
 						sessionPath,
 					),
+					{ deferExtensionLifecycle: this.isRoomOnlyRuntimeDemand(sessionPath, runtime) },
 				);
 				return;
 			} catch {
 				await new Promise((resolve) => setTimeout(resolve, SESSION_HANDOFF_RECONNECT_INTERVAL_MS));
 			}
 		}
+	}
+
+	private isRoomOnlyRuntimeDemand(sessionPath: string, runtime: RuntimeSession | undefined): boolean {
+		return (
+			this.roomDeliveryDemand.has(sessionPath) &&
+			!this.coordinatorDemand.has(sessionPath) &&
+			!this.leases.has(sessionPath) &&
+			!this.activeOperationBySession.has(sessionPath) &&
+			runtime?.hasExternalClients?.() !== true
+		);
 	}
 
 	private runtimeHasDemand(sessionPath: string, runtime: RuntimeSession | undefined): boolean {

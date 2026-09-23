@@ -85,6 +85,62 @@ describe("Input Event", () => {
 		expect((globalThis as any).testVar).toBe(false);
 	});
 
+	it("skips scoped input handlers for Room turns", async () => {
+		(globalThis as any).testVar = [];
+		const r = await createRunner(
+			`export default p => p.on("input", async e => { globalThis.testVar.push("user:" + e.origin.type); }, { scope: { origins: ["user"] } });`,
+			`export default p => p.on("input", async e => { globalThis.testVar.push("room:" + e.origin.type); }, { scope: { origins: ["room"] } });`,
+		);
+		const roomTurn = {
+			turnId: "room-turn",
+			inputId: "room-input",
+			origin: {
+				type: "room" as const,
+				roomId: "room",
+				messageId: "message",
+				seq: 1,
+				kind: "task" as const,
+				senderSessionId: "sender",
+			},
+			rootOrigin: "room" as const,
+		};
+		await r.emitInput("x", undefined, "rpc", undefined, roomTurn);
+		expect((globalThis as any).testVar).toEqual([]);
+		await r.emitInput("x", undefined, "rpc");
+		expect((globalThis as any).testVar).toEqual(["user:user"]);
+	});
+
+	it("uses the same scoped dispatch for lifecycle events and creates distinct input identities", async () => {
+		(globalThis as any).testVar = [];
+		const r = await createRunner(
+			`export default p => { p.on("input", async e => { globalThis.testVar.push(e.inputId); }); p.on("agent_settled", async () => { globalThis.testVar.push("room settled"); }, { scope: { origins: ["room"] } }); p.on("agent_settled", async () => { globalThis.testVar.push("user settled"); }, { scope: { origins: ["user"] } }); };`,
+		);
+		await r.emitInput("first", undefined, "interactive");
+		await r.emitInput("second", undefined, "interactive");
+		const ids = (globalThis as any).testVar;
+		expect(ids[0]).not.toBe(ids[1]);
+		const turn = {
+			turnId: "room-turn",
+			inputId: "room-input",
+			origin: {
+				type: "room" as const,
+				roomId: "room",
+				messageId: "message",
+				seq: 1,
+				kind: "task" as const,
+				senderSessionId: "sender",
+			},
+			rootOrigin: "room" as const,
+		};
+		await r.emit({ type: "agent_settled", turn });
+		expect((globalThis as any).testVar).toEqual([ids[0], ids[1]]);
+		await r.emit({
+			type: "agent_settled",
+			turn: { ...turn, origin: { type: "user", channel: "rpc" }, rootOrigin: "user" },
+		});
+		expect((globalThis as any).testVar).toEqual([ids[0], ids[1], "user settled"]);
+	});
+
 	it("passes source correctly for all source types", async () => {
 		const r = await createRunner(
 			`export default p => p.on("input", async e => { globalThis.testVar = e.source; return { action: "continue" }; });`,

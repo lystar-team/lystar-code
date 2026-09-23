@@ -13,6 +13,7 @@ export interface SubagentConfigInput {
 	thinkingLevel?: SubagentThinkingLevel;
 	tools?: string[];
 	skills?: string[];
+	tags?: string[];
 	content: string;
 }
 
@@ -55,6 +56,12 @@ export function normalizeSubagentSkills(value: unknown): string[] | undefined {
 	const values = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : [];
 	const skills = values.map(stringValue).filter((skill): skill is string => skill !== undefined);
 	return skills.length > 0 ? [...new Set(skills)] : undefined;
+}
+
+export function normalizeSubagentTags(value: unknown): string[] | undefined {
+	const values = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : [];
+	const tags = values.map(stringValue).filter((tag): tag is string => tag !== undefined);
+	return tags.length > 0 ? [...new Set(tags)] : undefined;
 }
 
 export function parseSubagentModelReference(reference: string | undefined): {
@@ -105,6 +112,7 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 	const modelReference = stringValue(frontmatter.model);
 	const tools = normalizeSubagentTools(frontmatter.tools);
 	const skills = normalizeSubagentSkills(frontmatter.skills);
+	const tags = normalizeSubagentTags(frontmatter.tags);
 	return {
 		name,
 		description,
@@ -113,6 +121,7 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 		...(modelReference ? { modelReference } : {}),
 		...(tools ? { tools } : {}),
 		...(skills ? { skills } : {}),
+		...(tags ? { tags } : {}),
 		content: body.trim(),
 	};
 }
@@ -127,6 +136,7 @@ export function renderSubagentMarkdown(input: SubagentConfigInput): string {
 	if (modelReference) frontmatter.model = modelReference;
 	if (input.tools && input.tools.length > 0) frontmatter.tools = [...new Set(input.tools)].join(", ");
 	if (input.skills && input.skills.length > 0) frontmatter.skills = [...new Set(input.skills)];
+	if (input.tags && input.tags.length > 0) frontmatter.tags = [...new Set(input.tags)];
 	const yaml = stringifyYaml(frontmatter, { lineWidth: 0 }).trimEnd();
 	const body = input.content.trim();
 	return `---\n${yaml}\n---\n${body ? `\n${body}\n` : ""}`;

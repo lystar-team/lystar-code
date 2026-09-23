@@ -8,7 +8,6 @@ import {
 	FolderTree,
 	List,
 	LoaderCircle,
-	LogOut,
 	MessageSquarePlus,
 	MoreHorizontal,
 	Pencil,
@@ -16,7 +15,6 @@ import {
 	Plus,
 	Search,
 	Settings,
-	SunMoon,
 	Trash2,
 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
@@ -48,7 +46,7 @@ import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
 import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPickerDialog } from "./project-group-dialog";
-import { ProductUpdateControl } from "./product-update-control";
+import { RailFooter } from "./rail-footer";
 import { type DropPosition, hasUnreadProjectSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
 import { SessionRenameDialog } from "./dialogs";
 import { SessionButton, type SessionButtonProps } from "./session-button";
@@ -1264,23 +1262,7 @@ export const ProjectRail = memo(function ProjectRail({
 					) : null}
 				</div>
 			</ScrollArea>
-			<div className="grid shrink-0 gap-1 border-t p-3">
-				<div className="flex min-w-0 items-center gap-2">
-					<Button
-						className="min-w-0 flex-1 justify-start gap-2"
-						variant="ghost"
-						onClick={() => void actions.openSettings("appearance")}
-					>
-						<SunMoon className="size-4 shrink-0" />
-						<span className="project-list-item-label truncate">偏好设置</span>
-					</Button>
-					<ProductUpdateControl />
-				</div>
-				<Button className="justify-start gap-2" variant="ghost" onClick={actions.signOut}>
-					<LogOut className="size-4" />
-					<span className="project-list-item-label">退出</span>
-				</Button>
-			</div>
+			<RailFooter actions={actions} />
 			<ProjectGroupDialog
 				open={groupDialogOpen}
 				group={editingGroup}

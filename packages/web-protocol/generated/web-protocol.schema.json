@@ -223,6 +223,26 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 4096
+                    },
+                    "nickname": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "profileId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "profileName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "profileIcon": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "additionalProperties": false
@@ -286,6 +306,18 @@
                       "minLength": 1,
                       "maxLength": 4096
                     },
+                    "senderType": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "agent"
+                        },
+                        {
+                          "type": "string",
+                          "const": "user"
+                        }
+                      ]
+                    },
                     "route": {
                       "anyOf": [
                         {
@@ -348,10 +380,89 @@
                       "minLength": 1,
                       "maxLength": 65536
                     },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "path",
+                          "filename",
+                          "mimeType"
+                        ],
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "filename": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "mimeType": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "maxItems": 32
+                    },
                     "taskId": {
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 4096
+                    },
+                    "capabilities": {
+                      "type": "object",
+                      "required": [
+                        "allowedTools"
+                      ],
+                      "properties": {
+                        "allowedTools": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "minItems": 1,
+                          "maxItems": 32
+                        },
+                        "readRoots": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "maxItems": 32
+                        },
+                        "writeRoots": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "maxItems": 32
+                        },
+                        "shell": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "disabled"
+                            },
+                            {
+                              "type": "string",
+                              "const": "sandboxed"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
                     },
                     "replyToMessageId": {
                       "type": "string",
@@ -2489,6 +2600,15 @@
                         "maxLength": 4096
                       },
                       "maxItems": 128
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "maxItems": 12
                     },
                     "content": {
                       "type": "string",
@@ -8116,6 +8236,15 @@
             },
             "maxItems": 128
           },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 12
+          },
           "content": {
             "type": "string",
             "maxLength": 4194304
@@ -8240,6 +8369,15 @@
             },
             "maxItems": 128
           },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 12
+          },
           "content": {
             "type": "string",
             "maxLength": 4194304
@@ -8363,6 +8501,15 @@
               "maxLength": 4096
             },
             "maxItems": 128
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 12
           },
           "content": {
             "type": "string",
@@ -9347,6 +9494,10 @@
                   {
                     "type": "string",
                     "const": "skill"
+                  },
+                  {
+                    "type": "string",
+                    "const": "agent"
                   },
                   {
                     "type": "string",

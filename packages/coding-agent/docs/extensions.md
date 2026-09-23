@@ -948,6 +948,7 @@ pi.on("input", async (event, ctx) => {
   // event.text - raw input (before skill/template expansion)
   // event.images - attached images, if any
   // event.source - "interactive" (typed), "rpc" (API), or "extension" (via sendUserMessage)
+  // event.inputId and event.turn identify this input; event.origin records its source
   // event.streamingBehavior - "steer" | "followUp" | undefined
   //   undefined when idle, "steer" for mid-stream interrupts,
   //   "followUp" for messages queued until the agent finishes
@@ -980,6 +981,16 @@ pi.on("input", async (event, ctx) => {
 - `handled` - skip agent entirely (first handler to return this wins)
 
 Transforms chain across handlers. See [input-transform.ts](../examples/extensions/input-transform.ts) and [input-transform-streaming.ts](../examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
+
+Use `pi.on(event, handler, { scope })` to select an input source for an event handler. The filter applies to input, lifecycle, tool, and provider hooks. Unscoped handlers receive ordinary user and extension events. A scoped handler without an active turn is skipped.
+
+```typescript
+pi.on("before_agent_start", async (event, ctx) => {
+  // event.turn.origin describes this turn's source
+}, { scope: { origins: ["user"] } });
+```
+
+Room turns do not run Extension Hooks, even when a handler explicitly includes `"room"` in its scope. They also do not execute extension commands or expand skill commands and prompt templates. A runtime opened only to deliver Room messages defers `session_start`, `resources_discover`, and `session_shutdown` until a regular client uses that session; ordinary runtimes keep their existing lifecycle. `ctx.currentTurn` provides the active turn for hooks without `event.turn`.
 
 ## ExtensionContext
 

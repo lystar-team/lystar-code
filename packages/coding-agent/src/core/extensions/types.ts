@@ -52,6 +52,7 @@ import type { CompactionPreparation, CompactionResult } from "../compaction/inde
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
+import type { AgentInputOrigin, AgentRoomMessageKind, AgentRootOrigin, AgentTurnContext } from "../input-origin.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -307,6 +308,16 @@ export interface CompactOptions {
  */
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
+export interface ExtensionHandlerScope {
+	origins?: readonly AgentInputOrigin["type"][];
+	rootOrigins?: readonly AgentRootOrigin[];
+	roomKinds?: readonly AgentRoomMessageKind[];
+}
+
+export interface ExtensionHandlerOptions {
+	scope?: ExtensionHandlerScope;
+}
+
 export interface ExtensionContext {
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
@@ -329,6 +340,8 @@ export interface ExtensionContext {
 	scopedModels: readonly ScopedModel[];
 	/** Current thinking level, when provided by the session runtime. */
 	thinkingLevel?: ThinkingLevel;
+	/** Structured provenance for the active agent turn, when one is running. */
+	readonly currentTurn?: AgentTurnContext;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
 	/** Whether project-local trust is active for this context. */
@@ -724,6 +737,8 @@ export interface AfterProviderResponseEvent {
 /** Fired after user submits prompt but before agent loop. */
 export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
+	/** Structured provenance for this input and turn. */
+	turn: AgentTurnContext;
 	/** The raw user prompt text (after expansion). */
 	prompt: string;
 	/** Images attached to the user prompt, if any. */
@@ -748,6 +763,8 @@ export interface AgentEndEvent {
 /** Fired after an agent run has fully settled and no automatic retry, compaction, or queued continuation will run. */
 export interface AgentSettledEvent {
 	type: "agent_settled";
+	/** Structured provenance for the completed turn. */
+	turn: AgentTurnContext;
 }
 
 export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
@@ -874,6 +891,12 @@ export type InputSource = "interactive" | "rpc" | "extension";
 /** Fired when user input is received, before agent processing */
 export interface InputEvent {
 	type: "input";
+	/** Stable identifier for this submitted input. */
+	inputId: string;
+	/** Structured provenance for this input. */
+	origin: AgentInputOrigin;
+	/** The turn that owns this input. */
+	turn: AgentTurnContext;
 	/** The input text */
 	text: string;
 	/** Attached images, if any */
@@ -1311,10 +1334,15 @@ export interface ExtensionAPI {
 	on(
 		event: "before_agent_start",
 		handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>,
+		options?: ExtensionHandlerOptions,
 	): () => void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): () => void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): () => void;
-	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
+	on(
+		event: "agent_settled",
+		handler: ExtensionHandler<AgentSettledEvent>,
+		options?: ExtensionHandlerOptions,
+	): () => void;
 	on(event: "ui_prompt_start", handler: ExtensionHandler<UIPromptStartEvent>): () => void;
 	on(event: "ui_prompt_end", handler: ExtensionHandler<UIPromptEndEvent>): () => void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
@@ -1327,10 +1355,22 @@ export interface ExtensionAPI {
 	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): () => void;
 	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent>): () => void;
 	on(event: "thinking_level_select", handler: ExtensionHandler<ThinkingLevelSelectEvent>): () => void;
-	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): () => void;
-	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): () => void;
+	on(
+		event: "tool_call",
+		handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>,
+		options?: ExtensionHandlerOptions,
+	): () => void;
+	on(
+		event: "tool_result",
+		handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>,
+		options?: ExtensionHandlerOptions,
+	): () => void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): () => void;
-	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): () => void;
+	on(
+		event: "input",
+		handler: ExtensionHandler<InputEvent, InputEventResult>,
+		options?: ExtensionHandlerOptions,
+	): () => void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1661,11 +1701,12 @@ export interface ExtensionShortcut {
 	extensionPath: string;
 }
 
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+type HandlerFn = ((...args: unknown[]) => Promise<unknown>) & { scope?: ExtensionHandlerScope };
 
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+	origin?: AgentInputOrigin,
 ) => void;
 
 export type SendUserMessageHandler = (
@@ -1716,6 +1757,8 @@ export interface ExtensionRuntimeState {
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;
+	/** Returns provenance for the active agent turn. */
+	getCurrentTurn: () => AgentTurnContext | undefined;
 	/** Retain an event-bus subscription until this runtime is invalidated. */
 	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
 	/**
@@ -1767,6 +1810,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	getCurrentTurn?: () => AgentTurnContext | undefined;
 }
 
 /**

@@ -70,6 +70,7 @@ export interface HarnessOptions {
 	resourceLoader?: ResourceLoader;
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
+	deferExtensionLifecycle?: boolean;
 	modelsJson?: Record<string, unknown>;
 }
 
@@ -190,6 +191,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
+		deferExtensionLifecycle: options.deferExtensionLifecycle,
 	});
 
 	const events: AgentSessionEvent[] = [];

@@ -2,12 +2,14 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { CacheWarmingAction } from "../cache-warmer.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import type { AgentTurnContext } from "../input-origin.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
@@ -236,8 +238,25 @@ export async function emitSessionShutdownEvent(
 	return false;
 }
 
-function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["type"]) {
-	return extensions.map((ext) => ({ ext, handlers: ext.handlers.get(event)?.slice() ?? [] }));
+function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["type"], turn?: AgentTurnContext) {
+	if (turn?.rootOrigin === "room") return [];
+	return extensions.map((ext) => ({
+		ext,
+		handlers: (ext.handlers.get(event)?.slice() ?? []).filter((handler) => {
+			const scope = handler.scope;
+			if (!scope) return true;
+			if (!turn) return false;
+			if (scope.origins && !scope.origins.includes(turn.origin.type)) return false;
+			if (scope.rootOrigins && !scope.rootOrigins.includes(turn.rootOrigin)) return false;
+			if (scope.roomKinds && turn.origin.type === "room" && !scope.roomKinds.includes(turn.origin.kind))
+				return false;
+			return true;
+		}),
+	}));
+}
+
+function userTurn(channel: "interactive" | "rpc" = "interactive"): AgentTurnContext {
+	return { turnId: randomUUID(), inputId: randomUUID(), origin: { type: "user", channel }, rootOrigin: "user" };
 }
 
 export async function emitProjectTrustEvent(
@@ -324,6 +343,7 @@ export class ExtensionRunner {
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () =>
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
+	private getTurnContextFn: () => AgentTurnContext | undefined = () => undefined;
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -362,6 +382,7 @@ export class ExtensionRunner {
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
 		this.runtime.sendMessage = actions.sendMessage;
+		this.runtime.getCurrentTurn = () => this.getTurnContextFn();
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
 		this.runtime.setSessionName = actions.setSessionName;
@@ -390,6 +411,7 @@ export class ExtensionRunner {
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn =
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
+		this.getTurnContextFn = contextActions.getCurrentTurn ?? (() => undefined);
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -799,6 +821,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.runtime.getThinkingLevel();
 			},
+			get currentTurn() {
+				runner.assertActive();
+				return runner.getTurnContextFn();
+			},
 			isIdle: () => {
 				runner.assertActive();
 				return runner.isIdleFn();
@@ -877,6 +903,10 @@ export class ExtensionRunner {
 		return context;
 	}
 
+	private snapshot(event: ExtensionEvent["type"], turn = this.getTurnContextFn()) {
+		return snapshotEventHandlers(this.extensions, event, turn);
+	}
+
 	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
 		return (
 			event.type === "session_before_switch" ||
@@ -890,7 +920,8 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+		const eventTurn = "turn" in event ? event.turn : this.getTurnContextFn();
+		for (const { ext, handlers } of this.snapshot(event.type, eventTurn)) {
 			for (const handler of handlers) {
 				try {
 					const handlerResult = await handler(event, ctx);
@@ -922,7 +953,7 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let action = event.action;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+		for (const { ext, handlers } of this.snapshot(event.type)) {
 			for (const handler of handlers) {
 				try {
 					const result = (await handler(event, ctx)) as CacheWarmingDecisionEventResult | undefined;
@@ -946,7 +977,7 @@ export class ExtensionRunner {
 		let currentMessage = event.message;
 		let modified = false;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "message_end")) {
+		for (const { ext, handlers } of this.snapshot("message_end")) {
 			for (const handler of handlers) {
 				try {
 					const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
@@ -985,7 +1016,7 @@ export class ExtensionRunner {
 		const currentEvent: ToolResultEvent = { ...event };
 		let modified = false;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "tool_result")) {
+		for (const { ext, handlers } of this.snapshot("tool_result")) {
 			for (const handler of handlers) {
 				try {
 					const handlerResult = (await handler(currentEvent, ctx)) as ToolResultEventResult | undefined;
@@ -1036,7 +1067,7 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
 
-		for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
+		for (const { handlers } of this.snapshot("tool_call")) {
 			for (const handler of handlers) {
 				const handlerResult = await handler(event, ctx);
 
@@ -1055,7 +1086,7 @@ export class ExtensionRunner {
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
 		const ctx = this.createContext();
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "user_bash")) {
+		for (const { ext, handlers } of this.snapshot("user_bash")) {
 			for (const handler of handlers) {
 				try {
 					const handlerResult = await handler(event, ctx);
@@ -1087,7 +1118,7 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let currentMessages = structuredClone(messages);
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context")) {
+		for (const { ext, handlers } of this.snapshot("context")) {
 			for (const handler of handlers) {
 				try {
 					const event: ContextEvent = { type: "context", messages: currentMessages };
@@ -1116,7 +1147,7 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let currentPayload = payload;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_request")) {
+		for (const { ext, handlers } of this.snapshot("before_provider_request")) {
 			for (const handler of handlers) {
 				try {
 					const event: BeforeProviderRequestEvent = {
@@ -1146,7 +1177,7 @@ export class ExtensionRunner {
 	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
 		const ctx = this.createContext();
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_headers")) {
+		for (const { ext, handlers } of this.snapshot("before_provider_headers")) {
 			for (const handler of handlers) {
 				try {
 					// Handlers mutate `headers` in place; the return value is ignored.
@@ -1175,7 +1206,9 @@ export class ExtensionRunner {
 		prompt: string,
 		images: ImageContent[] | undefined,
 		systemPromptOptions: BuildSystemPromptOptions,
+		turn?: AgentTurnContext,
 	): Promise<BeforeAgentStartCombinedResult> {
+		const activeTurn = turn ?? this.getTurnContextFn() ?? userTurn();
 		const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
 		const renderCurrentSystemPrompt = (): string => buildSystemPrompt(currentOptions);
 		const ctx = Object.defineProperties(
@@ -1188,11 +1221,12 @@ export class ExtensionRunner {
 		};
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
+		for (const { ext, handlers } of this.snapshot("before_agent_start", activeTurn)) {
 			for (const handler of handlers) {
 				try {
 					const event: BeforeAgentStartEvent = {
 						type: "before_agent_start",
+						turn: activeTurn,
 						prompt,
 						images,
 						get systemPrompt() {
@@ -1238,7 +1272,7 @@ export class ExtensionRunner {
 		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
 		const themePaths: Array<{ path: string; extensionPath: string }> = [];
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "resources_discover")) {
+		for (const { ext, handlers } of this.snapshot("resources_discover")) {
 			for (const handler of handlers) {
 				try {
 					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
@@ -1276,16 +1310,21 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		source: InputSource,
 		streamingBehavior?: "steer" | "followUp",
+		turn?: AgentTurnContext,
 	): Promise<InputEventResult> {
+		const activeTurn = turn ?? this.getTurnContextFn() ?? userTurn(source === "rpc" ? "rpc" : "interactive");
 		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "input")) {
+		for (const { ext, handlers } of this.snapshot("input", activeTurn)) {
 			for (const handler of handlers) {
 				try {
 					const event: InputEvent = {
 						type: "input",
+						inputId: activeTurn.inputId,
+						origin: activeTurn.origin,
+						turn: activeTurn,
 						text: currentText,
 						images: currentImages,
 						source,

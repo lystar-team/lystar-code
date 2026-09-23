@@ -1,4 +1,4 @@
-import { FileText, Folder, Puzzle, Sparkles, Terminal } from "lucide-react";
+import { Bot, FileText, Folder, Puzzle, Sparkles, Terminal } from "lucide-react";
 import type { KeyboardEvent, ReactNode, RefObject, SyntheticEvent } from "react";
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api.ts";
@@ -56,6 +56,8 @@ function completionGroupLabel(kind: CompletionItem["kind"]): string {
 			return "Prompt";
 		case "skill":
 			return "Skill";
+		case "agent":
+			return "Room Agent";
 		default:
 			return "其它";
 	}
@@ -69,6 +71,8 @@ function CompletionIcon({ kind }: { kind: CompletionItem["kind"] }) {
 			return <Folder className="size-3.5 shrink-0 text-muted-foreground" />;
 		case "skill":
 			return <Sparkles className="size-4 shrink-0 text-muted-foreground" />;
+		case "agent":
+			return <Bot className="size-4 shrink-0 text-muted-foreground" />;
 		case "extension":
 			return <Puzzle className="size-4 shrink-0 text-muted-foreground" />;
 		case "prompt":
@@ -104,6 +108,7 @@ import {
 	promptTokenDisplayOffset,
 	promptTokenParts,
 	promptTokenRanges,
+	type PromptCompletionLookup,
 	usePromptTokenValidation,
 } from "./prompt-token.tsx";
 
@@ -194,6 +199,7 @@ export interface PromptCompletionProviderProps {
 	sessionId?: string;
 	disabled?: boolean;
 	onError?: (error: unknown) => void;
+	getCompletions?: PromptCompletionLookup;
 	children: ReactNode;
 }
 
@@ -202,11 +208,24 @@ export function PromptCompletionProvider({
 	sessionId,
 	disabled = false,
 	onError,
+	getCompletions,
 	children,
 }: PromptCompletionProviderProps) {
 	const controller = usePromptInputController();
 	const text = controller.textInput.value;
-	const { validTokens, markValidToken } = usePromptTokenValidation(text, projectId, sessionId);
+	const completionLookup = useCallback<PromptCompletionLookup>(
+		(query, nextCursor) =>
+			getCompletions
+				? getCompletions(query, nextCursor)
+				: webApi.completions(projectId ?? "", query, nextCursor, sessionId),
+		[getCompletions, projectId, sessionId],
+	);
+	const { validTokens, markValidToken } = usePromptTokenValidation(
+		text,
+		projectId,
+		sessionId,
+		completionLookup,
+	);
 	const [cursor, setCursorState] = useState(text.length);
 	const [result, setResult] = useState<CompletionResult>();
 	const [loading, setLoading] = useState(false);
@@ -262,8 +281,7 @@ export function PromptCompletionProvider({
 		setResult(undefined);
 		setSelectedIndex(0);
 		const timer = window.setTimeout(() => {
-			void webApi
-				.completions(projectId, text, cursor, sessionId)
+			void completionLookup(text, cursor)
 				.then((nextResult) => {
 					if (requestVersion.current !== version) return;
 					setResult(webCommandCompletions(nextResult));
@@ -280,7 +298,7 @@ export function PromptCompletionProvider({
 		}, 90);
 
 		return () => window.clearTimeout(timer);
-	}, [active, close, cursor, projectId, sessionId, text]);
+	}, [active, close, completionLookup, cursor, projectId, sessionId, text]);
 
 	const selectItem = useCallback(
 		(index: number) => {

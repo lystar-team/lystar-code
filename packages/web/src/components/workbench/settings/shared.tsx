@@ -1,9 +1,20 @@
 import type { ReactNode } from "react";
+import { cn } from "../../../lib/utils";
 import { Card, CardContent } from "../../ui/card";
 
-export function SettingSection({ title, children }: { title: string; children: ReactNode }) {
+export function SettingSection({
+	title,
+	children,
+	id,
+	className,
+}: {
+	title: string;
+	children: ReactNode;
+	id?: string;
+	className?: string;
+}) {
 	return (
-		<section className="grid min-w-0 gap-3">
+		<section id={id} className={cn("grid min-w-0 gap-3", className)}>
 			<h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
 			{children}
 		</section>

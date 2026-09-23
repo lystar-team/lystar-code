@@ -1,4 +1,8 @@
 import type {
+	AgentCapabilityLease,
+	AgentInputOrigin,
+	AgentTurnContext,
+	AgentTurnResult,
 	SessionCollaborationResult,
 	SessionCollaborationTask,
 	SessionCoordinator,
@@ -87,7 +91,20 @@ export interface RuntimeSessionAsyncControls {
 	listSubagentsAsync?(): Promise<SubagentSnapshot[]>;
 	readSubagentAsync?(agentId: string): Promise<{ transcript?: SubagentSnapshot; live?: SubagentSnapshot }>;
 	getLastAssistantTextAsync?(): Promise<string | undefined>;
+	getTurnResultAsync?(turnId: string): Promise<AgentTurnResult | undefined>;
+	activateExtensionLifecycle?(): Promise<void>;
+	reservePromptWithOrigin?(options: {
+		inputId: string;
+		origin: AgentInputOrigin;
+		activeToolNames?: readonly string[];
+		capabilities?: AgentCapabilityLease;
+	}): RuntimePromptReservation;
 	recordCollaborationResult?(result: SessionCollaborationResult): Promise<void>;
+}
+
+export interface RuntimePromptReservation {
+	submit(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<AgentTurnContext | undefined>;
+	cancel(): void;
 }
 
 export interface RuntimeSession extends RuntimeSessionAsyncControls {
@@ -111,6 +128,16 @@ export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	abortSubagent(agentId: string): Promise<void>;
 	continueSubagent(agentId: string, text: string): Promise<void>;
 	prompt(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
+	promptWithOrigin?(
+		text: string,
+		images: Array<{ data: string; mimeType: string }> | undefined,
+		options: {
+			inputId: string;
+			origin: AgentInputOrigin;
+			activeToolNames?: readonly string[];
+			capabilities?: AgentCapabilityLease;
+		},
+	): Promise<AgentTurnContext | undefined>;
 	steer(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
 	followUp(text: string, images?: Array<{ data: string; mimeType: string }>, queueId?: string): Promise<void>;
 	queueAction(queueId: string, action: QueueAction): Promise<void>;
@@ -243,7 +270,11 @@ export interface RuntimeAdapter {
 		},
 	): Promise<RuntimeSession>;
 	setSessionCoordinator?(coordinator: SessionCoordinator): void;
-	openSession(sessionPath: string, onUiRequest: UiRequestHandler): Promise<RuntimeSession>;
+	openSession(
+		sessionPath: string,
+		onUiRequest: UiRequestHandler,
+		options?: { deferExtensionLifecycle?: boolean },
+	): Promise<RuntimeSession>;
 	inspectSession(sessionPath: string): SessionStateSnapshot;
 	inspectSessionActivity?(sessionPath: string): Promise<SessionActivity | undefined>;
 	isSessionWriterLocked(sessionPath: string): boolean;
@@ -281,6 +312,7 @@ export interface RuntimeAdapter {
 			thinkingLevel?: ThinkingLevel;
 			tools?: string[];
 			skills?: string[];
+			tags?: string[];
 			content: string;
 			expectedHash?: string;
 		},

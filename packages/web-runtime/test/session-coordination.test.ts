@@ -1,7 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+	AgentTurnResult,
 	SessionCollaborationResult,
 	SessionCollaborationTask,
 	SessionCoordinator,
@@ -32,6 +34,7 @@ function createFakeRuntime(
 ): RuntimeSession {
 	const listeners = new Set<(event: RuntimeEvent) => void>();
 	let lastAssistantText: string | undefined;
+	let lastTurnResult: AgentTurnResult | undefined;
 	let aborted = false;
 	let releasePrompt: (() => void) | undefined;
 	const promptGate = options.blockPromptUntilAbort
@@ -80,6 +83,30 @@ function createFakeRuntime(
 			if (aborted) return;
 			completeMessage(text);
 		},
+		promptWithOrigin: async (
+			text: string,
+			_images: unknown,
+			options: { inputId: string; origin: AgentTurnResult["origin"] },
+		) => {
+			if (promptGate) await promptGate;
+			if (aborted) return undefined;
+			completeMessage(text);
+			lastTurnResult = {
+				turnId: randomUUID(),
+				inputId: options.inputId,
+				origin: options.origin,
+				rootOrigin:
+					options.origin.type === "room"
+						? "room"
+						: options.origin.type === "extension"
+							? options.origin.rootOrigin
+							: "user",
+				outcome: "completed",
+				finalText: lastAssistantText,
+			};
+			return lastTurnResult;
+		},
+		getTurnResultAsync: async (turnId: string) => (lastTurnResult?.turnId === turnId ? lastTurnResult : undefined),
 		steer: async (text: string) => {
 			if (options.respondToSteer && !aborted) completeMessage(text);
 		},
@@ -267,11 +294,40 @@ describe("WebRuntimeService session coordination", () => {
 		} as unknown as RuntimeAdapter;
 
 		const service = new WebRuntimeService(adapter, { agentDir });
+		let releaseFirst: () => void = () => {};
 		try {
 			const room = await coordinator?.room.create({ cwd, ownerSessionId: "owner", title: "交付 Room" });
 			expect(room).toBeDefined();
-			await coordinator?.room.join({ cwd, roomId: room!.room.id, sessionId: "member" });
-			await coordinator?.room.join({ cwd, roomId: room!.room.id, sessionId: "busy" });
+			await coordinator?.room.join({ cwd, roomId: room!.room.id, sessionId: "member", profileId: "worker" });
+			await coordinator?.room.join({ cwd, roomId: room!.room.id, sessionId: "busy", profileId: "worker-busy" });
+			const memberRuntime = runtimes.get("member")!;
+			const originalPrompt = memberRuntime.promptWithOrigin!.bind(memberRuntime);
+			let signalFirst: () => void = () => {};
+			const firstStarted = new Promise<void>((resolve) => {
+				signalFirst = resolve;
+			});
+			const firstReleased = new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+			let memberCalls = 0;
+			let activeMemberCalls = 0;
+			let maxActiveMemberCalls = 0;
+			memberRuntime.promptWithOrigin = async (...args) => {
+				memberCalls++;
+				activeMemberCalls++;
+				maxActiveMemberCalls = Math.max(maxActiveMemberCalls, activeMemberCalls);
+				try {
+					if (memberCalls === 1) {
+						signalFirst();
+						await firstReleased;
+					}
+					return await originalPrompt(...args);
+				} finally {
+					activeMemberCalls--;
+				}
+			};
+			const attachmentPath = join(root, "notes.md");
+			writeFileSync(attachmentPath, "报告摘要");
 			const sent = await coordinator?.room.send({
 				cwd,
 				roomId: room!.room.id,
@@ -279,10 +335,27 @@ describe("WebRuntimeService session coordination", () => {
 				route: "direct",
 				targetSessionIds: ["member"],
 				body: "请处理这个 Room 消息",
+				attachments: [{ path: attachmentPath, filename: "notes.md", mimeType: "text/markdown" }],
 				idempotencyKey: "room-delivery-1",
 			});
 			expect(sent?.deliveredTo).toEqual(["member"]);
-			await expect.poll(() => bases.get("member")?.firstMessage).toContain("请处理这个 Room 消息");
+			await firstStarted;
+			const next = await coordinator?.room.send({
+				cwd,
+				roomId: room!.room.id,
+				senderSessionId: "owner",
+				route: "direct",
+				targetSessionIds: ["member"],
+				body: "第二条 Room 消息",
+				idempotencyKey: "room-delivery-next",
+			});
+			expect(next?.deliveredTo).toEqual(["member"]);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(memberCalls).toBe(1);
+			releaseFirst();
+			await expect.poll(() => bases.get("member")?.messageCount).toBe(5);
+			expect(maxActiveMemberCalls).toBe(1);
+			expect(bases.get("member")?.firstMessage).toBe("第二条 Room 消息");
 			expect(bases.get("owner")?.messageCount).toBe(1);
 			const busySent = await coordinator?.room.send({
 				cwd,
@@ -294,6 +367,7 @@ describe("WebRuntimeService session coordination", () => {
 				idempotencyKey: "room-delivery-2",
 			});
 			expect(busySent?.deliveredTo).toEqual(["busy"]);
+			await runtimes.get("busy")?.prompt("完成前一条消息");
 			await expect
 				.poll(
 					async () =>
@@ -317,6 +391,12 @@ describe("WebRuntimeService session coordination", () => {
 							replyToMessageId: sent?.message.id,
 						}),
 						expect.objectContaining({
+							senderSessionId: "member",
+							kind: "answer",
+							body: expect.stringContaining("第二条 Room 消息"),
+							replyToMessageId: next?.message.id,
+						}),
+						expect.objectContaining({
 							senderSessionId: "busy",
 							targetSessionIds: ["owner"],
 							kind: "answer",
@@ -326,6 +406,7 @@ describe("WebRuntimeService session coordination", () => {
 					]),
 				);
 		} finally {
+			releaseFirst();
 			await service.dispose();
 		}
 	});

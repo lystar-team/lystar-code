@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api.ts";
 import { cn } from "../../lib/utils";
+import type { WebCompletionResult } from "../../types.ts";
 
 export const PROMPT_TOKEN_PATTERN =
 	/\$\[[a-z0-9][a-z0-9-]*\]|@\[[a-z0-9][a-z0-9-]*\]|\/skill:[a-z0-9][a-z0-9-]*|@"(?:[^"\\]|\\.)*"|@[^\s,，。；;!?！？、()\[\]{}<>]+/giu;
@@ -93,14 +94,22 @@ function validationQuery(value: string): string {
 	return value.startsWith("$[") || value.startsWith("@[") ? value.slice(0, -1) : value;
 }
 
-function validatePromptToken(projectId: string, sessionId: string | undefined, value: string): Promise<boolean> {
+export type PromptCompletionLookup = (text: string, cursor: number) => Promise<WebCompletionResult>;
+
+function validatePromptToken(
+	projectId: string,
+	sessionId: string | undefined,
+	value: string,
+	getCompletions?: PromptCompletionLookup,
+): Promise<boolean> {
 	const key = `${projectId}\u0000${sessionId ?? ""}\u0000${value}`;
 	const cached = promptTokenValidationCache.get(key);
 	if (cached) return cached;
 
 	const query = validationQuery(value);
-	const request = webApi
-		.completions(projectId, query, query.length, sessionId)
+	const request = (getCompletions
+		? getCompletions(query, query.length)
+		: webApi.completions(projectId, query, query.length, sessionId))
 		.then((result) => result.items.some((item) => item.value.trimEnd() === value))
 		.catch(() => false);
 	promptTokenValidationCache.set(key, request);
@@ -111,6 +120,7 @@ export function usePromptTokenValidation(
 	text: string,
 	projectId?: string,
 	sessionId?: string,
+	getCompletions?: PromptCompletionLookup,
 ): { validTokens: ReadonlySet<string>; markValidToken: (value: string) => void } {
 	const candidates = useMemo(() => [...new Set(promptTokenCandidates(text))], [text]);
 	const candidateKey = candidates.join("\u0001");
@@ -127,7 +137,11 @@ export function usePromptTokenValidation(
 			return;
 		}
 		let cancelled = false;
-		void Promise.all(candidates.map(async (value) => ((await validatePromptToken(projectId, sessionId, value)) ? value : undefined))).then(
+		void Promise.all(
+			candidates.map(async (value) =>
+				(await validatePromptToken(projectId, sessionId, value, getCompletions)) ? value : undefined,
+			),
+		).then(
 			(values) => {
 				if (cancelled) return;
 				setValidatedTokens(new Set(values.filter((value): value is string => value !== undefined)));
@@ -136,7 +150,7 @@ export function usePromptTokenValidation(
 		return () => {
 			cancelled = true;
 		};
-	}, [candidateKey, candidates, projectId, sessionId]);
+	}, [candidateKey, candidates, getCompletions, projectId, sessionId]);
 
 	const markValidToken = useCallback((value: string) => {
 		if (!promptTokenKind(value)) return;

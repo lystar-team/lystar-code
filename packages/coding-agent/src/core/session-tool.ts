@@ -73,7 +73,19 @@ const SessionsParams = Type.Union([
 		kind: Type.Optional(SessionRoomKindSchema),
 		body: Type.String({ minLength: 1, maxLength: 64 * 1024 }),
 		taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+		capabilities: Type.Optional(
+			Type.Object(
+				{
+					allowedTools: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 32 }),
+					readRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
+					writeRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
+					shell: Type.Optional(Type.Union([Type.Literal("disabled"), Type.Literal("sandboxed")])),
+				},
+				{ additionalProperties: false },
+			),
+		),
 		replyToMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+
 		basedOnSeq: Type.Optional(Type.Integer({ minimum: 0 })),
 		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 	}),
@@ -190,6 +202,7 @@ export function createSessionsTool(
 							...(params.kind ? { kind: params.kind } : {}),
 							body: params.body,
 							...(params.taskId ? { taskId: params.taskId } : {}),
+							...(params.capabilities ? { capabilities: params.capabilities } : {}),
 							...(params.replyToMessageId ? { replyToMessageId: params.replyToMessageId } : {}),
 							...(params.basedOnSeq !== undefined ? { basedOnSeq: params.basedOnSeq } : {}),
 							...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
