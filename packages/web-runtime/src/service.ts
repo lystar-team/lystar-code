@@ -514,8 +514,16 @@ export class WebRuntimeService {
 		};
 	}
 
-	private coordinatorUiHandler(sessionPath?: string): UiRequestHandler {
-		return this.createUiRequestHandler(() => `session-coordinator:${sessionPath ?? "pending"}`, sessionPath);
+	private coordinatorUiHandler(
+		sessionPath?: string,
+		options: { suppressInfoNotifications?: boolean } = {},
+	): UiRequestHandler {
+		return this.createUiRequestHandler(
+			() => `session-coordinator:${sessionPath ?? "pending"}`,
+			sessionPath,
+			undefined,
+			options,
+		);
 	}
 
 	private coordinatorSummary(
@@ -778,9 +786,11 @@ export class WebRuntimeService {
 		this.roomDeliveryDemand.add(sessionPath);
 		try {
 			await previousDelivery;
-			const runtime = await this.ensureRuntime(sessionPath, this.coordinatorUiHandler(sessionPath), {
-				deferExtensionLifecycle: true,
-			});
+			const runtime = await this.ensureRuntime(
+				sessionPath,
+				this.coordinatorUiHandler(sessionPath, { suppressInfoNotifications: true }),
+				{ deferExtensionLifecycle: true },
+			);
 			if (!runtime.promptWithOrigin) {
 				throw Object.assign(new Error("当前 Room 成员运行时不支持结构化输入"), {
 					code: "room_structured_input_unsupported",
@@ -1340,7 +1350,11 @@ export class WebRuntimeService {
 					clientInstanceId: request.clientInstanceId,
 					clientRequestId: request.clientRequestId,
 					scope: `session-collection:${cwd}`,
-					payload: { cwd, ...(request.profileId ? { profileId: request.profileId } : {}) },
+					payload: {
+						cwd,
+						...(request.profileId ? { profileId: request.profileId } : {}),
+						...(request.roomAgent ? { roomAgent: true } : {}),
+					},
 					run: async () => {
 						let sessionPath: string | undefined;
 						const controlOperationId = `control:${request.clientInstanceId}`;
@@ -1353,8 +1367,14 @@ export class WebRuntimeService {
 										: controlOperationId,
 								() => sessionPath,
 								request.clientInstanceId,
+								{ suppressInfoNotifications: request.suppressInfoNotifications === true },
 							),
-							request.profileId ? { profileId: request.profileId } : undefined,
+							request.profileId || request.roomAgent
+								? {
+										...(request.profileId ? { profileId: request.profileId } : {}),
+										...(request.roomAgent ? { roomAgent: true } : {}),
+									}
+								: undefined,
 						);
 						sessionPath = canonicalSessionPath(runtime.sessionPath);
 						let lease: ReturnType<LeaseManager["acquire"]> | undefined;
@@ -3802,6 +3822,7 @@ export class WebRuntimeService {
 		operationId: string | (() => string),
 		sessionPath?: string | (() => string | undefined),
 		clientInstanceId?: string,
+		options: { suppressInfoNotifications?: boolean } = {},
 	): UiRequestHandler {
 		return async (request) => {
 			const resolvedOperationId = typeof operationId === "function" ? operationId() : operationId;
@@ -3816,6 +3837,16 @@ export class WebRuntimeService {
 				timeoutMs: request.timeoutMs,
 			};
 			if (request.kind === "notify") {
+				const payload = request.payload;
+				if (
+					options.suppressInfoNotifications &&
+					typeof payload === "object" &&
+					payload !== null &&
+					!Array.isArray(payload) &&
+					payload.type === "info"
+				) {
+					return {};
+				}
 				await this.sendUiEvent(event, clientInstanceId);
 				return {};
 			}

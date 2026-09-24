@@ -111,10 +111,13 @@ describe("session name extension", () => {
 		}
 	});
 
-	it("uses the configured model and low reasoning to name a new session", async () => {
+	it("uses the configured model and thinking level to name a new session", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "pi-session-name-"));
 		tempDirs.push(agentDir);
-		writeFileSync(join(agentDir, "lystar.json"), JSON.stringify({ sessionName: { model: "upstream/gpt-5.6-luna" } }));
+		writeFileSync(
+			join(agentDir, "lystar.json"),
+			JSON.stringify({ sessionName: { model: "upstream/gpt-5.6-luna", thinkingLevel: "medium" } }),
+		);
 
 		const test = createExtensionTest(agentDir, "rpc");
 		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
@@ -128,9 +131,27 @@ describe("session name extension", () => {
 			expect.objectContaining({
 				messages: [expect.objectContaining({ content: [{ type: "text", text: "修复会话自动命名" }] })],
 			}),
-			expect.objectContaining({ reasoning: "low", maxTokens: 64, sessionId: "session-1" }),
+			expect.objectContaining({ reasoning: "medium", maxTokens: 64, sessionId: "session-1" }),
 		);
 		expect(test.setSessionName).toHaveBeenCalledWith("默认标题");
+	});
+
+	it("omits reasoning when title generation is configured with off", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-session-name-"));
+		tempDirs.push(agentDir);
+		writeFileSync(join(agentDir, "lystar.json"), JSON.stringify({ sessionName: { thinkingLevel: "off" } }));
+
+		const test = createExtensionTest(agentDir);
+		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
+		test.state.entries.push({ type: "message", message: { role: "user", content: "关闭标题思考" } });
+		await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);
+		await flushAsyncWork();
+
+		expect(test.modelRegistry.complete).toHaveBeenCalledWith(
+			activeModel,
+			expect.any(Object),
+			expect.not.objectContaining({ reasoning: expect.anything() }),
+		);
 	});
 
 	it("starts RPC naming before the agent settles without blocking the main response", async () => {

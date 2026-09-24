@@ -198,6 +198,28 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
+export type ExtensionActivityEvent =
+	| {
+			phase: "start";
+			activityId: string;
+			extensionPath: string;
+			hook: string;
+			startedAt: number;
+	  }
+	| {
+			phase: "end";
+			activityId: string;
+			extensionPath: string;
+			hook: string;
+			startedAt: number;
+			endedAt: number;
+			durationMs: number;
+			status: "completed" | "failed";
+			error?: string;
+	  };
+
+export type ExtensionActivityListener = (activity: ExtensionActivityEvent) => void;
+
 export type NewSessionHandler = (options?: {
 	parentSession?: string;
 	setup?: (sessionManager: SessionManager) => Promise<void>;
@@ -330,6 +352,7 @@ export class ExtensionRunner {
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
+	private activityListeners: Set<ExtensionActivityListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
@@ -670,6 +693,27 @@ export class ExtensionRunner {
 		return () => this.errorListeners.delete(listener);
 	}
 
+	onActivity(listener: ExtensionActivityListener): () => void {
+		this.activityListeners.add(listener);
+		return () => this.activityListeners.delete(listener);
+	}
+
+	private emitActivity(activity: ExtensionActivityEvent): void {
+		for (const listener of this.activityListeners) {
+			try {
+				listener(activity);
+			} catch (error) {
+				try {
+					this.emitError({
+						extensionPath: activity.extensionPath,
+						event: activity.hook,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				} catch {}
+			}
+		}
+	}
+
 	emitError(error: ExtensionError): void {
 		for (const listener of this.errorListeners) {
 			listener(error);
@@ -904,7 +948,51 @@ export class ExtensionRunner {
 	}
 
 	private snapshot(event: ExtensionEvent["type"], turn = this.getTurnContextFn()) {
-		return snapshotEventHandlers(this.extensions, event, turn);
+		const snapshot = snapshotEventHandlers(this.extensions, event, turn);
+		if (this.activityListeners.size === 0) return snapshot;
+		return snapshot.map(({ ext, handlers }) => ({
+			ext,
+			handlers: handlers.map((handler) => async (...args: Parameters<typeof handler>) => {
+				const activityId = randomUUID();
+				const startedAt = Date.now();
+				this.emitActivity({
+					phase: "start",
+					activityId,
+					extensionPath: ext.path,
+					hook: event,
+					startedAt,
+				});
+				try {
+					const result = await handler(...args);
+					const endedAt = Date.now();
+					this.emitActivity({
+						phase: "end",
+						activityId,
+						extensionPath: ext.path,
+						hook: event,
+						startedAt,
+						endedAt,
+						durationMs: Math.max(0, endedAt - startedAt),
+						status: "completed",
+					});
+					return result;
+				} catch (error) {
+					const endedAt = Date.now();
+					this.emitActivity({
+						phase: "end",
+						activityId,
+						extensionPath: ext.path,
+						hook: event,
+						startedAt,
+						endedAt,
+						durationMs: Math.max(0, endedAt - startedAt),
+						status: "failed",
+						error: error instanceof Error ? error.message : String(error),
+					});
+					throw error;
+				}
+			}),
+		}));
 	}
 
 	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {

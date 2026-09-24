@@ -62,6 +62,9 @@ function assertActiveTarget(
 	}
 	const target = members.find((member) => member.sessionId === targetSessionId && member.leftAt === undefined);
 	if (!target) throw routingError(`Room 成员不存在或已退出：${targetSessionId}`, "room_target_not_member");
+	if (senderType === "user" && target.role === "owner") {
+		throw routingError("用户消息只能发送给 Room 中的智能体", "room_user_target_not_agent");
+	}
 }
 
 export function resolveSessionRoomTargets(input: SessionRoomRoutingInput): string[] {
@@ -80,7 +83,9 @@ export function resolveSessionRoomTargets(input: SessionRoomRoutingInput): strin
 			requested.length > 0
 				? requested
 				: active
-						.filter((member) => senderType === "user" || member.sessionId !== input.senderSessionId)
+						.filter((member) =>
+							senderType === "user" ? member.role !== "owner" : member.sessionId !== input.senderSessionId,
+						)
 						.map((member) => member.sessionId);
 		for (const sessionId of candidates) assertActiveTarget(sessionId, input.senderSessionId, senderType, active);
 		const memberById = new Map(active.map((member) => [member.sessionId, member]));
@@ -91,7 +96,10 @@ export function resolveSessionRoomTargets(input: SessionRoomRoutingInput): strin
 		);
 	}
 	const candidates = (requested.length > 0 ? requested : active.map((member) => member.sessionId)).filter(
-		(sessionId) => senderType === "user" || sessionId !== input.senderSessionId,
+		(sessionId) => {
+			const member = active.find((candidate) => candidate.sessionId === sessionId);
+			return senderType === "user" ? member?.role !== "owner" : sessionId !== input.senderSessionId;
+		},
 	);
 	for (const sessionId of candidates) assertActiveTarget(sessionId, input.senderSessionId, senderType, active);
 	if (candidates.length === 0) throw routingError("one-of-us 路由没有可用成员", "room_one_of_us_target_required");

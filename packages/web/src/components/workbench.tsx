@@ -63,6 +63,7 @@ function MobileProjectRailDialog({
 	workspaceMode,
 	onWorkspaceModeChange,
 	roomProjects,
+	roomAgentSessionIds,
 	roomsLoading,
 	roomsError,
 	selectedRoomId,
@@ -78,6 +79,7 @@ function MobileProjectRailDialog({
 	workspaceMode: WorkspaceMode;
 	onWorkspaceModeChange: (mode: WorkspaceMode) => void;
 	roomProjects: RoomProjectList[];
+	roomAgentSessionIds: ReadonlySet<string>;
 	roomsLoading: boolean;
 	roomsError?: string;
 	selectedRoomId?: string;
@@ -262,6 +264,7 @@ function MobileProjectRailDialog({
 							state={state}
 							actions={actions}
 							projects={projects}
+							roomAgentSessionIds={roomAgentSessionIds}
 							currentProject={currentProject}
 							onAddProject={onAddProject}
 							onEditProject={onEditProject}
@@ -306,10 +309,22 @@ export function Workbench({
 	const roomWorkspace = useRoomWorkspace({
 		projects,
 		sessionId: state.sessionId,
-		onSelectSession: actions.selectSession,
 		refreshProjectSessions: actions.refreshProjectSessions,
 		showToast: actions.showToast,
 	});
+	const roomAgentSessionIds = useMemo(() => {
+		const sessionIds = new Set(
+			projects.flatMap((project) => project.sessions.filter((session) => session.roomMember).map((session) => session.id)),
+		);
+		for (const { rooms } of roomWorkspace.roomProjects) {
+			for (const room of rooms) {
+				for (const member of room.members) {
+					if (member.role === "member") sessionIds.add(member.sessionId);
+				}
+			}
+		}
+		return sessionIds;
+	}, [projects, roomWorkspace.roomProjects]);
 	const roomMentionCompletionItems = useMemo(
 		() => roomWorkspace.roomMentionItems.map(({ item }) => item),
 		[roomWorkspace.roomMentionItems],
@@ -427,6 +442,7 @@ export function Workbench({
 							state={state}
 							actions={actions}
 							projects={projects}
+							roomAgentSessionIds={roomAgentSessionIds}
 							currentProject={currentProject}
 							onAddProject={openDirectory}
 							onEditProject={setEditingProject}
@@ -470,6 +486,7 @@ export function Workbench({
 								workspaceMode={workspaceMode}
 								onWorkspaceModeChange={handleWorkspaceModeChange}
 								roomProjects={roomWorkspace.roomProjects}
+								roomAgentSessionIds={roomAgentSessionIds}
 								roomsLoading={roomWorkspace.roomsLoading}
 								roomsError={roomWorkspace.roomsError}
 								selectedRoomId={roomWorkspace.selectedRoom?.room.id}
@@ -586,6 +603,7 @@ export function Workbench({
 											state={state}
 											controller={roomWorkspace}
 											onModeChange={() => setWorkspaceMode("sessions")}
+											openResource={actions.openResource}
 										/>
 									) : (
 										<ConversationView

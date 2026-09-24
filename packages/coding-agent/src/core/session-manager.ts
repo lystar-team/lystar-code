@@ -105,6 +105,7 @@ export interface SessionHeader {
 	cwd: string;
 	parentSession?: string;
 	relation?: SessionRelation;
+	roomAgent?: true;
 	profile?: SessionProfileSnapshot;
 	collaborationTask?: SessionCollaborationTask;
 	collaborationWorkspace?: SessionWorkspaceSnapshot;
@@ -114,6 +115,7 @@ export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
 	relation?: SessionRelation;
+	roomAgent?: boolean;
 	profile?: SessionProfileSnapshot;
 	collaborationTask?: SessionCollaborationTask;
 	collaborationWorkspace?: SessionWorkspaceSnapshot;
@@ -1596,6 +1598,7 @@ export class SessionManager {
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
 			relation: options?.relation,
+			...(options?.roomAgent ? { roomAgent: true } : {}),
 			profile: options?.profile,
 			collaborationTask: options?.collaborationTask,
 			collaborationWorkspace: options?.collaborationWorkspace,

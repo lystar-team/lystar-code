@@ -263,6 +263,7 @@ export interface RuntimeAdapter {
 		options?: {
 			parentSession?: string;
 			profileId?: string;
+			roomAgent?: boolean;
 			collaborationTask?: SessionCollaborationTask;
 			collaborationWorkspace?: SessionWorkspaceSnapshot;
 			sessionDir?: string;

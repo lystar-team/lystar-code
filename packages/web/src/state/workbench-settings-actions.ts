@@ -436,11 +436,60 @@ export function useWorkbenchSettingsActions({
 		[refreshHostInstructions, showToast, updateState],
 	);
 
+	const refreshSessionNameSettings = useCallback(async () => {
+		updateState((current) => ({ ...current, sessionNameSettingsLoading: true, sessionNameSettingsError: undefined }));
+		try {
+			const settings = await webApi.sessionNameSettings();
+			updateState((current) => ({
+				...current,
+				sessionNameSettings: settings,
+				sessionNameSettingsLoading: false,
+				sessionNameSettingsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({
+				...current,
+				sessionNameSettingsLoading: false,
+				sessionNameSettingsError: message,
+			}));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const saveSessionNameSettings = useCallback(
+		async (input: { model?: string; thinkingLevel: WebThinkingLevel }) => {
+			updateState((current) => ({ ...current, sessionNameSettingsSaving: true, sessionNameSettingsError: undefined }));
+			try {
+				const settings = await webApi.saveSessionNameSettings(input);
+				updateState((current) => ({
+					...current,
+					sessionNameSettings: settings,
+					sessionNameSettingsSaving: false,
+					sessionNameSettingsError: undefined,
+				}));
+				showToast("会话标题设置已保存");
+			} catch (error) {
+				const message = errorMessage(error);
+				updateState((current) => ({
+					...current,
+					sessionNameSettingsSaving: false,
+					sessionNameSettingsError: message,
+				}));
+				showToast(message);
+			}
+		},
+		[showToast, updateState],
+	);
+
 	const openSettings = useCallback(
 		async (tab: SettingsTab = "appearance") => {
 			updateState((current) => ({ ...current, settingsOpen: true, settingsTab: tab }));
-			if (tab === "models" && stateRef.current.models.length === 0) {
-				await refreshModelSettings();
+			if (tab === "models") {
+				const tasks: Promise<void>[] = [];
+				if (stateRef.current.models.length === 0) tasks.push(refreshModelSettings());
+				if (!stateRef.current.sessionNameSettings) tasks.push(refreshSessionNameSettings());
+				await Promise.all(tasks);
 			}
 			if (tab === "instructions") await refreshHostInstructions();
 			if (tab === "skills") await refreshSkills();
@@ -466,6 +515,7 @@ export function useWorkbenchSettingsActions({
 			refreshHarnessImports,
 			refreshHostInstructions,
 			refreshModelSettings,
+			refreshSessionNameSettings,
 			refreshSecuritySettings,
 			refreshSkills,
 			refreshSubagentConfigs,
@@ -562,6 +612,8 @@ export function useWorkbenchSettingsActions({
 		refreshSecuritySettings,
 		saveSecuritySettings,
 		saveBranding,
+		refreshSessionNameSettings,
+		saveSessionNameSettings,
 		refreshHostInstructions,
 		saveHostInstruction,
 		openSettings,

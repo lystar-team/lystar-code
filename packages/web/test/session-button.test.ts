@@ -24,6 +24,46 @@ describe("会话标题展示", () => {
 		expect((SessionButton as unknown as { $$typeof?: symbol }).$$typeof).toBe(Symbol.for("react.memo"));
 	});
 
+	it("智能体会话行显示智能体名称和图标身份", () => {
+		const session: WebSessionSummary = {
+			id: "session-agent",
+			name: "检查项目代码",
+			profileId: "code-review",
+			profileName: "代码审阅",
+			profileIcon: "code",
+			createdAt: 1,
+			updatedAt: 1,
+			messageCount: 1,
+			firstMessage: "检查项目代码",
+			activity: "idle",
+			writeAccess: "available",
+		};
+		const markup = renderToStaticMarkup(
+			createElement(SessionButton, {
+				projectName: "测试项目",
+				session,
+				active: false,
+				running: false,
+				unread: false,
+				onClick: () => {},
+				onRename: async () => {},
+				onContextRename: () => {},
+				onTogglePinned: () => {},
+				onDelete: () => {},
+				dragging: false,
+				dropTarget: false,
+				onDragStart: () => {},
+				onDragOver: () => {},
+				onDrop: () => {},
+				onDragEnd: () => {},
+			}),
+		);
+
+		expect(markup).toContain("代码审阅");
+		expect(markup).toContain("检查项目代码");
+		expect(markup).toContain("lucide-braces");
+	});
+
 	it("会话行提供独立的删除按钮", () => {
 		const session: WebSessionSummary = {
 			id: "session-1",

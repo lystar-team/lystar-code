@@ -5,10 +5,13 @@ import type { RoomMemberSelection, RoomWorkspaceController } from "../../state/u
 import type { WebRoomMember, WebRoomMessage, WebRoomSummary, WebSessionSummary } from "../../types";
 import { cn } from "../../lib/utils";
 import { Conversation, ConversationContent } from "../ai-elements/conversation";
+import { MessageResponse } from "../ai-elements/message";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { AgentProfileCard } from "./agent-profile-card";
 import { AgentIdentityIcon, collaborationAlias } from "./collaboration-session";
+import { mergeRoomMessages } from "./room-message-utils";
+import type { WorkbenchActions } from "./types";
 
 function formatMessageTime(value: string): string {
 	const date = new Date(value);
@@ -20,8 +23,9 @@ function sessionLabel(
 	session: WebSessionSummary | undefined,
 	sessionId: string,
 	member?: WebRoomMember,
+	senderType?: WebRoomMessage["senderType"],
 ): string {
-	if (member?.role === "owner") return "你";
+	if (member?.role === "owner") return senderType === "agent" ? "主智能体" : "你";
 	return member?.nickname?.trim() || collaborationAlias(session?.id ?? sessionId);
 }
 
@@ -54,31 +58,38 @@ function ActivityRow({ message }: { message: WebRoomMessage }) {
 	);
 }
 
+function AgentAvatar({ memberSession, member }: { memberSession?: WebSessionSummary; member?: WebRoomMember }) {
+	return (
+		<div className="mt-1 grid size-8 shrink-0 place-items-center rounded-full border border-border/70 bg-muted text-muted-foreground">
+			{memberSession || member ? (
+				<AgentIdentityIcon member={member} session={memberSession} className="size-4 object-contain" />
+			) : (
+				<Bot className="size-4" aria-hidden="true" />
+			)}
+		</div>
+	);
+}
+
 function MessageBubble({
 	message,
 	isCurrentUser,
 	memberLabel,
 	memberSession,
 	member,
+	projectId,
+	openResource,
 }: {
 	message: WebRoomMessage;
 	isCurrentUser: boolean;
 	memberLabel: string;
 	memberSession?: WebSessionSummary;
 	member?: WebRoomMember;
+	projectId?: string;
+	openResource: WorkbenchActions["openResource"];
 }) {
-	const memberIcon = memberSession || member ? (
-		<AgentIdentityIcon member={member} session={memberSession} className="size-4 object-contain" />
-	) : (
-		<Bot className="size-4" aria-hidden="true" />
-	);
 	return (
 		<article className={cn("flex gap-2.5", isCurrentUser ? "justify-end" : "justify-start")}>
-			{isCurrentUser ? null : (
-				<div className="mt-1 grid size-8 shrink-0 place-items-center rounded-full border border-border/70 bg-muted text-muted-foreground">
-							{memberIcon}
-				</div>
-			)}
+			{isCurrentUser ? null : <AgentAvatar member={member} memberSession={memberSession} />}
 			<div className={cn("flex max-w-[min(78%,680px)] flex-col", isCurrentUser ? "items-end" : "items-start")}>
 				<div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
 					<span className="font-medium text-foreground">{isCurrentUser ? "你" : memberLabel}</span>
@@ -92,7 +103,19 @@ function MessageBubble({
 							: "rounded-bl-md border border-border/70 bg-background text-foreground",
 					)}
 				>
-					<p className="whitespace-pre-wrap break-words">{message.body}</p>
+					{message.senderType === "agent" ? (
+						<MessageResponse
+							className="sd-prose min-w-0 max-w-full break-words text-sm leading-6"
+							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+							linkSafety={{ enabled: true }}
+							onOpenPath={(path) => void openResource(path)}
+							projectId={projectId}
+						>
+							{message.body || " "}
+						</MessageResponse>
+					) : (
+						<p className="whitespace-pre-wrap break-words">{message.body}</p>
+					)}
 					{message.attachments?.length ? (
 						<ul className="mt-2 flex flex-wrap gap-1.5" aria-label="附件">
 							{message.attachments.map((attachment) => (
@@ -111,6 +134,37 @@ function MessageBubble({
 					<MessageSquare className="size-4" aria-hidden="true" />
 				</div>
 			) : null}
+		</article>
+	);
+}
+
+function PendingAgentBubble({
+	pending,
+	memberLabel,
+	memberSession,
+	member,
+}: {
+	pending: RoomWorkspaceController["pendingAgentReplies"][number];
+	memberLabel: string;
+	memberSession?: WebSessionSummary;
+	member?: WebRoomMember;
+}) {
+	return (
+		<article className="flex gap-2.5" aria-label={`${memberLabel}正在处理`}>
+			<AgentAvatar member={member} memberSession={memberSession} />
+			<div className="flex max-w-[min(78%,680px)] flex-col items-start">
+				<div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+					<span className="font-medium text-foreground">{memberLabel}</span>
+					<span>{formatMessageTime(pending.createdAt)}</span>
+				</div>
+				<div
+					className="flex min-w-0 items-center gap-2 rounded-2xl rounded-bl-md border border-border/70 bg-background px-3.5 py-2.5 text-sm leading-6 text-muted-foreground shadow-sm"
+					role="status"
+				>
+					<LoaderCircle className="size-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+					<span className="min-w-0 break-words">消息已发送，等待回复。</span>
+				</div>
+			</div>
 		</article>
 	);
 }
@@ -217,10 +271,12 @@ export function RoomWorkspace({
 	state,
 	controller,
 	onModeChange,
+	openResource,
 }: {
 	state: WorkbenchState;
 	controller: RoomWorkspaceController;
 	onModeChange: () => void;
+	openResource: WorkbenchActions["openResource"];
 }) {
 	const selectedProject = state.projects.find((project) => project.id === controller.selectedRoomProjectId);
 	const memberSessions = useMemo(() => {
@@ -228,7 +284,6 @@ export function RoomWorkspace({
 		return new Map<string, WebSessionSummary>(sessions.map((session) => [session.id, session]));
 	}, [selectedProject?.sessions]);
 	const currentRoom = controller.selectedRoom;
-	const currentSessionId = state.sessionId;
 	const [inviteOpen, setInviteOpen] = useState(false);
 	const activeMembers = useMemo(
 		() => currentRoom?.members.filter((member) => !member.leftAt) ?? [],
@@ -290,21 +345,55 @@ export function RoomWorkspace({
 								<CircleAlert className="size-4" aria-hidden="true" />
 								{controller.roomMessagesError}
 							</div>
-						) : controller.selectedRoomMessages.length ? (
-							controller.selectedRoomMessages.map((message) => (
-								<MessageBubble
-									isCurrentUser={message.senderType === "user" || message.senderSessionId === currentSessionId}
-									key={message.id}
-									member={currentRoom.members.find((member) => member.sessionId === message.senderSessionId)}
-									memberLabel={sessionLabel(
-										memberSessions.get(message.senderSessionId),
-										message.senderSessionId,
-										currentRoom.members.find((member) => member.sessionId === message.senderSessionId),
-									)}
-									memberSession={memberSessions.get(message.senderSessionId)}
-									message={message}
-								/>
-							))
+						) : controller.selectedRoomMessages.length ||
+							controller.pendingAgentReplies.some(
+								(pending) =>
+									pending.projectId === controller.selectedRoomProjectId &&
+									pending.roomId === currentRoom.room.id &&
+									activeMembers.some((member) => member.sessionId === pending.sessionId),
+							) ? (
+							<>
+								{controller.selectedRoomMessages.map((message) => {
+									const member = currentRoom.members.find((candidate) => candidate.sessionId === message.senderSessionId);
+									return (
+										<MessageBubble
+											isCurrentUser={message.senderType === "user"}
+											key={message.id}
+											member={member}
+											memberLabel={sessionLabel(
+												memberSessions.get(message.senderSessionId),
+												message.senderSessionId,
+												member,
+												message.senderType,
+											)}
+											memberSession={memberSessions.get(message.senderSessionId)}
+											message={message}
+											projectId={controller.selectedRoomProjectId}
+											openResource={openResource}
+										/>
+									);
+								})}
+								{controller.pendingAgentReplies
+									.filter(
+										(pending) =>
+											pending.projectId === controller.selectedRoomProjectId &&
+											pending.roomId === currentRoom.room.id &&
+											activeMembers.some((member) => member.sessionId === pending.sessionId),
+									)
+									.map((pending) => {
+										const member = activeMembers.find((candidate) => candidate.sessionId === pending.sessionId);
+										const memberSession = memberSessions.get(pending.sessionId);
+										return (
+											<PendingAgentBubble
+												key={`${pending.requestMessageId}:${pending.sessionId}`}
+												pending={pending}
+												member={member}
+												memberLabel={sessionLabel(memberSession, pending.sessionId, member, "agent")}
+												memberSession={memberSession}
+											/>
+										);
+									})}
+							</>
 						) : (
 							<div className="py-12 text-center text-sm text-muted-foreground">还没有消息，发送第一条协作消息。</div>
 						)}

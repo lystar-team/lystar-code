@@ -628,6 +628,12 @@
                       "minLength": 1,
                       "maxLength": 4096
                     },
+                    "roomAgent": {
+                      "type": "boolean"
+                    },
+                    "suppressInfoNotifications": {
+                      "type": "boolean"
+                    },
                     "clientInstanceId": {
                       "type": "string",
                       "minLength": 1,
@@ -5418,7 +5424,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 9
+              "const": 10
             },
             "productVersion": {
               "type": "string",
@@ -5426,7 +5432,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 9
+              "const": 10
             },
             "serverInstanceId": {
               "type": "string",
@@ -7128,6 +7134,166 @@
                                     "const": "bash"
                                   },
                                   "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "custom_message"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "images": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "contentRef",
+                                        "mimeType",
+                                        "byteLength"
+                                      ],
+                                      "properties": {
+                                        "contentRef": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "mimeType": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        },
+                                        "byteLength": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "alt": {
+                                          "type": "string",
+                                          "maxLength": 4096
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 32
+                                  },
+                                  "files": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "filename",
+                                        "mimeType"
+                                      ],
+                                      "properties": {
+                                        "filename": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "mimeType": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 32
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "customType"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "extension_entry"
+                                  },
+                                  "customType": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 16384
+                                  },
+                                  "details": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "activityId",
+                                  "extensionPath",
+                                  "hook",
+                                  "status"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "extension_activity"
+                                  },
+                                  "activityId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                  },
+                                  "extensionPath": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "hook": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "status": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "const": "running"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "completed"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "failed"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "interrupted"
+                                      }
+                                    ]
+                                  },
+                                  "durationMs": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "error": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "details": {
                                     "type": "string",
                                     "maxLength": 16384
                                   }

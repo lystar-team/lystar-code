@@ -1,5 +1,6 @@
 import type { TranscriptItem } from "@lystar/code-web-protocol";
 import { describe, expect, it } from "vitest";
+import { EXTENSION_ACTIVITY_CUSTOM_TYPE } from "../src/extension-activity.ts";
 import { projectTranscriptBatch, projectTranscriptItems } from "../src/transcript-projection.ts";
 
 function assistant(content: unknown, options: { stopReason?: string; errorMessage?: string } = {}): TranscriptItem {
@@ -498,5 +499,193 @@ describe("assistant transcript projection", () => {
 			text: "",
 			tokensBefore: 12000,
 		});
+	});
+
+	it("preserves the existing bash custom entry projection", () => {
+		const entry: TranscriptItem = {
+			entryId: "bash-custom-entry",
+			parentId: null,
+			timestamp: "2026-09-24T00:00:00Z",
+			kind: "custom",
+			payload: { type: "custom", customType: "bash", data: { command: "pwd" } },
+		};
+
+		expect(projectTranscriptItems(entry)[0]?.view).toEqual({
+			type: "bash",
+			text: '{"type":"custom","customType":"bash","data":{"command":"pwd"}}',
+		});
+	});
+
+	it("projects generic extension entries as collapsed-card views", () => {
+		const entry: TranscriptItem = {
+			entryId: "extension-entry",
+			parentId: "user-entry",
+			timestamp: "2026-09-24T00:00:00Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: "context-preheat-metrics",
+				data: { version: 1, decision: "context" },
+			},
+		};
+
+		expect(projectTranscriptItems(entry)).toEqual([
+			{
+				...entry,
+				view: {
+					type: "extension_entry",
+					customType: "context-preheat-metrics",
+					details: '{\n  "version": 1,\n  "decision": "context"\n}',
+				},
+			},
+		]);
+	});
+
+	it("groups Hook lifecycle and its custom entries into one activity card", () => {
+		const start: TranscriptItem = {
+			entryId: "activity-start",
+			parentId: "user-entry",
+			timestamp: "2026-09-24T00:00:01Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: EXTENSION_ACTIVITY_CUSTOM_TYPE,
+				data: {
+					version: 1,
+					phase: "start",
+					activityId: "activity-1",
+					extensionPath: "extensions/context-preheat/index.ts",
+					hook: "before_agent_start",
+					startedAt: 1000,
+				},
+			},
+		};
+		const customEntry: TranscriptItem = {
+			entryId: "extension-entry",
+			parentId: "activity-start",
+			timestamp: "2026-09-24T00:00:02Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: "context-preheat-metrics",
+				data: { decision: "context" },
+			},
+		};
+		const end: TranscriptItem = {
+			entryId: "activity-end",
+			parentId: "extension-entry",
+			timestamp: "2026-09-24T00:00:03Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: EXTENSION_ACTIVITY_CUSTOM_TYPE,
+				data: {
+					version: 1,
+					phase: "end",
+					activityId: "activity-1",
+					extensionPath: "extensions/context-preheat/index.ts",
+					hook: "before_agent_start",
+					startedAt: 1000,
+					endedAt: 1014,
+					durationMs: 14,
+					status: "completed",
+					relatedEntryIds: ["extension-entry"],
+					details: '[{"customType":"context-preheat-metrics","data":{"decision":"context"}}]',
+				},
+			},
+		};
+
+		expect(projectTranscriptBatch([start, customEntry, end])).toEqual([
+			{
+				...start,
+				view: {
+					type: "extension_activity",
+					activityId: "activity-1",
+					extensionPath: "extensions/context-preheat/index.ts",
+					hook: "before_agent_start",
+					status: "completed",
+					durationMs: 14,
+					details: expect.stringContaining('"decision": "context"'),
+				},
+			},
+		]);
+		expect(projectTranscriptBatch([end])[0]?.view).toMatchObject({
+			type: "extension_activity",
+			status: "completed",
+			details: '[{"customType":"context-preheat-metrics","data":{"decision":"context"}}]',
+		});
+	});
+
+	it("shows an open Hook activity as running without exposing its custom entry separately", () => {
+		const start: TranscriptItem = {
+			entryId: "activity-start",
+			parentId: "user-entry",
+			timestamp: "2026-09-24T00:00:01Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: EXTENSION_ACTIVITY_CUSTOM_TYPE,
+				data: {
+					version: 1,
+					phase: "start",
+					activityId: "activity-2",
+					extensionPath: "extensions/context-preheat/index.ts",
+					hook: "before_agent_start",
+					startedAt: 1000,
+				},
+			},
+		};
+		const customEntry: TranscriptItem = {
+			entryId: "extension-entry-running",
+			parentId: "activity-start",
+			timestamp: "2026-09-24T00:00:02Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: "context-preheat-metrics",
+				data: { decision: "context" },
+			},
+		};
+
+		expect(projectTranscriptBatch([start, customEntry]).map((item) => item.view)).toEqual([
+			{
+				type: "extension_activity",
+				activityId: "activity-2",
+				extensionPath: "extensions/context-preheat/index.ts",
+				hook: "before_agent_start",
+				status: "running",
+				details: expect.stringContaining('"decision": "context"'),
+			},
+		]);
+	});
+
+	it("projects only displayed custom message content", () => {
+		const hidden: TranscriptItem = {
+			entryId: "hidden-custom-message",
+			parentId: null,
+			timestamp: "2026-09-24T00:00:00Z",
+			kind: "custom_message",
+			payload: {
+				type: "custom_message",
+				customType: "context-injection",
+				content: "Hidden extension context",
+				display: false,
+			},
+		};
+		const visible: TranscriptItem = {
+			...hidden,
+			entryId: "visible-custom-message",
+			payload: {
+				type: "custom_message",
+				customType: "context-injection",
+				content: "Visible extension message",
+				display: true,
+			},
+		};
+
+		expect(projectTranscriptItems(hidden)).toEqual([]);
+		expect(projectTranscriptItems(visible).map((item) => item.view)).toEqual([
+			{ type: "custom_message", text: "Visible extension message" },
+		]);
 	});
 });

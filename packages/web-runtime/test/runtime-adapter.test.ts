@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { assertWorkspaceCommandResult } from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1709,6 +1710,99 @@ describe("CodingAgentRuntimeAdapter", () => {
 			expect.arrayContaining([expect.objectContaining({ label: "edge-before", kind: "extension" })]),
 		);
 		await runtime.prompt("/edge-after");
+	});
+
+	it("isolates Room sessions from user AGENTS.md and retains profile and project context", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-room-context-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const profileDir = join(agentDir, "agents", "room-worker");
+		const faux = registerFauxProvider();
+		const capturedContexts: string[] = [];
+		const captureResponse = (context: TranscriptContext) => {
+			capturedContexts.push(JSON.stringify(context.messages));
+			return fauxAssistantMessage("done");
+		};
+		faux.setResponses(Array.from({ length: 24 }, () => captureResponse));
+		const model = faux.getModel();
+		for (const dir of [agentDir, cwd, profileDir]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(agentDir, "AGENTS.md"), "GLOBAL_AGENTS_MARKER");
+		writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), "GLOBAL_APPEND_MARKER");
+		writeFileSync(join(cwd, "AGENTS.md"), "PROJECT_AGENTS_MARKER");
+		writeFileSync(join(profileDir, "profile.json"), JSON.stringify({ name: "Room Worker" }));
+		writeFileSync(join(profileDir, "PROMPT.md"), "PROFILE_SYSTEM_MARKER");
+		writeFileSync(join(profileDir, "AGENTS.md"), "PROFILE_AGENTS_MARKER");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[model.provider]: {
+						baseUrl: model.baseUrl,
+						apiKey: "faux-key",
+						api: faux.api,
+						models: [
+							{
+								id: model.id,
+								name: model.name,
+								reasoning: model.reasoning,
+								input: model.input,
+								cost: model.cost,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+							},
+						],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: model.provider,
+				defaultModel: model.id,
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+			}),
+		);
+
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			faux.unregister();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }), {
+			profileId: "room-worker",
+			roomAgent: true,
+		});
+		const roomSessionPath = runtime.sessionPath;
+		await runtime.prompt("Room context check");
+		await runtime.dispose();
+		runtime = undefined;
+
+		const roomContext = capturedContexts.find((context) => context.includes("PROJECT_AGENTS_MARKER"));
+		expect(roomContext).toContain("PROFILE_SYSTEM_MARKER");
+		expect(roomContext).toContain("PROFILE_AGENTS_MARKER");
+		expect(roomContext).toContain("GLOBAL_APPEND_MARKER");
+		expect(roomContext).toContain("expert coding assistant operating inside pi");
+		expect(roomContext).not.toContain("GLOBAL_AGENTS_MARKER");
+
+		capturedContexts.length = 0;
+		runtime = await adapter.openSession(roomSessionPath, async () => ({ cancelled: true }));
+		await runtime.prompt("Room context restore check");
+		await runtime.dispose();
+		runtime = undefined;
+		const restoredRoomContext = capturedContexts.find((context) => context.includes("PROJECT_AGENTS_MARKER"));
+		expect(restoredRoomContext).toContain("PROFILE_AGENTS_MARKER");
+		expect(restoredRoomContext).not.toContain("GLOBAL_AGENTS_MARKER");
+
+		capturedContexts.length = 0;
+		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }), { profileId: "room-worker" });
+		await runtime.prompt("Regular context check");
+		const regularContext = capturedContexts.find((context) => context.includes("PROJECT_AGENTS_MARKER"));
+		expect(regularContext).toContain("GLOBAL_AGENTS_MARKER");
+		expect(regularContext).toContain("PROFILE_AGENTS_MARKER");
 	});
 
 	it("routes API key login through a secret UI request and Core credential storage", async () => {

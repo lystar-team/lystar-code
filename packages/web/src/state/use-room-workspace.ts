@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../adapters/host-protocol/api";
 import { roomAgentMentions } from "../components/workbench/collaboration-session";
+import {
+	addPendingRoomAgentReplies,
+	mergeRoomMessages,
+	settlePendingRoomAgentReplies,
+	type PendingRoomAgentReply,
+} from "../components/workbench/room-message-utils";
 import { allocateRoomNickname, readRoomNicknamePool } from "../components/workbench/room-agent-identity";
 import type { SubagentConfig, WebProject, WebRoomMessage, WebRoomSummary } from "../types";
 
 interface UseRoomWorkspaceOptions {
 	projects: readonly WebProject[];
 	sessionId?: string;
-	onSelectSession: (sessionId: string) => Promise<void>;
 	refreshProjectSessions: (projectId: string) => Promise<void>;
 	showToast: (message: string) => void;
 }
@@ -32,6 +37,7 @@ export interface RoomWorkspaceController {
 	selectedRoomMessages: WebRoomMessage[];
 	roomMessagesLoading: boolean;
 	roomMessagesError?: string;
+	pendingAgentReplies: PendingRoomAgentReply[];
 	roomSending: boolean;
 	agentProfiles: SubagentConfig[];
 	agentProfilesLoading: boolean;
@@ -74,7 +80,6 @@ function roomMemberIdentity(member: RoomMemberSelection, room?: WebRoomSummary):
 export function useRoomWorkspace({
 	projects,
 	sessionId,
-	onSelectSession,
 	refreshProjectSessions,
 	showToast,
 }: UseRoomWorkspaceOptions): RoomWorkspaceController {
@@ -82,18 +87,21 @@ export function useRoomWorkspace({
 	const [roomsLoading, setRoomsLoading] = useState(false);
 	const [roomsError, setRoomsError] = useState<string>();
 	const [selectedRoomKey, setSelectedRoomKey] = useState<string>();
+	const selectedRoomKeyRef = useRef<string>();
 	const [selectedRoom, setSelectedRoom] = useState<WebRoomSummary>();
 	const [selectedRoomProjectId, setSelectedRoomProjectId] = useState<string>();
 	const [selectedRoomSessionId, setSelectedRoomSessionId] = useState<string>();
 	const [selectedRoomMessages, setSelectedRoomMessages] = useState<WebRoomMessage[]>([]);
 	const [roomMessagesLoading, setRoomMessagesLoading] = useState(false);
 	const [roomMessagesError, setRoomMessagesError] = useState<string>();
+	const [pendingAgentReplies, setPendingAgentReplies] = useState<PendingRoomAgentReply[]>([]);
 	const [roomSending, setRoomSending] = useState(false);
 	const [agentProfiles, setAgentProfiles] = useState<SubagentConfig[]>([]);
 	const [agentProfilesLoading, setAgentProfilesLoading] = useState(false);
 	const roomMessagesRef = useRef<WebRoomMessage[]>([]);
 	roomMessagesRef.current = selectedRoomMessages;
 	const roomsRequestIdRef = useRef(0);
+	const roomsInitializedRef = useRef(false);
 	const selectionRequestIdRef = useRef(0);
 	const profileRequestIdRef = useRef(0);
 
@@ -107,7 +115,7 @@ export function useRoomWorkspace({
 	);
 	const refreshRooms = useCallback(async () => {
 		const requestId = ++roomsRequestIdRef.current;
-		setRoomsLoading(true);
+		if (!roomsInitializedRef.current) setRoomsLoading(true);
 		try {
 			const entries = await Promise.all(
 				projects
@@ -118,10 +126,16 @@ export function useRoomWorkspace({
 			const next = Object.fromEntries(entries);
 			setRoomsError(undefined);
 			setRoomsByProject(next);
+			roomsInitializedRef.current = true;
 			const selectedStillExists = Object.values(next)
 				.flat()
 				.some((summary) => roomKey(selectedRoomProjectId ?? "", summary.room.id) === selectedRoomKey);
 			if (!selectedStillExists && selectedRoomKey) {
+				setPendingAgentReplies((current) =>
+					current.filter((pending) => roomKey(pending.projectId, pending.roomId) !== selectedRoomKey),
+				);
+				selectedRoomKeyRef.current = undefined;
+				roomMessagesRef.current = [];
 				setSelectedRoomKey(undefined);
 				setSelectedRoom(undefined);
 				setSelectedRoomProjectId(undefined);
@@ -129,7 +143,9 @@ export function useRoomWorkspace({
 				setSelectedRoomMessages([]);
 			}
 		} catch (error) {
-			if (requestId === roomsRequestIdRef.current) setRoomsError(error instanceof Error ? error.message : String(error));
+			if (requestId === roomsRequestIdRef.current && !roomsInitializedRef.current) {
+				setRoomsError(error instanceof Error ? error.message : String(error));
+			}
 		} finally {
 			if (requestId === roomsRequestIdRef.current) setRoomsLoading(false);
 		}
@@ -173,7 +189,10 @@ export function useRoomWorkspace({
 				showToast("Room 没有关联可用会话");
 				return;
 			}
-			setSelectedRoomKey(roomKey(projectId, summary.room.id));
+			const key = roomKey(projectId, summary.room.id);
+			selectedRoomKeyRef.current = key;
+			roomMessagesRef.current = [];
+			setSelectedRoomKey(key);
 			setSelectedRoom(summary);
 			setSelectedRoomProjectId(projectId);
 			setSelectedRoomSessionId(senderSessionId);
@@ -181,12 +200,13 @@ export function useRoomWorkspace({
 			setRoomMessagesError(undefined);
 			setRoomMessagesLoading(true);
 			try {
-				if (senderSessionId !== sessionId) await onSelectSession(senderSessionId);
 				await webApi.joinRoom(projectId, summary.room.id, senderSessionId);
 				const response = await webApi.roomMessages(projectId, summary.room.id, senderSessionId, { limit: 100 });
 				if (requestId !== selectionRequestIdRef.current) return;
 				setSelectedRoom(response.summary);
+				roomMessagesRef.current = response.messages;
 				setSelectedRoomMessages(response.messages);
+				setPendingAgentReplies((current) => settlePendingRoomAgentReplies(current, response.messages));
 			} catch (error) {
 				if (requestId !== selectionRequestIdRef.current) return;
 				const message = error instanceof Error ? error.message : String(error);
@@ -196,7 +216,7 @@ export function useRoomWorkspace({
 				if (requestId === selectionRequestIdRef.current) setRoomMessagesLoading(false);
 			}
 		},
-		[onSelectSession, projects, sessionId, showToast],
+		[projects, sessionId, showToast],
 	);
 
 	useEffect(() => {
@@ -204,23 +224,47 @@ export function useRoomWorkspace({
 		const roomId = selectedRoom?.room.id;
 		const memberSessionId = selectedRoomSessionId;
 		if (!projectId || !roomId || !memberSessionId) return;
+		const key = roomKey(projectId, roomId);
+		let polling = false;
 		const poll = async () => {
+			if (polling || selectedRoomKeyRef.current !== key) return;
+			polling = true;
 			try {
 				const response = await webApi.roomMessages(projectId, roomId, memberSessionId, {
 					afterSeq: roomMessagesRef.current.at(-1)?.seq ?? 0,
 					limit: 100,
 				});
+				if (selectedRoomKeyRef.current !== key) return;
 				setRoomMessagesError(undefined);
 				setSelectedRoom(response.summary);
+				setRoomsByProject((current) => {
+					const rooms = current[projectId];
+					const currentSummary = rooms?.find((summary) => summary.room.id === roomId);
+					if (!rooms || !currentSummary) return current;
+					const activeMemberCount = (summary: WebRoomSummary) =>
+						summary.members.filter((member) => !member.leftAt).length;
+					if (
+						currentSummary.latestSeq === response.summary.latestSeq &&
+						activeMemberCount(currentSummary) === activeMemberCount(response.summary)
+					) {
+						return current;
+					}
+					return {
+						...current,
+						[projectId]: rooms.map((summary) => (summary.room.id === roomId ? response.summary : summary)),
+					};
+				});
+				setPendingAgentReplies((current) => settlePendingRoomAgentReplies(current, response.messages));
 				if (!response.messages.length) return;
 				setSelectedRoomMessages((current) => {
-					const known = new Set(current.map((message) => message.id));
-					const next = [...current, ...response.messages.filter((message) => !known.has(message.id))];
+					const next = mergeRoomMessages(current, response.messages);
 					roomMessagesRef.current = next;
 					return next;
 				});
 			} catch {
 				// 轮询失败不打断当前 Room，下一轮继续尝试。
+			} finally {
+				polling = false;
 			}
 		};
 		const timer = window.setInterval(() => void poll(), 2_000);
@@ -231,16 +275,17 @@ export function useRoomWorkspace({
 		() => projects.find((project) => project.id === selectedRoomProjectId),
 		[projects, selectedRoomProjectId],
 	);
-	const roomMentionItems = useMemo(
-		() =>
-			roomAgentMentions(
-				(selectedProject?.sessions ?? []).filter((session) =>
-					selectedRoom?.members.some((member) => member.sessionId === session.id && !member.leftAt),
-				),
+	const roomMentionItems = useMemo(() => {
+		const agentSessionIds = new Set(
+			selectedRoom?.members
+				.filter((member) => member.role === "member" && !member.leftAt)
+				.map((member) => member.sessionId) ?? [],
+		);
+		return roomAgentMentions(
+			(selectedProject?.sessions ?? []).filter((session) => agentSessionIds.has(session.id)),
 			selectedRoom?.members,
-			),
-		[selectedProject?.sessions, selectedRoom?.members],
-	);
+		);
+	}, [selectedProject?.sessions, selectedRoom?.members]);
 
 	const createRoom = useCallback(
 		async (projectId: string, title: string, member: RoomMemberSelection) => {
@@ -250,12 +295,16 @@ export function useRoomWorkspace({
 			if (!owner) throw new Error("项目中没有可关联的会话");
 			const identity = roomMemberIdentity(member);
 			let createdSessionId: string | undefined;
+			let joinedRoom = false;
 			try {
-				const created = await webApi.createSession(projectId, member.profileId);
+				const created = await webApi.createSession(projectId, member.profileId, {
+					roomAgent: true,
+					suppressInfoNotifications: true,
+				});
 				createdSessionId = created.session.id;
-				await webApi.release(created.session.id);
 				const summary = await webApi.createRoom(projectId, owner.id, { title });
 				const joined = await webApi.joinRoom(projectId, summary.room.id, createdSessionId, identity);
+				joinedRoom = true;
 				setRoomsByProject((current) => ({
 					...current,
 					[projectId]: [joined, ...(current[projectId] ?? []).filter((candidate) => candidate.room.id !== joined.room.id)],
@@ -263,7 +312,7 @@ export function useRoomWorkspace({
 				await refreshProjectSessions(projectId);
 				await selectRoom(projectId, joined);
 			} catch (error) {
-				if (createdSessionId) await webApi.release(createdSessionId).catch(() => undefined);
+				if (createdSessionId && !joinedRoom) await webApi.release(createdSessionId).catch(() => undefined);
 				throw error;
 			}
 		},
@@ -277,10 +326,15 @@ export function useRoomWorkspace({
 			if (!projectId || !room) throw new Error("请先选择 Room");
 			const identity = roomMemberIdentity(member, room);
 			let createdSessionId: string | undefined;
+			let joinedRoom = false;
 			try {
-				const created = await webApi.createSession(projectId, member.profileId);
+				const created = await webApi.createSession(projectId, member.profileId, {
+					roomAgent: true,
+					suppressInfoNotifications: true,
+				});
 				createdSessionId = created.session.id;
 				const joined = await webApi.joinRoom(projectId, room.room.id, createdSessionId, identity);
+				joinedRoom = true;
 				setSelectedRoom(joined);
 				setRoomsByProject((current) => ({
 					...current,
@@ -289,8 +343,9 @@ export function useRoomWorkspace({
 					),
 				}));
 				await refreshProjectSessions(projectId);
-			} finally {
-				if (createdSessionId) await webApi.release(createdSessionId).catch(() => undefined);
+			} catch (error) {
+				if (createdSessionId && !joinedRoom) await webApi.release(createdSessionId).catch(() => undefined);
+				throw error;
 			}
 		},
 		[refreshProjectSessions, selectedRoom, selectedRoomProjectId],
@@ -304,14 +359,18 @@ export function useRoomWorkspace({
 			if (memberSessionId === room.room.ownerSessionId) throw new Error("Room Owner 不能退出 Room");
 			const left = await webApi.leaveRoom(projectId, room.room.id, memberSessionId);
 			setSelectedRoom(left);
+			setPendingAgentReplies((current) =>
+				current.filter((pending) => pending.roomId !== room.room.id || pending.sessionId !== memberSessionId),
+			);
 			setRoomsByProject((current) => ({
 				...current,
 				[projectId]: (current[projectId] ?? []).map((candidate) =>
 					candidate.room.id === left.room.id ? left : candidate,
 				),
 			}));
+			if (memberSessionId !== sessionId) await webApi.release(memberSessionId).catch(() => undefined);
 		},
-		[selectedRoom, selectedRoomProjectId],
+		[selectedRoom, selectedRoomProjectId, sessionId],
 	);
 
 	const sendRoomMessage = useCallback(
@@ -320,6 +379,7 @@ export function useRoomWorkspace({
 			const room = selectedRoom;
 			const senderSessionId = selectedRoomSessionId ?? sessionId;
 			if (!projectId || !room || !senderSessionId) throw new Error("请先选择 Room");
+			const key = roomKey(projectId, room.room.id);
 			const tokens = new Set(body.split(/[\s,，。；;!?！？、()[\]{}<>]+/u).filter(Boolean));
 			const targetSessionIds = roomMentionItems
 				.filter(({ item }) => tokens.has(item.value))
@@ -335,19 +395,47 @@ export function useRoomWorkspace({
 					body,
 					...(attachments?.length ? { attachments } : {}),
 				});
-				setSelectedRoomMessages((current) => {
-					if (current.some((message) => message.id === result.message.id)) return current;
-					return [...current, result.message];
-				});
-				setSelectedRoom((current) =>
-					current
-						? {
-							...current,
-							latestSeq: Math.max(current.latestSeq, result.message.seq),
-							room: { ...current.room, updatedAt: result.message.createdAt },
-						}
-						: current,
+				setPendingAgentReplies((current) =>
+					addPendingRoomAgentReplies(
+						current,
+						projectId,
+						result.message,
+						roomMessagesRef.current,
+						result.errors.map((error) => error.sessionId),
+					),
 				);
+				setRoomsByProject((current) => {
+					const rooms = current[projectId];
+					if (!rooms) return current;
+					return {
+						...current,
+						[projectId]: rooms.map((summary) =>
+							summary.room.id === room.room.id
+								? {
+									...summary,
+									latestSeq: Math.max(summary.latestSeq, result.message.seq),
+									room: { ...summary.room, updatedAt: result.message.createdAt },
+								}
+								: summary,
+						),
+					};
+				});
+				if (selectedRoomKeyRef.current === key) {
+					setSelectedRoomMessages((current) => {
+						const next = mergeRoomMessages(current, [result.message]);
+						roomMessagesRef.current = next;
+						return next;
+					});
+					setSelectedRoom((current) =>
+						current?.room.id === room.room.id
+							? {
+								...current,
+								latestSeq: Math.max(current.latestSeq, result.message.seq),
+								room: { ...current.room, updatedAt: result.message.createdAt },
+							}
+							: current,
+					);
+				}
 				if (result.errors.length) {
 					showToast(`部分 Agent 未响应：${result.errors.map((error) => error.message).join("；")}`);
 				}
@@ -368,6 +456,7 @@ export function useRoomWorkspace({
 		selectedRoomMessages,
 		roomMessagesLoading,
 		roomMessagesError,
+		pendingAgentReplies,
 		roomSending,
 		agentProfiles,
 		agentProfilesLoading,

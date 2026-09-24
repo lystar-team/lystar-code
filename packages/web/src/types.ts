@@ -45,7 +45,7 @@ export type {
 	SubagentSnapshot,
 };
 
-export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
+export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean; roomMember?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
 export type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 export type WebOperation = Omit<

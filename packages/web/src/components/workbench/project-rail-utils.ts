@@ -2,6 +2,13 @@ import type { WebSessionSummary } from "../../types";
 
 export type DropPosition = "before" | "after";
 
+export function excludeRoomAgentSessions(
+	sessions: readonly WebSessionSummary[],
+	roomAgentSessionIds: ReadonlySet<string>,
+): WebSessionSummary[] {
+	return sessions.filter((session) => !session.roomMember && !roomAgentSessionIds.has(session.id));
+}
+
 export function hasUnreadSessions(
 	sessions: readonly Pick<WebSessionSummary, "id" | "activity">[],
 	unreadSessionIds: Readonly<Record<string, true>>,

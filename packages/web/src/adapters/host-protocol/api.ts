@@ -491,10 +491,16 @@ export class WebApi {
 	async createSession(
 		projectId: string,
 		profileId?: string,
+		options: { roomAgent?: boolean; suppressInfoNotifications?: boolean } = {},
 	): Promise<{ session: WebSessionSnapshot; lease: WebLease }> {
 		return this.request<{ session: WebSessionSnapshot; lease: WebLease }>("/api/sessions", {
 			method: "POST",
-			body: JSON.stringify({ projectId, ...(profileId ? { profileId } : {}) }),
+			body: JSON.stringify({
+				projectId,
+				...(profileId ? { profileId } : {}),
+				...(options.roomAgent ? { roomAgent: true } : {}),
+				...(options.suppressInfoNotifications ? { suppressInfoNotifications: true } : {}),
+			}),
 		});
 	}
 
@@ -877,6 +883,20 @@ export class WebApi {
 
 	async branding(): Promise<ProductBranding> {
 		return this.request<ProductBranding>("/api/branding");
+	}
+
+	async sessionNameSettings(): Promise<{ model?: string; thinkingLevel: WebThinkingLevel }> {
+		return this.request<{ model?: string; thinkingLevel: WebThinkingLevel }>("/api/session-name-settings");
+	}
+
+	async saveSessionNameSettings(input: {
+		model?: string;
+		thinkingLevel: WebThinkingLevel;
+	}): Promise<{ model?: string; thinkingLevel: WebThinkingLevel }> {
+		return this.request<{ model?: string; thinkingLevel: WebThinkingLevel }>("/api/session-name-settings", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
 	}
 
 	async saveBranding(input: { name: string; logo?: string | null }): Promise<ProductBranding> {

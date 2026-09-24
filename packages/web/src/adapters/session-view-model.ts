@@ -54,6 +54,18 @@ export type SessionItemViewModel =
 	| { kind: "reasoning"; text: string; timestamp: string }
 	| { kind: "tools"; tools: TranscriptToolViewModel[]; timestamp: string }
 	| { kind: "code"; code: string; language: string; timestamp: string }
+	| { kind: "extension_entry"; customType: string; details?: string; timestamp: string }
+	| {
+			kind: "extension_activity";
+			activityId: string;
+			extensionPath: string;
+			hook: string;
+			status: "running" | "completed" | "failed" | "interrupted";
+			durationMs?: number;
+			error?: string;
+			details?: string;
+			timestamp: string;
+	  }
 	| {
 			kind: "summary";
 			variant?: "compaction" | "branch_summary";
@@ -79,10 +91,10 @@ export function toSessionItemViewModel(
 		};
 	}
 
-	if (view.type === "user" || view.type === "assistant") {
+	if (view.type === "user" || view.type === "assistant" || view.type === "custom_message") {
 		return {
 			kind: "message",
-			role: view.type,
+			role: view.type === "custom_message" ? "system" : view.type,
 			text: view.text,
 			timestamp: item.timestamp,
 			attachments: [
@@ -112,6 +124,29 @@ export function toSessionItemViewModel(
 			kind: "summary",
 			title: view.step.title,
 			text: view.step.summary ?? "",
+			timestamp: item.timestamp,
+		};
+	}
+
+	if (view.type === "extension_entry") {
+		return {
+			kind: "extension_entry",
+			customType: view.customType,
+			...(view.details === undefined ? {} : { details: view.details }),
+			timestamp: item.timestamp,
+		};
+	}
+
+	if (view.type === "extension_activity") {
+		return {
+			kind: "extension_activity",
+			activityId: view.activityId,
+			extensionPath: view.extensionPath,
+			hook: view.hook,
+			status: view.status,
+			...(view.durationMs === undefined ? {} : { durationMs: view.durationMs }),
+			...(view.error === undefined ? {} : { error: view.error }),
+			...(view.details === undefined ? {} : { details: view.details }),
 			timestamp: item.timestamp,
 		};
 	}

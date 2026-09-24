@@ -2,6 +2,7 @@ import { gsap } from "gsap";
 import {
 	Archive,
 	ArrowRight,
+	Bot,
 	ChevronDown,
 	Folder,
 	FolderPlus,
@@ -21,7 +22,7 @@ import type { DragEvent as ReactDragEvent } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
-import type { ProjectGroup, WebProject, WebSessionSummary } from "../../types";
+import type { ProjectGroup, SubagentConfig, WebProject, WebSessionSummary } from "../../types";
 import { BrandLogo } from "../brand-logo";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
@@ -46,8 +47,9 @@ import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
 import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPickerDialog } from "./project-group-dialog";
+import { AgentSessionDialog } from "./agent-session-dialog";
 import { RailFooter } from "./rail-footer";
-import { type DropPosition, hasUnreadProjectSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
+import { type DropPosition, excludeRoomAgentSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
 import { SessionRenameDialog } from "./dialogs";
 import { SessionButton, type SessionButtonProps } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
@@ -81,6 +83,7 @@ type ProjectRailProps = {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
 	projects: WebProject[];
+	roomAgentSessionIds: ReadonlySet<string>;
 	currentProject?: WebProject;
 	onAddProject: () => void;
 	onEditProject: (project: WebProject) => void;
@@ -92,6 +95,7 @@ type ProjectRailProps = {
 function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProps): boolean {
 	return (
 		previous.projects === next.projects &&
+		previous.roomAgentSessionIds === next.roomAgentSessionIds &&
 		previous.currentProject === next.currentProject &&
 		previous.actions === next.actions &&
 		previous.onAddProject === next.onAddProject &&
@@ -172,6 +176,7 @@ export const ProjectRail = memo(function ProjectRail({
 	state,
 	actions,
 	projects,
+	roomAgentSessionIds,
 	currentProject,
 	onAddProject,
 	onEditProject,
@@ -201,6 +206,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const [sessionManagementProject, setSessionManagementProject] = useState<WebProject>();
 	const [sessionRenameTarget, setSessionRenameTarget] = useState<WebSessionSummary>();
 	const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string }>();
+	const [agentSessionProject, setAgentSessionProject] = useState<WebProject>();
 	const [deletingSessionId, setDeletingSessionId] = useState<string>();
 	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
 	const [editingProjectId, setEditingProjectId] = useState<string>();
@@ -273,9 +279,12 @@ export const ProjectRail = memo(function ProjectRail({
 	const groupForProject = (projectId: string): ProjectGroup | undefined =>
 		state.projectGroups.find((group) => group.projectIds.includes(projectId));
 
-	const createProjectSession = async (projectId: string) => {
+	const createProjectSession = async (
+		projectId: string,
+		agentProfile?: Pick<SubagentConfig, "name" | "icon">,
+	) => {
 		if (projectId !== state.currentProjectId) await actions.selectProject(projectId);
-		await actions.createSession();
+		await actions.createSession(agentProfile);
 		onNavigate?.();
 	};
 
@@ -566,7 +575,7 @@ export const ProjectRail = memo(function ProjectRail({
 		const selected = selectedProjectId === project.id;
 		const expanded = expandedProjectIds.has(project.id);
 		const projectActionsVisible = openProjectMenuId === project.id;
-		const sessions = orderedSessions(project);
+		const sessions = excludeRoomAgentSessions(orderedSessions(project), roomAgentSessionIds);
 		const runningSessionCount = sessions.filter(isSessionRunning).length;
 		const hasUnread = hasUnreadSessions(sessions, state.unreadSessionIds);
 		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
@@ -725,7 +734,7 @@ export const ProjectRail = memo(function ProjectRail({
 											<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
 											<span>{state.connected ? "已连接" : "未连接"}</span>
 											<span className="text-muted-foreground">·</span>
-											<span>{project.sessions.length} 个会话</span>
+											<span>{sessions.length} 个会话</span>
 										</div>
 										{runningSessionCount > 0 ? (
 											<div className="mt-2 flex items-center gap-2 text-sm text-primary">
@@ -932,12 +941,15 @@ export const ProjectRail = memo(function ProjectRail({
 	const renderGroup = (group: ProjectGroup, groupProjects: WebProject[]) => {
 		const expanded = expandedGroupIds.has(group.id);
 		const groupDrop = groupDropTarget?.groupId === group.id;
-		const groupRunningSessionCount = groupProjects.reduce(
-			(total, project) => total + project.sessions.filter(isSessionRunning).length,
+		const visibleGroupSessions = groupProjects.map((project) =>
+			excludeRoomAgentSessions(project.sessions, roomAgentSessionIds),
+		);
+		const groupRunningSessionCount = visibleGroupSessions.reduce(
+			(total, sessions) => total + sessions.filter(isSessionRunning).length,
 			0,
 		);
-		const groupSessionCount = groupProjects.reduce((total, project) => total + project.sessions.length, 0);
-		const groupHasUnread = hasUnreadProjectSessions(groupProjects, state.unreadSessionIds);
+		const groupSessionCount = visibleGroupSessions.reduce((total, sessions) => total + sessions.length, 0);
+		const groupHasUnread = visibleGroupSessions.some((sessions) => hasUnreadSessions(sessions, state.unreadSessionIds));
 
 		const groupActionsVisible = openGroupMenuId === group.id;
 		const groupMenuItems = [
@@ -1149,9 +1161,9 @@ export const ProjectRail = memo(function ProjectRail({
 			<div className="px-3 pb-3">
 				<WorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
 			</div>
-			<div className="px-3 pb-3">
+			<div className="grid grid-cols-2 gap-2 px-3 pb-3">
 				<Button
-					className="h-10 w-full justify-start gap-2 px-3"
+					className="h-10 min-w-0 justify-start gap-2 px-3"
 					variant="ghost"
 					disabled={!selectedProject}
 					onClick={() => {
@@ -1159,8 +1171,22 @@ export const ProjectRail = memo(function ProjectRail({
 						void createProjectSession(selectedProject.id);
 					}}
 				>
-					<MessageSquarePlus className="size-4" />
-					<span className="project-list-item-label">新对话</span>
+					<MessageSquarePlus className="size-4 shrink-0" />
+					<span className="project-list-item-label min-w-0 truncate">新对话</span>
+				</Button>
+				<Button
+					aria-label="使用智能体新建会话"
+					className="h-10 min-w-0 justify-start gap-2 px-3"
+					disabled={!selectedProject}
+					onClick={() => {
+						if (selectedProject) setAgentSessionProject(selectedProject);
+					}}
+					title="使用智能体新建会话"
+					variant="ghost"
+				>
+					<Bot className="size-4 shrink-0" aria-hidden="true" />
+					<span className="project-list-item-label min-w-0 truncate xl:hidden">智能体会话</span>
+					<span className="project-list-item-label hidden min-w-0 truncate xl:inline">使用智能体新建会话</span>
 				</Button>
 			</div>
 			<div className="px-3 pb-3">
@@ -1285,6 +1311,23 @@ export const ProjectRail = memo(function ProjectRail({
 						? actions.setProjectGroup(projectId, addingProjectToGroup.id)
 						: Promise.resolve(false)
 				}
+			/>
+			<AgentSessionDialog
+				open={Boolean(agentSessionProject)}
+				projectId={agentSessionProject?.id}
+				onOpenChange={(open) => {
+					if (!open) setAgentSessionProject(undefined);
+				}}
+				onCreateSession={(profile) =>
+					agentSessionProject
+						? createProjectSession(agentSessionProject.id, profile)
+						: Promise.resolve()
+				}
+				onManageAgents={() => {
+					setAgentSessionProject(undefined);
+					onNavigate?.();
+					void actions.openSettings("subagents");
+				}}
 			/>
 			<SessionManagementDialog
 				project={sessionManagementProject}

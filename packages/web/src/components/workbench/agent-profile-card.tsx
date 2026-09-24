@@ -37,12 +37,14 @@ export function AgentProfileCard({
 	selected,
 	disabled,
 	status,
+	tagLimit,
 	onClick,
 }: {
 	profile: SubagentConfig;
 	selected: boolean;
 	disabled?: boolean;
 	status?: string;
+	tagLimit?: number;
 	onClick: () => void;
 }) {
 	const capabilityCount = (profile.tools?.length ?? 0) + (profile.skills?.length ?? 0);
@@ -69,7 +71,11 @@ export function AgentProfileCard({
 			<span className="mt-1 min-h-10 min-w-0 shrink-0 line-clamp-2 overflow-hidden text-xs leading-5 text-muted-foreground">
 				{profile.description}
 			</span>
-			<AgentTagList className="mt-2 min-h-5 max-h-8 shrink-0" tags={profile.tags} />
+			<AgentTagList
+				className={cn("mt-2 min-h-5 shrink-0", tagLimit === undefined && "max-h-8")}
+				tags={profile.tags}
+				limit={tagLimit}
+			/>
 			<span className="mt-auto flex min-w-0 shrink-0 flex-wrap gap-1.5 pt-3 text-[11px] text-muted-foreground">
 				{capabilityCount ? <span>{capabilityCount} 项能力</span> : null}
 			</span>

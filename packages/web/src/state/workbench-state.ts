@@ -589,6 +589,10 @@ export function initialState(): WorkbenchState {
 		providers: [],
 		hiddenModelProviders: savedHiddenModelProviders(),
 		modelSettingsLoading: false,
+		sessionNameSettings: undefined,
+		sessionNameSettingsLoading: false,
+		sessionNameSettingsSaving: false,
+		sessionNameSettingsError: undefined,
 		theme: savedTheme(),
 		composerMode: "prompt",
 	};

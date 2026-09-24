@@ -91,6 +91,8 @@ export {
 	type ExecOptions,
 	type ExecResult,
 	type Extension,
+	type ExtensionActivityEvent,
+	type ExtensionActivityListener,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionCommandContextActions,

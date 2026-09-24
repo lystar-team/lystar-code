@@ -119,15 +119,21 @@ function findShadowedContextFile(cwd: string): string | undefined {
 export function loadProjectContextFiles(options: {
 	cwd: string;
 	agentDir: string;
+	excludeUserAgentsFile?: boolean;
 }): Array<{ path: string; content: string }> {
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(options.agentDir);
 
 	const contextFiles: Array<{ path: string; content: string }> = [];
 	const seenPaths = new Set<string>();
+	const isExcludedUserAgentsFile = (path: string | undefined): boolean =>
+		options.excludeUserAgentsFile === true &&
+		path !== undefined &&
+		dirname(path) === resolvedAgentDir &&
+		basename(path).toUpperCase() === "AGENTS.MD";
 
 	const globalContext = loadContextFileFromDir(resolvedAgentDir);
-	if (globalContext) {
+	if (globalContext && !isExcludedUserAgentsFile(globalContext.path)) {
 		contextFiles.push(globalContext);
 		seenPaths.add(globalContext.path);
 	}
@@ -141,7 +147,12 @@ export function loadProjectContextFiles(options: {
 		const contextFile = loadContextFileFromDir(currentDir);
 		const isShadowed =
 			shadowedContextFile !== undefined && canonicalizePath(contextFile?.path ?? "") === shadowedContextFile;
-		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
+		if (
+			contextFile &&
+			!isShadowed &&
+			!seenPaths.has(contextFile.path) &&
+			!isExcludedUserAgentsFile(contextFile.path)
+		) {
 			ancestorContextFiles.unshift(contextFile);
 			seenPaths.add(contextFile.path);
 		}
@@ -171,6 +182,7 @@ export interface DefaultResourceLoaderOptions {
 	noPromptTemplates?: boolean;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
+	excludeUserAgentsFile?: boolean;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
@@ -209,6 +221,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private noPromptTemplates: boolean;
 	private noThemes: boolean;
 	private noContextFiles: boolean;
+	private excludeUserAgentsFile: boolean;
 	private systemPromptSource?: string;
 	private appendSystemPromptSource?: string[];
 	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
@@ -271,6 +284,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.noPromptTemplates = options.noPromptTemplates ?? false;
 		this.noThemes = options.noThemes ?? false;
 		this.noContextFiles = options.noContextFiles ?? false;
+		this.excludeUserAgentsFile = options.excludeUserAgentsFile ?? false;
 		this.systemPromptSource = options.systemPrompt;
 		this.appendSystemPromptSource = options.appendSystemPrompt;
 		this.extensionsOverride = options.extensionsOverride;
@@ -518,6 +532,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 				: loadProjectContextFiles({
 						cwd: this.cwd,
 						agentDir: this.agentDir,
+						excludeUserAgentsFile: this.excludeUserAgentsFile,
 					}),
 		};
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;

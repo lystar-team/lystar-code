@@ -10,11 +10,12 @@ import {
 	LiveElapsedHeader,
 } from "../src/components/workbench/conversation.tsx";
 import { activeThinkingText, THINKING_SHIMMER_HEIGHT, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
-import { TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
+import { TranscriptItemView, TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
 import {
 	CONVERSATION_EDGE_PADDING,
 	resolveTranscriptFirstItemIndex,
 } from "../src/components/workbench/virtualized-transcript.tsx";
+import type { WorkbenchState } from "../src/state/use-workbench";
 
 const thinking = { id: "thinking-1", kind: "thinking" as const, parts: ["先分析任务"], turnId: 1 };
 const text = { id: "text-1", kind: "text" as const, parts: ["回复内容"], turnId: 1 };
@@ -161,6 +162,73 @@ describe("conversation render items", () => {
 		);
 
 		expect(html).toContain("本次耗时：2小时08分钟");
+	});
+
+	it("扩展记录使用标准工具调用行并默认折叠详情", () => {
+		const item: WorkbenchState["transcript"][number] = {
+			entryId: "extension-entry",
+			parentId: "user-entry",
+			timestamp: "2026-09-24T00:00:00Z",
+			kind: "custom",
+			renderId: "extension-entry:extension_activity:0",
+			view: {
+				type: "extension_entry",
+				customType: "context-preheat-metrics",
+				details: '{\n  "version": 1,\n  "decision": "context"\n}',
+			},
+		};
+		const html = renderToStaticMarkup(
+			createElement(TranscriptItemView, {
+				item,
+				toolStatuses: new Map(),
+				onOpenPath: async () => {},
+				showCopy: false,
+			}),
+		);
+
+		expect(html).toContain('data-testid="extension-entry-card"');
+		expect(html).toContain("已调用 context-preheat-metrics");
+		expect(html).toContain('data-state="closed"');
+		expect(html).toContain("flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5");
+		expect(html).not.toContain("扩展记录");
+		expect(html).not.toContain("rounded-md border");
+		expect(html).not.toContain('"decision"');
+	});
+
+	it("displays a Hook activity status without exposing its details by default", () => {
+		const item: WorkbenchState["transcript"][number] = {
+			entryId: "activity-entry",
+			parentId: "user-entry",
+			timestamp: "2026-09-24T00:00:00Z",
+			kind: "custom",
+			renderId: "activity-entry:extension_activity:0",
+			view: {
+				type: "extension_activity",
+				activityId: "activity-1",
+				extensionPath: "extensions/context-preheat/index.ts",
+				hook: "before_agent_start",
+				status: "completed",
+				durationMs: 140,
+				details: '[{ "customType": "context-preheat-metrics" }]',
+			},
+		};
+		const html = renderToStaticMarkup(
+			createElement(TranscriptItemView, {
+				item,
+				toolStatuses: new Map(),
+				onOpenPath: async () => {},
+				showCopy: false,
+			}),
+		);
+
+		expect(html).toContain('data-testid="extension-activity-card"');
+		expect(html).toContain("已调用 before_agent_start");
+		expect(html).toContain("index.ts");
+		expect(html).toContain("140 毫秒");
+		expect(html).toContain('data-state="closed"');
+		expect(html).toContain("min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5");
+		expect(html).not.toContain("rounded-md border");
+		expect(html).not.toContain("context-preheat-metrics");
 	});
 
 	it("处理中在用户消息下方显示实时已处理耗时行", () => {

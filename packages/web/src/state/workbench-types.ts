@@ -28,6 +28,7 @@ import type {
 	WebOperation,
 	WebProject,
 	WebSessionSnapshot,
+	WebThinkingLevel,
 } from "../types.ts";
 import type { PendingUserPrompt } from "./chat-lifecycle.ts";
 import type { LiveCompactionState } from "./compaction-state.ts";
@@ -254,6 +255,10 @@ export interface WorkbenchState {
 	hiddenModelProviders: string[];
 	modelSettingsLoading: boolean;
 	modelSettingsError?: string;
+	sessionNameSettings?: { model?: string; thinkingLevel: WebThinkingLevel };
+	sessionNameSettingsLoading: boolean;
+	sessionNameSettingsSaving: boolean;
+	sessionNameSettingsError?: string;
 	about?: Record<string, unknown>;
 	diagnostics?: Record<string, unknown>;
 	projectTrust?: { cwd: string; trusted: boolean | null; reason: string; resourceRisk: boolean };

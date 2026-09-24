@@ -406,6 +406,29 @@ Content`,
 			expect(agentsFiles).toEqual([]);
 		});
 
+		it("can exclude only the user-level AGENTS.md while keeping other context", async () => {
+			writeFileSync(join(agentDir, "AGENTS.md"), "User instructions");
+			writeFileSync(join(agentDir, "SYSTEM.md"), "User system prompt");
+			writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), "User append prompt");
+			writeFileSync(join(cwd, "AGENTS.md"), "Project instructions");
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, excludeUserAgentsFile: true });
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles).toEqual([
+				{ path: join(cwd, "AGENTS.md"), content: "Project instructions" },
+			]);
+			expect(loader.getSystemPrompt()).toBe("User system prompt");
+			expect(loader.getAppendSystemPrompt()).toEqual(["User append prompt"]);
+
+			writeFileSync(join(agentDir, "AGENTS.override.md"), "User override");
+			await loader.reload();
+			expect(loader.getAgentsFiles().agentsFiles).toEqual([
+				{ path: join(agentDir, "AGENTS.override.md"), content: "User override" },
+				{ path: join(cwd, "AGENTS.md"), content: "Project instructions" },
+			]);
+		});
+
 		it("should discover SYSTEM.md from cwd/.pi", async () => {
 			const piDir = join(cwd, ".pi");
 			mkdirSync(piDir, { recursive: true });

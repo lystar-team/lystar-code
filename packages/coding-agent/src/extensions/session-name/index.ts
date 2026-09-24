@@ -1,5 +1,5 @@
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
-import { contentText } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, contentText } from "@earendil-works/pi-ai";
 import type {
 	AgentSettledEvent,
 	BeforeAgentStartEvent,
@@ -25,7 +25,6 @@ const SESSION_NAME_SYSTEM_PROMPT = [
 ].join("\n");
 
 const SESSION_NAME_MAX_TOKENS = 64;
-const SESSION_NAME_THINKING_LEVEL = "low" as const;
 const SESSION_NAME_MAX_LENGTH = 30;
 
 interface PendingNameRequest {
@@ -87,6 +86,8 @@ async function generateSessionName(
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) return undefined;
 
+	const configuredThinkingLevel = configuredModel.thinkingLevel;
+	const clampedThinkingLevel = model.reasoning ? clampThinkingLevel(model, configuredThinkingLevel) : "off";
 	const context: Context = {
 		systemPrompt: SESSION_NAME_SYSTEM_PROMPT,
 		messages: [
@@ -105,7 +106,7 @@ async function generateSessionName(
 		maxTokens: SESSION_NAME_MAX_TOKENS,
 		cacheRetention: "none" as const,
 		sessionId,
-		reasoning: model.reasoning ? SESSION_NAME_THINKING_LEVEL : undefined,
+		reasoning: clampedThinkingLevel === "off" ? undefined : clampedThinkingLevel,
 	};
 
 	const response: AssistantMessage = await ctx.modelRegistry.complete(model, context, options);

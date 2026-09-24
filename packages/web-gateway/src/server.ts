@@ -63,8 +63,10 @@ import {
 import {
 	getRuntimeServiceStatus,
 	loadProductBranding,
+	loadSessionNameSettings,
 	restartRuntimeService,
 	saveProductBranding,
+	saveSessionNameSettings,
 	stopRuntimeService,
 } from "@lystar/code-web-runtime";
 import { WebSocket, WebSocketServer } from "ws";
@@ -102,6 +104,7 @@ import {
 import { ProductUpdateController } from "./product-update.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
+import { markRoomAgentSessions } from "./room-session-visibility.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -260,7 +263,7 @@ interface BrowserContext {
 	initial?: RuntimeInitialSnapshot;
 	leases: Map<string, ContextLease>;
 	sockets: Set<WebSocket>;
-	sessionListPromises: Map<string, Promise<SessionSummary[]>>;
+	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
 	sessionSummaryState: Map<string, { name?: string; activity: SessionActivity; operationUpdatedAt?: number }>;
 	sessionSnapshotState: Map<string, WebSessionSnapshot>;
@@ -468,9 +471,11 @@ function mergeProgress(left: SessionProgress, right: SessionProgress): SessionPr
 	return right;
 }
 
+type GatewaySessionSummary = SessionSummary & { roomMember?: true };
+
 interface SessionListCache {
 	generation: number;
-	value: SessionSummary[];
+	value: GatewaySessionSummary[];
 }
 
 interface UploadedFile {
@@ -627,10 +632,10 @@ function setSecurityHeaders(response: ServerResponse): void {
 	);
 }
 
-function orderSessionSummaries(
-	sessions: readonly SessionSummary[],
+function orderSessionSummaries<T extends SessionSummary>(
+	sessions: readonly T[],
 	sessionOrder?: readonly string[],
-): SessionSummary[] {
+): T[] {
 	if (!sessionOrder?.length) return [...sessions];
 	const sessionsById = new Map(sessions.map((session) => [session.id, session]));
 	const orderedIds = new Set<string>();
@@ -643,7 +648,7 @@ function orderSessionSummaries(
 	return [...ordered, ...sessions.filter((session) => !orderedIds.has(session.id))];
 }
 
-function publicSessionSummary(session: SessionSummary, pinnedSessionIds?: readonly string[]): WebSessionSummary {
+function publicSessionSummary(session: GatewaySessionSummary, pinnedSessionIds?: readonly string[]): WebSessionSummary {
 	const { path: _path, cwd: _cwd, ...result } = session;
 	return {
 		...result,
@@ -1562,7 +1567,7 @@ export class WebGatewayServer {
 		}
 	}
 
-	private async listProjectSessions(context: BrowserContext, project: WebProject): Promise<SessionSummary[]> {
+	private async listProjectSessions(context: BrowserContext, project: WebProject): Promise<GatewaySessionSummary[]> {
 		const cached = context.sessionListCache.get(project.id);
 		if (cached?.generation === context.sessionListGeneration) return cached.value;
 		const pending = context.sessionListPromises.get(project.id);
@@ -1570,11 +1575,17 @@ export class WebGatewayServer {
 		const generation = context.sessionListGeneration;
 		const request = (async () => {
 			const client = await this.getClient(context);
-			const sessions = await client.request<SessionSummary[]>({
-				command: "list_sessions",
-				cwd: project.cwd,
-				metadataOnly: true,
-			});
+			const [sessions, rooms] = await Promise.all([
+				client.request<SessionSummary[]>({
+					command: "list_sessions",
+					cwd: project.cwd,
+					metadataOnly: true,
+				}),
+				client.request<Array<{ members: Array<{ sessionId: string; role: "owner" | "member" }> }>>({
+					command: "room_project_list",
+					cwd: project.cwd,
+				}),
+			]);
 			const sessionsById = new Map<string, SessionSummary>();
 			for (const session of sessions) {
 				const existing = sessionsById.get(session.id);
@@ -1596,7 +1607,8 @@ export class WebGatewayServer {
 			}
 			await this.registry.setRecentSessions(project.id, uniqueSessions);
 			const refreshedProject = this.registry.get(project.id);
-			const orderedSessions = orderSessionSummaries(uniqueSessions, refreshedProject?.sessionOrder);
+			const roomAwareSessions = markRoomAgentSessions(uniqueSessions, rooms);
+			const orderedSessions = orderSessionSummaries(roomAwareSessions, refreshedProject?.sessionOrder);
 			context.sessionListCache.set(project.id, { generation, value: orderedSessions });
 			return orderedSessions;
 		})();
@@ -2049,6 +2061,10 @@ export class WebGatewayServer {
 		const parts = parsePathParts(url.pathname);
 		if (parts.length === 2 && parts[1] === "branding") {
 			await this.handleBranding(request, response);
+			return;
+		}
+		if (parts.length === 2 && parts[1] === "session-name-settings") {
+			await this.handleSessionNameSettings(request, response);
 			return;
 		}
 		if (parts.length === 2 && parts[1] === "security-settings") {
@@ -2539,20 +2555,18 @@ export class WebGatewayServer {
 			const session = await this.resolveSession(context, sessionId);
 			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
 			const roomId = parts[4];
-			sendJson(
-				response,
-				200,
-				await (await this.getClient(context)).request<JsonValue>({
-					command: "room_join",
-					cwd: project.cwd,
-					roomId,
-					sessionId,
-					...(stringValue(body.nickname) ? { nickname: stringValue(body.nickname)! } : {}),
-					...(stringValue(body.profileId) ? { profileId: stringValue(body.profileId)! } : {}),
-					...(stringValue(body.profileName) ? { profileName: stringValue(body.profileName)! } : {}),
-					...(stringValue(body.profileIcon) ? { profileIcon: stringValue(body.profileIcon)! } : {}),
-				}),
-			);
+			const joined = await (await this.getClient(context)).request<JsonValue>({
+				command: "room_join",
+				cwd: project.cwd,
+				roomId,
+				sessionId,
+				...(stringValue(body.nickname) ? { nickname: stringValue(body.nickname)! } : {}),
+				...(stringValue(body.profileId) ? { profileId: stringValue(body.profileId)! } : {}),
+				...(stringValue(body.profileName) ? { profileName: stringValue(body.profileName)! } : {}),
+				...(stringValue(body.profileIcon) ? { profileIcon: stringValue(body.profileIcon)! } : {}),
+			});
+			this.invalidateBootstrap(context);
+			sendJson(response, 200, joined);
 			return;
 		}
 		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "leave" && request.method === "POST") {
@@ -2561,16 +2575,14 @@ export class WebGatewayServer {
 			if (!sessionId) throw new HttpError(400, "room_session_required", "退出 Room 需要指定会话");
 			const session = await this.resolveSession(context, sessionId);
 			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
-			sendJson(
-				response,
-				200,
-				await (await this.getClient(context)).request<JsonValue>({
-					command: "room_leave",
-					cwd: project.cwd,
-					roomId: parts[4],
-					sessionId,
-				}),
-			);
+			const left = await (await this.getClient(context)).request<JsonValue>({
+				command: "room_leave",
+				cwd: project.cwd,
+				roomId: parts[4],
+				sessionId,
+			});
+			this.invalidateBootstrap(context);
+			sendJson(response, 200, left);
 			return;
 		}
 		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "messages") {
@@ -3160,6 +3172,8 @@ export class WebGatewayServer {
 				command: "create_session",
 				cwd: project.cwd,
 				...(typeof body.profileId === "string" ? { profileId: body.profileId } : {}),
+				...(body.roomAgent === true ? { roomAgent: true } : {}),
+				...(body.suppressInfoNotifications === true ? { suppressInfoNotifications: true } : {}),
 				clientInstanceId: context.id,
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			});
@@ -3923,6 +3937,31 @@ export class WebGatewayServer {
 			);
 		} catch (error) {
 			throw new HttpError(400, "branding_invalid", error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private async handleSessionNameSettings(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		if (request.method === "GET") {
+			sendJson(response, 200, await loadSessionNameSettings(this.config.agentDir));
+			return;
+		}
+		if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "该接口只支持 GET 或 POST");
+		const body = await parseJsonBody(request);
+		try {
+			sendJson(
+				response,
+				200,
+				await saveSessionNameSettings(this.config.agentDir, {
+					model: body.model,
+					thinkingLevel: body.thinkingLevel,
+				}),
+			);
+		} catch (error) {
+			throw new HttpError(
+				400,
+				"session_name_settings_invalid",
+				error instanceof Error ? error.message : String(error),
+			);
 		}
 	}
 

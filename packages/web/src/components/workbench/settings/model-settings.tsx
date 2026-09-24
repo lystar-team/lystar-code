@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
 import type { WorkbenchState } from "../../../state/use-workbench";
+import type { WebThinkingLevel } from "../../../types";
 import { Alert, AlertDescription, AlertTitle } from "../../ui/alert";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -13,7 +14,12 @@ import { ScrollArea } from "../../ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
-import { THINKING_LEVEL_LABELS, VISIBLE_THINKING_LEVELS } from "../constants";
+import {
+	THINKING_LEVEL_LABELS,
+	VISIBLE_THINKING_LEVELS,
+	selectedVisibleThinkingLevel,
+	visibleThinkingLevels,
+} from "../constants";
 import { modelIconId, formatModelDisplayName, providerIconId } from "../model-utils";
 import type { WorkbenchActions } from "../types";
 import { SettingSection } from "./shared";
@@ -55,6 +61,21 @@ const MODEL_PROVIDER_API_OPTIONS = [
 	{ value: "openai-codex-responses", label: "OpenAI Codex Responses" },
 	{ value: "pi-messages", label: "Pi Messages" },
 ] as const;
+
+const FOLLOW_CURRENT_SESSION_MODEL = "__follow_current_session_model__";
+
+function titleModelReference(model: { provider: string; id: string }): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function supportedTitleThinkingLevels(model: WorkbenchState["models"][number] | undefined): string[] {
+	return visibleThinkingLevels(model?.supportedThinkingLevels ?? []);
+}
+
+function visibleTitleThinkingLevel(level: string, supportedLevels: readonly string[]): string {
+	if (level === "low" && !supportedLevels.includes("low") && supportedLevels.includes("minimal")) return "minimal";
+	return selectedVisibleThinkingLevel(level, supportedLevels);
+}
 
 function editableThinkingLevelMap(
 	model?: WorkbenchState["models"][number],
@@ -146,6 +167,23 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		? state.models.filter((model) => model.provider === modelListProviderId)
 		: [];
 	const disabledModelIds = modelListProvider?.disabledModels ?? [];
+	const sessionNameModel = state.sessionNameSettings?.model;
+	const sessionModelRef = state.session?.model;
+	const currentSessionModel = sessionModelRef
+		? state.models.find((model) => titleModelReference(model) === titleModelReference(sessionModelRef))
+		: undefined;
+	const configuredTitleModel = sessionNameModel
+		? state.models.find((model) => titleModelReference(model) === sessionNameModel)
+		: undefined;
+	const effectiveTitleModel = sessionNameModel ? configuredTitleModel : currentSessionModel;
+	const titleModelOptions = state.models
+		.filter((model) => model.authenticated)
+		.sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name));
+	const savedTitleThinkingLevel = state.sessionNameSettings?.thinkingLevel ?? "low";
+	const titleThinkingLevels = supportedTitleThinkingLevels(effectiveTitleModel);
+	const selectedTitleThinkingLevel = visibleTitleThinkingLevel(savedTitleThinkingLevel, titleThinkingLevels);
+	const titleSettingsDisabled =
+		state.sessionNameSettingsLoading || state.sessionNameSettingsSaving || !state.sessionNameSettings;
 
 	useEffect(() => {
 		if (providerTab === "custom" && customProviders.length === 0 && builtinProviders.length > 0)
@@ -315,6 +353,103 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 
 	return (
 		<div className="grid min-w-0 gap-6">
+			<SettingSection title="会话标题模型">
+				<p className="text-sm text-muted-foreground">用于新会话的自动命名，不会更改已有会话名称。</p>
+				{state.sessionNameSettingsError ? (
+					<Alert variant="destructive">
+						<AlertTitle>会话标题配置失败</AlertTitle>
+						<AlertDescription>{state.sessionNameSettingsError}</AlertDescription>
+					</Alert>
+				) : null}
+				{state.sessionNameSettingsLoading ? (
+					<div className="flex items-center gap-2 text-sm text-muted-foreground">
+						<LoaderCircle className="size-4 animate-spin" />
+						正在读取会话标题设置
+					</div>
+				) : null}
+				<Card className="rounded-xl py-0 shadow-none">
+					<CardContent className="grid items-start gap-4 p-3 sm:grid-cols-2">
+						<div className="grid min-w-0 gap-2">
+							<label htmlFor="session-name-model" className="text-sm font-medium">标题模型</label>
+							<Select
+								value={sessionNameModel ?? FOLLOW_CURRENT_SESSION_MODEL}
+								disabled={titleSettingsDisabled}
+								onValueChange={(value) => {
+									const nextModel = value === FOLLOW_CURRENT_SESSION_MODEL ? undefined : value;
+									const selectedModel = nextModel
+										? state.models.find((model) => titleModelReference(model) === nextModel)
+										: currentSessionModel;
+									const availableLevels = supportedTitleThinkingLevels(selectedModel);
+									const thinkingLevel =
+										availableLevels.length === 0 || availableLevels.includes(savedTitleThinkingLevel)
+											? savedTitleThinkingLevel
+											: availableLevels.includes("low")
+												? "low"
+												: availableLevels.includes("minimal")
+													? "minimal"
+													: (availableLevels[0] ?? "off");
+									void actions.saveSessionNameSettings({
+										...(nextModel ? { model: nextModel } : {}),
+										thinkingLevel: thinkingLevel as WebThinkingLevel,
+									});
+								}}
+							>
+								<SelectTrigger id="session-name-model" className="h-9 w-full">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value={FOLLOW_CURRENT_SESSION_MODEL}>跟随当前会话模型</SelectItem>
+									{sessionNameModel &&
+									!titleModelOptions.some((model) => titleModelReference(model) === sessionNameModel) ? (
+										<SelectItem value={sessionNameModel} disabled>
+											{configuredTitleModel
+											? `${formatModelDisplayName(configuredTitleModel)} · ${sessionNameModel}（未连接）`
+											: `${sessionNameModel}（当前配置不可用）`}
+										</SelectItem>
+									) : null}
+									{titleModelOptions.map((model) => (
+										<SelectItem key={titleModelReference(model)} value={titleModelReference(model)}>
+											{formatModelDisplayName(model)} · {titleModelReference(model)}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="grid min-w-0 gap-2">
+							<label htmlFor="session-name-thinking-level" className="text-sm font-medium">思考强度</label>
+							<Select
+								value={selectedTitleThinkingLevel}
+								disabled={titleSettingsDisabled || titleThinkingLevels.length === 0}
+								onValueChange={(value) => {
+									void actions.saveSessionNameSettings({
+										...(sessionNameModel ? { model: sessionNameModel } : {}),
+										thinkingLevel: value as WebThinkingLevel,
+									});
+								}}
+							>
+								<SelectTrigger id="session-name-thinking-level" className="h-9 w-full">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{!titleThinkingLevels.includes(selectedTitleThinkingLevel) ? (
+										<SelectItem value={selectedTitleThinkingLevel} disabled>
+											{THINKING_LEVEL_LABELS[savedTitleThinkingLevel] ?? savedTitleThinkingLevel}（当前配置）
+										</SelectItem>
+									) : null}
+									{titleThinkingLevels.map((level) => (
+										<SelectItem key={level} value={level}>
+											{THINKING_LEVEL_LABELS[level] ?? level}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							<p className="text-xs text-muted-foreground">
+								{titleThinkingLevels.length > 0 ? "选项按所选模型支持的强度显示。" : "请先选择可用模型。"}
+							</p>
+						</div>
+					</CardContent>
+				</Card>
+			</SettingSection>
 			<SettingSection title="模型供应商">
 				<div className="flex min-w-0 flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
 					<p className="text-sm text-muted-foreground">管理供应商、目录来源和在模型选择器中的显示状态。</p>

@@ -65,4 +65,29 @@ describe("MessageResponse local resource links", () => {
 		expect(markup).toContain("<button");
 		expect(markup).not.toContain("[blocked]");
 	});
+
+	it("renders Agent Markdown headings, lists, emphasis, and code blocks", () => {
+		const markup = renderToStaticMarkup(
+			createElement(
+				MessageResponse,
+				{ mode: "static" },
+				[
+					"## 处理结果",
+					"",
+					"- **重点**：检查 `Room` 状态。",
+					"",
+					"```ts",
+					"const ready = true;",
+					"```",
+				].join("\n"),
+			),
+		);
+
+		expect(markup).toContain("<h2");
+		expect(markup).toContain('data-streamdown="strong"');
+		expect(markup).toContain("<ul");
+		expect(markup).toContain("<pre");
+		expect(markup).toContain("const ready = true");
+		expect(markup).not.toContain("**重点**");
+	});
 });

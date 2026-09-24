@@ -299,9 +299,11 @@ export function initialTranscriptDisplayState(
 export function shouldLoadEarlierHistory(
 	atTop: boolean,
 	state: Pick<WorkbenchState, "hasMorePrevious" | "loadingEarlier" | "previousCursor" | "transcriptError">,
+	requestedAtTop: boolean,
 ): boolean {
 	return (
 		atTop &&
+		!requestedAtTop &&
 		state.hasMorePrevious &&
 		Boolean(state.previousCursor) &&
 		!state.loadingEarlier &&
@@ -1260,6 +1262,7 @@ function ConversationBody({
 	activeSessionIdRef.current = state.sessionId;
 	const [isAtBottom, setIsAtBottom] = useState(true);
 	const [isAtTop, setIsAtTop] = useState(false);
+	const historyLoadRequestedAtTopRef = useRef(false);
 	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
 	const promptScrollRequestRef = useRef(state.promptScrollRequest);
 	const promptFollowRef = useRef(false);
@@ -1370,7 +1373,12 @@ function ConversationBody({
 	}, [actions.loadEarlier, actions.showToast, state.sessionId]);
 
 	useEffect(() => {
-		if (!shouldLoadEarlierHistory(isAtTop, state)) return;
+		if (!isAtTop) {
+			historyLoadRequestedAtTopRef.current = false;
+			return;
+		}
+		if (!shouldLoadEarlierHistory(isAtTop, state, historyLoadRequestedAtTopRef.current)) return;
+		historyLoadRequestedAtTopRef.current = true;
 		requestEarlierHistory();
 	}, [
 		isAtTop,
@@ -1405,6 +1413,7 @@ function ConversationBody({
 	const [expandedToolRows, setExpandedToolRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 	const toolStackPresentationsRef = useRef(new Map<string, ToolStackPresentation>());
 	useLayoutEffect(() => {
+		historyLoadRequestedAtTopRef.current = false;
 		scrollToBottomTweenRef.current?.kill();
 		scrollToBottomTweenRef.current = null;
 		if (scrollToBottomSettleTimerRef.current !== undefined) {

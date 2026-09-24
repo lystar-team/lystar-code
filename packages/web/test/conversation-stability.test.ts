@@ -21,11 +21,27 @@ describe("conversation rendering stability", () => {
 			transcriptError: undefined,
 		};
 
-		expect(shouldLoadEarlierHistory(true, unavailable)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, available)).toBe(true);
-		expect(shouldLoadEarlierHistory(false, available)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, { ...available, loadingEarlier: true })).toBe(false);
-		expect(shouldLoadEarlierHistory(true, { ...available, transcriptError: "加载失败" })).toBe(false);
+		expect(shouldLoadEarlierHistory(true, unavailable, false)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, available, false)).toBe(true);
+		expect(shouldLoadEarlierHistory(false, available, false)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, { ...available, loadingEarlier: true }, false)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, { ...available, transcriptError: "加载失败" }, false)).toBe(false);
+	});
+
+	it("waits for the viewport to leave the top before requesting another page", () => {
+		const firstPageState = {
+			hasMorePrevious: true,
+			loadingEarlier: false,
+			previousCursor: "before-entry",
+			transcriptError: undefined,
+		};
+		const nextPageState = { ...firstPageState, previousCursor: "before-older-entry" };
+
+		expect(shouldLoadEarlierHistory(true, firstPageState, false)).toBe(true);
+		expect(shouldLoadEarlierHistory(true, { ...firstPageState, loadingEarlier: true }, true)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, nextPageState, true)).toBe(false);
+		expect(shouldLoadEarlierHistory(false, nextPageState, false)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, nextPageState, false)).toBe(true);
 	});
 
 	it("keeps active and single tools as stable rows across state updates", () => {

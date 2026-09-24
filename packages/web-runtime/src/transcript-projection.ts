@@ -9,6 +9,11 @@ import type {
 	TranscriptWebSearchSource,
 } from "@lystar/code-web-protocol";
 import { AGENT_STEP_CUSTOM_TYPE, AGENT_STEP_TOOL_NAMES } from "./agent-steps.ts";
+import {
+	EXTENSION_ACTIVITY_CUSTOM_TYPE,
+	type ExtensionActivityRecord,
+	parseExtensionActivityRecord,
+} from "./extension-activity.ts";
 import { toolProgressDiff } from "./tool-progress.ts";
 
 const INTERNAL_FILE_REFERENCE_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
@@ -687,6 +692,20 @@ function projectTranscriptViews(
 	) {
 		return [];
 	}
+	if (item.kind === "custom_message" || payload?.type === "custom_message") {
+		if (payload?.display !== true) return [];
+		const content = payload.content;
+		const images = imageMetadata(content);
+		const files = fileMetadata(content);
+		return [
+			{
+				type: "custom_message",
+				text: promptText(content),
+				...(images.length > 0 ? { images } : {}),
+				...(files.length > 0 ? { files } : {}),
+			},
+		];
+	}
 	const entryMessage = message(item);
 	const role = entryMessage?.role;
 	if (role === "system") return [];
@@ -787,15 +806,119 @@ function projectTranscriptViews(
 			},
 		];
 	}
-	if (item.kind === "custom" || item.kind === "custom_message") {
+	if (item.kind === "custom" || payload?.type === "custom") {
 		const step = projectedAgentStep(payload);
 		if (step) {
 			return !latestStepEntryIds || latestStepEntryIds.has(item.entryId) ? [{ type: "agent_step", step }] : [];
 		}
-		const name = typeof payload?.customType === "string" ? payload.customType : "";
-		return [name === "bash" ? { type: "bash", text: text(payload) } : { type: "custom", text: text(payload) }];
+		const customType = typeof payload?.customType === "string" ? payload.customType : "";
+		if (!customType) return [];
+		if (customType === "bash") return [{ type: "bash", text: text(payload) }];
+		if (customType === EXTENSION_ACTIVITY_CUSTOM_TYPE) {
+			const activity = parseExtensionActivityRecord(payload?.data);
+			if (activity) return [extensionActivityView(activity, [])];
+		}
+		const data = payload?.data;
+		const details = data === undefined ? undefined : bounded(JSON.stringify(data, null, 2));
+		return [{ type: "extension_entry", customType: bounded(customType), ...(details ? { details } : {}) }];
 	}
 	return [{ type: "system", text: text(payload) }];
+}
+
+function extensionActivityRecordFromItem(item: TranscriptItem): ExtensionActivityRecord | undefined {
+	if (item.kind !== "custom") return undefined;
+	const payload = record(item.payload);
+	if (payload?.type !== "custom" || payload.customType !== EXTENSION_ACTIVITY_CUSTOM_TYPE) return undefined;
+	return parseExtensionActivityRecord(payload.data);
+}
+
+function extensionActivityView(
+	activity: ExtensionActivityRecord,
+	relatedEntries: readonly TranscriptItem[],
+): TranscriptViewItem {
+	const details = relatedEntries.flatMap((item) => {
+		const payload = record(item.payload);
+		if (payload?.type !== "custom" || typeof payload.customType !== "string") return [];
+		return [
+			{ customType: bounded(payload.customType), ...(payload.data === undefined ? {} : { data: payload.data }) },
+		];
+	});
+	const detailsText =
+		details.length > 0
+			? bounded(JSON.stringify(details, null, 2))
+			: activity.phase === "end" && activity.details
+				? bounded(activity.details)
+				: undefined;
+	return {
+		type: "extension_activity",
+		activityId: activity.activityId,
+		extensionPath: bounded(activity.extensionPath),
+		hook: bounded(activity.hook),
+		status: activity.phase === "start" ? "running" : activity.status,
+		...(activity.phase === "end" ? { durationMs: activity.durationMs } : {}),
+		...(activity.phase === "end" && activity.error ? { error: bounded(activity.error) } : {}),
+		...(detailsText ? { details: detailsText } : {}),
+	};
+}
+
+function extensionActivityBatchProjection(items: readonly TranscriptItem[]): {
+	views: Map<string, TranscriptViewItem>;
+	hiddenEntryIds: Set<string>;
+} {
+	const groups = new Map<
+		string,
+		{ anchor: TranscriptItem; activity: ExtensionActivityRecord; relatedEntries: TranscriptItem[] }
+	>();
+	const hiddenEntryIds = new Set<string>();
+	const activeActivityIds: string[] = [];
+
+	for (const item of items) {
+		const activity = extensionActivityRecordFromItem(item);
+		if (activity) {
+			let group = groups.get(activity.activityId);
+			if (activity.phase === "start") {
+				group = { anchor: item, activity, relatedEntries: [] };
+				groups.set(activity.activityId, group);
+				activeActivityIds.push(activity.activityId);
+			} else {
+				if (group) {
+					group.activity = activity;
+					if (group.anchor.entryId !== item.entryId) hiddenEntryIds.add(item.entryId);
+				} else {
+					group = { anchor: item, activity, relatedEntries: [] };
+					groups.set(activity.activityId, group);
+				}
+				for (let index = activeActivityIds.length - 1; index >= 0; index--) {
+					if (activeActivityIds[index] === activity.activityId) activeActivityIds.splice(index, 1);
+				}
+			}
+			continue;
+		}
+
+		const activeActivityId = activeActivityIds.at(-1);
+		const group = activeActivityId ? groups.get(activeActivityId) : undefined;
+		const payload = record(item.payload);
+		if (group && item.kind === "custom" && payload?.customType !== AGENT_STEP_CUSTOM_TYPE) {
+			group.relatedEntries.push(item);
+		}
+	}
+
+	const views = new Map<string, TranscriptViewItem>();
+	const entriesById = new Map(items.map((item) => [item.entryId, item]));
+	for (const group of groups.values()) {
+		let relatedEntries: TranscriptItem[];
+		if (group.activity.phase === "end") {
+			relatedEntries = group.activity.relatedEntryIds.flatMap((entryId) => {
+				const item = entriesById.get(entryId);
+				return item?.kind === "custom" ? [item] : [];
+			});
+		} else {
+			relatedEntries = group.relatedEntries;
+		}
+		for (const item of relatedEntries) hiddenEntryIds.add(item.entryId);
+		views.set(group.anchor.entryId, extensionActivityView(group.activity, relatedEntries));
+	}
+	return { views, hiddenEntryIds };
 }
 
 export function projectTranscriptItems(
@@ -835,9 +958,16 @@ export function projectTranscriptBatch(
 		}
 	}
 	const latestStepEntryIds = new Set(latestStepEntryIdsByStep.values());
-	return items.flatMap((item) =>
-		projectTranscriptViews(item, toolCalls, stepByToolCall, latestStepEntryIds).map((view) => ({ ...item, view })),
-	);
+	const extensionActivities = extensionActivityBatchProjection(items);
+	return items.flatMap((item) => {
+		const activityView = extensionActivities.views.get(item.entryId);
+		if (activityView) return [{ ...item, view: activityView }];
+		if (extensionActivities.hiddenEntryIds.has(item.entryId)) return [];
+		return projectTranscriptViews(item, toolCalls, stepByToolCall, latestStepEntryIds).map((view) => ({
+			...item,
+			view,
+		}));
+	});
 }
 
 export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {

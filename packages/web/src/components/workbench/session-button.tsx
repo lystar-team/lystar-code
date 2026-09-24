@@ -99,6 +99,8 @@ function SessionButtonComponent({
 	const relativeTime = formatSessionAge(session.updatedAt);
 	const absoluteTime = formatSessionDate(session.updatedAt);
 	const collaboration = isCollaborationSession(session);
+	const agentSession = !collaboration && Boolean(session.profileId);
+	const profileName = session.profileName?.trim() || "智能体";
 	const alias = collaborationAlias(session.id);
 	const agentType = collaborationAgentType(session);
 
@@ -145,16 +147,26 @@ function SessionButtonComponent({
 							<Button
 								className={cn(
 									"mobile-session-button h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 text-left text-xs",
-									collaboration ? "!pl-10" : "!pl-8",
+									collaboration || agentSession ? "!pl-10" : "!pl-8",
 								)}
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
-								{collaboration ? <AgentIdentityIcon session={session} className="size-3.5 shrink-0 object-contain text-muted-foreground" /> : null}
+								{collaboration || agentSession ? (
+									<AgentIdentityIcon
+										session={session}
+										className="size-3.5 shrink-0 object-contain text-muted-foreground"
+									/>
+								) : null}
 								<span className="project-list-item-label min-w-0 flex-1 truncate">
 									{collaboration ? (
 										<>
 											<span className="font-medium text-foreground">{alias}</span>
+											<span className="text-muted-foreground"> · {displayTitle}</span>
+										</>
+									) : agentSession ? (
+										<>
+											<span className="font-medium text-foreground">{profileName}</span>
 											<span className="text-muted-foreground"> · {displayTitle}</span>
 										</>
 									) : (
@@ -245,10 +257,12 @@ function SessionButtonComponent({
 									</div>
 								</div>
 							<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
-								{collaboration ? (
+								{collaboration || agentSession ? (
 									<div className="flex min-w-0 items-center gap-2">
 										<AgentIdentityIcon session={session} className="size-3.5 shrink-0 object-contain" />
-										<span className="truncate">{alias} · {agentType}</span>
+										<span className="truncate">
+											{collaboration ? `${alias} · ${agentType}` : `${profileName} · 智能体会话`}
+										</span>
 									</div>
 								) : null}
 								<div className="flex min-w-0 items-center gap-2">

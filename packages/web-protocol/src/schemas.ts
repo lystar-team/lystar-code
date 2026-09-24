@@ -2,7 +2,7 @@ import Type, { type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 9 as const;
+export const RUNTIME_PROTOCOL_VERSION = 10 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
@@ -624,6 +624,32 @@ export const TranscriptViewItemSchema = Type.Union([
 		subagents: Type.Optional(Type.Array(TranscriptSubagentRefSchema, { maxItems: 32 })),
 	}),
 	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),
+	StrictObject({
+		type: Type.Literal("custom_message"),
+		text: TranscriptViewTextSchema,
+		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+		files: Type.Optional(Type.Array(TranscriptFileSchema, { maxItems: 32 })),
+	}),
+	StrictObject({
+		type: Type.Literal("extension_entry"),
+		customType: Type.String({ minLength: 1, maxLength: 16_384 }),
+		details: Type.Optional(TranscriptViewTextSchema),
+	}),
+	StrictObject({
+		type: Type.Literal("extension_activity"),
+		activityId: Id,
+		extensionPath: TranscriptViewTextSchema,
+		hook: TranscriptViewTextSchema,
+		status: Type.Union([
+			Type.Literal("running"),
+			Type.Literal("completed"),
+			Type.Literal("failed"),
+			Type.Literal("interrupted"),
+		]),
+		durationMs: Type.Optional(Type.Integer({ minimum: 0 })),
+		error: Type.Optional(TranscriptViewTextSchema),
+		details: Type.Optional(TranscriptViewTextSchema),
+	}),
 	StrictObject({ type: Type.Literal("custom"), text: TranscriptViewTextSchema }),
 	StrictObject({
 		type: Type.Literal("summary"),
@@ -1626,6 +1652,8 @@ export const CommandSchema = Type.Union([
 		command: Type.Literal("create_session"),
 		cwd: Type.String({ minLength: 1 }),
 		profileId: Type.Optional(Id),
+		roomAgent: Type.Optional(Type.Boolean()),
+		suppressInfoNotifications: Type.Optional(Type.Boolean()),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

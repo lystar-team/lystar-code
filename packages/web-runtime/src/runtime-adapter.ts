@@ -151,7 +151,17 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
-import { AGENT_STEP_TOOL_NAMES, AgentStepController, createAgentStepTools } from "./agent-steps.ts";
+import {
+	AGENT_STEP_CUSTOM_TYPE,
+	AGENT_STEP_TOOL_NAMES,
+	AgentStepController,
+	createAgentStepTools,
+} from "./agent-steps.ts";
+import {
+	EXTENSION_ACTIVITY_CUSTOM_TYPE,
+	type ExtensionActivityRecord,
+	parseExtensionActivityRecord,
+} from "./extension-activity.ts";
 import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
 import {
 	migrateLegacyWebAttachments,
@@ -970,6 +980,83 @@ function isTranscriptEntry(entry: SessionEntry): boolean {
 	return entry.type === "custom_message" && entry.display === true;
 }
 
+function extensionActivityRecordFromEntry(entry: SessionEntry): ExtensionActivityRecord | undefined {
+	if (entry.type !== "custom" || entry.customType !== EXTENSION_ACTIVITY_CUSTOM_TYPE) return undefined;
+	return parseExtensionActivityRecord(entry.data);
+}
+
+function extensionActivityDetails(entries: readonly SessionEntry[], entryIds: readonly string[]): string | undefined {
+	const ids = new Set(entryIds);
+	const records = entries.flatMap((entry) => {
+		if (
+			!ids.has(entry.id) ||
+			entry.type !== "custom" ||
+			entry.customType === EXTENSION_ACTIVITY_CUSTOM_TYPE ||
+			entry.customType === AGENT_STEP_CUSTOM_TYPE
+		) {
+			return [];
+		}
+		return [{ customType: entry.customType, ...(entry.data === undefined ? {} : { data: entry.data }) }];
+	});
+	if (records.length === 0) return undefined;
+	const details = JSON.stringify(records, null, 2);
+	const limit = 16 * 1024;
+	return details.length <= limit ? details : `${details.slice(0, limit - 1)}…`;
+}
+
+interface CompletedExtensionActivity {
+	startEntryId: string;
+	relatedEntryIds: string[];
+}
+
+function recoverInterruptedExtensionActivities(
+	sessionManager: SessionManager,
+): Map<string, CompletedExtensionActivity> {
+	const entries = sessionManager.getEntries();
+	const openActivities = new Map<
+		string,
+		{
+			activity: Extract<ExtensionActivityRecord, { phase: "start" }>;
+			startEntryId: string;
+			relatedEntryIds: string[];
+		}
+	>();
+	for (const entry of entries) {
+		const activity = extensionActivityRecordFromEntry(entry);
+		if (activity?.phase === "start") {
+			openActivities.set(activity.activityId, { activity, startEntryId: entry.id, relatedEntryIds: [] });
+			continue;
+		}
+		if (activity?.phase === "end") {
+			openActivities.delete(activity.activityId);
+			continue;
+		}
+		if (entry.type === "custom" && entry.customType !== AGENT_STEP_CUSTOM_TYPE) {
+			[...openActivities.values()].at(-1)?.relatedEntryIds.push(entry.id);
+		}
+	}
+	const completed = new Map<string, CompletedExtensionActivity>();
+	const endedAt = Date.now();
+	for (const { activity, startEntryId, relatedEntryIds } of openActivities.values()) {
+		const details = extensionActivityDetails(entries, relatedEntryIds);
+		sessionManager.appendCustomEntry(EXTENSION_ACTIVITY_CUSTOM_TYPE, {
+			version: 1,
+			phase: "end",
+			activityId: activity.activityId,
+			extensionPath: activity.extensionPath,
+			hook: activity.hook,
+			startedAt: activity.startedAt,
+			endedAt,
+			durationMs: Math.max(0, endedAt - activity.startedAt),
+			status: "interrupted",
+			relatedEntryIds,
+			...(details ? { details } : {}),
+		});
+		completed.set(activity.activityId, { startEntryId, relatedEntryIds });
+	}
+	return completed;
+}
+
 function sessionGeneration(
 	sessionPath: string,
 	sessionId: string,
@@ -1686,6 +1773,13 @@ class CoreRuntimeSession implements RuntimeSession {
 	private unsubscribe?: () => void;
 	private unsubscribeSteps?: () => void;
 	private unsubscribeSubagents?: () => void;
+	private unsubscribeExtensionActivities?: () => void;
+	private activeExtensionActivities: Array<{
+		activityId: string;
+		startEntryId: string;
+		relatedEntryIds: string[];
+	}> = [];
+	private completedExtensionActivities = new Map<string, CompletedExtensionActivity>();
 	private stateRevision = 0;
 	private committedEntryCount = 0;
 	private lastTranscriptGeneration?: string;
@@ -2326,6 +2420,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.unsubscribeSteps = undefined;
 		this.unsubscribeSubagents?.();
 		this.unsubscribeSubagents = undefined;
+		this.unsubscribeExtensionActivities?.();
+		this.unsubscribeExtensionActivities = undefined;
 		const companion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
@@ -2345,11 +2441,18 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.unsubscribeSteps = undefined;
 		this.unsubscribeSubagents?.();
 		this.unsubscribeSubagents = undefined;
+		this.unsubscribeExtensionActivities?.();
+		this.unsubscribeExtensionActivities = undefined;
+		this.activeExtensionActivities = [];
+		this.completedExtensionActivities.clear();
 		const previousCompanion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
 		await previousCompanion?.dispose();
 		const session = this.runtime.session;
+		for (const [activityId, activity] of recoverInterruptedExtensionActivities(session.sessionManager)) {
+			this.completedExtensionActivities.set(activityId, activity);
+		}
 		const unsupportedSessionChange = async () => {
 			throw new Error("LYStar Web Runtime不支持由扩展替换会话");
 		};
@@ -2368,6 +2471,55 @@ class CoreRuntimeSession implements RuntimeSession {
 			abortHandler: () => void this.abort(),
 			onError: (error) => this.emit({ type: "progress", payload: jsonValue({ type: "extension_error", ...error }) }),
 		});
+		this.unsubscribeExtensionActivities = session.extensionRunner.onActivity((activity) => {
+			if (this.disposed || this.runtime.session !== session) return;
+			if (activity.phase === "start") {
+				const startEntryId = session.sessionManager.appendCustomEntry(EXTENSION_ACTIVITY_CUSTOM_TYPE, {
+					version: 1,
+					phase: "start",
+					activityId: activity.activityId,
+					extensionPath: activity.extensionPath,
+					hook: activity.hook,
+					startedAt: activity.startedAt,
+				});
+				this.activeExtensionActivities.push({
+					activityId: activity.activityId,
+					startEntryId,
+					relatedEntryIds: [],
+				});
+			} else {
+				const activeIndex = this.activeExtensionActivities.findIndex(
+					(active) => active.activityId === activity.activityId,
+				);
+				const active = activeIndex >= 0 ? this.activeExtensionActivities.splice(activeIndex, 1)[0] : undefined;
+				const entries = session.sessionManager.getEntries();
+				const relatedEntryIds = active?.relatedEntryIds ?? [];
+				const details = extensionActivityDetails(entries, relatedEntryIds);
+				session.sessionManager.appendCustomEntry(EXTENSION_ACTIVITY_CUSTOM_TYPE, {
+					version: 1,
+					phase: "end",
+					activityId: activity.activityId,
+					extensionPath: activity.extensionPath,
+					hook: activity.hook,
+					startedAt: activity.startedAt,
+					endedAt: activity.endedAt,
+					durationMs: activity.durationMs,
+					status: activity.status,
+					relatedEntryIds,
+					...(activity.error ? { error: boundedStatus(activity.error) } : {}),
+					...(details ? { details } : {}),
+				});
+				if (active) {
+					this.completedExtensionActivities.set(activity.activityId, {
+						startEntryId: active.startEntryId,
+						relatedEntryIds,
+					});
+				}
+			}
+			queueMicrotask(() => {
+				if (!this.disposed && this.runtime.session === session) this.emitCommittedEntries();
+			});
+		});
 		this.unsubscribeSteps = this.stepController.onChange((step) => {
 			this.stateRevision++;
 			this.emit({ type: "progress", payload: { type: "agent_step", step } });
@@ -2376,6 +2528,14 @@ class CoreRuntimeSession implements RuntimeSession {
 		});
 		this.unsubscribe = session.subscribe((event) => {
 			this.stateRevision++;
+			if (
+				event.type === "entry_appended" &&
+				event.entry.type === "custom" &&
+				event.entry.customType !== EXTENSION_ACTIVITY_CUSTOM_TYPE &&
+				event.entry.customType !== AGENT_STEP_CUSTOM_TYPE
+			) {
+				this.activeExtensionActivities.at(-1)?.relatedEntryIds.push(event.entry.id);
+			}
 			if (event.type === "tool_execution_start" && !AGENT_STEP_TOOL_NAMES.has(event.toolName)) {
 				this.stepController.associateTool(event.toolCallId);
 			}
@@ -2444,30 +2604,88 @@ class CoreRuntimeSession implements RuntimeSession {
 			return;
 		}
 		this.companion = companion;
+		if (this.completedExtensionActivities.size > 0) this.emitCommittedEntries();
 	}
 
 	private emitCommittedEntries(): void {
 		if (!existsSync(this.sessionPath)) return;
-		const entries = this.runtime.session.sessionManager.getEntries();
+		const session = this.runtime.session;
+		const entries = session.sessionManager.getEntries();
 		const committed = entries.slice(this.committedEntryCount);
 		if (committed.length === 0) return;
+		const transcriptEntries = committed.filter(isTranscriptEntry);
+		const activityMarkers = transcriptEntries.flatMap((entry) => {
+			const activity = extensionActivityRecordFromEntry(entry);
+			return activity ? [{ entry, activity }] : [];
+		});
 		const hasCompletedEntry = committed.some(
 			(entry) =>
 				entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "bashExecution"),
 		);
 		const hasTranscriptBeforeCommit = entries.slice(0, this.committedEntryCount).some(isTranscriptEntry);
-		if (!hasTranscriptBeforeCommit && !hasCompletedEntry) return;
-		const storage = sessionGeneration(this.sessionPath, this.runtime.session.sessionId);
-		const fromRevision = this.lastTranscriptGeneration === storage.generation ? this.lastTranscriptRevision : 0;
-		const transcriptEntries = committed.filter(isTranscriptEntry);
+		if (!hasTranscriptBeforeCommit && !hasCompletedEntry && activityMarkers.length === 0) return;
+
+		const activityMarkersById = new Map<
+			string,
+			{ start?: SessionEntry; end?: SessionEntry; endRecord?: Extract<ExtensionActivityRecord, { phase: "end" }> }
+		>();
+		for (const { entry, activity } of activityMarkers) {
+			const group = activityMarkersById.get(activity.activityId) ?? {};
+			if (activity.phase === "start") group.start = entry;
+			else {
+				group.end = entry;
+				group.endRecord = activity;
+			}
+			activityMarkersById.set(activity.activityId, group);
+		}
+
+		const activityEntryIds = new Set<string>();
+		const completedRelatedEntryIds = new Set<string>();
+		const processedActivities = new Set<string>();
+		for (const { activity } of activityMarkers) {
+			if (processedActivities.has(activity.activityId)) continue;
+			processedActivities.add(activity.activityId);
+			const group = activityMarkersById.get(activity.activityId);
+			if (!group) continue;
+			const completed = group.endRecord;
+			const remembered = this.completedExtensionActivities.get(activity.activityId);
+			const startEntryId = remembered?.startEntryId ?? group.start?.id;
+			const startEntry = startEntryId ? session.sessionManager.getEntry(startEntryId) : group.start;
+			const relatedEntryIds = completed?.relatedEntryIds ?? remembered?.relatedEntryIds ?? [];
+			const relatedEntries = relatedEntryIds.flatMap((entryId) => {
+				const entry = session.sessionManager.getEntry(entryId);
+				return entry?.type === "custom" ? [entry] : [];
+			});
+			if (group.start) activityEntryIds.add(group.start.id);
+			if (group.end) activityEntryIds.add(group.end.id);
+			if (startEntry) activityEntryIds.add(startEntry.id);
+			for (const entry of relatedEntries) {
+				activityEntryIds.add(entry.id);
+				completedRelatedEntryIds.add(entry.id);
+			}
+			if (completed) this.completedExtensionActivities.delete(activity.activityId);
+		}
+
+		const activeRelatedEntryIds = new Set(
+			this.activeExtensionActivities.flatMap((activity) => activity.relatedEntryIds),
+		);
+		const includedEntryIds = new Set(activityEntryIds);
+		for (const entry of transcriptEntries) {
+			if (extensionActivityRecordFromEntry(entry)) continue;
+			if (activeRelatedEntryIds.has(entry.id) || completedRelatedEntryIds.has(entry.id)) continue;
+			includedEntryIds.add(entry.id);
+		}
+		const emittedEntries = entries.filter((entry) => includedEntryIds.has(entry.id));
 		const agentSteps = this.stepController.stepsForEntries(transcriptEntries);
 		this.committedEntryCount = entries.length;
+		const storage = sessionGeneration(this.sessionPath, session.sessionId);
+		const fromRevision = this.lastTranscriptGeneration === storage.generation ? this.lastTranscriptRevision : 0;
 		this.lastTranscriptGeneration = storage.generation;
 		this.lastTranscriptRevision = storage.revision;
 		this.emit({
 			type: "entry_committed",
 			payload: jsonValue({
-				items: transcriptEntries.map(entryItem),
+				items: emittedEntries.map(entryItem),
 				...(agentSteps.length > 0 ? { agentSteps } : {}),
 				transcriptGeneration: storage.generation,
 				fromRevision,
@@ -2542,6 +2760,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		options?: {
 			parentSession?: string;
 			profileId?: string;
+			roomAgent?: boolean;
 			collaborationTask?: SessionCollaborationTask;
 			collaborationWorkspace?: SessionWorkspaceSnapshot;
 			sessionDir?: string;
@@ -2561,6 +2780,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					? { parentSession: options.parentSession, relation: "collaboration" as const }
 					: {}),
 				...(profile ? { profile: sessionProfileSnapshot(profile) } : {}),
+				...(options?.roomAgent ? { roomAgent: true } : {}),
 				...(options?.collaborationTask ? { collaborationTask: options.collaborationTask } : {}),
 				...(options?.collaborationWorkspace ? { collaborationWorkspace: options.collaborationWorkspace } : {}),
 			},
@@ -4254,6 +4474,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				modelRuntimeSignal: AbortSignal.timeout(15_000),
 				resourceLoaderOptions: {
 					extensionFactories: builtInExtensions,
+					...(runtimeSessionManager.getHeader()?.roomAgent ? { excludeUserAgentsFile: true } : {}),
 					...(effectiveProfile
 						? {
 								agentsFilesOverride: (base) => ({

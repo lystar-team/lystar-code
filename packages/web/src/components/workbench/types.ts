@@ -22,7 +22,7 @@ export interface PromptEditRequest {
 export interface WorkbenchActions {
 	selectProject: (projectId: string) => Promise<void>;
 	selectSession: (sessionId: string) => Promise<void>;
-	createSession: () => Promise<void>;
+	createSession: (agentProfile?: Pick<SubagentConfig, "name" | "icon">) => Promise<void>;
 	sendMessage: (
 		text: string,
 		mode?: ComposerMode,
@@ -37,6 +37,8 @@ export interface WorkbenchActions {
 	openSettings: (tab?: SettingsTab) => Promise<void>;
 	refreshBranding: () => Promise<void>;
 	saveBranding: (input: { name: string; logo?: string | null }) => Promise<void>;
+	refreshSessionNameSettings: () => Promise<void>;
+	saveSessionNameSettings: (input: { model?: string; thinkingLevel: WebThinkingLevel }) => Promise<void>;
 	closeSettings: () => void;
 	signOut: () => void;
 	setComposerMode: (mode: ComposerMode) => void;

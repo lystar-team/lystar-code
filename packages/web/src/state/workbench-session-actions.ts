@@ -5,6 +5,7 @@ import type {
 	PromptAttachment,
 	PromptAttachmentPreview,
 	QueuedUserPrompt,
+	SubagentConfig,
 } from "../types.ts";
 import {
 	applyPromptAccepted,
@@ -493,11 +494,11 @@ export function useWorkbenchSessionActions({
 		}
 	}, [loadTranscript, scheduleTranscriptRefresh, updateState]);
 
-	const createSession = useCallback(async () => {
+	const createSession = useCallback(async (agentProfile?: Pick<SubagentConfig, "name" | "icon">) => {
 		const projectId = stateRef.current.currentProjectId;
 		if (!projectId) return;
 		const selectionRequest = selectionRef.current;
-		const result = await webApi.createSession(projectId);
+		const result = await webApi.createSession(projectId, agentProfile?.name);
 		if (selectionRef.current !== selectionRequest || stateRef.current.currentProjectId !== projectId) {
 			await webApi.release(result.session.id).catch(() => {});
 			return;
@@ -516,6 +517,13 @@ export function useWorkbenchSessionActions({
 							sessions: [
 								{
 									...result.session,
+									...(agentProfile
+										? {
+											profileId: agentProfile.name,
+											profileName: agentProfile.name,
+											...(agentProfile.icon ? { profileIcon: agentProfile.icon } : {}),
+										}
+										: {}),
 									firstMessage: "",
 									messageCount: 0,
 								},

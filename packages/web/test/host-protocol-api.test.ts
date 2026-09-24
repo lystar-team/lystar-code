@@ -85,6 +85,41 @@ describe("WebApi prompt admission", () => {
 	});
 });
 
+describe("WebApi session creation", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("sends Room startup notification policy only when requested", async () => {
+		const storage = new Map<string, string>();
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) => storage.get(key) ?? null,
+			setItem: (key: string, value: string) => storage.set(key, value),
+			removeItem: (key: string) => storage.delete(key),
+		});
+		const fetchMock = vi.fn(
+			async (_input: string | URL | Request, _init?: RequestInit) =>
+				new Response(JSON.stringify({ session: {}, lease: {} }), {
+					status: 201,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const api = new WebApi();
+
+		await api.createSession("project-1", "reviewer", { roomAgent: true, suppressInfoNotifications: true });
+		await api.createSession("project-1");
+
+		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+			projectId: "project-1",
+			profileId: "reviewer",
+			roomAgent: true,
+			suppressInfoNotifications: true,
+		});
+		expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ projectId: "project-1" });
+	});
+});
+
 describe("WebApi WebSocket subscriptions", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
