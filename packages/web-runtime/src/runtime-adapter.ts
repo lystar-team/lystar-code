@@ -2156,8 +2156,11 @@ class CoreRuntimeSession implements RuntimeSession {
 				...(options.capabilities ? { capabilities: options.capabilities } : {}),
 			});
 			await this.runtime.session.waitForIdle();
-			const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
-			if (error) throw new Error(error);
+			const turnResult = turn ? this.runtime.session.getTurnResult(turn.turnId) : undefined;
+			if (turnResult?.outcome === "failed") {
+				const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
+				throw new Error(error ?? "模型响应失败");
+			}
 			this.emitCommittedEntries();
 			return turn;
 		} finally {
@@ -2541,7 +2544,10 @@ class CoreRuntimeSession implements RuntimeSession {
 			}
 			if (event.type === "message_end" && (event.message.role === "assistant" || event.message.role === "user")) {
 				const messageRole = event.message.role;
-				const stepId = this.stepController.activeStep?.id;
+				const finalAssistantMessage =
+					event.message.role === "assistant" &&
+					(event.message.stopReason === "stop" || event.message.stopReason === "length");
+				const stepId = finalAssistantMessage ? undefined : this.stepController.activeStep?.id;
 				if (stepId) {
 					const entryOffset = session.sessionManager.getEntries().length;
 					queueMicrotask(() => {
@@ -2553,13 +2559,12 @@ class CoreRuntimeSession implements RuntimeSession {
 						if (entry) this.stepController.associateMessage(entry.id, stepId);
 					});
 				}
-				if (event.message.role === "assistant" && event.message.stopReason === "error") {
-					this.stepController.finishActive("failed", event.message.errorMessage ?? "模型响应失败");
-				} else if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
-					this.stepController.finishActive("interrupted", event.message.errorMessage ?? "请求已取消");
-				}
 			}
-			if (event.type === "agent_settled") this.stepController.finishActive("completed");
+			if (event.type === "agent_settled") {
+				const outcome = session.getTurnResult(event.turn.turnId)?.outcome;
+				const status = outcome === "failed" ? "failed" : outcome === "aborted" ? "interrupted" : "completed";
+				this.stepController.finishActive(status);
+			}
 			if (event.type === "message_end" || event.type === "entry_appended") {
 				queueMicrotask(() => this.emitCommittedEntries());
 			}

@@ -11,6 +11,7 @@ import {
 	appendLiveTextBlock,
 	appendLiveToolBlock,
 	applyToolActivityState,
+	detachFinalTextFromCompletedStep,
 	ensureLiveCompactionMarker,
 	markLiveUserPromptProcessing,
 	mergeToolDiff,
@@ -283,14 +284,17 @@ export function useWorkbenchProgressActions({
 								: progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
 									? undefined
 									: current.liveCompaction;
+						const settledItems = current.liveTurnItems.filter((item) => item.kind !== "compaction");
 						const liveTurnItems =
 							progress.phase === "turn"
 								? current.liveTurnItems.filter((item) => item.kind === "user")
 								: progress.phase === "compaction"
 									? ensureLiveCompactionMarker(current.liveTurnItems, current.liveTurnId, runningAgentStepId(current.liveSteps))
-									: progress.phase === "idle" || progress.phase === "interrupted"
-										? current.liveTurnItems.filter((item) => item.kind !== "compaction")
-										: current.liveTurnItems;
+									: progress.phase === "idle"
+										? detachFinalTextFromCompletedStep(settledItems, current.liveSteps)
+										: progress.phase === "interrupted"
+											? settledItems
+											: current.liveTurnItems;
 						return {
 							...current,
 							liveCompaction,

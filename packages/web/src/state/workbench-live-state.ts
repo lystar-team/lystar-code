@@ -77,6 +77,25 @@ export function runningAgentStepId(steps: Readonly<Record<string, AgentStep>>): 
 	return runningSteps.length === 1 ? runningSteps[0]?.id : undefined;
 }
 
+export function detachFinalTextFromCompletedStep(
+	items: LiveTurnItem[],
+	steps: Readonly<Record<string, AgentStep>>,
+): LiveTurnItem[] {
+	const lastCompletedStep = Object.values(steps)
+		.reverse()
+		.find((step) => step.status === "completed");
+	if (!lastCompletedStep) return items;
+
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (item?.kind !== "text") continue;
+		if (item.stepId !== lastCompletedStep.id) return items;
+		const detached: LiveTurnItem = { id: item.id, kind: "text", parts: item.parts, turnId: item.turnId };
+		return [...items.slice(0, index), detached, ...items.slice(index + 1)];
+	}
+	return items;
+}
+
 export function appendLiveUserPrompt(
 	items: LiveTurnItem[],
 	prompt: QueuedUserPrompt,
@@ -610,14 +629,17 @@ export function applySubagentProgress(
 					: progress.phase === "turn" || progress.phase === "idle" || progress.phase === "interrupted"
 						? undefined
 						: current.liveCompaction;
+			const settledItems = current.liveTurnItems.filter((item) => item.kind !== "compaction");
 			const liveTurnItems =
 				progress.phase === "turn"
 					? current.liveTurnItems.filter((item) => item.kind === "user")
 					: progress.phase === "compaction"
 						? ensureLiveCompactionMarker(current.liveTurnItems, current.liveTurnId, runningAgentStepId(current.liveSteps))
-						: progress.phase === "idle" || progress.phase === "interrupted"
-							? current.liveTurnItems.filter((item) => item.kind !== "compaction")
-							: current.liveTurnItems;
+						: progress.phase === "idle"
+							? detachFinalTextFromCompletedStep(settledItems, current.liveSteps)
+							: progress.phase === "interrupted"
+								? settledItems
+								: current.liveTurnItems;
 			return {
 				...current,
 				liveTurnId: progress.phase === "turn" ? current.liveTurnId + 1 : current.liveTurnId,

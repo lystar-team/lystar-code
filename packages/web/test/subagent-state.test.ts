@@ -61,6 +61,50 @@ describe("Subagent workbench state", () => {
 		expect(state.liveTurnActive).toBe(false);
 	});
 
+	it("moves the final assistant text outside a completed task", () => {
+		let itemIndex = 0;
+		let batchIndex = 0;
+		let state = createSubagentConversationState(snapshot());
+		const next = (progress: SessionProgress) => {
+			state = applySubagentProgress(
+				state,
+				progress,
+				() => `item-${++itemIndex}`,
+				() => `batch-${++batchIndex}`,
+			);
+		};
+
+		next({ type: "phase", phase: "turn" });
+		next({
+			type: "agent_step",
+			step: { id: "step-1", title: "执行检查", status: "running", toolCallIds: [], startedAt: 1 },
+		});
+		next({ type: "assistant_delta", text: "正在检查。", stepId: "step-1" });
+		next({ type: "tool_start", toolCallId: "tool-1", name: "read", summary: "README.md", stepId: "step-1" });
+		next({ type: "tool_end", toolCallId: "tool-1", name: "read", status: "success", summary: "读取完成" });
+		next({ type: "assistant_delta", text: "检查完成。", stepId: "step-1" });
+		next({
+			type: "agent_step",
+			step: {
+				id: "step-1",
+				title: "执行检查",
+				status: "completed",
+				toolCallIds: ["tool-1"],
+				messageEntryIds: [],
+				startedAt: 1,
+				endedAt: 2,
+			},
+		});
+		next({ type: "phase", phase: "idle" });
+
+		expect(state.liveTurnItems).toMatchObject([
+			{ kind: "text", parts: ["正在检查。"], stepId: "step-1" },
+			{ kind: "tools", toolIds: ["tool-1"] },
+			{ kind: "text", parts: ["检查完成。"] },
+		]);
+		expect(state.liveTurnItems.at(-1)).not.toHaveProperty("stepId");
+	});
+
 	it("starts a new turn without inheriting stale tools, Task state, or compaction cards", () => {
 		let itemIndex = 0;
 		let batchIndex = 0;

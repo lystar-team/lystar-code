@@ -18,13 +18,18 @@ import {
 	createAgentSessionServices,
 } from "../../coding-agent/src/core/agent-session-services.ts";
 import { getLystarSetting, getLystarSettingsForUi } from "../../coding-agent/src/core/lystar-settings-catalog.ts";
-import { CURRENT_SESSION_VERSION, SessionManager } from "../../coding-agent/src/core/session-manager.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	type SessionEntry,
+	SessionManager,
+} from "../../coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
 	appendSessionRecoveryLedger,
 	createRecoveryLedgerEntry,
 	getSessionRecoveryLedgerPath,
 } from "../../coding-agent/src/core/tool-recovery/ledger.ts";
+import { agentStepFromEntry } from "../src/agent-steps.ts";
 import { CodingAgentRuntimeAdapter, projectRuntimeProgress } from "../src/runtime-adapter.ts";
 import { projectTranscriptItem } from "../src/transcript-projection.ts";
 import type { RuntimeEvent, RuntimeSession } from "../src/types.ts";
@@ -1249,6 +1254,109 @@ describe("CodingAgentRuntimeAdapter", () => {
 		await adapter.deleteSession(forkedSessionPath);
 		expect(existsSync(forkedSessionPath)).toBe(false);
 		expect(existsSync(ledgerPath)).toBe(false);
+	});
+
+	it("keeps a task active through a retryable error and separates the final answer", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-step-retry-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const faux = registerFauxProvider();
+		faux.setResponses([
+			fauxAssistantMessage(
+				{ type: "toolCall", id: "start-recovered", name: "step_start", arguments: { title: "错误后继续" } },
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fauxAssistantMessage(
+				{ type: "toolCall", id: "read-after-error", name: "read", arguments: { path: "README.md" } },
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("检查完成"),
+			fauxAssistantMessage(
+				{ type: "toolCall", id: "start-failed", name: "step_start", arguments: { title: "最终失败" } },
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" }),
+		]);
+		const model = faux.getModel();
+		for (const dir of [agentDir, cwd]) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(cwd, "README.md"), "测试读取\n");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					[model.provider]: {
+						baseUrl: model.baseUrl,
+						apiKey: "faux-key",
+						api: faux.api,
+						models: [
+							{
+								id: model.id,
+								name: model.name,
+								reasoning: model.reasoning,
+								input: model.input,
+								cost: model.cost,
+								contextWindow: model.contextWindow,
+								maxTokens: model.maxTokens,
+							},
+						],
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: model.provider,
+				defaultModel: model.id,
+				defaultThinkingLevel: "off",
+				defaultProjectTrust: "always",
+				retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 1 },
+			}),
+		);
+
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		let runtime: RuntimeSession | undefined;
+		cleanups.push(async () => {
+			await runtime?.dispose();
+			faux.unregister();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		runtime = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		await runtime.rename("任务步骤回归");
+
+		await expect(runtime.prompt("错误后继续处理")).resolves.toBeUndefined();
+		const firstEntries = readFileSync(runtime.sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as SessionEntry);
+		const recoveredStep = firstEntries
+			.map(agentStepFromEntry)
+			.filter((step) => step?.title === "错误后继续")
+			.at(-1);
+		const finalEntry = [...firstEntries]
+			.reverse()
+			.find(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					entry.message.content.some((part) => part.type === "text" && part.text.includes("检查完成")),
+			);
+		if (!recoveredStep) throw new Error("Missing recovered task step");
+		if (!finalEntry || finalEntry.type !== "message") throw new Error("Missing final assistant message");
+		expect(recoveredStep).toMatchObject({ status: "completed", toolCallIds: ["read-after-error"] });
+		expect(recoveredStep.messageEntryIds).not.toContain(finalEntry.id);
+
+		await expect(runtime.prompt("最终失败的处理")).rejects.toThrow("invalid_api_key");
+		const failedEntries = readFileSync(runtime.sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as SessionEntry);
+		const failedStep = failedEntries
+			.map(agentStepFromEntry)
+			.filter((step) => step?.title === "最终失败")
+			.at(-1);
+		expect(failedStep).toMatchObject({ status: "failed" });
 	});
 
 	it("atomically manages project instructions and validates project resources", () => {
