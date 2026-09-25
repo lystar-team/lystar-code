@@ -667,7 +667,7 @@ describe("CodingAgentRuntimeAdapter RPC contract", () => {
 
 		expect(web).toEqual(rpc);
 		expect(web.thinkingLevel).toBe("high");
-		expect(web.roles).toEqual(["user", "assistant"]);
+		expect(web.roles).toEqual(["system", "user", "assistant"]);
 		expect(web.userTexts).toEqual(["target session message"]);
 	}, 30_000);
 
@@ -676,7 +676,7 @@ describe("CodingAgentRuntimeAdapter RPC contract", () => {
 		const web = await runWebToolContract(createWorkspace());
 
 		expect(web).toEqual(rpc);
-		expect(web.transcript.roles).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		expect(web.transcript.roles).toEqual(["system", "user", "assistant", "toolResult", "assistant"]);
 		expect(web.transcript.assistantTexts).toEqual(["", "tool complete"]);
 	}, 30_000);
 

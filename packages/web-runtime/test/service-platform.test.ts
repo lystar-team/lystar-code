@@ -120,10 +120,11 @@ describe("platform service lifecycle", () => {
 		const securityWrapper = files.get("/test/user space/agent/web/bin/security");
 		const sshWrapper = files.get("/test/user space/agent/web/bin/ssh");
 		expect(osascriptWrapper).toContain("administrator");
-		expect(credentialWrapper).toContain("git-credential-osxkeychain");
+		expect(credentialWrapper).toContain("git-keychain-authorization.helper");
+		expect(credentialWrapper).toContain('"$helper" "$@"');
 		expect(securityWrapper).toContain("等待钥匙串授权超过 30 秒");
 		expect(sshWrapper).toContain("BatchMode=yes");
-		for (const wrapper of [osascriptWrapper, credentialWrapper, securityWrapper]) {
+		for (const wrapper of [osascriptWrapper, securityWrapper]) {
 			expect(wrapper).toContain("exec 3<&0");
 			expect(wrapper).toContain("<&3 &");
 		}

@@ -21,14 +21,14 @@ describe("conversation rendering stability", () => {
 			transcriptError: undefined,
 		};
 
-		expect(shouldLoadEarlierHistory(true, unavailable, false)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, available, false)).toBe(true);
-		expect(shouldLoadEarlierHistory(false, available, false)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, { ...available, loadingEarlier: true }, false)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, { ...available, transcriptError: "加载失败" }, false)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, unavailable, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, available, undefined)).toBe(true);
+		expect(shouldLoadEarlierHistory(false, available, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, { ...available, loadingEarlier: true }, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, { ...available, transcriptError: "加载失败" }, undefined)).toBe(false);
 	});
 
-	it("waits for the viewport to leave the top before requesting another page", () => {
+	it("requests each new cursor at the top once without waiting for the viewport to leave", () => {
 		const firstPageState = {
 			hasMorePrevious: true,
 			loadingEarlier: false,
@@ -37,11 +37,12 @@ describe("conversation rendering stability", () => {
 		};
 		const nextPageState = { ...firstPageState, previousCursor: "before-older-entry" };
 
-		expect(shouldLoadEarlierHistory(true, firstPageState, false)).toBe(true);
-		expect(shouldLoadEarlierHistory(true, { ...firstPageState, loadingEarlier: true }, true)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, nextPageState, true)).toBe(false);
-		expect(shouldLoadEarlierHistory(false, nextPageState, false)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, nextPageState, false)).toBe(true);
+		expect(shouldLoadEarlierHistory(true, firstPageState, undefined)).toBe(true);
+		expect(shouldLoadEarlierHistory(true, { ...firstPageState, loadingEarlier: true }, "before-entry")).toBe(false);
+		expect(shouldLoadEarlierHistory(true, firstPageState, "before-entry")).toBe(false);
+		expect(shouldLoadEarlierHistory(true, nextPageState, "before-entry")).toBe(true);
+		expect(shouldLoadEarlierHistory(false, nextPageState, "before-entry")).toBe(false);
+		expect(shouldLoadEarlierHistory(true, nextPageState, "before-older-entry")).toBe(false);
 	});
 
 	it("keeps active and single tools as stable rows across state updates", () => {

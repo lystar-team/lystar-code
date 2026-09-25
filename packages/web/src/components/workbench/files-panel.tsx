@@ -3,16 +3,9 @@ import {
 	Copy,
 	Download,
 	FileArchive,
-	FileCode2,
-	FileJson,
-	FileSpreadsheet,
-	FileText,
-	FileType2,
 	FolderOpen,
-	ImageIcon,
 	LoaderCircle,
 	Pencil,
-	Presentation,
 	RefreshCw,
 	Search,
 	Trash2,
@@ -54,8 +47,10 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
+import { FileTypeIcon } from "./file-type-icon";
 import { preloadMonacoRuntime } from "./monaco-runtime";
 import type { WorkbenchActions } from "./types";
+
 
 interface ProjectEntryReference {
 	kind: "file" | "directory";
@@ -977,39 +972,4 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			</Dialog>
 		</>
 	);
-}
-
-export function FileTypeIcon({ path }: { path: string }) {
-	const fileName = path.split(/[\\/]/u).at(-1)?.toLowerCase() ?? "";
-	const extension = fileName.split(".").at(-1) ?? "";
-	const Icon = ["avif", "gif", "jpeg", "jpg", "png", "svg", "webp"].includes(extension)
-		? ImageIcon
-		: ["csv", "ods", "tsv", "xls", "xlsx"].includes(extension)
-			? FileSpreadsheet
-			: ["odp", "pot", "pps", "ppt", "pptx"].includes(extension)
-				? Presentation
-				: ["doc", "docm", "docx", "odt", "rtf"].includes(extension)
-					? FileType2
-					: extension === "md" || extension === "mdx"
-						? FileText
-						: extension === "json"
-							? FileJson
-							: [
-									"css",
-									"go",
-									"java",
-									"js",
-									"jsx",
-									"py",
-									"rs",
-									"sql",
-									"ts",
-									"tsx",
-									"vue",
-									"yaml",
-									"yml",
-								].includes(extension)
-								? FileCode2
-								: FileText;
-	return <Icon className="size-4 shrink-0 text-muted-foreground" />;
 }

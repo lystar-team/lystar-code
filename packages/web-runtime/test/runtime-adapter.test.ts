@@ -1168,15 +1168,17 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(existsSync(sessionPath)).toBe(true);
 		expect(isAbsolute(relative(join(agentDir, "sessions"), sessionPath))).toBe(false);
 		const firstCommitted = firstEvents.filter((event) => event.type === "entry_committed").map(eventPayload);
-		expect(firstCommitted).toHaveLength(1);
-		expect(firstCommitted[0].items.map((item) => item.payload.message?.role)).toEqual([
-			"system",
-			"user",
-			"assistant",
-		]);
-		expect(firstCommitted[0].fromRevision).toBe(0);
-		const firstRevision = firstCommitted[0].transcriptRevision;
-		const firstGeneration = firstCommitted[0].transcriptGeneration;
+		expect(
+			firstCommitted.flatMap((event) => event.items.map((item) => item.payload.message?.role)).filter(Boolean),
+		).toEqual(["system", "user", "assistant"]);
+		expect(firstCommitted[0]?.fromRevision).toBe(0);
+		expect(
+			firstCommitted.every(
+				(event, index) => index === 0 || event.fromRevision === firstCommitted[index - 1]?.transcriptRevision,
+			),
+		).toBe(true);
+		const firstRevision = firstCommitted.at(-1)!.transcriptRevision;
+		const firstGeneration = firstCommitted[0]!.transcriptGeneration;
 		const persistedRoles = readFileSync(sessionPath, "utf8")
 			.trim()
 			.split("\n")
@@ -1192,14 +1194,17 @@ describe("CodingAgentRuntimeAdapter", () => {
 		await runtime.prompt("again");
 
 		const resumedCommitted = resumedEvents.filter((event) => event.type === "entry_committed").map(eventPayload);
-		expect(resumedCommitted.map((event) => event.items.map((item) => item.payload.message?.role))).toEqual([
-			["user"],
-			["assistant"],
-		]);
+		expect(
+			resumedCommitted.flatMap((event) => event.items.map((item) => item.payload.message?.role)).filter(Boolean),
+		).toEqual(["user", "assistant"]);
 		expect(resumedCommitted[0].transcriptGeneration).toBe(firstGeneration);
 		expect(resumedCommitted[0].fromRevision).toBe(firstRevision);
-		expect(resumedCommitted[1].fromRevision).toBe(resumedCommitted[0].transcriptRevision);
-		expect(resumedCommitted[1].transcriptRevision).toBeGreaterThan(resumedCommitted[0].transcriptRevision);
+		expect(
+			resumedCommitted.every(
+				(event, index) => index === 0 || event.fromRevision === resumedCommitted[index - 1]?.transcriptRevision,
+			),
+		).toBe(true);
+		expect(resumedCommitted.at(-1)!.transcriptRevision).toBeGreaterThan(firstRevision);
 
 		await runtime.rename("Web 控制契约");
 		await runtime.setModel({ provider: model.provider, id: model.id });
@@ -1215,7 +1220,9 @@ describe("CodingAgentRuntimeAdapter", () => {
 			thinkingLevel,
 		});
 
-		const firstUserEntryId = firstCommitted[0].items.find((item) => item.payload.message?.role === "user")?.entryId;
+		const firstUserEntryId = firstCommitted
+			.flatMap((event) => event.items)
+			.find((item) => item.payload.message?.role === "user")?.entryId;
 		if (!firstUserEntryId) throw new Error("Missing user entry for fork");
 		expect(runtime.listForkMessages()).toEqual([
 			{ entryId: firstUserEntryId, text: "hello" },

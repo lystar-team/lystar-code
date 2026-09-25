@@ -1,4 +1,3 @@
-import { gsap } from "gsap";
 import {
 	ArrowDownIcon,
 	CheckCircle2,
@@ -8,19 +7,27 @@ import {
 	Sparkles,
 	WrenchIcon,
 } from "lucide-react";
-import type { AgentStep } from "@lystar/code-web-protocol";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { VirtuosoHandle } from "react-virtuoso";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
-import { toSessionItemViewModel } from "../../adapters/session-view-model";
-import { type LiveCompactionState } from "../../state/compaction-state";
-import { agentStepsFromIndex } from "../../state/session-timeline";
-import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
-import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
-import type { PromptAttachmentPreview, WebSessionSummary } from "../../types";
+import type { WorkbenchState } from "../../state/use-workbench";
+import type { WebSessionSummary } from "../../types";
 import { CompactionCard } from "./compaction-card";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
+import {
+	appendLiveRenderItems,
+	buildConversationRenderItems,
+	buildPersistedRenderItems,
+	type AgentStepChildRenderItem,
+	type AgentStepRenderItem,
+	type CompactionRenderItem,
+	type ConversationContentRenderItem,
+	type ConversationRenderItem,
+	type MessageRenderItem,
+	type ToolIndex,
+	type TranscriptToolStackRenderItem,
+} from "./conversation-render-model";
+export { appendLiveRenderItems, buildConversationRenderItems, buildPersistedRenderItems };
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
@@ -29,9 +36,18 @@ import { ACTIVE_OPERATION_STATUSES } from "./constants";
 import { activeThinkingText, ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
 import { PrependAnchoredConversationTranscript } from "./prepend-anchored-transcript";
-import { type ConversationTranscriptScrollState, DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
+import { DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
 import { CollaborationFeed } from "./collaboration-feed";
+import { useConversationScroll } from "./use-conversation-scroll";
+import { useConversationExpansion } from "./use-conversation-expansion";
+export { shouldLoadEarlierHistory } from "./use-conversation-scroll";
+export { initialToolStackPresentation } from "./use-conversation-expansion";
+import { formatElapsedDuration } from "./conversation-format";
+import { LiveElapsedHeader } from "./live-elapsed-header";
+import { HookActivityGroup } from "./hook-activity-group";
+export { formatElapsedDuration } from "./conversation-format";
+export { LiveElapsedHeader } from "./live-elapsed-header";
 
 export type ConversationState = {
 	sessionId?: string;
@@ -68,88 +84,9 @@ export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queue
 	openSubagent?: WorkbenchActions["openSubagent"];
 };
 
-type MessageRenderItem = {
-	kind: "message";
-	key: string;
-	entryId?: string;
-	live: boolean;
-	role: "user" | "assistant" | "system";
-	text: string;
-	timestamp?: string;
-	sentAt?: number;
-	durationLabel?: string;
-	statusLabel?: string;
-	queueId?: string;
-	attachments: PromptAttachmentPreview[];
-	sources: string[];
-	copyVisible: boolean;
-	editable: boolean;
-};
-type TranscriptItemRenderItem = { kind: "item"; key: string; item: WorkbenchState["transcript"][number] };
-type TranscriptBatchRenderItem = {
-	kind: "tool-batch";
-	key: string;
-	entryId?: string;
-	tools: ToolBatchTool[];
-	stepId?: string;
-};
-type ActivityBoundaryRenderItem = { kind: "activity-boundary"; key: string };
-type AgentStepAnchorRenderItem = { kind: "agent-step-anchor"; key: string; step: AgentStep };
-type ResultBoundaryRenderItem = { kind: "result-boundary"; key: string };
-type TranscriptToolStackRenderItem = {
-	kind: "tool-stack";
-	key: string;
-	live: boolean;
-	collapseForResult: boolean;
-	stepId?: string;
-	batches: TranscriptBatchRenderItem[];
-};
-type CompactionRenderItem = {
-	kind: "compaction";
-	key: string;
-	entryId?: string;
-	timestamp?: string;
-	live: boolean;
-	state?: LiveCompactionState;
-	text?: string;
-	tokensBefore?: number;
-};
-type AgentStepChildRenderItem = MessageRenderItem | TranscriptToolStackRenderItem | CompactionRenderItem;
-type AgentStepRenderItem = {
-	kind: "agent-step";
-	key: string;
-	live: boolean;
-	step: AgentStep;
-	items: AgentStepChildRenderItem[];
-};
-type ConversationContentRenderItem =
-	| MessageRenderItem
-	| TranscriptItemRenderItem
-	| TranscriptToolStackRenderItem
-	| AgentStepRenderItem
-	| CompactionRenderItem;
-type WorkProcessRenderItem = {
-	kind: "work-process";
-	key: string;
-	items: ConversationContentRenderItem[];
-};
-type LiveElapsedRenderItem = { kind: "live-elapsed"; key: string; startedAt: number };
-type ConversationRenderItem =
-	| ConversationContentRenderItem
-	| WorkProcessRenderItem
-	| ResultBoundaryRenderItem
-	| LiveElapsedRenderItem;
-type RawRenderItem =
-	| MessageRenderItem
-	| TranscriptItemRenderItem
-	| TranscriptBatchRenderItem
-	| ActivityBoundaryRenderItem
-	| AgentStepAnchorRenderItem
-	| CompactionRenderItem;
 
 const HISTORY_LOAD_THRESHOLD = 240;
 const CONVERSATION_RENDER_CACHE_LIMIT = 8;
-const SESSION_SCROLL_CACHE_LIMIT = 8;
 const EMPTY_LIVE_STEPS = Object.freeze({}) as WorkbenchState["liveSteps"];
 
 type ConversationRenderCacheEntry = {
@@ -167,59 +104,6 @@ type ConversationRenderCacheEntry = {
 	toolIndex: ToolIndex;
 	renderItems: ConversationRenderItem[];
 };
-
-export function formatElapsedDuration(durationMs: number): string | undefined {
-	if (!Number.isFinite(durationMs) || durationMs < 0) return undefined;
-	const totalSeconds = Math.floor(durationMs / 1000);
-	if (totalSeconds < 60) return `${totalSeconds}秒`;
-	const totalMinutes = Math.floor(totalSeconds / 60);
-	const seconds = totalSeconds % 60;
-	const secondsLabel = seconds > 0 ? `${String(seconds).padStart(2, "0")}秒` : "";
-	const totalHours = Math.floor(totalMinutes / 60);
-	const minutes = totalMinutes % 60;
-	if (totalHours === 0) return `${totalMinutes}分钟${secondsLabel}`;
-	const paddedMinutes = String(minutes).padStart(2, "0");
-	if (totalHours < 24) return `${totalHours}小时${paddedMinutes}分钟${secondsLabel}`;
-	const days = Math.floor(totalHours / 24);
-	const hours = totalHours % 24;
-	return `${days}天${String(hours).padStart(2, "0")}小时${paddedMinutes}分钟${secondsLabel}`;
-}
-
-/**
- * 回合处理中的实时耗时行，回合结束后由最终回复下方的“本次耗时”接手。
- * 计时起点是用户按下发送的时刻。
- */
-export function LiveElapsedHeader({
-	startedAt,
-	onElapsedChange,
-}: {
-	startedAt: number;
-	/** 每次跳动后回报当前显示的秒数，让回合结束时下方数字与用户看到的最后一个数字一致。 */
-	onElapsedChange?: (startedAt: number, seconds: number) => void;
-}) {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		setNow(Date.now());
-		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-		return () => window.clearInterval(timer);
-	}, [startedAt]);
-	const elapsedMs = Math.max(0, now - startedAt);
-	const seconds = Math.floor(elapsedMs / 1_000);
-	useEffect(() => {
-		onElapsedChange?.(startedAt, seconds);
-	}, [onElapsedChange, seconds, startedAt]);
-	const label = formatElapsedDuration(elapsedMs);
-	return (
-		<div className="w-full" data-testid="live-elapsed">
-			<div className="pb-2 text-xs text-muted-foreground">{label ? `已处理 ${label}` : "已处理"}</div>
-			<div
-				aria-label="已处理耗时与回复分界"
-				className="w-full border-t border-border/50"
-				role="separator"
-			/>
-		</div>
-	);
-}
 
 function AgentStepContent({
 	entry,
@@ -296,49 +180,24 @@ export function initialTranscriptDisplayState(
 	return state.transcriptError ? "error" : "ready";
 }
 
-export function shouldLoadEarlierHistory(
-	atTop: boolean,
-	state: Pick<WorkbenchState, "hasMorePrevious" | "loadingEarlier" | "previousCursor" | "transcriptError">,
-	requestedAtTop: boolean,
-): boolean {
-	return (
-		atTop &&
-		!requestedAtTop &&
-		state.hasMorePrevious &&
-		Boolean(state.previousCursor) &&
-		!state.loadingEarlier &&
-		!state.transcriptError
-	);
+function isToolActivityEntry(entry: ConversationRenderItem): boolean {
+	if (entry.kind === "tool-stack") return true;
+	if (entry.kind !== "item") return false;
+	switch (entry.item.view?.type) {
+		case "tool_call":
+		case "tool_result":
+		case "web_search":
+		case "extension_entry":
+		case "extension_activity":
+		case "bash":
+			return true;
+		default:
+			return false;
+	}
 }
 
-type ToolIndex = {
-	callIds: ReadonlySet<string>;
-	results: ReadonlyMap<string, ToolBatchTool>;
-	statuses: ReadonlyMap<string, "success" | "error">;
-};
-
-function isWebSearchTranscriptItem(entry: ConversationRenderItem): boolean {
-	return entry.kind === "item" && entry.item.view?.type === "web_search";
-}
-
-function isToolComplete(tool: ToolBatchTool): boolean {
-	return (
-		tool.state === "output-available" ||
-		tool.state === "output-error" ||
-		tool.state === "output-cancelled" ||
-		tool.state === "output-interrupted"
-	);
-}
-
-type ToolStackPresentation = "rows" | "group";
-
-export function initialToolStackPresentation(tools: readonly ToolBatchTool[]): ToolStackPresentation {
-	const groupableActivity =
-		tools.length > 1 &&
-		(tools.every((tool) => tool.name === "read" && !tool.images?.length) ||
-			tools.every((tool) => tool.name === "bash" && !tool.images?.length) ||
-			tools.every((tool) => tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch"));
-	return groupableActivity && tools.every(isToolComplete) ? "group" : "rows";
+export function toolActivityGap(previous: ConversationRenderItem, current: ConversationRenderItem): number {
+	return isToolActivityEntry(previous) && isToolActivityEntry(current) ? 0 : DEFAULT_TRANSCRIPT_GAP;
 }
 
 function attachmentListsEqual(
@@ -396,17 +255,6 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 	});
 }
 
-type PersistedToolBatchKind = "read" | "skill" | "generated-image" | "image" | "search" | "action";
-
-function persistedToolBatchKind(batch: TranscriptBatchRenderItem): PersistedToolBatchKind {
-	if (batch.tools.length > 0 && batch.tools.every((tool) => Boolean(skillNameFromTool(tool)))) return "skill";
-	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "web_search")) return "search";
-	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "image_gen")) return "generated-image";
-	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read" && Boolean(tool.images?.length))) return "image";
-	if (batch.tools.length > 0 && batch.tools.every((tool) => tool.name === "read")) return "read";
-	return "action";
-}
-
 function conversationRenderItemEqual(previous: ConversationRenderItem, next: ConversationRenderItem): boolean {
 	if (previous.kind !== next.kind || previous.key !== next.key) return false;
 	if (previous.kind === "message" && next.kind === "message") {
@@ -447,6 +295,12 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			})
 		);
 	}
+	if (previous.kind === "hook-group" && next.kind === "hook-group") {
+		return (
+			previous.items.length === next.items.length &&
+			previous.items.every((item, index) => item.item === next.items[index]?.item)
+		);
+	}
 	if (previous.kind === "work-process" && next.kind === "work-process") {
 		return (
 			previous.items.length === next.items.length &&
@@ -464,592 +318,6 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			: !next.live && previous.text === next.text && previous.tokensBefore === next.tokensBefore;
 	}
 	return previous.kind === "item" && next.kind === "item" && previous.item === next.item;
-}
-
-type GroupedPersistedRenderItem = ConversationContentRenderItem | AgentStepAnchorRenderItem;
-
-function groupPersistedToolBatches(rendered: Array<RawRenderItem>): GroupedPersistedRenderItem[] {
-	const grouped: GroupedPersistedRenderItem[] = [];
-	let previousToolStack: TranscriptToolStackRenderItem | undefined;
-	let previousToolBatchKind: PersistedToolBatchKind | undefined;
-	for (const entry of rendered) {
-		if (entry.kind === "activity-boundary") {
-			previousToolStack = undefined;
-			previousToolBatchKind = undefined;
-			continue;
-		}
-		if (entry.kind === "tool-batch") {
-			const toolBatchKind = persistedToolBatchKind(entry);
-			if (
-				previousToolStack &&
-				previousToolStack.stepId === entry.stepId &&
-				previousToolBatchKind === toolBatchKind &&
-				toolBatchKind !== "skill"
-			) {
-				previousToolStack.batches.push(entry);
-			} else {
-				previousToolStack = {
-				kind: "tool-stack",
-				key: `tool-stack:${entry.key}`,
-				live: false,
-				collapseForResult: false,
-				stepId: entry.stepId,
-				batches: [entry],
-			};
-				grouped.push(previousToolStack);
-			}
-			previousToolBatchKind = toolBatchKind;
-			continue;
-		}
-		grouped.push(entry);
-		previousToolStack = undefined;
-		previousToolBatchKind = undefined;
-	}
-	return grouped;
-}
-
-function groupAgentSteps(
-	items: GroupedPersistedRenderItem[],
-	steps: ReadonlyMap<string, AgentStep>,
-): ConversationContentRenderItem[] {
-	const grouped: ConversationContentRenderItem[] = [];
-	const renderedSteps = new Map<string, AgentStepRenderItem>();
-	const stepIdByToolCallId = new Map<string, string>();
-	const stepIdByMessageEntryId = new Map<string, string>();
-	for (const step of steps.values()) {
-		for (const toolCallId of step.toolCallIds) stepIdByToolCallId.set(toolCallId, step.id);
-		for (const messageEntryId of step.messageEntryIds ?? []) stepIdByMessageEntryId.set(messageEntryId, step.id);
-	}
-	const ensureStep = (stepId: string, fallback?: AgentStep): AgentStepRenderItem | undefined => {
-		const step = steps.get(stepId) ?? fallback;
-		if (!step) return undefined;
-		const existing = renderedSteps.get(stepId);
-		if (existing) {
-			existing.step = step;
-			return existing;
-		}
-		const entry: AgentStepRenderItem = {
-			kind: "agent-step",
-			key: `agent-step:${stepId}`,
-			live: false,
-			step,
-			items: [],
-		};
-		renderedSteps.set(stepId, entry);
-		grouped.push(entry);
-		return entry;
-	};
-	for (const item of items) {
-		if (item.kind === "agent-step-anchor") {
-			ensureStep(item.step.id, item.step);
-			continue;
-		}
-		if (item.kind === "message" && item.entryId) {
-			const stepId = stepIdByMessageEntryId.get(item.entryId);
-			if (stepId) {
-				const step = ensureStep(stepId);
-				if (step && !step.items.some((candidate) => candidate.key === item.key)) {
-					step.items.push(item);
-					continue;
-				}
-			}
-		}
-		if (item.kind === "tool-stack") {
-			const inferredStepIds = new Set(
-				item.batches.flatMap((batch) =>
-					batch.tools.flatMap((tool) => {
-						const stepId = stepIdByToolCallId.get(tool.id);
-						return stepId ? [stepId] : [];
-					}),
-				),
-			);
-			const inferredMessageStepIds = new Set(
-				item.batches.flatMap((batch) => {
-					const stepId = batch.entryId ? stepIdByMessageEntryId.get(batch.entryId) : undefined;
-					return stepId ? [stepId] : [];
-				}),
-			);
-			const inferredStepId = inferredStepIds.size === 1 ? inferredStepIds.values().next().value : undefined;
-			const inferredMessageStepId =
-				inferredMessageStepIds.size === 1 ? inferredMessageStepIds.values().next().value : undefined;
-			const stepId = item.stepId ?? inferredStepId ?? inferredMessageStepId;
-			if (stepId) {
-				const step = ensureStep(stepId);
-				const stepItem = item.stepId ? item : { ...item, stepId };
-				if (step && !step.items.some((candidate) => candidate.key === item.key)) step.items.push(stepItem);
-				else if (!step) grouped.push(item);
-				continue;
-			}
-		}
-		grouped.push(item);
-	}
-	return grouped;
-}
-
-export function buildPersistedRenderItems(
-	items: WorkbenchState["transcript"],
-	toolIndex: ToolIndex,
-	pendingUserPrompts: WorkbenchState["pendingUserPrompts"] = [],
-	promptSendTimes: WorkbenchState["promptSendTimes"] = {},
-	agentSteps: WorkbenchState["agentSteps"] = {},
-): ConversationContentRenderItem[] {
-	const rendered: Array<RawRenderItem> = [];
-	let batchTools: ToolBatchTool[] = [];
-	let batchKey = "";
-	let batchEntryId: string | undefined;
-	let batchStepId: string | undefined;
-	const latestSteps = new Map<string, { entryId: string; step: AgentStep }>(
-		agentStepsFromIndex(agentSteps).map((step) => [step.id, { entryId: `agent-step-index:${step.id}`, step }]),
-	);
-	for (const item of items) {
-		if (item.view?.type === "agent_step" && !latestSteps.has(item.view.step.id))
-			latestSteps.set(item.view.step.id, { entryId: item.entryId, step: item.view.step });
-	}
-	const stepIdByEntryId = new Map<string, string>();
-	const stepIdByToolCallId = new Map<string, string>();
-	for (const [stepId, value] of latestSteps) {
-		for (const entryId of value.step.messageEntryIds ?? []) stepIdByEntryId.set(entryId, stepId);
-		for (const toolCallId of value.step.toolCallIds) stepIdByToolCallId.set(toolCallId, stepId);
-	}
-	const renderedStepIds = new Set<string>();
-	const appendPersistedStepAnchor = (stepId: string | undefined, key: string) => {
-		if (!stepId || renderedStepIds.has(stepId)) return;
-		const latest = latestSteps.get(stepId);
-		if (!latest) return;
-		flushBatch();
-		renderedStepIds.add(stepId);
-		rendered.push({ kind: "agent-step-anchor", key: `agent-step-index-anchor:${key}:${stepId}`, step: latest.step });
-	};
-
-	const pendingAtIndex = new Map<number, WorkbenchState["pendingUserPrompts"]>();
-	for (const prompt of pendingUserPrompts) {
-		let insertIndex = prompt.afterEntryId ? items.length : 0;
-		if (prompt.afterEntryId) {
-			for (let index = items.length - 1; index >= 0; index--) {
-				if (items[index]?.entryId === prompt.afterEntryId) {
-					insertIndex = index + 1;
-					break;
-				}
-			}
-		}
-		const prompts = pendingAtIndex.get(insertIndex) ?? [];
-		prompts.push(prompt);
-		pendingAtIndex.set(insertIndex, prompts);
-	}
-
-	const flushBatch = () => {
-		if (batchTools.length > 0) {
-			rendered.push({ kind: "tool-batch", key: batchKey, tools: batchTools, stepId: batchStepId });
-			batchTools = [];
-			batchKey = "";
-			batchEntryId = undefined;
-			batchStepId = undefined;
-		}
-	};
-	const appendPendingPrompts = (index: number) => {
-		const prompts = pendingAtIndex.get(index);
-		if (!prompts?.length) return;
-		flushBatch();
-		for (const prompt of prompts) {
-			rendered.push({
-				kind: "message",
-				key: prompt.id,
-				live: false,
-				role: "user",
-				text: prompt.text,
-				sentAt: prompt.sentAt,
-				attachments: prompt.attachments,
-				sources: [],
-				copyVisible: false,
-				editable: false,
-			});
-		}
-	};
-
-	for (let index = 0; index <= items.length; index++) {
-		appendPendingPrompts(index);
-		if (index === items.length) break;
-		const item = items[index]!;
-		if (item.view?.type === "agent_step") {
-			const latest = latestSteps.get(item.view.step.id);
-			if (latest) latest.entryId = item.entryId;
-			appendPersistedStepAnchor(item.view.step.id, item.renderId);
-			continue;
-		}
-		appendPersistedStepAnchor(item.entryId ? stepIdByEntryId.get(item.entryId) : undefined, item.renderId);
-		const viewModel = toSessionItemViewModel(item, toolIndex.statuses);
-		if (viewModel.kind === "reasoning") {
-			flushBatch();
-			rendered.push({ kind: "activity-boundary", key: `activity-boundary:${item.renderId}` });
-			continue;
-		}
-		if (viewModel.kind === "message") {
-			flushBatch();
-			rendered.push({
-				kind: "message",
-				key: item.renderId,
-				entryId: item.entryId,
-				live: false,
-				role: viewModel.role,
-				text: viewModel.text,
-				timestamp: viewModel.timestamp,
-				sentAt: promptSendTimes[item.entryId],
-				attachments: viewModel.attachments,
-				sources: viewModel.sources,
-				copyVisible: false,
-				editable: false,
-			});
-			continue;
-		}
-		if (viewModel.kind === "tools" && item.view?.type === "web_search") {
-			flushBatch();
-			const searchTool = viewModel.tools[0];
-			if (searchTool) {
-				appendPersistedStepAnchor(stepIdByToolCallId.get(searchTool.id), item.renderId);
-				rendered.push({
-					kind: "tool-batch",
-					key: `web-search:${item.renderId}:${searchTool.id}`,
-					entryId: item.entryId,
-					tools: [searchTool],
-				});
-			}
-			continue;
-		}
-		if (viewModel.kind === "tools" && item.view?.type === "tool_call") {
-			for (const tool of viewModel.tools) {
-				const stepId = item.view.calls.find((call) => call.id === tool.id)?.stepId ?? stepIdByToolCallId.get(tool.id);
-				appendPersistedStepAnchor(stepId, item.renderId);
-				const result = toolIndex.results.get(tool.id);
-				const resolvedTool = result
-					? { ...tool, ...result, summary: tool.name === "image_gen" ? result.summary || tool.summary : tool.summary || result.summary }
-					: tool;
-				const previous = batchTools.at(-1);
-				if (
-					!previous ||
-					batchEntryId !== item.entryId ||
-					batchStepId !== stepId ||
-					!shouldJoinToolBatch(previous, resolvedTool)
-				) {
-					flushBatch();
-					batchEntryId = item.entryId;
-					batchStepId = stepId;
-					batchKey = `tool-batch:${item.renderId}:${resolvedTool.id}`;
-				}
-				batchTools.push(resolvedTool);
-			}
-			continue;
-		}
-		if (viewModel.kind === "tools" && item.view?.type === "tool_result") {
-			if (toolIndex.callIds.has(item.view.callId)) continue;
-			flushBatch();
-			const resultTool = viewModel.tools[0];
-			if (resultTool) {
-				appendPersistedStepAnchor(item.view.stepId ?? stepIdByToolCallId.get(resultTool.id), item.renderId);
-				rendered.push({
-					kind: "tool-batch",
-					key: `tool-result:${item.renderId}:${resultTool.id}`,
-					entryId: item.entryId,
-					tools: [resultTool],
-					stepId: item.view.stepId,
-				});
-			}
-			continue;
-		}
-		flushBatch();
-		if (viewModel.kind === "summary" && (viewModel.variant === "compaction" || viewModel.title === "上下文压缩")) {
-			rendered.push({
-				kind: "compaction",
-				key: item.renderId,
-				entryId: item.entryId,
-				timestamp: item.timestamp,
-				live: false,
-				text: viewModel.text,
-				tokensBefore: viewModel.tokensBefore,
-			});
-		} else {
-			rendered.push({ kind: "item", key: item.renderId, item });
-		}
-	}
-	flushBatch();
-	return groupAgentSteps(
-		groupPersistedToolBatches(rendered),
-		new Map([...latestSteps].map(([stepId, value]) => [stepId, value.step])),
-	);
-}
-
-function updateLiveCompactionRenderItem(
-	items: Array<ConversationContentRenderItem | AgentStepChildRenderItem>,
-	key: string,
-	state: LiveCompactionState,
-): boolean {
-	for (const entry of items) {
-		if (entry.kind === "compaction" && entry.key === key) {
-			entry.live = true;
-			entry.state = state;
-			return true;
-		}
-		if (entry.kind === "agent-step" && updateLiveCompactionRenderItem(entry.items, key, state)) return true;
-	}
-	return false;
-}
-
-export function appendLiveRenderItems(
-	rendered: ConversationContentRenderItem[],
-	liveItems: readonly LiveTurnItem[],
-	liveTools: WorkbenchState["liveTools"],
-	committedToolCallIds: ReadonlySet<string>,
-	liveCompaction: LiveCompactionState | undefined,
-	liveTurnId: number,
-	liveSteps: WorkbenchState["liveSteps"] = {},
-): ConversationContentRenderItem[] {
-	const next = [...rendered];
-	const stepIdByToolCallId = new Map<string, string>();
-	for (const step of Object.values(liveSteps)) {
-		for (const toolCallId of step.toolCallIds) stepIdByToolCallId.set(toolCallId, step.id);
-	}
-	const hasRenderItemKey = (key: string) =>
-		next.some((entry) => entry.key === key || (entry.kind === "agent-step" && entry.items.some((item) => item.key === key)));
-	const appendStepItem = (stepId: string, item: AgentStepChildRenderItem): boolean => {
-		const step = liveSteps[stepId];
-		if (!step) return false;
-		const key = `agent-step:${stepId}`;
-		const existing = next.find((entry): entry is AgentStepRenderItem => entry.kind === "agent-step" && entry.key === key);
-		if (existing) {
-			existing.live = true;
-			existing.step = step;
-			if (!existing.items.some((candidate) => candidate.key === item.key)) existing.items.push(item);
-		} else {
-			next.push({ kind: "agent-step", key, live: true, step, items: [item] });
-		}
-		return true;
-	};
-	for (const item of liveItems) {
-		if (item.kind === "user") {
-			if (hasRenderItemKey(item.id)) continue;
-			const message: MessageRenderItem = {
-				kind: "message",
-				key: item.id,
-				live: false,
-				role: "user",
-				text: item.displayText,
-				sentAt: item.sentAt,
-				statusLabel: item.status === "queued" ? "已发出 · 等待当前步骤结束" : "已发出 · Agent 正在处理",
-				queueId: item.status === "queued" ? item.queueId : undefined,
-				attachments: item.attachments,
-				sources: [],
-				copyVisible: false,
-				editable: false,
-			};
-			if (!item.stepId || !appendStepItem(item.stepId, message)) next.push(message);
-			continue;
-		}
-		if (item.kind === "thinking") continue;
-		if (item.kind === "compaction") {
-			if (item.turnId !== liveTurnId || !liveCompaction) continue;
-			const compaction: CompactionRenderItem = { kind: "compaction", key: item.id, live: true, state: liveCompaction };
-			if (updateLiveCompactionRenderItem(next, item.id, liveCompaction)) continue;
-			if (item.stepId && appendStepItem(item.stepId, compaction)) continue;
-			next.push(compaction);
-			continue;
-		}
-		if (item.kind === "text") {
-			const text = item.parts.join("");
-			if (!text.trim() || hasRenderItemKey(item.id)) continue;
-			const message: MessageRenderItem = {
-				kind: "message",
-				key: item.id,
-				live: true,
-				role: "assistant",
-				text,
-				attachments: [],
-				sources: [],
-				copyVisible: false,
-				editable: false,
-			};
-			if (!item.stepId || !appendStepItem(item.stepId, message)) next.push(message);
-			continue;
-		}
-		if (item.kind !== "tools") continue;
-		const tools = item.toolIds.flatMap((toolId) => {
-			const tool = liveTools[toolId];
-			if (!tool || committedToolCallIds.has(toolId)) return [];
-			return [toLiveToolViewModel(tool)];
-		});
-		if (!tools.length) continue;
-		const batchKey = `tool-batch:${item.id}:${tools[0]?.id ?? item.batchId}`;
-		if (next.some((entry) => entry.key === `tool-stack:${batchKey}`)) continue;
-		const candidateStepIds = new Set(
-			tools.flatMap((tool) => {
-				const stepId = tool.stepId ?? stepIdByToolCallId.get(tool.id);
-				return stepId ? [stepId] : [];
-			}),
-		);
-		const explicitStepId = candidateStepIds.size === 1 ? candidateStepIds.values().next().value : undefined;
-		const stepId = explicitStepId;
-		const toolsWithStep = stepId
-			? tools.map((tool) => (tool.stepId ? tool : { ...tool, stepId }))
-			: tools;
-		const stack: TranscriptToolStackRenderItem = {
-			kind: "tool-stack",
-			key: `tool-stack:${batchKey}`,
-			live: true,
-			collapseForResult: false,
-			stepId,
-			batches: [{ kind: "tool-batch", key: batchKey, tools: toolsWithStep, stepId }],
-		};
-		if (!stepId || !appendStepItem(stepId, stack)) next.push(stack);
-	}
-	for (const step of Object.values(liveSteps)) {
-		const key = `agent-step:${step.id}`;
-		const existing = next.find((entry): entry is AgentStepRenderItem => entry.kind === "agent-step" && entry.key === key);
-		if (existing) {
-			existing.live = true;
-			existing.step = step;
-		} else {
-			next.push({ kind: "agent-step", key, live: true, step, items: [] });
-		}
-	}
-	return next;
-}
-
-function messageStartedAt(message: MessageRenderItem): number | undefined {
-	if (message.sentAt !== undefined) return message.sentAt;
-	if (!message.timestamp) return undefined;
-	const parsed = Date.parse(message.timestamp);
-	return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-/**
- * 回合结束后位于最终回复下方的耗时。
- * 优先用客户端亲眼看到的实时值，保证与上方「已处理」完全一致；
- * 其次从用户消息的发送时刻算到末条文本回复，历史回合回退到会话时间戳。
- */
-function completedTurnDurationLabel(
-	userMessage: MessageRenderItem | undefined,
-	finalMessage: MessageRenderItem,
-	observedElapsed?: (sentAt: number) => number | undefined,
-): string | undefined {
-	if (!userMessage) return undefined;
-	const observed = userMessage.sentAt === undefined ? undefined : observedElapsed?.(userMessage.sentAt);
-	if (observed !== undefined) return formatElapsedDuration(observed);
-	const start = messageStartedAt(userMessage);
-	const end = finalMessage.timestamp ? Date.parse(finalMessage.timestamp) : Number.NaN;
-	if (start === undefined || !Number.isFinite(end) || end < start) return undefined;
-	return formatElapsedDuration(end - start);
-}
-
-function markCompletedTurnResult(
-	turn: ConversationContentRenderItem[],
-	completed: boolean,
-	observedElapsed?: (sentAt: number) => number | undefined,
-): ConversationRenderItem[] {
-	const firstEntry = turn[0];
-	const userMessage =
-		firstEntry?.kind === "message" && firstEntry.role === "user" ? firstEntry : undefined;
-	if (!completed) {
-		const startedAt = userMessage ? messageStartedAt(userMessage) : undefined;
-		if (!userMessage || startedAt === undefined) return turn;
-		return [
-			userMessage,
-			{ kind: "live-elapsed", key: `live-elapsed:${userMessage.key}`, startedAt },
-			...turn.slice(1),
-		];
-	}
-	let finalMessageIndex = -1;
-	for (let index = turn.length - 1; index >= 0; index--) {
-		const entry = turn[index];
-		if (entry?.kind === "message" && entry.role === "assistant" && entry.text) {
-			finalMessageIndex = index;
-			break;
-		}
-	}
-	if (finalMessageIndex < 0) return turn;
-	const finalMessage = turn[finalMessageIndex];
-	if (!finalMessage || finalMessage.kind !== "message") return turn;
-	const durationLabel = completedTurnDurationLabel(userMessage, finalMessage, observedElapsed);
-	const completedTurn = durationLabel
-		? turn.map((entry, index) => (index === finalMessageIndex ? { ...entry, durationLabel } : entry))
-		: turn;
-	const processStartIndex = userMessage ? 1 : 0;
-	if (finalMessageIndex <= processStartIndex) return completedTurn;
-	const processItems = completedTurn.slice(processStartIndex, finalMessageIndex);
-	if (completedTurn.slice(finalMessageIndex + 1).some((entry) => entry.kind === "tool-stack")) return completedTurn;
-	const completedFinalMessage = completedTurn[finalMessageIndex];
-	if (!completedFinalMessage || completedFinalMessage.kind !== "message") return completedTurn;
-
-	const workProcessItems = processItems.map((entry) =>
-		entry.kind === "tool-stack" ? { ...entry, collapseForResult: true } : entry,
-	);
-	const completedItems: ConversationRenderItem[] = [];
-	if (userMessage) completedItems.push(userMessage);
-	completedItems.push(
-		{
-			kind: "work-process",
-			key: `work-process:${completedFinalMessage.key}:0`,
-			items: workProcessItems,
-		},
-		{ kind: "result-boundary", key: `result-boundary:${completedFinalMessage.key}` },
-		completedFinalMessage,
-		...completedTurn.slice(finalMessageIndex + 1),
-	);
-	return completedItems;
-}
-
-function markCompletedTurnResults(
-	rendered: ConversationContentRenderItem[],
-	responseActive: boolean,
-	observedElapsed?: (sentAt: number) => number | undefined,
-): ConversationRenderItem[] {
-	const next: ConversationRenderItem[] = [];
-	let turn: ConversationContentRenderItem[] = [];
-	for (const entry of rendered) {
-		if (entry.kind === "message" && entry.role === "user") {
-			if (turn.length) next.push(...markCompletedTurnResult(turn, true, observedElapsed));
-			turn = [entry];
-		} else {
-			turn.push(entry);
-		}
-	}
-	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive, observedElapsed));
-	return next;
-}
-
-export function buildConversationRenderItems(
-	persistedItems: ConversationContentRenderItem[],
-	liveItems: readonly LiveTurnItem[],
-	liveTools: WorkbenchState["liveTools"],
-	committedToolCallIds: ReadonlySet<string>,
-	liveCompaction: LiveCompactionState | undefined,
-	liveTurnId: number,
-	responseActive: boolean,
-	canEditPrompts = false,
-	liveSteps: WorkbenchState["liveSteps"] = {},
-	observedElapsed?: (sentAt: number) => number | undefined,
-): ConversationRenderItem[] {
-	const withLive = appendLiveRenderItems(
-		persistedItems,
-		liveItems,
-		liveTools,
-		committedToolCallIds,
-		liveCompaction,
-		liveTurnId,
-		liveSteps,
-	);
-	for (let index = 0; index < withLive.length; index++) {
-		const entry = withLive[index];
-		if (entry?.kind !== "message" || entry.role !== "user") continue;
-		const editable = canEditPrompts && Boolean(entry.entryId);
-		if (entry.editable !== editable) withLive[index] = { ...entry, editable };
-	}
-	if (!responseActive) {
-		for (let index = withLive.length - 1; index >= 0; index--) {
-			const entry = withLive[index];
-			if (entry?.kind !== "message" || entry.role !== "assistant" || !entry.text) continue;
-			withLive[index] = { ...entry, copyVisible: true };
-			break;
-		}
-	}
-	return markCompletedTurnResults(withLive, responseActive, observedElapsed);
 }
 
 function isConversationResponseActive(state: ConversationState): boolean {
@@ -1253,233 +521,43 @@ function ConversationBody({
 }) {
 	const responseActive = isConversationResponseActive(state);
 	const thinkingText = activeThinkingText(state.liveTurnItems);
-	const virtuosoRef = useRef<VirtuosoHandle | null>(null);
-	const transcriptScrollerRef = useRef<HTMLElement | null>(null);
-	const scrollToBottomTweenRef = useRef<gsap.core.Tween | null>(null);
-	const scrollToBottomSettleTimerRef = useRef<number>();
-	const sessionScrollStatesRef = useRef(new Map<string, ConversationTranscriptScrollState>());
-	const activeSessionIdRef = useRef(state.sessionId);
-	activeSessionIdRef.current = state.sessionId;
-	const [isAtBottom, setIsAtBottom] = useState(true);
-	const [isAtTop, setIsAtTop] = useState(false);
-	const historyLoadRequestedAtTopRef = useRef(false);
-	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
-	const promptScrollRequestRef = useRef(state.promptScrollRequest);
-	const promptFollowRef = useRef(false);
-	const handleVirtuosoRef = useCallback((handle: VirtuosoHandle | null) => {
-		virtuosoRef.current = handle;
-	}, []);
-	const handleTranscriptScrollerRef = useCallback((element: HTMLElement | null) => {
-		transcriptScrollerRef.current = element;
-	}, []);
-	const scrollToBottom = useCallback(() => {
-		virtuosoRef.current?.scrollToIndex({ align: "end", behavior: "auto", index: "LAST" });
-	}, []);
-	const animateScrollToBottom = useCallback(() => {
-		const scroller = transcriptScrollerRef.current;
-		scrollToBottomTweenRef.current?.kill();
-		scrollToBottomTweenRef.current = null;
-		if (scrollToBottomSettleTimerRef.current !== undefined) {
-			window.clearTimeout(scrollToBottomSettleTimerRef.current);
-			scrollToBottomSettleTimerRef.current = undefined;
-		}
-		if (!scroller) {
-			setFollowOutput("auto");
-			scrollToBottom();
-			return;
-		}
-		let stableFrames = 0;
-		let previousMaxScrollTop = -1;
-		const settleAtBottom = () => {
-			const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-			const heightStable = Math.abs(maxScrollTop - previousMaxScrollTop) < 0.5;
-			const alreadyAtBottom = Math.abs(maxScrollTop - scroller.scrollTop) < 0.5;
-			stableFrames = heightStable && alreadyAtBottom ? stableFrames + 1 : 0;
-			previousMaxScrollTop = maxScrollTop;
-			scroller.scrollTop = maxScrollTop;
-			if (stableFrames >= 4) {
-				scrollToBottomSettleTimerRef.current = undefined;
-				scrollToBottomTweenRef.current = null;
-				setFollowOutput("auto");
-				return;
-			}
-			scrollToBottomSettleTimerRef.current = window.setTimeout(settleAtBottom, 50);
-		};
-		const reduceMotion =
-			typeof window !== "undefined" &&
-			typeof window.matchMedia === "function" &&
-			window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-		const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-		if (reduceMotion || Math.abs(maxScrollTop - scroller.scrollTop) < 1) {
-			settleAtBottom();
-			return;
-		}
-		setFollowOutput(false);
-		const progress = { value: 0 };
-		const startScrollTop = scroller.scrollTop;
-		const tween = gsap.to(progress, {
-			duration: 0.5,
-			ease: "power2.out",
-			overwrite: "auto",
-			value: 1,
-			onUpdate: () => {
-				const currentMaxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-				scroller.scrollTop = startScrollTop + (currentMaxScrollTop - startScrollTop) * progress.value;
-			},
-			onInterrupt: () => {
-				if (scrollToBottomTweenRef.current === tween) scrollToBottomTweenRef.current = null;
-			},
-		});
-		scrollToBottomTweenRef.current = tween;
-		scrollToBottomSettleTimerRef.current = window.setTimeout(settleAtBottom, 500);
-	}, [scrollToBottom]);
-	const handleScrollStateCapture = useCallback(
-		(sessionId: string, scrollState: ConversationTranscriptScrollState) => {
-			if (sessionId !== activeSessionIdRef.current) return;
-			const states = sessionScrollStatesRef.current;
-			states.delete(sessionId);
-			states.set(sessionId, scrollState);
-			while (states.size > SESSION_SCROLL_CACHE_LIMIT) {
-				const oldest = states.keys().next().value;
-				if (oldest === undefined) break;
-				states.delete(oldest);
-			}
-		},
-		[],
-	);
-	const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
-		setIsAtBottom(atBottom);
-		if (atBottom) {
-			promptFollowRef.current = true;
-			setFollowOutput("auto");
-		}
-	}, []);
-	const handleUserScrollAway = useCallback(() => {
-		scrollToBottomTweenRef.current?.kill();
-		scrollToBottomTweenRef.current = null;
-		if (scrollToBottomSettleTimerRef.current !== undefined) {
-			window.clearTimeout(scrollToBottomSettleTimerRef.current);
-			scrollToBottomSettleTimerRef.current = undefined;
-		}
-		promptFollowRef.current = false;
-		setFollowOutput(false);
-		setIsAtBottom(false);
-	}, []);
-	const requestEarlierHistory = useCallback(() => {
-		void actions.loadEarlier().catch((error: unknown) => {
-			if (activeSessionIdRef.current === state.sessionId)
-				actions.showToast(error instanceof Error ? error.message : String(error));
-		});
-	}, [actions.loadEarlier, actions.showToast, state.sessionId]);
-
-	useEffect(() => {
-		if (!isAtTop) {
-			historyLoadRequestedAtTopRef.current = false;
-			return;
-		}
-		if (!shouldLoadEarlierHistory(isAtTop, state, historyLoadRequestedAtTopRef.current)) return;
-		historyLoadRequestedAtTopRef.current = true;
-		requestEarlierHistory();
-	}, [
-		isAtTop,
-		requestEarlierHistory,
-		state.hasMorePrevious,
-		state.loadingEarlier,
-		state.previousCursor,
-		state.transcriptError,
-	]);
-
-	useLayoutEffect(() => {
-		if (promptScrollRequestRef.current === state.promptScrollRequest) return;
-		promptScrollRequestRef.current = state.promptScrollRequest;
-		promptFollowRef.current = true;
-		setFollowOutput("auto");
-		scrollToBottom();
-	}, [scrollToBottom, state.promptScrollRequest]);
-
-	useEffect(() => {
-		if (!promptFollowRef.current || responseActive) return;
-		const frame = window.requestAnimationFrame(() => {
-			promptFollowRef.current = false;
-			setFollowOutput(false);
-		});
-		return () => window.cancelAnimationFrame(frame);
-	}, [responseActive]);
-
 	const openResource = actions.openResource;
-	const [expandedWorkProcesses, setExpandedWorkProcesses] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-	const [expandedAgentSteps, setExpandedAgentSteps] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-	const [expandedToolBatches, setExpandedToolBatches] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-	const [expandedToolRows, setExpandedToolRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-	const toolStackPresentationsRef = useRef(new Map<string, ToolStackPresentation>());
-	useLayoutEffect(() => {
-		historyLoadRequestedAtTopRef.current = false;
-		scrollToBottomTweenRef.current?.kill();
-		scrollToBottomTweenRef.current = null;
-		if (scrollToBottomSettleTimerRef.current !== undefined) {
-			window.clearTimeout(scrollToBottomSettleTimerRef.current);
-			scrollToBottomSettleTimerRef.current = undefined;
-		}
-		const sessionId = state.sessionId;
-		const savedScroll = sessionId ? sessionScrollStatesRef.current.get(sessionId) : undefined;
-		const atBottom = savedScroll?.atBottom ?? true;
-		setExpandedWorkProcesses(new Map());
-		setExpandedAgentSteps(new Map());
-		setExpandedToolBatches(new Map());
-		setExpandedToolRows(new Map());
-		toolStackPresentationsRef.current.clear();
-		promptFollowRef.current = atBottom;
-		setIsAtBottom(atBottom);
-		setIsAtTop(false);
-		setFollowOutput(atBottom ? "auto" : false);
-		const frame = window.requestAnimationFrame(() => {
-			if (!savedScroll || savedScroll.atBottom) scrollToBottom();
-		});
-		return () => {
-			window.cancelAnimationFrame(frame);
-			scrollToBottomTweenRef.current?.kill();
-			scrollToBottomTweenRef.current = null;
-			if (scrollToBottomSettleTimerRef.current !== undefined) {
-				window.clearTimeout(scrollToBottomSettleTimerRef.current);
-				scrollToBottomSettleTimerRef.current = undefined;
-			}
-		};
-	}, [scrollToBottom, state.sessionId]);
-	const updateExpandedWorkProcess = useCallback((key: string, open: boolean) => {
-		setExpandedWorkProcesses((current) => {
-			if ((current.get(key) ?? false) === open) return current;
-			const next = new Map(current);
-			if (open) next.set(key, true);
-			else next.delete(key);
-			return next;
-		});
-	}, []);
-	const updateExpandedAgentStep = useCallback((key: string, open: boolean) => {
-		setExpandedAgentSteps((current) => {
-			if (current.get(key) === open) return current;
-			const next = new Map(current);
-			next.set(key, open);
-			return next;
-		});
-	}, []);
-	const updateExpandedToolBatch = useCallback((key: string, open: boolean) => {
-		setExpandedToolBatches((current) => {
-			if ((current.get(key) ?? false) === open) return current;
-			const next = new Map(current);
-			if (open) next.set(key, true);
-			else next.delete(key);
-			return next;
-		});
-	}, []);
-	const updateExpandedToolRow = useCallback((toolId: string, open: boolean) => {
-		setExpandedToolRows((current) => {
-			if ((current.get(toolId) ?? false) === open) return current;
-			const next = new Map(current);
-			if (open) next.set(toolId, true);
-			else next.delete(toolId);
-			return next;
-		});
-	}, []);
+	const {
+		expandedWorkProcesses,
+		expandedAgentSteps,
+		expandedToolBatches,
+		expandedToolRows,
+		getToolStackPresentation,
+		resetExpandedState,
+		updateExpandedWorkProcess,
+		updateExpandedAgentStep,
+		updateExpandedToolBatch,
+		updateExpandedToolRow,
+	} = useConversationExpansion();
+	const {
+		followOutput,
+		handleAtBottomStateChange,
+		handleAtTopStateChange,
+		handleReturnToBottom,
+		handleScrollStateCapture,
+		handleTranscriptScrollerRef,
+		handleUserScrollAway,
+		handleVirtuosoRef,
+		isAtBottom,
+		requestEarlierHistory,
+		scrollState,
+	} = useConversationScroll({
+		sessionId: state.sessionId,
+		promptScrollRequest: state.promptScrollRequest,
+		hasMorePrevious: state.hasMorePrevious,
+		loadingEarlier: state.loadingEarlier,
+		previousCursor: state.previousCursor,
+		transcriptError: state.transcriptError,
+		responseActive,
+		loadEarlier: actions.loadEarlier,
+		showToast: actions.showToast,
+		resetExpandedState,
+	});
 	const renderStateRef = useRef({ sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses });
 	renderStateRef.current = { sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses };
 	const openSubagent = actions.openSubagent;
@@ -1488,11 +566,7 @@ function ConversationBody({
 			const current = renderStateRef.current;
 			const tools = entry.batches.flatMap((batch) => batch.tools);
 			const controlCollapsedState = entry.collapseForResult;
-			let presentation = toolStackPresentationsRef.current.get(entry.key);
-			if (!presentation) {
-				presentation = initialToolStackPresentation(tools);
-				toolStackPresentationsRef.current.set(entry.key, presentation);
-			}
+			const presentation = getToolStackPresentation(entry.key, tools);
 			if (presentation === "rows") {
 				return (
 					<div className="tool-batch-stack">
@@ -1532,6 +606,7 @@ function ConversationBody({
 		[
 			expandedToolBatches,
 			expandedToolRows,
+			getToolStackPresentation,
 			openResource,
 			openSubagent,
 			updateExpandedToolBatch,
@@ -1618,6 +693,7 @@ function ConversationBody({
 					/>
 				);
 			}
+			if (entry.kind === "hook-group") return <HookActivityGroup entry={entry} />;
 			const content =
 				entry.kind === "message" ? (
 					renderMessage(entry)
@@ -1695,9 +771,13 @@ function ConversationBody({
 							</button>
 						</CollapsibleTrigger>
 						<GsapCollapsibleContent open={open} className="pt-2" data-transcript-resize-anchor>
-							<div className="grid min-w-0 gap-3">
-								{entry.items.map((item) => (
-									<div className="min-w-0" key={item.key}>
+							<div className="grid min-w-0">
+								{entry.items.map((item, index) => (
+									<div
+										className="min-w-0"
+										key={item.key}
+										style={index > 0 ? { marginTop: toolActivityGap(entry.items[index - 1]!, item) } : undefined}
+									>
 										{renderConversationContentItem(item)}
 									</div>
 								))}
@@ -1719,9 +799,10 @@ function ConversationBody({
 					? 32
 					: entry.kind === "work-process" ||
 						entry.kind === "agent-step" ||
+						entry.kind === "hook-group" ||
 						entry.kind === "tool-stack" ||
 						entry.kind === "compaction" ||
-						isWebSearchTranscriptItem(entry)
+						isToolActivityEntry(entry)
 					? 32
 					: 80,
 		[],
@@ -1731,10 +812,7 @@ function ConversationBody({
 		(previous: ConversationRenderItem, current: ConversationRenderItem) => {
 			if (current.kind === "result-boundary") return 8;
 			if (previous.kind === "result-boundary") return DEFAULT_TRANSCRIPT_GAP;
-			return (previous.kind === "tool-stack" && current.kind === "tool-stack") ||
-				(isWebSearchTranscriptItem(previous) && isWebSearchTranscriptItem(current))
-				? 0
-				: DEFAULT_TRANSCRIPT_GAP;
+			return toolActivityGap(previous, current);
 		},
 		[],
 	);
@@ -1785,12 +863,10 @@ function ConversationBody({
 					renderItem={renderConversationItem}
 					isItemEqual={conversationRenderItemEqual}
 					atBottomStateChange={handleAtBottomStateChange}
-					atTopStateChange={setIsAtTop}
+					atTopStateChange={handleAtTopStateChange}
 					atTopThreshold={HISTORY_LOAD_THRESHOLD}
 					followOutput={followOutput}
-					scrollState={
-						state.sessionId ? sessionScrollStatesRef.current.get(state.sessionId) : undefined
-					}
+					scrollState={scrollState}
 					onScrollStateCapture={handleScrollStateCapture}
 					onScrollerRef={handleTranscriptScrollerRef}
 					onUserScrollAway={handleUserScrollAway}
@@ -1802,8 +878,7 @@ function ConversationBody({
 						aria-label="回到最新消息"
 						className="absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted"
 						onClick={() => {
-							promptFollowRef.current = true;
-							animateScrollToBottom();
+							handleReturnToBottom();
 						}}
 						size="icon"
 						type="button"

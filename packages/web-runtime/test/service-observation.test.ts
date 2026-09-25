@@ -248,7 +248,9 @@ describe("WebRuntimeService Session observation", () => {
 		});
 
 		expect(local.disposeMock).toHaveBeenCalledOnce();
-		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function));
+		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function), {
+			deferExtensionLifecycle: false,
+		});
 		messages.length = 0;
 		companion.runtime.emit({ type: "progress", payload: { type: "assistant_delta", text: "已切换" } });
 		await waitFor(() =>
@@ -321,7 +323,9 @@ describe("WebRuntimeService Session observation", () => {
 		expect(results).toEqual([fresh.runtime, fresh.runtime]);
 		expect(adapter.openSession).toHaveBeenCalledOnce();
 		expect(stale.disposeMock).toHaveBeenCalledOnce();
-		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function));
+		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function), {
+			deferExtensionLifecycle: false,
+		});
 	});
 	it("coalesces adjacent high-frequency progress before sending it over the Host protocol", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-progress-"));

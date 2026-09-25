@@ -23,13 +23,16 @@ import {
 	errorMessage,
 	operationForSessionSnapshot,
 	projectInspectorStateForSelection,
-	readCachedSessionDetail,
-	sessionDetailCacheFromState,
 	updateSessionActivity,
 	updateSessionSummaryFirstMessage,
 	updateSessionSummaryName,
-	cacheSessionDetail,
 } from "./workbench-state.ts";
+import {
+	cacheSessionDetail,
+	readCachedSessionDetail,
+	sessionDetailCacheFromState,
+	type CachedSessionDetail,
+} from "./workbench-session-cache.ts";
 import {
 	appendLiveUserPrompt,
 	removeLiveUserPrompt,
@@ -38,7 +41,6 @@ import {
 	withPromptSendTimes,
 } from "./workbench-live-state.ts";
 import { isOlderSessionSnapshot } from "./session-sync.ts";
-import type { CachedSessionDetail } from "./workbench-state.ts";
 import type { ComposerMode, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
@@ -504,7 +506,15 @@ export function useWorkbenchSessionActions({
 			return;
 		}
 		selectionRef.current++;
-		const previousSessionId = stateRef.current.sessionId;
+		const previous = stateRef.current;
+		const previousSessionId = previous.sessionId;
+		if (previousSessionId && previousSessionId !== result.session.id) {
+			cacheSessionDetail(
+				sessionDetailCacheRef.current,
+				previousSessionId,
+				sessionDetailCacheFromState(previous),
+			);
+		}
 		const socket = socketRef.current;
 		if (socket && previousSessionId && previousSessionId !== result.session.id)
 			webApi.unsubscribeSession(socket, previousSessionId);

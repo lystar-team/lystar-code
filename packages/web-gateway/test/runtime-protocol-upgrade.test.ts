@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { type ChildProcessByStdio, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
-import { probeIpcRuntime, stopRuntimeService } from "@lystar/code-web-runtime";
+import { probeIpcRuntime, stopRuntimeService, webServiceUnitName } from "@lystar/code-web-runtime";
 import type { WebGatewayConfig } from "../src/config.ts";
 import { connectRuntimeClient } from "../src/runtime-client.ts";
 
@@ -145,6 +145,103 @@ afterEach(async () => {
 });
 
 describe("Web Gateway Runtime 协议升级", () => {
+	it("已安装且可达的旧 Runtime 存在活跃会话时拒绝强制升级", { skip: process.platform !== "linux" }, async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "web-runtime-installed-busy-upgrade-"));
+		tempDirs.add(agentDir);
+		const endpoint = join(agentDir, "host.sock");
+		const serviceProfile = `protocol-upgrade-installed-busy-${process.pid}`;
+		const systemdUserDirectory = join(agentDir, ".config", "systemd", "user");
+		const systemdUnit = join(systemdUserDirectory, `${webServiceUnitName("runtime", serviceProfile)}.service`);
+		const commandDirectory = join(agentDir, "bin");
+		const systemctlLog = join(agentDir, "systemctl.log");
+		mkdirSync(systemdUserDirectory, { recursive: true });
+		mkdirSync(commandDirectory, { recursive: true });
+		writeFileSync(systemdUnit, ["[Unit]", "Description=test fixture", ""].join("\n"));
+		writeFileSync(
+			join(commandDirectory, "systemctl"),
+			[
+				"#!/bin/sh",
+				'printf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"',
+				'if [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then exit 1; fi',
+				"exit 0",
+				"",
+			].join("\n"),
+			{ mode: 0o755 },
+		);
+		const previousEnvironment = {
+			home: process.env.HOME,
+			path: process.env.PATH,
+			systemctlLog: process.env.SYSTEMCTL_LOG,
+		};
+		try {
+			process.env.HOME = agentDir;
+			process.env.PATH = `${commandDirectory}:${previousEnvironment.path ?? ""}`;
+			process.env.SYSTEMCTL_LOG = systemctlLog;
+			const legacy = spawn(
+				process.execPath,
+				["--import", tsxImport, "--input-type=module", "--eval", legacyRuntimeScript],
+				{
+					cwd: repositoryRoot,
+					env: {
+						...process.env,
+						PROTOCOL_MODULE: protocolModule,
+						RUNTIME_ENDPOINT: endpoint,
+						LEGACY_BUSY_SESSION: "1",
+					},
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			children.add(legacy);
+			await waitForReady(legacy);
+			const config: WebGatewayConfig = {
+				host: "127.0.0.1",
+				port: 0,
+				agentDir,
+				runtimeEndpoint: endpoint,
+				token: "test-token",
+				allowedHosts: ["127.0.0.1"],
+				staticDir: agentDir,
+				manageRuntime: true,
+				serviceProfile,
+				runtimeInvocation: {
+					command: process.execPath,
+					args: ["--import", tsxImport, runtimeCli, "serve"],
+					cwd: repositoryRoot,
+				},
+			};
+
+			await assert.rejects(
+				connectRuntimeClient(
+					config,
+					"installed-busy-upgrade-client",
+					() => {},
+					() => {},
+				),
+				(error: Error & { code?: string; retryable?: boolean }) =>
+					error.code === "version" && error.retryable === true && error.message.includes("仍有运行任务"),
+			);
+			assert.equal(legacy.exitCode, null);
+			assert.equal(legacy.signalCode, null);
+			const systemctlCommands = readFileSync(systemctlLog, "utf8").trim().split("\n");
+			assert.ok(systemctlCommands.length > 0);
+			assert.ok(
+				systemctlCommands.every(
+					(command) =>
+						command.startsWith("--user is-active --quiet ") ||
+						(command.startsWith("--user show ") && command.endsWith(" --property=MainPID --value")),
+				),
+				`Unexpected systemctl commands: ${systemctlCommands.join("; ")}`,
+			);
+		} finally {
+			if (previousEnvironment.home === undefined) delete process.env.HOME;
+			else process.env.HOME = previousEnvironment.home;
+			if (previousEnvironment.path === undefined) delete process.env.PATH;
+			else process.env.PATH = previousEnvironment.path;
+			if (previousEnvironment.systemctlLog === undefined) delete process.env.SYSTEMCTL_LOG;
+			else process.env.SYSTEMCTL_LOG = previousEnvironment.systemctlLog;
+		}
+	});
+
 	it("旧 Runtime 存在活跃会话时拒绝强制升级", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "web-runtime-busy-upgrade-"));
 		tempDirs.add(agentDir);
@@ -242,7 +339,7 @@ describe("Web Gateway Runtime 协议升级", () => {
 		);
 		try {
 			assert.equal(connected.client.getSnapshot().hello?.protocolVersion, RUNTIME_PROTOCOL_VERSION);
-			assert.equal(RUNTIME_PROTOCOL_VERSION, 9);
+			assert.equal(RUNTIME_PROTOCOL_VERSION, 10);
 			assert.equal(legacy.exitCode === null && legacy.signalCode === null, false);
 			children.delete(legacy);
 		} finally {

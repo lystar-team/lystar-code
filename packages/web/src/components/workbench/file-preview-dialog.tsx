@@ -9,7 +9,7 @@ import { MessageResponse, shouldVirtualizeMarkdown } from "../ai-elements/messag
 import { ResourceImage, ResourceImageViewer, type ResourceImageItem } from "../ai-elements/resource-preview.tsx";
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.tsx";
-import { FileTypeIcon } from "./files-panel.tsx";
+import { FileTypeIcon } from "./file-type-icon.tsx";
 import { languageForPath, monacoLanguageForPath } from "./file-language.ts";
 import {
 	MonacoFileEditor,
@@ -18,7 +18,7 @@ import {
 } from "./monaco-file-editor.tsx";
 import { OfficeFilePreview, downloadBinaryFile, officeFormatForPath } from "./office-file-preview.tsx";
 import { preloadMonacoLanguage } from "./monaco-runtime.ts";
-import { CodeBlockView } from "./transcript.tsx";
+import { CodeBlockView } from "./code-block-view.tsx";
 import type { WorkbenchActions } from "./types.ts";
 
 function formatBytes(bytes: number): string {

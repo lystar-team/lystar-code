@@ -36,6 +36,8 @@
 
 - [开发环境](development/setup.md)
 - [测试与验证](development/verification.md)
+- [LYStar Code Web 架构总览](development/web-overview.md)
+- [LYStar Code Web 编写规范](development/web-architecture.md)
 - [发行](development/release.md)
 - [同步 Pi 上游](development/upstream-sync.md)
 
@@ -44,7 +46,6 @@
 `packages/coding-agent/docs/` 保留 Pi 上游的完整技术文档，包含 Extension API、Skill 规范、Package 格式、SDK、RPC、Session 格式和自定义 Provider。LYStar 中文文档只维护安装与高频路径，深入契约以对应上游文档和当前源码为准。
 
 - [项目建设与兼容基线](lystar-agent-plan.md)
-- [LYStar Code Web 架构与验证记录](../AGENT_VERIFICATION.md)
 - [README、安装与文档改造方案](readme-documentation-usability-plan.md)
 - [项目验证记录](../AGENT_VERIFICATION.md)
 

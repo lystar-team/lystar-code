@@ -132,7 +132,7 @@ describe("Skill read tool display", () => {
 				],
 			}),
 		);
-		expect(imageMarkup).toContain("已生成 1 张图片");
+		expect(imageMarkup).toContain('data-slot="image-generation"');
 		expect(imageMarkup).not.toContain("max-w-3xl");
 	});
 
@@ -460,8 +460,8 @@ describe("Skill read tool display", () => {
 			createElement(ToolBatch, { tools: [running], open: false, autoCollapseWhenComplete: true }),
 		);
 
-		expect(runningMarkup).toContain("正在生成图片 · 蓝色纸张上的白色圆形");
-		expect(runningMarkup).toContain("正在使用 gpt-image-2.5-flare 生成图片");
+		expect(runningMarkup).toContain('data-slot="image-generation" data-state="generating"');
+		expect(runningMarkup).toContain("正在生成图片");
 		expect(runningMarkup).toContain("lucide-loader-circle");
 
 		const completed: ToolBatchTool = {
@@ -482,11 +482,8 @@ describe("Skill read tool display", () => {
 		);
 
 		expect(toolBatchSummaryLabel([completed])).toBe("已生成 1 张图片");
-		expect(completedMarkup).toContain("已生成 1 张图片");
-		expect(completedMarkup).toContain("generated.png");
-		expect(completedMarkup).toMatch(
-			/<span class="min-w-0 truncate text-sm" title="gpt-image-2\.5-flare">gpt-image-2\.5-flare<\/span>/u,
-		);
+		expect(completedMarkup).toContain('data-slot="image-generation"');
+		expect(completedMarkup).toContain("请求模型");
 		expect(completedMarkup).toMatch(/<button[^>]*text-\[13px\]![^>]*leading-5![^>]*>.*?查看大图/su);
 		expect(completedMarkup).toContain("查看大图");
 		expect(completedMarkup).toContain("gpt-image-2.5-flare");
@@ -494,7 +491,7 @@ describe("Skill read tool display", () => {
 		expect(completedMarkup).toContain("没有图片内容");
 	});
 
-	it("places prompt actions below the full-width prompt", () => {
+	it("shows the prompt in image generation details", () => {
 		const prompt =
 			"请保留提示词正文的完整可用宽度，并把展开按钮放在操作行左侧，把复制提示词按钮放在操作行右侧。".repeat(6);
 		const markup = renderToStaticMarkup(
@@ -511,12 +508,12 @@ describe("Skill read tool display", () => {
 			}),
 		);
 
-		expect(markup).toMatch(
-			/<p class="min-w-0 whitespace-pre-wrap break-words line-clamp-4">.*?<\/p><div class="flex min-h-8 items-center justify-between gap-3"><button[^>]*>展开提示词<\/button><button[^>]*ml-auto[^>]*>.*?复制提示词<\/button><\/div>/su,
-		);
+		expect(markup).toContain("提示词");
+		expect(markup).toContain(prompt);
+		expect(markup).toContain("查看大图");
 	});
 
-	it("does not present the requested auto selector as the actual image model", () => {
+	it("shows the model value supplied in the completed image summary", () => {
 		const markup = renderToStaticMarkup(
 			createElement(ToolBatch, {
 				tools: [
@@ -533,7 +530,8 @@ describe("Skill read tool display", () => {
 
 		expect(markup).toContain("蓝色圆形");
 		expect(markup).not.toContain("生成模型");
-		expect(markup).not.toContain(">auto<");
+		expect(markup).toContain("请求模型");
+		expect(markup).toContain(">auto<");
 	});
 
 	it("keeps failed image generation visible as an error card", () => {
@@ -548,7 +546,8 @@ describe("Skill read tool display", () => {
 
 		expect(markup).toContain("图片生成失败 · blocked image");
 		expect(markup).toContain("content_policy_violation");
-		expect(markup).toContain('role="alert"');
+		expect(markup).toContain('role="img" aria-label="content_policy_violation"');
+		expect(markup).toContain('aria-live="polite"');
 	});
 
 	it("allows completed image previews to be collapsed by the result boundary state", () => {

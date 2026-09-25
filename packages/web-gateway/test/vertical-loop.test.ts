@@ -472,16 +472,19 @@ test("Web Gateway fake Provider 完成 Prompt、事件和 Transcript 闭环", as
 		"Prompt operation completion event",
 	);
 	assert.equal(record(completedEvent.operation)?.sessionId, sessionId);
-	const transcriptCommittedEvent = await waitForWebSocketMessage(
+	await waitForWebSocketMessage(
 		messages,
 		(message) =>
 			message.type === "transcript_committed" &&
 			message.sessionId === sessionId &&
-			Array.isArray(message.items) &&
-			message.items.length >= 2,
-		"Transcript committed event",
+			messages
+				.filter((event) => event.type === "transcript_committed" && event.sessionId === sessionId)
+				.reduce((count, event) => count + (Array.isArray(event.items) ? event.items.length : 0), 0) >= 2,
+		"Transcript committed events",
 	);
-	const committedItems = transcriptCommittedEvent.items as unknown[];
+	const committedItems = messages
+		.filter((event) => event.type === "transcript_committed" && event.sessionId === sessionId)
+		.flatMap((event) => (Array.isArray(event.items) ? event.items : []));
 	const firstCommittedItem = record(committedItems[0]);
 	assert.equal(firstCommittedItem ? "payload" in firstCommittedItem : false, false);
 	const resolvedProjectCwd = resolve(projectCwd);

@@ -3,7 +3,7 @@ import { GitCompare, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { monacoLanguageForPath } from "./file-language";
 import { ensureMonacoLanguage, loadMonacoRuntime, setMonacoTheme } from "./monaco-runtime";
-import { CodeBlockView } from "./transcript";
+import { CodeBlockView } from "./code-block-view";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Badge } from "../ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";

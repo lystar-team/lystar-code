@@ -11,6 +11,7 @@ import { allocateRoomNickname, readRoomNicknamePool } from "../components/workbe
 import type { SubagentConfig, WebProject, WebRoomMessage, WebRoomSummary } from "../types";
 
 interface UseRoomWorkspaceOptions {
+	active: boolean;
 	projects: readonly WebProject[];
 	sessionId?: string;
 	refreshProjectSessions: (projectId: string) => Promise<void>;
@@ -78,6 +79,7 @@ function roomMemberIdentity(member: RoomMemberSelection, room?: WebRoomSummary):
 }
 
 export function useRoomWorkspace({
+	active,
 	projects,
 	sessionId,
 	refreshProjectSessions,
@@ -152,8 +154,8 @@ export function useRoomWorkspace({
 	}, [projects, selectedRoomKey, selectedRoomProjectId]);
 
 	useEffect(() => {
-		void refreshRooms();
-	}, [refreshRooms]);
+		if (active) void refreshRooms();
+	}, [active, refreshRooms]);
 
 	useEffect(() => {
 		const projectId = selectedRoomProjectId;

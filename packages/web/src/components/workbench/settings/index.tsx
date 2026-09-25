@@ -1,5 +1,5 @@
 import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, BrainCircuit, CircleHelp, KeyRound, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { webApi } from "../../../adapters/host-protocol/api";
 import { useAppInstall } from "../../../state/use-app-install";
@@ -11,7 +11,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
 import { GsapReveal } from "../../ui/gsap-reveal";
 import { AboutSettings } from "./about";
 import { AppearanceSettings } from "./appearance";
-import { DiagnosticsSettings } from "./diagnostics";
 import { GlobalInstructionsSettings } from "./global-instructions";
 import { HarnessImportsSettings } from "./imports";
 import { ModelSettings } from "./model-settings";
@@ -21,6 +20,10 @@ import { SkillsSettings } from "./skills";
 import { SubagentSettings } from "./subagents";
 import { SystemSettings } from "./system";
 import type { WorkbenchActions } from "../types";
+
+const DiagnosticsSettings = lazy(() =>
+	import("./diagnostics").then((module) => ({ default: module.DiagnosticsSettings })),
+);
 
 export function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [query, setQuery] = useState("");
@@ -203,7 +206,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 								<HarnessImportsSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="diagnostics">
-								<DiagnosticsSettings state={state} actions={actions} />
+								<Suspense fallback={<p role="status" className="text-sm text-muted-foreground">正在加载诊断…</p>}>
+									<DiagnosticsSettings state={state} actions={actions} />
+								</Suspense>
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="permissions">
 								<SystemPermissionsSettings />

@@ -1,4 +1,4 @@
-import type { ToolBatchTool } from "../components/ai-elements/tool-batch.tsx";
+import type { ToolBatchTool } from "../types.ts";
 import type { LiveTool } from "../state/use-workbench.ts";
 
 export function toLiveToolViewModel(tool: LiveTool): ToolBatchTool {

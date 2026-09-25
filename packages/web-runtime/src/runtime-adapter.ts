@@ -1739,7 +1739,11 @@ function progressWithAgentStep(progress: SessionProgress, controller: AgentStepC
 		return stepId ? { ...progress, stepId } : progress;
 	}
 	if (progress.type === "tool_state") {
-		const stepId = controller.stepIdForTool(progress.activity.toolCallId);
+		const stepId =
+			controller.stepIdForTool(progress.activity.toolCallId) ??
+			(progress.activity.state === "preparing" || progress.activity.state === "queued"
+				? controller.activeStep?.id
+				: undefined);
 		return stepId ? { ...progress, activity: { ...progress.activity, stepId } } : progress;
 	}
 	if (progress.type === "tool_start" || progress.type === "tool_update" || progress.type === "tool_end") {

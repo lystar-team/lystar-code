@@ -51,8 +51,8 @@ import {
 	transcriptText,
 	updateSessionActivity,
 	updateSessionSummaryName,
-	type CachedSessionDetail,
 } from "./workbench-state.ts";
+import type { CachedSessionDetail } from "./workbench-session-cache.ts";
 import { useWorkbenchSettingsActions } from "./workbench-settings-actions.ts";
 import { useWorkbenchGitActions } from "./workbench-git-actions.ts";
 import { useWorkbenchFileActions } from "./workbench-file-actions.ts";
@@ -101,7 +101,6 @@ type SessionSubscriptionWaiter = {
 export function useWorkbench() {
 	const [state, setState] = useState<WorkbenchState>(() => initialState());
 	const stateRef = useRef(state);
-	stateRef.current = state;
 	const mountedRef = useRef(true);
 	const socketRef = useRef<WebSocket | undefined>(undefined);
 	const streamGenerationRef = useRef(0);

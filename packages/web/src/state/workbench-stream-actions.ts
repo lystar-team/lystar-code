@@ -52,7 +52,7 @@ import {
 	updateSessionActivity,
 	updateSessionSummaryName,
 } from "./workbench-state.ts";
-import type { CachedSessionDetail } from "./workbench-state.ts";
+import type { CachedSessionDetail } from "./workbench-session-cache.ts";
 import {
 	mergeTranscriptEntries,
 	transcriptRenderIdOverrides,

@@ -86,14 +86,14 @@ export interface RuntimeInitialSnapshot {
 	startupCwd?: string;
 }
 
-async function waitForHello(client: RuntimeProtocolClient): Promise<void> {
+async function waitForHello(client: RuntimeProtocolClient, timeoutMs = 10_000): Promise<void> {
 	if (client.getSnapshot().connected) return;
 	await new Promise<void>((resolvePromise, reject) => {
 		let unsubscribe = () => {};
 		const timer = setTimeout(() => {
 			unsubscribe();
 			reject(new Error(client.getSnapshot().lastError ?? "Web Runtime 连接超时"));
-		}, 10_000);
+		}, timeoutMs);
 		unsubscribe = client.subscribe(() => {
 			const snapshot = client.getSnapshot();
 			if (!snapshot.connected && !snapshot.lastError) return;
@@ -190,6 +190,23 @@ function runtimeServiceInvocation(config: WebGatewayConfig): WebServiceInvocatio
 		: undefined;
 }
 
+async function hasIncompatibleRuntimeVersion(endpoint: string): Promise<boolean> {
+	const transport = await SocketByteTransport.connect(endpoint).catch(() => undefined);
+	if (!transport) return false;
+	const client = new ProtocolClient(transport, `gateway-version-probe-${process.pid}`, {
+		trustedServerMessages: true,
+	});
+	try {
+		await client.connect();
+		await waitForHello(client, 1_000);
+		return false;
+	} catch (error) {
+		return incompatibleRuntimeVersion(error) !== undefined;
+	} finally {
+		await client.close().catch(() => {});
+	}
+}
+
 export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void> {
 	const startupKey = [config.agentDir, config.serviceProfile ?? "default", config.runtimeEndpoint].join("\0");
 	const existing = runtimeStartupPromises.get(startupKey);
@@ -206,6 +223,7 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 		if (status.responsive) return;
 		if (!config.manageRuntime) throw new Error(`Web Runtime 未运行或无响应：${config.runtimeEndpoint}`);
 		if (status.installed) {
+			if (status.reachable && (await hasIncompatibleRuntimeVersion(config.runtimeEndpoint))) return;
 			await ensureRuntimeService(config.runtimeEndpoint, serviceProfile, serviceInvocation, false, config.agentDir);
 			return;
 		}

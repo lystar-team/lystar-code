@@ -1,4 +1,4 @@
-import { Bot, Check, CircleAlert, Clock3, LoaderCircle, MessageSquare, Paperclip, UserPlus, Wrench } from "lucide-react";
+import { Check, CircleAlert, Clock3, LoaderCircle, MessageSquare, Paperclip, UserPlus, Wrench } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { RoomMemberSelection, RoomWorkspaceController } from "../../state/use-room-workspace";
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AgentProfileCard } from "./agent-profile-card";
 import { AgentIdentityIcon, collaborationAlias } from "./collaboration-session";
 import { mergeRoomMessages } from "./room-message-utils";
+import { AgentAvatar } from "./room-workspace-agent-avatar";
 import type { WorkbenchActions } from "./types";
 
 function formatMessageTime(value: string): string {
@@ -58,17 +59,7 @@ function ActivityRow({ message }: { message: WebRoomMessage }) {
 	);
 }
 
-function AgentAvatar({ memberSession, member }: { memberSession?: WebSessionSummary; member?: WebRoomMember }) {
-	return (
-		<div className="mt-1 grid size-8 shrink-0 place-items-center rounded-full border border-border/70 bg-muted text-muted-foreground">
-			{memberSession || member ? (
-				<AgentIdentityIcon member={member} session={memberSession} className="size-4 object-contain" />
-			) : (
-				<Bot className="size-4" aria-hidden="true" />
-			)}
-		</div>
-	);
-}
+
 
 function MessageBubble({
 	message,

@@ -8,7 +8,9 @@ import {
 	formatElapsedDuration,
 	initialTranscriptDisplayState,
 	LiveElapsedHeader,
+	toolActivityGap,
 } from "../src/components/workbench/conversation.tsx";
+import { HookActivityGroup } from "../src/components/workbench/hook-activity-group.tsx";
 import { activeThinkingText, THINKING_SHIMMER_HEIGHT, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
 import { TranscriptItemView, TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
 import {
@@ -229,6 +231,302 @@ describe("conversation render items", () => {
 		expect(html).toContain("min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5");
 		expect(html).not.toContain("rounded-md border");
 		expect(html).not.toContain("context-preheat-metrics");
+	});
+
+	it("各类相邻工具记录在会话和工作过程中共用紧凑间隔", () => {
+		const timestamp = "2026-09-24T00:00:00Z";
+		const transcript: WorkbenchState["transcript"] = [
+			{ entryId: "user", parentId: null, timestamp, kind: "message", view: { type: "user", text: "检查项目" } },
+			{
+				entryId: "extension",
+				parentId: "user",
+				timestamp,
+				kind: "custom",
+				view: { type: "extension_entry", customType: "context-preheat-metrics" },
+			},
+			{
+				entryId: "hook",
+				parentId: "extension",
+				timestamp,
+				kind: "custom",
+				view: {
+					type: "extension_activity",
+					activityId: "hook-1",
+					extensionPath: "extensions/context-preheat/index.ts",
+					hook: "before_agent_start",
+					status: "completed",
+				},
+			},
+			{
+				entryId: "progress",
+				parentId: "hook",
+				timestamp,
+				kind: "message",
+				view: { type: "assistant", text: "开始检查。" },
+			},
+			{
+				entryId: "commands",
+				parentId: "progress",
+				timestamp,
+				kind: "message",
+				view: { type: "tool_call", calls: [{ id: "bash-1", name: "bash", summary: "pwd" }] },
+			},
+			{
+				entryId: "skill",
+				parentId: "commands",
+				timestamp,
+				kind: "message",
+				view: {
+					type: "tool_call",
+					calls: [{ id: "skill-1", name: "read", summary: "/home/yean/.agents/skills/demo/SKILL.md" }],
+				},
+			},
+			{
+				entryId: "image",
+				parentId: "skill",
+				timestamp,
+				kind: "message",
+				view: { type: "tool_call", calls: [{ id: "image-1", name: "image_gen", summary: "生成图片" }] },
+			},
+			{
+				entryId: "custom-tool",
+				parentId: "image",
+				timestamp,
+				kind: "message",
+				view: { type: "tool_call", calls: [{ id: "custom-1", name: "custom_tool", summary: "执行" }] },
+			},
+			{
+				entryId: "search",
+				parentId: "custom-tool",
+				timestamp,
+				kind: "message",
+				view: { type: "web_search", id: "search-1", status: "completed", query: "项目说明", sources: [] },
+			},
+			{ entryId: "legacy-bash", parentId: "search", timestamp, kind: "custom", view: { type: "bash", text: "pwd" } },
+			{
+				entryId: "final",
+				parentId: "legacy-bash",
+				timestamp,
+				kind: "message",
+				view: { type: "assistant", text: "检查完成。" },
+			},
+		];
+		const persisted = buildPersistedRenderItems(transcript, emptyToolIndex);
+		const active = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, true);
+		const completed = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
+		const process = completed.find((entry) => entry.kind === "work-process");
+		if (!process || process.kind !== "work-process") throw new Error("缺少工作过程");
+
+		expect(process.items.map((entry) => entry.kind)).toEqual([
+			"item",
+			"message",
+			"tool-stack",
+			"tool-stack",
+			"tool-stack",
+			"tool-stack",
+			"tool-stack",
+			"item",
+		]);
+		expect(toolActivityGap(active[2]!, active[3]!)).toBe(12);
+		expect(toolActivityGap(process.items[0]!, process.items[1]!)).toBe(12);
+		expect(toolActivityGap(process.items[1]!, process.items[2]!)).toBe(12);
+		for (let index = 3; index < process.items.length; index++) {
+			expect(toolActivityGap(process.items[index - 1]!, process.items[index]!)).toBe(0);
+		}
+		expect(toolActivityGap(active[0]!, active[2]!)).toBe(12);
+	});
+
+	it("成功 Hook 不进入对话，失败 Hook 在所属回合显示一条提示", () => {
+		const timestamp = "2026-09-24T00:00:00Z";
+		const step = {
+			id: "check-step",
+			title: "检查项目",
+			status: "completed" as const,
+			toolCallIds: ["read-1"],
+			messageEntryIds: [],
+			startedAt: 1,
+			endedAt: 2,
+		};
+		const hook = (id: string, status: "completed" | "failed"): WorkbenchState["transcript"][number] => ({
+			entryId: id,
+			renderId: id,
+			parentId: "user-1",
+			timestamp,
+			kind: "custom",
+			view: {
+				type: "extension_activity",
+				activityId: id,
+				extensionPath: `extensions/${id}.ts`,
+				hook: "tool_call",
+				status,
+				...(status === "failed" ? { error: "Hook 执行失败" } : {}),
+			},
+		});
+		const transcript: WorkbenchState["transcript"] = [
+			{
+				entryId: "user-1",
+				renderId: "user-1",
+				parentId: null,
+				timestamp,
+				kind: "message",
+				view: { type: "user", text: "检查项目" },
+			},
+			hook("hook-before", "completed"),
+			{
+				entryId: "step",
+				renderId: "step",
+				parentId: "hook-before",
+				timestamp,
+				kind: "custom",
+				view: { type: "agent_step", step },
+			},
+			{
+				entryId: "read",
+				renderId: "read",
+				parentId: "step",
+				timestamp,
+				kind: "message",
+				view: { type: "tool_call", calls: [{ id: "read-1", name: "read", summary: "README.md", stepId: step.id }] },
+			},
+			hook("hook-middle", "completed"),
+			{
+				entryId: "final-1",
+				renderId: "final-1",
+				parentId: "hook-middle",
+				timestamp,
+				kind: "message",
+				view: { type: "assistant", text: "检查完成。" },
+			},
+			hook("hook-after", "failed"),
+			{
+				entryId: "user-2",
+				renderId: "user-2",
+				parentId: "hook-after",
+				timestamp,
+				kind: "message",
+				view: { type: "user", text: "继续。" },
+			},
+			hook("hook-next", "completed"),
+			{
+				entryId: "final-2",
+				renderId: "final-2",
+				parentId: "hook-next",
+				timestamp,
+				kind: "message",
+				view: { type: "assistant", text: "继续完成。" },
+			},
+		];
+		const persisted = buildPersistedRenderItems(transcript, emptyToolIndex, [], {}, { [step.id]: step });
+		const completed = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
+		const processes = completed.filter((entry) => entry.kind === "work-process");
+		expect(completed.map((entry) => entry.kind)).toEqual([
+			"message",
+			"work-process",
+			"hook-group",
+			"result-boundary",
+			"message",
+			"message",
+			"message",
+		]);
+		expect(processes).toHaveLength(1);
+		expect(processes[0]).toMatchObject({
+			items: [{ kind: "agent-step", items: [{ kind: "tool-stack", stepId: step.id }] }],
+		});
+		const group = completed[2];
+		if (group?.kind !== "hook-group") throw new Error("缺少 Hook 异常提示");
+		expect(group.items.map((entry) => entry.item.entryId)).toEqual(["hook-after"]);
+		const html = renderToStaticMarkup(createElement(HookActivityGroup, { entry: group }));
+		expect(html).toContain("Hook 出错或中断 · 1 条");
+		expect(html).toContain("Hook 执行失败");
+		expect(html).not.toContain("hook-before.ts");
+		expect(html).not.toContain("hook-after.ts");
+		expect(html).not.toContain("<button");
+	});
+
+	it("运行和完成的 Hook 不显示，失败与中断时保留单条异常提示", () => {
+		const timestamp = "2026-09-24T00:00:00Z";
+		const user = {
+			entryId: "user",
+			renderId: "user",
+			parentId: null,
+			timestamp,
+			kind: "message" as const,
+			view: { type: "user" as const, text: "检查" },
+		};
+		const step = {
+			id: "step",
+			title: "读取文件",
+			status: "running" as const,
+			toolCallIds: [],
+			messageEntryIds: [],
+			startedAt: 1,
+		};
+		const activity = (status: "running" | "completed" | "failed" | "interrupted") => ({
+			entryId: "hook",
+			renderId: "hook",
+			parentId: "step",
+			timestamp,
+			kind: "custom" as const,
+			view: {
+				type: "extension_activity" as const,
+				activityId: "hook-1",
+				extensionPath: "extensions/check.ts",
+				hook: "tool_call",
+				status,
+			},
+		});
+		const render = (status: "running" | "completed" | "failed" | "interrupted") =>
+			buildConversationRenderItems(
+				buildPersistedRenderItems([user, activity(status)], emptyToolIndex, [], {}, { [step.id]: step }),
+				[],
+				{},
+				new Set(),
+				undefined,
+				1,
+				true,
+				false,
+				{ [step.id]: step },
+			);
+		const running = render("running");
+		const completed = render("completed");
+		const failed = render("failed");
+		const interrupted = render("interrupted");
+		expect(running.map((entry) => entry.kind)).toEqual(["message", "live-elapsed", "agent-step"]);
+		expect(completed.map((entry) => entry.kind)).toEqual(["message", "live-elapsed", "agent-step"]);
+		expect(failed.at(-1)).toMatchObject({
+			kind: "hook-group",
+			items: [{ item: { view: { status: "failed" } } }],
+		});
+		expect(interrupted.at(-1)).toMatchObject({
+			kind: "hook-group",
+			key: failed.at(-1)?.key,
+			items: [{ item: { view: { status: "interrupted" } } }],
+		});
+	});
+
+	it("大量成功 Hook 不生成对话分组，异常提示不展开内部明细", () => {
+		const timestamp = "2026-09-24T00:00:00Z";
+		const transcript: WorkbenchState["transcript"] = [
+			{ entryId: "user", parentId: null, timestamp, kind: "message", view: { type: "user", text: "检查" } },
+			...Array.from({ length: 816 }, (_, index) => ({
+				entryId: `hook-${index}`,
+				parentId: "user",
+				timestamp,
+				kind: "custom" as const,
+				view: {
+					type: "extension_activity" as const,
+					activityId: `hook-${index}`,
+					extensionPath: "extensions/internal.ts",
+					hook: "tool_call",
+					status: "completed" as const,
+				},
+			})),
+			{ entryId: "final", parentId: "user", timestamp, kind: "message", view: { type: "assistant", text: "完成" } },
+		];
+		const persisted = buildPersistedRenderItems(transcript, emptyToolIndex);
+		const rendered = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
+		expect(rendered.map((entry) => entry.kind)).toEqual(["message", "message"]);
+		expect(rendered.some((entry) => entry.kind === "hook-group")).toBe(false);
 	});
 
 	it("处理中在用户消息下方显示实时已处理耗时行", () => {

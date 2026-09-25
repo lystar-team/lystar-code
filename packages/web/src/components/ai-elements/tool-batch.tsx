@@ -1,7 +1,7 @@
 "use client";
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
-import type { ToolDiff, TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
+import type { ToolDiff, WebSearchProgress } from "@lystar/code-web-protocol";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
@@ -24,6 +24,7 @@ import {
 import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
+import type { ToolBatchState, ToolBatchTool } from "../../types.ts";
 import { StabilityBoundary } from "../stability-boundary";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
@@ -39,31 +40,8 @@ import {
 } from "./resource-preview";
 import { ImageGeneration, type ImageGenerationStatus } from "../agents/image-generation";
 import { skillNameFromTool } from "../../state/tool-batching";
-import { languageForPath } from "../workbench/file-language";
+import { languageForPath } from "../../lib/file-language.ts";
 import { Source } from "./sources";
-
-export type ToolBatchState =
-	| "input-available"
-	| "input-queued"
-	| "output-available"
-	| "output-error"
-	| "output-cancelled"
-	| "output-interrupted";
-
-export interface ToolBatchTool {
-	id: string;
-	name: string;
-	summary: string;
-	state: ToolBatchState;
-	stepId?: string;
-	detail?: string;
-	webSearch?: WebSearchProgress;
-	sources?: Array<{ url: string; title?: string }>;
-	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
-	subagents?: TranscriptSubagentRef[];
-	diff?: ToolDiff;
-	inputPreview?: boolean;
-}
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
 
@@ -1518,3 +1496,4 @@ export const ToolBatch = memo(function ToolBatch({
 });
 
 export { skillNameFromTool, statusLabels as toolBatchStatusLabels, toolTitle };
+export type { ToolBatchState, ToolBatchTool };

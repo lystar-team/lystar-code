@@ -32,6 +32,7 @@ import {
 	DialogTitle,
 } from "../ui/dialog";
 import { ACTIVE_OPERATION_STATUSES, THINKING_LEVEL_LABELS } from "./constants";
+import { OperationDetailSection, type OperationDetail } from "./operation-detail-section";
 import { VirtualizedTranscript } from "./virtualized-transcript";
 import type { WorkbenchActions } from "./types";
 
@@ -192,12 +193,6 @@ function operationEqual(previous: WebOperation, next: WebOperation): boolean {
 	);
 }
 
-type OperationDetail = {
-	label: string;
-	value: string;
-	multiline?: boolean;
-};
-
 function operationTime(timestamp: number, withDate = false): string {
 	return new Intl.DateTimeFormat("zh-CN", withDate
 		? { dateStyle: "medium", timeStyle: "medium" }
@@ -353,21 +348,6 @@ export function operationDetails(operation: WebOperation): OperationDetail[] {
 			value: operation.status === "completed" ? "任务已完成，没有更多可展示的明细。" : "暂无可展示的执行明细。",
 		});
 	return details;
-}
-
-function OperationDetailSection({ detail }: { detail: OperationDetail }) {
-	return (
-		<section className="space-y-1.5">
-			<h3 className="text-xs font-medium text-muted-foreground">{detail.label}</h3>
-			{detail.multiline ? (
-				<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 font-mono text-xs leading-5">
-					{detail.value}
-				</pre>
-			) : (
-				<div className="break-words rounded-md border bg-muted/20 px-3 py-2 text-sm">{detail.value}</div>
-			)}
-		</section>
-	);
 }
 
 function OperationRow({ operation, onClick }: { operation: WebOperation; onClick: () => void }) {

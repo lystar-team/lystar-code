@@ -56,13 +56,14 @@ function assertActiveTarget(
 	senderSessionId: string,
 	senderType: SessionRoomSenderType,
 	members: readonly SessionRoomMember[],
+	allowOwnerForUserBroadcast = false,
 ): void {
 	if (targetSessionId === senderSessionId && senderType !== "user") {
 		throw routingError("Room 消息不能定向发送给发送者自己", "room_target_sender");
 	}
 	const target = members.find((member) => member.sessionId === targetSessionId && member.leftAt === undefined);
 	if (!target) throw routingError(`Room 成员不存在或已退出：${targetSessionId}`, "room_target_not_member");
-	if (senderType === "user" && target.role === "owner") {
+	if (senderType === "user" && target.role === "owner" && !allowOwnerForUserBroadcast) {
 		throw routingError("用户消息只能发送给 Room 中的智能体", "room_user_target_not_agent");
 	}
 }
@@ -79,15 +80,15 @@ export function resolveSessionRoomTargets(input: SessionRoomRoutingInput): strin
 		return requested;
 	}
 	if (input.route === "broadcast") {
+		const includeOwner = senderType === "user" && requested.length === 0;
 		const candidates =
 			requested.length > 0
 				? requested
 				: active
-						.filter((member) =>
-							senderType === "user" ? member.role !== "owner" : member.sessionId !== input.senderSessionId,
-						)
+						.filter((member) => includeOwner || member.sessionId !== input.senderSessionId)
 						.map((member) => member.sessionId);
-		for (const sessionId of candidates) assertActiveTarget(sessionId, input.senderSessionId, senderType, active);
+		for (const sessionId of candidates)
+			assertActiveTarget(sessionId, input.senderSessionId, senderType, active, includeOwner);
 		const memberById = new Map(active.map((member) => [member.sessionId, member]));
 		return candidates.sort(
 			(left, right) =>

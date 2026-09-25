@@ -47,7 +47,7 @@ describe("session room routing", () => {
 		).toEqual(["first", "second"]);
 	});
 
-	it("sends a user broadcast to every active Room Agent except the Owner session", () => {
+	it("sends an unaddressed user broadcast to every active Room session, including the Owner", () => {
 		expect(
 			resolveSessionRoomTargets({
 				route: "broadcast",
@@ -55,13 +55,22 @@ describe("session room routing", () => {
 				senderType: "user",
 				members,
 			}),
-		).toEqual(["first", "second"]);
+		).toEqual(["owner", "first", "second"]);
 	});
 
 	it("supports user-selected direct and multi-Agent targets", () => {
 		expect(() =>
 			resolveSessionRoomTargets({
 				route: "direct",
+				senderSessionId: "owner",
+				senderType: "user",
+				targetSessionIds: ["owner"],
+				members,
+			}),
+		).toThrowError(/只能发送给 Room 中的智能体/);
+		expect(() =>
+			resolveSessionRoomTargets({
+				route: "broadcast",
 				senderSessionId: "owner",
 				senderType: "user",
 				targetSessionIds: ["owner"],

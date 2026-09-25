@@ -18,7 +18,7 @@
   "scripts": {
     "clean": "shx rm -rf dist",
     "build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "test:vertical": "node --import tsx --test test/vertical-loop.test.ts",
     "dev": "tsx src/cli.ts"
   },
@@ -30,7 +30,8 @@
   "devDependencies": {
     "@types/ws": "8.18.1",
     "shx": "0.4.0",
-    "tsx": "4.22.1"
+    "tsx": "4.22.1",
+    "vitest": "4.1.9"
   },
   "engines": {
     "node": ">=22.19.0"
