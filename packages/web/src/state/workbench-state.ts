@@ -234,8 +234,12 @@ export function updateSessionActivity(
 		const sessionIndex = project.sessions.findIndex((session) => session.id === sessionId);
 		if (sessionIndex < 0) continue;
 		const session = project.sessions[sessionIndex];
+		// 已结束的结果来自会话历史；打开历史会话的 idle 快照不能抹掉最近一次结果。
+		const nextActivity = activity === "idle" && TERMINAL_OPERATION_STATUSES.has(session.activity)
+			? session.activity
+			: activity;
 		if (
-			session.activity === activity &&
+			session.activity === nextActivity &&
 			(operationUpdatedAt === undefined || session.operationUpdatedAt === operationUpdatedAt)
 		) {
 			return projects;
@@ -243,7 +247,7 @@ export function updateSessionActivity(
 		const sessions = [...project.sessions];
 		sessions[sessionIndex] = {
 			...session,
-			activity,
+			activity: nextActivity,
 			...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt }),
 		};
 		const next = [...projects];
@@ -251,6 +255,16 @@ export function updateSessionActivity(
 		return next;
 	}
 	return projects;
+}
+
+export function acknowledgeSessionRead(current: WorkbenchState, sessionId: string, readAt: number): WorkbenchState {
+	if (!current.unreadSessionIds[sessionId]) return current;
+	const session = current.projects.flatMap((project) => project.sessions)
+		.find((candidate) => candidate.id === sessionId);
+	if (session?.operationUpdatedAt !== undefined && session.operationUpdatedAt > readAt) return current;
+	const unreadSessionIds = { ...current.unreadSessionIds };
+	delete unreadSessionIds[sessionId];
+	return { ...current, unreadSessionIds };
 }
 
 export function sessionActivityFromProgress(progress: SessionProgress): "running" | "waiting_for_input" | "idle" | undefined {

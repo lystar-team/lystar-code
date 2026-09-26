@@ -85,10 +85,12 @@ export function ExpandableActionBarHighlight({ className, itemId }: { className?
 export function ExpandableActionBarLabel({
 	children,
 	className,
+	gap = 8,
 	visible,
 }: {
 	children: ReactNode;
 	className?: string;
+	gap?: number;
 	visible?: boolean;
 }) {
 	const reduce = useReducedMotion() ?? false;
@@ -103,14 +105,14 @@ export function ExpandableActionBarLabel({
 				reduce
 					? {
 							filter: "blur(0px)",
-							marginLeft: shown ? 8 : 0,
+							marginLeft: shown ? gap : 0,
 							opacity: shown ? 1 : 0,
 							width: shown ? "auto" : 0,
 							x: 0,
 						}
 					: {
 							filter: shown ? "blur(0px)" : "blur(3px)",
-							marginLeft: shown ? 8 : 0,
+							marginLeft: shown ? gap : 0,
 							opacity: shown ? 1 : 0,
 							width: shown ? "auto" : 0,
 							x: shown ? 0 : -4,

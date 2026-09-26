@@ -990,14 +990,25 @@ export function stopWebService(
 	}
 	if (process.platform === "linux") {
 		const unit = webServiceUnitName(spec.kind, spec.profile);
-		if (force) {
-			const kill = run("systemctl", ["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", unit]);
-			if (!kill.ok && status.running)
-				throw new Error(`无法强制停止 systemd 用户服务：${kill.stderr || kill.stdout}`);
-		}
 		const result = run("systemctl", ["--user", "stop", "--no-block", unit]);
 		if (!result.ok && status.running) throw new Error(`无法停止 systemd 用户服务：${result.stderr || result.stdout}`);
+		if (force) {
+			// 先提交停止任务，再杀进程，避免 Restart=on-failure 抢先重启服务。
+			const kill = run("systemctl", ["--user", "kill", "--kill-whom=all", "--signal=SIGKILL", unit]);
+			if (!kill.ok && getWebServiceStatus(spec).running)
+				throw new Error(`无法强制停止 systemd 用户服务：${kill.stderr || kill.stdout}`);
+			const stopped = run("systemctl", ["--user", "stop", unit]);
+			if (!stopped.ok && getWebServiceStatus(spec).running)
+				throw new Error(`无法停止 systemd 用户服务：${stopped.stderr || stopped.stdout}`);
+		}
 	} else if (process.platform === "darwin") {
+		if (force && status.pid) {
+			try {
+				process.kill(status.pid, "SIGKILL");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			}
+		}
 		const result =
 			spec.macosSession === "gui"
 				? runMacosUserLaunchctl(["bootout", launchdTarget(spec)])
@@ -1010,6 +1021,13 @@ export function stopWebService(
 		const result = runWindowsServiceCommand(["stop", webServiceWindowsName(spec.kind, spec.profile)]);
 		if (!result.ok && status.running && !/1062|not started|未启动/iu.test(`${result.stdout}\n${result.stderr}`))
 			throw new Error(`无法停止 Windows Service：${result.stderr || result.stdout}`);
+		if (force && status.pid) {
+			let killed = run("taskkill", ["/PID", String(status.pid), "/T", "/F"]);
+			if (!killed.ok && isAccessDenied(killed))
+				killed = runElevatedWindows("taskkill", ["/PID", String(status.pid), "/T", "/F"]);
+			if (!killed.ok && getWebServiceStatus(spec).running)
+				throw new Error(`无法强制停止 Windows Service：${killed.stderr || killed.stdout}`);
+		}
 		waitForWindowsServiceStopped(webServiceWindowsName(spec.kind, spec.profile));
 	}
 	return getWebServiceStatus(spec);

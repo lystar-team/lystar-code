@@ -299,6 +299,7 @@ ${chalk.bold("命令：")}
   ${APP_NAME} doctor [--json]           输出只读恢复与运行环境诊断
   ${APP_NAME} close-old [--dry-run]     关闭更新前启动的旧版 lc 会话
   ${APP_NAME} close-old --force         强制关闭旧版 lc 会话
+  ${APP_NAME} session stop <sessionId>  停止当前 Web Runtime 中的指定会话
   ${APP_NAME} <command> --help          查看 install/remove/update/config/auth/lessons/doctor 等命令帮助
 
 ${chalk.bold("选项：")}

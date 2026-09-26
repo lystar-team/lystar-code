@@ -12,7 +12,7 @@ export function WorkspaceModeSwitch({ mode, onChange }: { mode: WorkspaceMode; o
 				<button
 					aria-selected={mode === value}
 					className={cn(
-						"h-8 flex-1 rounded-md px-3 text-xs font-medium text-muted-foreground transition-colors",
+						"h-11 flex-1 rounded-md px-3 text-xs font-medium text-muted-foreground transition-colors",
 						"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
 						mode === value && "bg-background text-foreground shadow-sm",
 					)}

@@ -90,22 +90,10 @@ import {
 	Zap,
 	type LucideIcon,
 } from "lucide-react";
+import { collaborationAlias } from "@lystar/code-web-protocol";
 import type { WebCompletionResult, WebRoomMember, WebSessionSummary } from "../../types";
 
-const AGENT_ALIASES = [
-	"霜叶",
-	"海盐",
-	"纸鸢",
-	"星野",
-	"青岚",
-	"松墨",
-	"云砚",
-	"川柏",
-	"月白",
-	"南枝",
-	"远山",
-	"清和",
-] as const;
+export { collaborationAlias } from "@lystar/code-web-protocol";
 
 export type CollaborationAgentKind = "main" | "code" | "test" | "document" | "research" | "general";
 
@@ -204,15 +192,6 @@ export function isCollaborationSession(session: WebSessionSummary | undefined): 
 	return session?.relation === "collaboration" && Boolean(session.parentId);
 }
 
-export function collaborationAlias(sessionId: string): string {
-	let hash = 2166136261;
-	for (const character of sessionId) {
-		hash ^= character.codePointAt(0) ?? 0;
-		hash = Math.imul(hash, 16777619);
-	}
-	return AGENT_ALIASES[Math.abs(hash) % AGENT_ALIASES.length]!;
-}
-
 export function collaborationAgentKind(session: WebSessionSummary | undefined): CollaborationAgentKind {
 	if (!session) return "main";
 	const value = `${session.profileId ?? ""} ${session.profileName ?? ""} ${session.profileIcon ?? ""}`.toLowerCase();
@@ -288,12 +267,10 @@ export function collaborationSessionsForSession(
 	if (!sessionId) return [];
 	const current = sessions.find((session) => session.id === sessionId);
 	if (!current) return [];
-	const rootId = current.relation === "collaboration" && current.parentId ? current.parentId : current.id;
-	const root = sessions.find((session) => session.id === rootId);
 	const children = sessions.filter(
-		(session) => session.relation === "collaboration" && session.parentId === rootId,
+		(session) => session.relation === "collaboration" && session.parentId === current.id,
 	);
-	return root && children.length ? [root, ...children] : [];
+	return children.length ? [current, ...children] : [];
 }
 
 export interface RoomAgentMention {

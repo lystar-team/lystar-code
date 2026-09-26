@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import type { Socket } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ByteTransport, RuntimeProtocolClient, ServerEvent } from "@lystar/code-web-protocol";
 import {
@@ -22,6 +22,7 @@ import {
 	type WebServiceInvocation,
 } from "@lystar/code-web-runtime";
 import type { WebGatewayConfig } from "./config.ts";
+import { logGatewayConnection } from "./connection-log.ts";
 
 class SocketByteTransport implements ByteTransport {
 	private readonly bytesListeners = new Set<(bytes: Uint8Array) => void>();
@@ -221,6 +222,11 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 			config.agentDir,
 		);
 		if (status.responsive) return;
+		logGatewayConnection("runtime_unresponsive", {
+			profile: config.serviceProfile ?? "default",
+			pid: status.pid,
+			reachable: status.reachable,
+		});
 		if (!config.manageRuntime) throw new Error(`Web Runtime 未运行或无响应：${config.runtimeEndpoint}`);
 		if (status.installed) {
 			if (status.reachable && (await hasIncompatibleRuntimeVersion(config.runtimeEndpoint))) return;
@@ -229,18 +235,35 @@ export function ensurePersistentRuntime(config: WebGatewayConfig): Promise<void>
 		}
 		if (status.reachable) return;
 		const command = config.runtimeInvocation ?? runtimeCommand(config.runtimeEndpoint);
-		const child = spawn(command.command, withRuntimeEndpoint(command.args, config.runtimeEndpoint), {
-			cwd: command.cwd,
-			env: {
-				...process.env,
-				PI_CODING_AGENT_DIR: config.agentDir,
-				PI_WEB_RUNTIME_ENDPOINT: config.runtimeEndpoint,
-				PI_WEB_SERVICE_PROFILE: config.serviceProfile ?? "default",
-			},
-			detached: true,
-			stdio: "ignore",
-		});
+		const logPath = join(config.agentDir, "web", "runtime.service.log.error");
+		mkdirSync(dirname(logPath), { recursive: true });
+		const logFd = openSync(logPath, "a");
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(command.command, withRuntimeEndpoint(command.args, config.runtimeEndpoint), {
+				cwd: command.cwd,
+				env: {
+					...process.env,
+					PI_CODING_AGENT_DIR: config.agentDir,
+					PI_WEB_RUNTIME_ENDPOINT: config.runtimeEndpoint,
+					PI_WEB_SERVICE_PROFILE: config.serviceProfile ?? "default",
+				},
+				detached: true,
+				stdio: ["ignore", logFd, logFd],
+			});
+		} finally {
+			closeSync(logFd);
+		}
+		child.once("error", (error) => logGatewayConnection("runtime_spawn_failed", { error: error.message, logPath }));
+		child.once("exit", (code, signal) =>
+			logGatewayConnection("runtime_process_exited", {
+				pid: child.pid,
+				code: code ?? undefined,
+				signal: signal ?? undefined,
+			}),
+		);
 		child.unref();
+		logGatewayConnection("runtime_spawned", { pid: child.pid, logPath });
 		const deadline = Date.now() + 10_000;
 		while (Date.now() < deadline) {
 			if ((await probeIpcRuntime(config.runtimeEndpoint)).reachable) return;
@@ -260,16 +283,44 @@ async function openRuntimeClient(
 	onEvent: (event: ServerEvent) => void,
 	onClose: (error?: Error) => void,
 ): Promise<{ client: RuntimeProtocolClient; initial: RuntimeInitialSnapshot }> {
-	const transport = await SocketByteTransport.connect(config.runtimeEndpoint);
-	const client = new ProtocolClient(transport, clientInstanceId, { trustedServerMessages: true });
+	const startedAt = Date.now();
+	logGatewayConnection("runtime_connect_started", { clientInstanceId });
+	let transport: SocketByteTransport;
+	try {
+		transport = await SocketByteTransport.connect(config.runtimeEndpoint);
+	} catch (error) {
+		logGatewayConnection("runtime_connect_failed", {
+			clientInstanceId,
+			elapsedMs: Date.now() - startedAt,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
+	const client = new ProtocolClient(transport, clientInstanceId, {
+		trustedServerMessages: true,
+		onRequestDiagnostic: (diagnostic) =>
+			logGatewayConnection("runtime_request", {
+				...diagnostic,
+			}),
+	});
 	client.onEvent(onEvent);
 	try {
 		await client.connect();
 		await waitForHello(client);
 		const initial = await client.request<RuntimeInitialSnapshot>({ command: "get_snapshot" }, { timeoutMs: 10_000 });
 		transport.onClose(onClose);
+		logGatewayConnection("runtime_connect_succeeded", {
+			clientInstanceId,
+			elapsedMs: Date.now() - startedAt,
+			hostInstanceId: client.getSnapshot().hello?.hostInstanceId,
+		});
 		return { client, initial };
 	} catch (error) {
+		logGatewayConnection("runtime_connect_failed", {
+			clientInstanceId,
+			elapsedMs: Date.now() - startedAt,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		await client.close().catch(() => {});
 		throw error;
 	}

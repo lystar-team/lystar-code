@@ -342,6 +342,19 @@ async function readHostSnapshot(endpoint: string): Promise<HostSnapshot | undefi
 	}
 }
 
+export async function stopRuntimeSession(endpoint: string, sessionId: string): Promise<boolean> {
+	const client = await openRuntimeControlClient(endpoint, 5_000);
+	try {
+		const result = await client.request<{ stopped: boolean }>(
+			{ command: "stop_session", sessionId },
+			{ timeoutMs: 10_000 },
+		);
+		return result.stopped;
+	} finally {
+		await client.close();
+	}
+}
+
 async function waitUntilResponsive(endpoint: string, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {

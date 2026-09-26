@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { webApi } from "../src/adapters/host-protocol/api.ts";
 import {
 	type CachedSessionDetail,
 	cacheSessionDetail,
 	readCachedSessionDetail,
 	SESSION_DETAIL_CACHE_LIMIT,
 	type SessionDetailCache,
+	sessionDetailCacheFromState,
 } from "../src/state/workbench-session-cache.ts";
+import { initialState } from "../src/state/workbench-state.ts";
 
 describe("session detail cache", () => {
 	it("refreshes recently read entries and evicts the oldest entry at the count limit", () => {
@@ -22,7 +25,6 @@ describe("session detail cache", () => {
 			toolActivityEpoch: undefined,
 			toolActivityRevision: undefined,
 			hasMorePrevious: false,
-			loadingEarlier: false,
 			liveTools: {},
 			liveSteps: {},
 			liveTurnItems: [],
@@ -47,5 +49,19 @@ describe("session detail cache", () => {
 		expect(cache.has(sessionIds[1]!)).toBe(false);
 		expect(cache.has(sessionIds[0]!)).toBe(true);
 		expect([...cache.keys()]).toEqual([...sessionIds.slice(2), sessionIds[0], "session-new"]);
+	});
+
+	it("keeps history boundaries without caching an in-flight history request", () => {
+		vi.spyOn(webApi, "hasToken").mockReturnValue(false);
+		const detail = sessionDetailCacheFromState({
+			...initialState(),
+			previousCursor: "older-page",
+			hasMorePrevious: true,
+			loadingEarlier: true,
+		});
+
+		expect(detail.previousCursor).toBe("older-page");
+		expect(detail.hasMorePrevious).toBe(true);
+		expect(detail).not.toHaveProperty("loadingEarlier");
 	});
 });

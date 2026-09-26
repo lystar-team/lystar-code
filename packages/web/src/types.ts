@@ -73,6 +73,7 @@ export interface ToolBatchTool {
 	subagents?: TranscriptSubagentRef[];
 	diff?: ToolDiff;
 	inputPreview?: boolean;
+	preparing?: boolean;
 }
 
 export type WebOperation = Omit<
@@ -150,6 +151,23 @@ export interface WebRoomMessage {
 	basedOnSeq?: number;
 	idempotencyKey: string;
 	createdAt: string;
+}
+
+export type WebRoomTaskStatus = "todo" | "doing" | "blocked" | "done";
+
+export interface WebRoomTask {
+	id: string;
+	roomId: string;
+	title: string;
+	description: string;
+	status: WebRoomTaskStatus;
+	createdBySessionId: string;
+	assigneeSessionId?: string;
+	resultMessageId?: string;
+	resultText?: string;
+	updates: Array<{ actorSessionId: string; status: WebRoomTaskStatus; note?: string; kind?: "comment"; createdAt: string }>;
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface WebRoomSummary {

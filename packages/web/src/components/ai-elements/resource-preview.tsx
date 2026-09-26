@@ -66,18 +66,25 @@ function imageDataUrl(result: FileResponse): string | undefined {
 	return `data:${result.mimeType};base64,${result.data}`;
 }
 
-const MAX_RESOURCE_IMAGE_CACHE_BYTES = 12 * 1024 * 1024;
+// 按 JS 字符串的最保守大小计费；会话详情缓存另有独立的 24 MiB 上限。
+const MAX_RESOURCE_IMAGE_CACHE_BYTES = 32 * 1024 * 1024;
+const MAX_RESOURCE_IMAGE_CACHE_ENTRIES = 64;
+const RESOURCE_PATH_CACHE_TTL_MS = 60_000;
 
 type ResourceImageCacheEntry = {
 	promise: Promise<string | undefined>;
+	source?: string;
 	bytes: number;
+	expiresAt: number;
 };
 
 const resourceImageCache = new Map<string, ResourceImageCacheEntry>();
 let resourceImageCacheBytes = 0;
 
 function resourceImageCacheKey(item: ResourceImageItem): string | undefined {
-	return item.sessionId && item.contentRef ? `${item.sessionId}\u0000${item.contentRef}` : undefined;
+	if (item.src) return undefined;
+	if (item.path) return `path\u0000${item.projectId ?? ""}\u0000${item.path}`;
+	return item.sessionId && item.contentRef ? `content\u0000${item.sessionId}\u0000${item.contentRef}` : undefined;
 }
 
 function removeResourceImageCacheEntry(key: string): void {
@@ -88,11 +95,28 @@ function removeResourceImageCacheEntry(key: string): void {
 }
 
 function trimResourceImageCache(): void {
-	while (resourceImageCacheBytes > MAX_RESOURCE_IMAGE_CACHE_BYTES) {
+	while (resourceImageCacheBytes > MAX_RESOURCE_IMAGE_CACHE_BYTES || resourceImageCache.size > MAX_RESOURCE_IMAGE_CACHE_ENTRIES) {
 		const oldest = resourceImageCache.keys().next().value;
 		if (typeof oldest !== "string") break;
 		removeResourceImageCacheEntry(oldest);
 	}
+}
+
+function cachedResourceImageEntry(key: string): ResourceImageCacheEntry | undefined {
+	const entry = resourceImageCache.get(key);
+	if (!entry) return undefined;
+	if (entry.expiresAt <= Date.now()) {
+		removeResourceImageCacheEntry(key);
+		return undefined;
+	}
+	resourceImageCache.delete(key);
+	resourceImageCache.set(key, entry);
+	return entry;
+}
+
+function cachedResourceImageSource(item: ResourceImageItem): string | undefined {
+	const key = resourceImageCacheKey(item);
+	return key ? cachedResourceImageEntry(key)?.source : undefined;
 }
 
 function requestResourceImage(item: ResourceImageItem): Promise<string | undefined> {
@@ -112,22 +136,24 @@ function requestResourceImage(item: ResourceImageItem): Promise<string | undefin
 	return Promise.resolve(undefined);
 }
 
-function loadResourceImage(item: ResourceImageItem): Promise<string | undefined> {
+export function loadResourceImage(item: ResourceImageItem): Promise<string | undefined> {
 	const key = resourceImageCacheKey(item);
 	if (!key) return requestResourceImage(item);
-	const cached = resourceImageCache.get(key);
-	if (cached) {
-		resourceImageCache.delete(key);
-		resourceImageCache.set(key, cached);
-		return cached.promise;
-	}
-	const entry: ResourceImageCacheEntry = { promise: Promise.resolve(undefined), bytes: 0 };
+	const cached = cachedResourceImageEntry(key);
+	if (cached) return cached.promise;
+	const entry: ResourceImageCacheEntry = { promise: Promise.resolve(undefined), bytes: 0, expiresAt: Infinity };
 	entry.promise = requestResourceImage(item).then(
 		(source) => {
-			if (resourceImageCache.get(key) === entry && source) {
-				entry.bytes = source.length * 2;
-				resourceImageCacheBytes += entry.bytes;
-				trimResourceImageCache();
+			if (resourceImageCache.get(key) === entry) {
+				const bytes = source ? source.length * 2 : 0;
+				if (!source || bytes > MAX_RESOURCE_IMAGE_CACHE_BYTES) removeResourceImageCacheEntry(key);
+				else {
+					entry.source = source;
+					entry.bytes = bytes;
+					entry.expiresAt = item.path ? Date.now() + RESOURCE_PATH_CACHE_TTL_MS : Infinity;
+					resourceImageCacheBytes += bytes;
+					trimResourceImageCache();
+				}
 			}
 			return source;
 		},
@@ -137,37 +163,33 @@ function loadResourceImage(item: ResourceImageItem): Promise<string | undefined>
 		},
 	);
 	resourceImageCache.set(key, entry);
+	trimResourceImageCache();
 	return entry.promise;
 }
 
 export function useResourceImageSource(item: ResourceImageItem) {
-	const [source, setSource] = useState(item.src);
-	const [loading, setLoading] = useState(!item.src && Boolean(item.path || (item.sessionId && item.contentRef)));
-	const [failed, setFailed] = useState(false);
+	const identity = item.src ?? resourceImageCacheKey(item);
+	const [loaded, setLoaded] = useState<{ identity?: string; source?: string; failed: boolean; settled: boolean }>();
+	const source = item.src ?? cachedResourceImageSource(item) ?? (loaded && loaded.identity === identity ? loaded.source : undefined);
+	const failed = Boolean(loaded && loaded.identity === identity && loaded.failed);
+	const loading = !source && !(loaded && loaded.identity === identity && loaded.settled) && Boolean(item.path || (item.sessionId && item.contentRef));
 
 	useEffect(() => {
+		if (item.src || (!item.path && !(item.sessionId && item.contentRef))) return;
+		if (cachedResourceImageSource(item)) return;
 		let cancelled = false;
-		setSource(item.src);
-		setFailed(false);
-		if (item.src || (!item.path && !(item.sessionId && item.contentRef))) {
-			setLoading(false);
-			return;
-		}
-		setLoading(true);
-		void loadResourceImage(item)
-			.then((result) => {
-				if (!cancelled) setSource(result);
-			})
-			.catch(() => {
-				if (!cancelled) setFailed(true);
-			})
-			.finally(() => {
-				if (!cancelled) setLoading(false);
-			});
+		void loadResourceImage(item).then(
+			(result) => {
+				if (!cancelled) setLoaded({ identity, source: result, failed: false, settled: true });
+			},
+			() => {
+				if (!cancelled) setLoaded({ identity, failed: true, settled: true });
+			},
+		);
 		return () => {
 			cancelled = true;
 		};
-	}, [item.contentRef, item.path, item.projectId, item.sessionId, item.src]);
+	}, [identity, item.contentRef, item.path, item.projectId, item.sessionId, item.src]);
 
 	return { source, loading, failed };
 }
@@ -212,10 +234,10 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 	useEffect(() => {
 		if (!open || !current) return;
 		let cancelled = false;
-		setSource(current.src);
+		setSource(current.src ?? cachedResourceImageSource(current));
 		setFailed(false);
 		setCopiedPrompt(false);
-		if (current.src || (!current.path && !(current.sessionId && current.contentRef))) {
+		if (current.src || cachedResourceImageSource(current) || (!current.path && !(current.sessionId && current.contentRef))) {
 			setLoading(false);
 			return;
 		}
@@ -630,7 +652,7 @@ export function ResourceImage({
 					aria-label={`放大${alt}`}
 				>
 					{source ? (
-						<img className={cn("max-h-72 max-w-full object-contain", imageClassName)} src={source} alt={alt} />
+						<img className={cn("max-h-72 max-w-full object-contain", imageClassName)} src={source} alt={alt} loading="lazy" decoding="async" />
 					) : loading ? (
 						<LoaderCircleIcon className="m-8 size-5 animate-spin text-muted-foreground" />
 					) : (

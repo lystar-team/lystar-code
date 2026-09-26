@@ -131,6 +131,7 @@ export interface WorkbenchState {
 	liveTurnId: number;
 	liveTurnStartRevision?: number;
 	liveTurnActive?: boolean;
+	lastOutputSpeed?: { outputTokens: number; elapsedMs: number };
 	liveCompaction?: LiveCompactionState;
 	promptScrollRequest?: number;
 	unreadSessionIds: Record<string, true>;

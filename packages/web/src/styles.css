@@ -170,6 +170,10 @@ kbd {
 	font-size: 13px !important;
 }
 
+.workspace-navigation-rail [data-slot="button"] {
+	font-size: 10px;
+}
+
 .tool-batch-stack {
 	display: grid;
 	min-width: 0;
@@ -470,6 +474,37 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 [data-slot="popover-content"][data-state="closed"]:has([role="group"][aria-label="选择发送方式"]) {
 	opacity: 0;
 	visibility: hidden;
+}
+
+/* 移动项目栏保持桌面行高，状态和操作占用独立区域。 */
+.mobile-project-rail .mobile-session-button {
+	padding-right: 4.5rem;
+}
+
+.mobile-project-rail .mobile-session-status {
+	right: 2.25rem;
+	opacity: 1;
+}
+
+.mobile-project-rail .mobile-project-indicators {
+	position: absolute;
+	right: 3rem;
+	top: 50%;
+	transform: translateY(-50%);
+	visibility: visible !important;
+}
+
+.mobile-project-rail fieldset [data-slot="button"]:has(> .mobile-project-indicators) {
+	padding-right: 6.5rem;
+}
+
+.mobile-project-rail .mobile-hover-action {
+	opacity: 1 !important;
+	pointer-events: auto !important;
+}
+
+.mobile-project-rail .mobile-quick-action {
+	display: none !important;
 }
 
 /* 触摸设备没有可靠的 Hover，Hover 后才出现的操作需要进入正常布局。 */

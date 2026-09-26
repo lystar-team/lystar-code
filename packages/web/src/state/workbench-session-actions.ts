@@ -56,8 +56,9 @@ export interface WorkbenchSessionActionsContext {
 	updateState: UpdateState;
 	transitionState: (update: StateUpdate | ((current: WorkbenchState) => WorkbenchState)) => void;
 	showToast: (message: string) => void;
+	onSessionRead: (sessionId: string) => void;
 	refreshProjectSessions: (projectId: string) => Promise<void>;
-	loadTranscript: (sessionId?: string, cursor?: string, deferCommit?: boolean) => Promise<void>;
+	loadTranscript: (sessionId?: string, cursor?: string, deferCommit?: boolean, completeTurn?: boolean) => Promise<void>;
 	loadSubagents: (sessionId?: string) => Promise<void>;
 	loadSessionOperations: (sessionId: string) => Promise<void>;
 	subscribeSessionAndWait: (sessionId: string) => Promise<SessionSubscriptionResult>;
@@ -79,7 +80,6 @@ export interface WorkbenchSessionActionsContext {
 	projectTreeGenerationRef: Ref<number>;
 	sessionTreeRequestRef: Ref<number>;
 	transcriptTimerRef: Ref<number | undefined>;
-	transcriptRefreshPendingRef: Ref<string | undefined>;
 	transcriptRequestRef: Ref<number>;
 	pendingUserPromptRef: Ref<number>;
 	sessionDetailCacheRef: Ref<Map<string, CachedSessionDetail>>;
@@ -95,6 +95,7 @@ export function useWorkbenchSessionActions({
 	updateState,
 	transitionState,
 	showToast,
+	onSessionRead,
 	refreshProjectSessions,
 	loadTranscript,
 	loadSubagents,
@@ -118,7 +119,6 @@ export function useWorkbenchSessionActions({
 	projectTreeGenerationRef,
 	sessionTreeRequestRef,
 	transcriptTimerRef,
-	transcriptRefreshPendingRef,
 	transcriptRequestRef,
 	pendingUserPromptRef,
 	sessionDetailCacheRef,
@@ -183,7 +183,6 @@ export function useWorkbenchSessionActions({
 				window.clearTimeout(transcriptTimerRef.current);
 				transcriptTimerRef.current = undefined;
 			}
-			transcriptRefreshPendingRef.current = undefined;
 			transcriptRequestRef.current++;
 			(cached?.transcriptPageLoaded ? transitionState : updateState)((current) => ({
 				...current,
@@ -191,6 +190,7 @@ export function useWorkbenchSessionActions({
 				...(selectedProjectId ? { currentProjectId: selectedProjectId } : {}),
 				sessionId,
 				session: cached?.session,
+				lastOutputSpeed: cached?.lastOutputSpeed,
 				sessionError: undefined,
 				lease: undefined,
 				readOnly: true,
@@ -211,7 +211,6 @@ export function useWorkbenchSessionActions({
 								transcriptLeafId: undefined,
 								previousCursor: undefined,
 								hasMorePrevious: false,
-								loadingEarlier: false,
 								liveTools: {},
 								liveSteps: {},
 								liveTurnItems: [],
@@ -224,6 +223,7 @@ export function useWorkbenchSessionActions({
 											subagentViews: {},
 										}
 								: {}),
+				loadingEarlier: false,
 				pendingUserPrompts:
 					current.sessionId === sessionId ? current.pendingUserPrompts : (cached?.pendingUserPrompts ?? []),
 				queuedUserPrompts:
@@ -246,6 +246,7 @@ export function useWorkbenchSessionActions({
 				sessionTree: sessionChanged ? [] : current.sessionTree,
 				sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
 			}));
+			if (previous.unreadSessionIds[sessionId]) onSessionRead(sessionId);
 			if (socket && previous.sessionId && previous.sessionId !== sessionId)
 				webApi.unsubscribeSession(socket, previous.sessionId);
 							const subscriptionPromise = socket
@@ -381,6 +382,7 @@ export function useWorkbenchSessionActions({
 			loadSessionOperations,
 			loadSubagents,
 			loadTranscript,
+			onSessionRead,
 			showToast,
 			subscribeSessionAndWait,
 			transitionState,
@@ -433,6 +435,7 @@ export function useWorkbenchSessionActions({
 				fileTreeRootPath: undefined,
 				fileTreeCache: {},
 				sessionId: undefined,
+				loadingEarlier: false,
 				session: undefined,
 				sessionError: undefined,
 				lease: undefined,
@@ -486,15 +489,11 @@ export function useWorkbenchSessionActions({
 		const sessionId = current.sessionId;
 		updateState((value) => ({ ...value, loadingEarlier: true }));
 		try {
-			await loadTranscript(sessionId, current.previousCursor);
+			await loadTranscript(sessionId, current.previousCursor, false, true);
 		} finally {
 			updateState((value) => (value.sessionId === sessionId ? { ...value, loadingEarlier: false } : value));
-			if (transcriptRefreshPendingRef.current === sessionId) {
-				transcriptRefreshPendingRef.current = undefined;
-				scheduleTranscriptRefresh(sessionId);
-			}
 		}
-	}, [loadTranscript, scheduleTranscriptRefresh, updateState]);
+	}, [loadTranscript, updateState]);
 
 	const createSession = useCallback(async (agentProfile?: Pick<SubagentConfig, "name" | "icon">) => {
 		const projectId = stateRef.current.currentProjectId;
@@ -560,6 +559,7 @@ export function useWorkbenchSessionActions({
 			transcriptLeafId: undefined,
 			previousCursor: undefined,
 			hasMorePrevious: false,
+			loadingEarlier: false,
 			toolActivityEpoch: undefined,
 			toolActivityRevision: undefined,
 			currentOperation: undefined,
@@ -876,6 +876,7 @@ export function useWorkbenchSessionActions({
 							...next,
 							projects,
 							sessionId: nextSessionId,
+							loadingEarlier: false,
 							session: undefined,
 							lease: undefined,
 							readOnly: false,
@@ -956,6 +957,7 @@ export function useWorkbenchSessionActions({
 				agentSteps: {},
 				transcriptPageLoaded: false,
 				transcriptLoading: true,
+				loadingEarlier: false,
 				transcriptError: undefined,
 				sessionError: undefined,
 				toolActivityEpoch: undefined,

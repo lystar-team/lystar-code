@@ -5,6 +5,7 @@ import {
 	createRuntimeServiceSpec,
 	installRuntimeService,
 	restartRuntimeService,
+	stopRuntimeSession,
 } from "../src/runtime-service.ts";
 import { installWebService, stopWebService } from "../src/service-manager.ts";
 
@@ -18,6 +19,7 @@ const state = vi.hoisted(() => ({
 	pendingUiRequests: [] as unknown[],
 	sessions: [] as Array<{ path: string; activity: string; phase: string }>,
 	readSnapshot: false,
+	requests: [] as Array<{ command: string; sessionId?: string }>,
 	requiredProtocolVersion: 9,
 	attemptedProtocolVersions: [] as number[],
 }));
@@ -54,7 +56,9 @@ vi.mock("@lystar/code-web-protocol", () => ({
 			}
 			return { connected: true };
 		}
-		async request() {
+		async request(command: { command: string; sessionId?: string }) {
+			state.requests.push(command);
+			if (command.command === "stop_session") return { stopped: true };
 			state.readSnapshot = true;
 			return { operations: state.operations, pendingUiRequests: state.pendingUiRequests, sessions: state.sessions };
 		}
@@ -100,6 +104,7 @@ beforeEach(() => {
 	state.pendingUiRequests = [];
 	state.sessions = [];
 	state.readSnapshot = false;
+	state.requests = [];
 	state.requiredProtocolVersion = 9;
 	state.attemptedProtocolVersions = [];
 	vi.clearAllMocks();
@@ -113,6 +118,11 @@ afterEach(() => {
 });
 
 describe("Runtime update and restart safety", () => {
+	it("sends a targeted stop request without acquiring the session lease", async () => {
+		await expect(stopRuntimeSession("/test/runtime.sock", "target-session")).resolves.toBe(true);
+		expect(state.requests).toEqual([{ command: "stop_session", sessionId: "target-session" }]);
+	});
+
 	it.each(["accepted", "running", "waiting_for_input"])(
 		"does not reinstall a Runtime with %s work",
 		async (status) => {

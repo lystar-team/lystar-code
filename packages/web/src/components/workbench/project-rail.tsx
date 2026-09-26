@@ -4,6 +4,7 @@ import {
 	ArrowRight,
 	Bot,
 	ChevronDown,
+	CircleCheck,
 	Folder,
 	FolderPlus,
 	FolderTree,
@@ -13,6 +14,8 @@ import {
 	MoreHorizontal,
 	Pencil,
 	Pin,
+	PanelLeftClose,
+	Play,
 	Plus,
 	Search,
 	Settings,
@@ -46,18 +49,25 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
+import { Tabs, TabsContent } from "../ui/tabs";
 import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPickerDialog } from "./project-group-dialog";
 import { AgentSessionDialog } from "./agent-session-dialog";
 import { RailFooter } from "./rail-footer";
-import { type DropPosition, excludeRoomAgentSessions, hasUnreadSessions, reorderIds } from "./project-rail-utils";
+import { type DropPosition, type SessionListTab, countSessionsByTab, hasUnreadSessions, isResumedCompletedSession, isSessionRunning, isSessionUnread, orderedSessions, reorderIds, searchProjectSessions, sessionMatchesTab } from "./project-rail-utils";
 import { SessionRenameDialog } from "./dialogs";
 import { SessionButton, type SessionButtonProps } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
 import { VirtualizedSessionList } from "./virtualized-session-list";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "./workspace-mode-switch";
 
 const SESSION_PAGE_SIZE = 7;
+const SESSION_TABS: ReadonlyArray<WorkbenchTabOption<SessionListTab>> = [
+	{ icon: List, label: "全部", value: "all" },
+	{ icon: Play, label: "进行中", value: "running" },
+	{ icon: CircleCheck, label: "已完成", value: "completed" },
+];
 
 type ProjectDropTarget =
 	| { kind: "project"; projectId: string; position: DropPosition }
@@ -88,6 +98,8 @@ type ProjectRailProps = {
 	onAddProject: () => void;
 	onEditProject: (project: WebProject) => void;
 	onNavigate?: () => void;
+	withNavigationRail?: boolean;
+	onCollapse?: () => void;
 	workspaceMode: WorkspaceMode;
 	onWorkspaceModeChange: (mode: WorkspaceMode) => void;
 };
@@ -101,9 +113,13 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 		previous.onAddProject === next.onAddProject &&
 		previous.onEditProject === next.onEditProject &&
 		previous.onNavigate === next.onNavigate &&
+		previous.withNavigationRail === next.withNavigationRail &&
+		previous.onCollapse === next.onCollapse &&
 		previous.workspaceMode === next.workspaceMode &&
 		previous.onWorkspaceModeChange === next.onWorkspaceModeChange &&
 		previous.state.connected === next.state.connected &&
+		previous.state.networkOnline === next.state.networkOnline &&
+		previous.state.reconnecting === next.state.reconnecting &&
 		previous.state.currentProjectId === next.state.currentProjectId &&
 		previous.state.loading === next.state.loading &&
 		previous.state.projects === next.state.projects &&
@@ -114,37 +130,9 @@ function projectRailPropsEqual(previous: ProjectRailProps, next: ProjectRailProp
 	);
 }
 
-function isSessionRunning(session: WebSessionSummary): boolean {
-	return session.activity === "running" || session.activity === "waiting_for_input";
-}
-
 function dropPosition(event: ReactDragEvent<HTMLElement>): DropPosition {
 	const rect = event.currentTarget.getBoundingClientRect();
 	return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
-}
-
-function orderedSessions(project: WebProject): WebSessionSummary[] {
-	const base = [
-		...project.sessions.filter((session) => session.pinned),
-		...project.sessions.filter((session) => !session.pinned),
-	];
-	const childrenByParent = new Map<string, WebSessionSummary[]>();
-	for (const session of base) {
-		if (session.relation !== "collaboration" || !session.parentId) continue;
-		childrenByParent.set(session.parentId, [...(childrenByParent.get(session.parentId) ?? []), session]);
-	}
-	const nested: WebSessionSummary[] = [];
-	const included = new Set<string>();
-	for (const session of base) {
-		if (session.relation === "collaboration" && session.parentId) continue;
-		nested.push(session);
-		included.add(session.id);
-		for (const child of childrenByParent.get(session.id) ?? []) {
-			nested.push(child);
-			included.add(child.id);
-		}
-	}
-	return [...nested, ...base.filter((session) => !included.has(session.id))];
 }
 
 function sessionItemKey(session: WebSessionSummary): string {
@@ -181,10 +169,13 @@ export const ProjectRail = memo(function ProjectRail({
 	onAddProject,
 	onEditProject,
 	onNavigate,
+	withNavigationRail = false,
+	onCollapse,
 	workspaceMode,
 	onWorkspaceModeChange,
 }: ProjectRailProps) {
 	const [query, setQuery] = useState("");
+	const [sessionTab, setSessionTab] = useState<SessionListTab>("all");
 	const [showArchived, setShowArchived] = useState(false);
 	const [ungroupedOpen, setUngroupedOpen] = useState(true);
 	const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
@@ -214,17 +205,65 @@ export const ProjectRail = memo(function ProjectRail({
 	const sessionViewportRef = useRef<HTMLDivElement>(null);
 	const draggedSessionRef = useRef<SessionDrag>();
 	draggedSessionRef.current = draggedSession;
+	const selectedSessionActivity = currentProject?.sessions.find((session) => session.id === state.sessionId)?.activity;
+	const previousSelectedSessionRef = useRef({ id: state.sessionId, activity: selectedSessionActivity });
+
+	useEffect(() => {
+		const current = { id: state.sessionId, activity: selectedSessionActivity };
+		if (sessionTab === "completed" && isResumedCompletedSession(previousSelectedSessionRef.current, current)) {
+			setSessionTab("running");
+		}
+		previousSelectedSessionRef.current = current;
+	}, [sessionTab, state.sessionId, selectedSessionActivity]);
 
 	const normalizedQuery = query.trim().toLowerCase();
 	const archivedProjects = state.projects.filter((project) => project.archived);
+	const searchedSessionsByProject = useMemo(
+		() => new Map(projects.map((project) => [
+			project.id,
+			searchProjectSessions(project, "all", normalizedQuery, roomAgentSessionIds, state.unreadSessionIds),
+		] as const)),
+		[projects, normalizedQuery, roomAgentSessionIds, state.unreadSessionIds],
+	);
+	const tabCounts = useMemo(
+		() => countSessionsByTab(searchedSessionsByProject, state.unreadSessionIds),
+		[searchedSessionsByProject, state.unreadSessionIds],
+	);
+	const tabsWithCounts = useMemo(
+		() => SESSION_TABS.map((tab) => ({ ...tab, count: tabCounts[tab.value] })),
+		[tabCounts],
+	);
+	const matchingSessionsByProject = useMemo(
+		() => sessionTab === "all" ? searchedSessionsByProject : new Map(projects.map((project) => [
+			project.id,
+			searchedSessionsByProject.get(project.id)!.filter((session) => sessionMatchesTab(session, sessionTab, state.unreadSessionIds)),
+		] as const)),
+		[projects, searchedSessionsByProject, sessionTab, state.unreadSessionIds],
+	);
 	const visibleProjects = useMemo(
-		() =>
-			normalizedQuery
-				? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
-				: projects,
-		[normalizedQuery, projects],
+		() => projects.filter((project) =>
+			(!normalizedQuery && sessionTab === "all") ||
+			(matchingSessionsByProject.get(project.id)?.length ?? 0) > 0 ||
+			(sessionTab === "all" && project.name.toLowerCase().includes(normalizedQuery)),
+		),
+		[projects, sessionTab, normalizedQuery, matchingSessionsByProject],
+	);
+	const sessionMatchedProjectIds = useMemo(
+		() => new Set(visibleProjects
+			.filter((project) => normalizedQuery && matchingSessionsByProject.get(project.id)!
+				.some((session) => sessionTitle(session).toLowerCase().includes(normalizedQuery)))
+			.map((project) => project.id)),
+		[visibleProjects, normalizedQuery, matchingSessionsByProject],
 	);
 	const selectedProject = projects.find((project) => project.id === selectedProjectId);
+	const pinnedSessions = useMemo(
+		() => visibleProjects.flatMap((project) =>
+			matchingSessionsByProject.get(project.id)!
+				.filter((session) => session.pinned)
+				.map((session) => ({ project, session })),
+		),
+		[visibleProjects, matchingSessionsByProject],
+	);
 
 	const projectSections = useMemo(() => {
 		const assigned = new Set<string>();
@@ -244,13 +283,31 @@ export const ProjectRail = memo(function ProjectRail({
 	const filteredProjectSections = useMemo(() => {
 		const visibleIds = new Set(visibleProjects.map((project) => project.id));
 		return {
-			groups: projectSections.groups.map((section) => ({
-				...section,
-				projects: section.projects.filter((project) => visibleIds.has(project.id)),
-			})),
+			groups: projectSections.groups
+				.map((section) => ({
+					...section,
+					projects: section.projects.filter((project) => visibleIds.has(project.id)),
+				}))
+				.filter((section) => (sessionTab === "all" && !normalizedQuery) || section.projects.length > 0),
 			ungrouped: projectSections.ungrouped.filter((project) => visibleIds.has(project.id)),
 		};
-	}, [projectSections, visibleProjects]);
+	}, [projectSections, visibleProjects, sessionTab, normalizedQuery]);
+
+	useEffect(() => {
+		if (!normalizedQuery) return;
+		setExpandedGroupIds((current) => {
+			const next = new Set(current);
+			for (const section of filteredProjectSections.groups) next.add(section.group.id);
+			return next.size === current.size ? current : next;
+		});
+		if (filteredProjectSections.ungrouped.length) setUngroupedOpen(true);
+		if (!sessionMatchedProjectIds.size) return;
+		setExpandedProjectIds((current) => {
+			const next = new Set(current);
+			for (const id of sessionMatchedProjectIds) next.add(id);
+			return next.size === current.size ? current : next;
+		});
+	}, [normalizedQuery, filteredProjectSections, sessionMatchedProjectIds]);
 
 	const displayedProjectIds = useMemo(
 		() => [
@@ -532,6 +589,15 @@ export const ProjectRail = memo(function ProjectRail({
 				handlers.set(session.id, {
 					onClick: () => {
 						setSelectedProjectId(project.id);
+						if (sessionTab === "completed") {
+							if (!session.pinned) {
+								const index = searchedSessionsByProject.get(project.id)!.findIndex((candidate) => candidate.id === session.id);
+								setSessionVisibleCounts((current) => index >= (current[project.id] ?? SESSION_PAGE_SIZE)
+									? { ...current, [project.id]: index + 1 }
+									: current);
+							}
+							setSessionTab("all");
+						}
 						void actions.selectSession(session.id);
 						onNavigate?.();
 					},
@@ -558,6 +624,8 @@ export const ProjectRail = memo(function ProjectRail({
 		projects,
 		requestSessionDelete,
 		resetSessionDrag,
+		searchedSessionsByProject,
+		sessionTab,
 	]);
 
 	const confirmSessionDelete = async () => {
@@ -575,7 +643,15 @@ export const ProjectRail = memo(function ProjectRail({
 		const selected = selectedProjectId === project.id;
 		const expanded = expandedProjectIds.has(project.id);
 		const projectActionsVisible = openProjectMenuId === project.id;
-		const sessions = excludeRoomAgentSessions(orderedSessions(project), roomAgentSessionIds);
+		const sessions = matchingSessionsByProject.get(project.id)!;
+		const sessionDepths = new Map<string, number>();
+		for (const session of sessions) {
+			const parentDepth = session.parentId ? sessionDepths.get(session.parentId) : undefined;
+			sessionDepths.set(
+				session.id,
+				session.relation === "collaboration" && parentDepth !== undefined ? parentDepth + 1 : 0,
+			);
+		}
 		const runningSessionCount = sessions.filter(isSessionRunning).length;
 		const hasUnread = hasUnreadSessions(sessions, state.unreadSessionIds);
 		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
@@ -638,27 +714,29 @@ export const ProjectRail = memo(function ProjectRail({
 										<CollapsibleTrigger asChild>
 											<Button
 												className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs"
-												variant={selected ? "secondary" : "ghost"}
+														variant={selected ? "secondary" : "ghost"}
 												onClick={() => setSelectedProjectId(project.id)}
 											>
 												<Folder className="size-4 shrink-0 text-muted-foreground" />
 												<span className="project-list-item-label min-w-0 flex-1 truncate text-left">
 													{project.name}
 												</span>
-												{hasUnread ? (
-													<span
-														role="img"
-														className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20 group-hover:invisible"
-														aria-label={`${project.name} 有新的会话内容`}
-														title="有新的会话内容"
-													/>
-												) : null}
-												{runningSessionCount > 0 ? (
-													<LoaderCircle
-														className="size-3.5 shrink-0 animate-spin text-primary group-hover:invisible"
-														aria-label="项目中有会话进行中"
-													/>
-												) : null}
+												<span className="mobile-project-indicators flex shrink-0 items-center gap-1.5 group-hover:invisible">
+													{hasUnread ? (
+														<span
+															role="img"
+															className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
+															aria-label={`${project.name} 有新的会话内容`}
+															title="有新的会话内容"
+														/>
+													) : null}
+													{runningSessionCount > 0 ? (
+														<LoaderCircle
+															className="size-3.5 shrink-0 animate-spin text-primary"
+															aria-label="项目中有会话进行中"
+														/>
+													) : null}
+												</span>
 											</Button>
 										</CollapsibleTrigger>
 									</HoverCardTrigger>
@@ -706,7 +784,7 @@ export const ProjectRail = memo(function ProjectRail({
 											) : (
 												<button
 													type="button"
-													className="project-list-item-label min-w-0 flex-1 cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
+													className="project-list-item-label min-w-0 flex-1 cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left leading-5 text-foreground"
 													onClick={() => {
 														setProjectNameDrafts((current) => ({
 															...current,
@@ -720,7 +798,8 @@ export const ProjectRail = memo(function ProjectRail({
 											)}
 											<Button
 												aria-label={project.pinned ? "取消置顶项目" : "置顶项目"}
-												size="icon-sm"
+												size="icon-xs"
+												className="size-5"
 												variant="ghost"
 												onClick={(event) => {
 													event.stopPropagation();
@@ -730,21 +809,23 @@ export const ProjectRail = memo(function ProjectRail({
 												<Pin className={cn("size-3.5", project.pinned && "text-primary")} />
 											</Button>
 										</div>
-										<div className="mt-3 flex items-center gap-2 text-sm text-foreground">
-											<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-											<span>{state.connected ? "已连接" : "未连接"}</span>
-											<span className="text-muted-foreground">·</span>
-											<span>{sessions.length} 个会话</span>
-										</div>
-										{runningSessionCount > 0 ? (
-											<div className="mt-2 flex items-center gap-2 text-sm text-primary">
-												<LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-												<span>{runningSessionCount} 个会话正在进行中</span>
+										<div className="mt-3 grid gap-2 whitespace-nowrap text-xs text-muted-foreground">
+											<div className="flex min-w-0 items-center gap-2">
+												<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+												<span>{state.connected ? "已连接" : "未连接"}</span>
+												<span>·</span>
+												<span>{sessions.length} 个会话</span>
 											</div>
-										) : null}
-										<div className="mt-2 flex min-w-0 items-start gap-2 text-sm text-muted-foreground">
-											<Folder className="mt-0.5 size-4 shrink-0" />
-											<span className="min-w-0 break-all font-mono text-xs">{project.path}</span>
+											{runningSessionCount > 0 ? (
+												<div className="flex min-w-0 items-center gap-2 text-primary">
+													<LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+													<span>{runningSessionCount} 个会话正在进行中</span>
+												</div>
+											) : null}
+											<div className="flex min-w-0 items-start gap-2">
+												<Folder className="mt-0.5 size-3.5 shrink-0" />
+												<span className="min-w-0 whitespace-normal break-all font-mono">{project.path}</span>
+											</div>
 										</div>
 									</HoverCardContent>
 								</HoverCard>
@@ -833,26 +914,31 @@ export const ProjectRail = memo(function ProjectRail({
 										<>
 											<VirtualizedSessionList
 												items={visibleSessions}
-												getKey={sessionItemKey}
-												scrollRef={sessionViewportRef}
+															getKey={sessionItemKey}
+															scrollRef={sessionViewportRef}
 												renderItem={(session) => {
 													const running = isSessionRunning(session);
 													const sessionDrop =
 														sessionDropTarget?.projectId === project.id &&
 														sessionDropTarget.sessionId === session.id;
-													return (
-														<SessionButton
-															projectName={project.name}
-															session={session}
-															active={state.sessionId === session.id}
-															running={running}
-															unread={Boolean(state.unreadSessionIds[session.id]) && !running}
-															dragging={draggedSession?.sessionId === session.id}
-															dropTarget={sessionDrop}
-															dropPosition={sessionDrop ? sessionDropTarget?.position : undefined}
-															{...sessionHandlers.get(session.id)!}
-														/>
-													);
+											return (
+												<div
+													className="h-full"
+													style={{ paddingLeft: Math.min(sessionDepths.get(session.id) ?? 0, 5) * 12 }}
+												>
+													<SessionButton
+														projectName={project.name}
+														session={session}
+														active={state.sessionId === session.id}
+														running={running}
+														unread={isSessionUnread(session, state.unreadSessionIds)}
+														dragging={draggedSession?.sessionId === session.id}
+														dropTarget={sessionDrop}
+														dropPosition={sessionDrop ? sessionDropTarget?.position : undefined}
+														{...sessionHandlers.get(session.id)!}
+													/>
+												</div>
+											);
 												}}
 											/>
 							{hasSessionPagination ? (
@@ -941,9 +1027,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const renderGroup = (group: ProjectGroup, groupProjects: WebProject[]) => {
 		const expanded = expandedGroupIds.has(group.id);
 		const groupDrop = groupDropTarget?.groupId === group.id;
-		const visibleGroupSessions = groupProjects.map((project) =>
-			excludeRoomAgentSessions(project.sessions, roomAgentSessionIds),
-		);
+		const visibleGroupSessions = groupProjects.map((project) => matchingSessionsByProject.get(project.id)!);
 		const groupRunningSessionCount = visibleGroupSessions.reduce(
 			(total, sessions) => total + sessions.filter(isSessionRunning).length,
 			0,
@@ -998,25 +1082,25 @@ export const ProjectRail = memo(function ProjectRail({
 											<HoverCard openDelay={140} closeDelay={80}>
 												<HoverCardTrigger asChild>
 													<CollapsibleTrigger asChild>
-														<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs" variant="ghost">
+																<Button className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 pr-20 text-xs" variant="ghost">
 													<ProjectRailChevron className="size-3.5 shrink-0" open={expanded} />
 															<FolderTree className="size-4 shrink-0 text-muted-foreground" />
 															<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
 																{group.name}
 															</span>
-															<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground group-hover:invisible">
+															<span className="mobile-project-indicators flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground group-hover:invisible">
 																{groupHasUnread ? (
 																	<span
 																		role="img"
-																		className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20 group-hover:invisible"
-																		aria-label={`${group.name} 中有新的会话内容`}
+																		className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
+																					aria-label={`${group.name} 中有新的会话内容`}
 																		title="有新的会话内容"
 																	/>
 																) : null}
 																{groupRunningSessionCount > 0 ? (
 																	<LoaderCircle
-																		className="size-3.5 animate-spin text-primary group-hover:invisible"
-																		aria-label="项目组中有会话进行中"
+																		className="size-3.5 animate-spin text-primary"
+																					aria-label="项目组中有会话进行中"
 																	/>
 																) : null}
 																{groupProjects.length}
@@ -1128,39 +1212,36 @@ export const ProjectRail = memo(function ProjectRail({
 	};
 
 	return (
-		<div className="flex min-h-0 flex-1 flex-col bg-background">
+		<div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
 			<div
 				className={cn(
 					"flex h-16 shrink-0 items-center justify-between px-4",
-					onNavigate ? "pr-14 lg:pr-4" : "pr-4",
+					withNavigationRail ? "pr-4" : onNavigate ? "pr-14 lg:pr-4" : "pr-4",
 				)}
 			>
-				<div className="flex items-center gap-2.5 font-semibold tracking-tight">
-					<BrandLogo logo={state.branding.logo} className="size-7 rounded-md object-contain" />
-					<span>{state.branding.name}</span>
+				<div className="flex min-w-0 items-center gap-2.5 font-semibold tracking-tight">
+					{!withNavigationRail ? <BrandLogo logo={state.branding.logo} className="size-7 rounded-md object-contain" /> : null}
+					<span className="truncate">{state.branding.name}</span>
 				</div>
-				<div className="flex items-center gap-1">
-					<Button
-						size="icon"
-						variant="ghost"
-						onClick={onAddProject}
-						aria-label="添加项目"
-					>
+				<div className="flex items-center gap-0.5">
+					<Button size="icon" variant="ghost" onClick={onAddProject} aria-label="添加项目" title="添加项目">
 						<Plus className="size-4" />
 					</Button>
-					<Button
-						size="icon"
-						variant="ghost"
-						onClick={openCreateGroup}
-						aria-label="新建项目组"
-					>
+					<Button size="icon" variant="ghost" onClick={openCreateGroup} aria-label="新建项目组" title="新建项目组">
 						<FolderPlus className="size-4" />
 					</Button>
+					{onCollapse ? (
+						<Button size="icon" variant="ghost" onClick={onCollapse} aria-label="收起项目栏" title="收起项目栏">
+							<PanelLeftClose className="size-4" />
+						</Button>
+					) : null}
 				</div>
 			</div>
-			<div className="px-3 pb-3">
-				<WorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
-			</div>
+			{!withNavigationRail ? (
+				<div className="px-3 pb-3">
+					<WorkspaceModeSwitch mode={workspaceMode} onChange={onWorkspaceModeChange} />
+				</div>
+			) : null}
 			<div className="grid grid-cols-2 gap-2 px-3 pb-3">
 				<Button
 					className="h-10 min-w-0 justify-start gap-2 px-3"
@@ -1193,19 +1274,48 @@ export const ProjectRail = memo(function ProjectRail({
 				<div className="relative">
 					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 					<Input
-						aria-label="搜索项目"
-						placeholder="搜索项目"
+						aria-label="搜索项目或会话"
+						placeholder="搜索项目/会话"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
-						className="h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0"
+						className={cn("h-9 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0", onNavigate && "min-h-10")}
 					/>
 				</div>
 			</div>
-			<ScrollArea viewportRef={sessionViewportRef} className="project-list min-h-0 flex-1 px-3">
+			<Tabs value={sessionTab} onValueChange={(value) => setSessionTab(value as SessionListTab)} className="min-h-0 flex-1 gap-0">
+				<WorkbenchTabBar activeId={sessionTab} tabs={tabsWithCounts} label="会话状态" className="mx-3 mb-3" compact />
+				{(["all", "running", "completed"] as const)
+					.filter((tab) => tab !== sessionTab)
+					.map((tab) => <TabsContent key={tab} value={tab} forceMount className="hidden" />)}
+				<TabsContent value={sessionTab} className="flex min-h-0 flex-1 flex-col">
+					<ScrollArea viewportRef={sessionViewportRef} className="project-list min-h-0 flex-1 px-3">
 				<div className="pb-5">
+					{pinnedSessions.length ? (
+						<div className="mb-4">
+							<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
+								<span>置顶</span>
+								<span>{pinnedSessions.length}</span>
+							</div>
+							<div className="grid gap-0.5">
+								{pinnedSessions.map(({ project, session }) => (
+									<SessionButton
+										key={session.id}
+										projectName={project.name}
+										session={session}
+										active={state.sessionId === session.id}
+										running={isSessionRunning(session)}
+										unread={isSessionUnread(session, state.unreadSessionIds)}
+										dragging={draggedSession?.sessionId === session.id}
+										dropTarget={false}
+										{...sessionHandlers.get(session.id)!}
+									/>
+								))}
+							</div>
+						</div>
+					) : null}
 					<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
 						<span>项目</span>
-						<span>{projects.length}</span>
+						<span>{visibleProjects.length}</span>
 					</div>
 					{state.loading && !projects.length ? (
 						<div className="px-2 py-8 text-center text-sm text-muted-foreground">正在加载项目与会话</div>
@@ -1249,10 +1359,12 @@ export const ProjectRail = memo(function ProjectRail({
 							filteredProjectSections.ungrouped.map((project) => renderProject(project))
 						)}
 					</div>
-					{!state.loading && !visibleProjects.length && !state.projectGroups.length ? (
-						<div className="px-2 py-8 text-center text-sm text-muted-foreground">暂无项目</div>
+					{!state.loading && !visibleProjects.length && (normalizedQuery || sessionTab !== "all" || !state.projectGroups.length) ? (
+						<div className="px-2 py-8 text-center text-sm text-muted-foreground">
+							{normalizedQuery ? "没有匹配的项目或会话" : sessionTab === "running" ? "暂无进行中的会话" : sessionTab === "completed" ? "暂无待查看的会话" : "暂无项目"}
+						</div>
 					) : null}
-					{archivedProjects.length ? (
+					{sessionTab === "all" && archivedProjects.length ? (
 						<>
 							<Separator className="my-4" />
 							<Button
@@ -1287,8 +1399,10 @@ export const ProjectRail = memo(function ProjectRail({
 						</>
 					) : null}
 				</div>
-			</ScrollArea>
-			<RailFooter actions={actions} />
+					</ScrollArea>
+				</TabsContent>
+			</Tabs>
+			<RailFooter actions={actions} connectionState={state} updatesOnly={withNavigationRail} />
 			<ProjectGroupDialog
 				open={groupDialogOpen}
 				group={editingGroup}

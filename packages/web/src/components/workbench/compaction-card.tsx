@@ -81,7 +81,7 @@ function CompactionActivityContent({ state }: { state: LiveCompactionState }) {
 
 	return (
 		<div className="min-w-0" aria-live="polite" role="status">
-			<div className="flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-1 text-left text-sm">
+			<div className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm">
 				<Icon
 					className={cn(
 						"size-4 shrink-0",
@@ -129,7 +129,7 @@ export function CompactionSummaryCard({
 			<CollapsibleTrigger asChild>
 				<button
 					type="button"
-					className="flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-1 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					aria-label={`${open ? "收起" : "展开"}上下文压缩摘要`}
 				>
 					<Sparkles className="size-4 shrink-0 text-muted-foreground" />

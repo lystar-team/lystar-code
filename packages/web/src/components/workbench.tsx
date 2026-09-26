@@ -1,6 +1,6 @@
-import { LoaderCircle, LogOut, PanelRight, Settings } from "lucide-react";
+import { LoaderCircle, PanelRightOpen } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
 import { connectionPresentation, type ConnectionPresentation } from "../state/connection-recovery";
 import { StabilityBoundary, StabilityFallbackPanel } from "./stability-boundary";
@@ -12,7 +12,7 @@ import { Button } from "./ui/button";
 import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
 import { AgentIdentityIcon, collaborationAlias, collaborationSessionsForSession } from "./workbench/collaboration-session";
-import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "./workbench/constants";
+import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, sidebarWidthFromPointer } from "./workbench/constants";
 import { ConversationView } from "./workbench/conversation";
 import {
 	DirectoryDialog,
@@ -28,6 +28,7 @@ import { ProjectRail } from "./workbench/project-rail";
 import { RoomRail } from "./workbench/room-rail";
 import { RoomWorkspace } from "./workbench/room-workspace";
 import type { WorkspaceMode } from "./workbench/workspace-mode-switch";
+import { WorkspaceNavigationRail } from "./workbench/workspace-navigation-rail";
 import { SettingsDialog } from "./workbench/settings";
 import { TokenGate } from "./workbench/token-gate";
 import type { PromptEditRequest, WorkbenchActions } from "./workbench/types";
@@ -68,17 +69,22 @@ export function Workbench({
 	const [editingProject, setEditingProject] = useState<WebProject>();
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+	const resizePointerIdRef = useRef<number | null>(null);
+	const [panelOpen, setPanelOpen] = useState(() =>
+		typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
+	);
+	const expandButtonRef = useRef<HTMLButtonElement>(null);
+	const mainRef = useRef<HTMLElement>(null);
 	const [promptEditRequest, setPromptEditRequest] = useState<PromptEditRequest>();
 	const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("sessions");
+	const [roomSection, setRoomSection] = useState<"chat" | "board">("chat");
 	const desktopLayout = useMediaQuery("(min-width: 768px), (horizontal-viewport-segments: 2)");
+	const wideLayout = useMediaQuery("(min-width: 1280px)");
 	const currentSessions = currentProject?.sessions ?? [];
 	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
 	const collaborationSessions = useMemo(
-		() =>
-			currentSessionSummary?.relation === "collaboration"
-				? []
-				: collaborationSessionsForSession(currentSessions, state.sessionId),
-		[currentSessionSummary?.relation, currentSessions, state.sessionId],
+		() => collaborationSessionsForSession(currentSessions, state.sessionId),
+		[currentSessions, state.sessionId],
 	);
 	const roomWorkspace = useRoomWorkspace({
 		active: workspaceMode === "rooms",
@@ -125,18 +131,25 @@ export function Workbench({
 	const viewSubtitle = workspaceMode === "rooms" ? roomProject?.name || "选择项目" : currentProject?.name;
 
 	const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-		if (event.button !== 0) return;
+		if (event.button !== 0 || resizePointerIdRef.current !== null) return;
 		event.preventDefault();
+		resizePointerIdRef.current = event.pointerId;
 		event.currentTarget.setPointerCapture(event.pointerId);
 		setIsResizingSidebar(true);
 	};
 
 	const resizeSidebar = (event: ReactPointerEvent<HTMLDivElement>) => {
-		if (!isResizingSidebar) return;
-		setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, event.clientX)));
+		if (resizePointerIdRef.current !== event.pointerId) return;
+		const panel = event.currentTarget.parentElement!;
+		setSidebarWidth(sidebarWidthFromPointer(event.clientX, panel.getBoundingClientRect().left));
 	};
 
-	const stopSidebarResize = () => setIsResizingSidebar(false);
+	const stopSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+		if (resizePointerIdRef.current !== event.pointerId) return;
+		resizePointerIdRef.current = null;
+		if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+		setIsResizingSidebar(false);
+	};
 
 	useEffect(() => {
 		if (!isResizingSidebar) return;
@@ -154,7 +167,41 @@ export function Workbench({
 		setPromptEditRequest(undefined);
 	}, [state.sessionId]);
 
-	const openDirectory = useCallback(() => setDirectoryOpen(true), []);
+	useEffect(() => {
+		setPanelOpen(wideLayout);
+		if (!wideLayout) {
+			resizePointerIdRef.current = null;
+			setIsResizingSidebar(false);
+		}
+	}, [wideLayout]);
+
+	useEffect(() => {
+		const main = mainRef.current;
+		if (!main) return;
+		main.inert = desktopLayout && !wideLayout && panelOpen;
+		return () => {
+			main.inert = false;
+		};
+	}, [desktopLayout, panelOpen, wideLayout]);
+
+	const closeSidebar = useCallback(() => {
+		setPanelOpen(false);
+		window.requestAnimationFrame(() => expandButtonRef.current?.focus());
+	}, []);
+
+	useEffect(() => {
+		if (!desktopLayout || wideLayout || !panelOpen) return;
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape" && !event.defaultPrevented) closeSidebar();
+		};
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, [closeSidebar, desktopLayout, panelOpen, wideLayout]);
+
+	const openDirectory = useCallback(() => {
+		setDirectoryOpen(true);
+		if (desktopLayout && !wideLayout) setPanelOpen(false);
+	}, [desktopLayout, wideLayout]);
 	const beginPromptEdit = useCallback(
 		(request: PromptEditRequest) => {
 			if (request.sessionId === state.sessionId) setPromptEditRequest(request);
@@ -164,7 +211,8 @@ export function Workbench({
 	const closePromptEdit = useCallback(() => setPromptEditRequest(undefined), []);
 	const handleWorkspaceModeChange = useCallback((mode: WorkspaceMode) => {
 		setWorkspaceMode(mode);
-	}, []);
+		if (desktopLayout) setPanelOpen(true);
+	}, [desktopLayout]);
 	const handleSelectRoom = useCallback(
 		(projectId: string, roomId: string) => {
 			const summary = roomWorkspace.roomProjects
@@ -182,72 +230,103 @@ export function Workbench({
 	return (
 		<div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
 			{desktopLayout ? (
-				<aside
-					className="relative flex shrink-0 border-r border-border/60 bg-background"
-					style={{ width: `${sidebarWidth}px` }}
-				>
-				<StabilityBoundary
-					scope="project-rail"
-					resetKeys={[state.currentProjectId]}
-					fallback={({ error, reset }) => (
-						<StabilityFallbackPanel
-							className="h-full w-full"
-							title="项目栏没有正常显示"
-							message="聊天区域仍可使用。重新加载项目栏可以恢复导航。"
-							error={error}
-							onReset={reset}
-						/>
-					)}
-				>
-					{workspaceMode === "rooms" ? (
-						<RoomRail
-							state={state}
-							actions={actions}
-							projects={projects}
-							roomProjects={roomWorkspace.roomProjects}
-							roomsLoading={roomWorkspace.roomsLoading}
-							roomsError={roomWorkspace.roomsError}
-							selectedRoomId={roomWorkspace.selectedRoom?.room.id}
-							onSelectRoom={(projectId, summary) => handleSelectRoom(projectId, summary.room.id)}
-							onCreateRoom={handleCreateRoom}
-							onModeChange={handleWorkspaceModeChange}
-						/>
-					) : (
-						<ProjectRail
-							state={state}
-							actions={actions}
-							projects={projects}
-							roomAgentSessionIds={roomAgentSessionIds}
-							currentProject={currentProject}
-							onAddProject={openDirectory}
-							onEditProject={setEditingProject}
-							workspaceMode={workspaceMode}
-							onWorkspaceModeChange={handleWorkspaceModeChange}
-						/>
-					)}
-				</StabilityBoundary>
-				<div
-					// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
-					role="separator"
-					aria-label="调整项目栏宽度"
-					aria-orientation="vertical"
-					aria-valuemin={SIDEBAR_MIN_WIDTH}
-					aria-valuemax={SIDEBAR_MAX_WIDTH}
-					aria-valuenow={sidebarWidth}
-					tabIndex={0}
-					className={cn(
-						"absolute top-0 right-0 z-20 block h-full w-1 translate-x-1/2 cursor-col-resize touch-none",
-						isResizingSidebar ? "bg-border" : "hover:bg-border",
-					)}
-					onPointerDown={startSidebarResize}
-					onPointerMove={resizeSidebar}
-					onPointerUp={stopSidebarResize}
-					onPointerCancel={stopSidebarResize}
-				/>
-				</aside>
+				<div className="relative flex h-full shrink-0">
+					<WorkspaceNavigationRail
+						branding={state.branding}
+						mode={workspaceMode}
+						panelOpen={panelOpen}
+						onModeChange={handleWorkspaceModeChange}
+						onPanelOpen={() => setPanelOpen(true)}
+						expandButtonRef={expandButtonRef}
+						actions={actions}
+					/>
+					{panelOpen ? (
+						<>
+							{!wideLayout ? (
+								<button type="button" tabIndex={-1} aria-hidden="true" className="fixed inset-0 z-30 cursor-default bg-black/30" onClick={closeSidebar} />
+							) : null}
+							<aside
+								aria-label={workspaceMode === "rooms" ? "Room 导航" : "项目与会话"}
+								className={cn(
+									"workspace-navigation-panel relative flex min-h-0 min-w-0 shrink-0 border-r border-border/60 bg-background",
+									!wideLayout && "absolute inset-y-0 left-16 z-40 w-[min(392px,calc(100vw-4rem))] shadow-lg",
+								)}
+								style={wideLayout ? { width: `${sidebarWidth}px`, minWidth: SIDEBAR_MIN_WIDTH, maxWidth: SIDEBAR_MAX_WIDTH } : undefined}
+							>
+								<StabilityBoundary
+									scope="project-rail"
+									resetKeys={[state.currentProjectId]}
+									fallback={({ error, reset }) => (
+										<StabilityFallbackPanel
+											className="h-full w-full"
+											title="项目栏没有正常显示"
+											message="聊天区域仍可使用。重新加载项目栏可以恢复导航。"
+											error={error}
+											onReset={reset}
+										/>
+									)}
+								>
+									{workspaceMode === "rooms" ? (
+										<RoomRail
+											state={state}
+											actions={actions}
+											projects={projects}
+											roomProjects={roomWorkspace.roomProjects}
+											roomsLoading={roomWorkspace.roomsLoading}
+											roomsError={roomWorkspace.roomsError}
+											selectedRoomId={roomWorkspace.selectedRoom?.room.id}
+											onSelectRoom={(projectId, summary) => handleSelectRoom(projectId, summary.room.id)}
+											onCreateRoom={handleCreateRoom}
+											onModeChange={handleWorkspaceModeChange}
+											onNavigate={wideLayout ? undefined : closeSidebar}
+											withNavigationRail
+											onCollapse={closeSidebar}
+										/>
+									) : (
+										<ProjectRail
+											state={state}
+											actions={actions}
+											projects={projects}
+											roomAgentSessionIds={roomAgentSessionIds}
+											currentProject={currentProject}
+											onAddProject={openDirectory}
+											onEditProject={setEditingProject}
+											onNavigate={wideLayout ? undefined : closeSidebar}
+											workspaceMode={workspaceMode}
+											onWorkspaceModeChange={handleWorkspaceModeChange}
+											withNavigationRail
+											onCollapse={closeSidebar}
+										/>
+									)}
+								</StabilityBoundary>
+								{wideLayout ? (
+									<div
+										// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
+										role="separator"
+										aria-label="调整项目栏宽度"
+										aria-orientation="vertical"
+										aria-valuemin={SIDEBAR_MIN_WIDTH}
+										aria-valuemax={SIDEBAR_MAX_WIDTH}
+										aria-valuenow={sidebarWidth}
+										tabIndex={0}
+										className={cn(
+											"absolute top-0 right-0 z-20 block h-full w-1 translate-x-1/2 cursor-col-resize touch-none",
+											isResizingSidebar ? "bg-border" : "hover:bg-border",
+										)}
+										onPointerDown={startSidebarResize}
+										onPointerMove={resizeSidebar}
+										onPointerUp={stopSidebarResize}
+										onPointerCancel={stopSidebarResize}
+										onLostPointerCapture={stopSidebarResize}
+									/>
+								) : null}
+							</aside>
+						</>
+					) : null}
+				</div>
 			) : null}
 
-			<main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+			<main ref={mainRef} className="flex min-w-0 flex-1 flex-col overflow-hidden">
 				<header className="relative flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-border/60 pl-3 pr-5 pt-[env(safe-area-inset-top)] sm:pl-5 sm:pr-7">
 					<div className="flex min-w-0 items-center gap-2">
 						{desktopLayout ? null : (
@@ -300,49 +379,16 @@ export function Workbench({
 								</span>
 							</div>
 						) : null}
-						<span
-							className="hidden items-center gap-2 sm:inline-flex"
-							role="status"
-							aria-label={`连接状态：${connection.label}`}
-						>
-							<span
-								className={cn(
-									"size-1.5 rounded-full",
-									connection.tone === "connected"
-										? "bg-[var(--success)]"
-										: connection.tone === "reconnecting"
-											? "bg-[var(--warning)]"
-											: "bg-destructive",
-								)}
-							/>
-							<span className="text-xs font-medium tracking-tight text-muted-foreground">
-								{connection.label}
-							</span>
-						</span>
 						<Button
-							size="icon"
+							className="h-10 gap-1.5 px-2 sm:px-3"
 							variant="ghost"
-							onClick={() => void actions.openInspector("runs")}
-							aria-label="打开运行面板"
+							onClick={() => void actions.openInspector()}
+							aria-label="打开审阅工作区"
+							aria-expanded={state.inspectorOpen}
 						>
-							<PanelRight className="size-4" />
-						</Button>
-						<Button
-							size="icon"
-							variant="ghost"
-							onClick={() => void actions.openSettings("appearance")}
-							aria-label="设置"
-						>
-							<Settings className="size-4" />
-						</Button>
-						<Button
-							className="hidden sm:inline-flex"
-							size="icon"
-							variant="ghost"
-							onClick={actions.signOut}
-							aria-label="退出"
-						>
-							<LogOut className="size-4" />
+							<PanelRightOpen className="size-4" aria-hidden="true" />
+							<span className="text-xs sm:hidden">审阅</span>
+							<span className="hidden text-xs sm:inline">审阅工作区</span>
 						</Button>
 					</div>
 					<Toast message={state.toast} />
@@ -379,6 +425,8 @@ export function Workbench({
 											controller={roomWorkspace}
 											onModeChange={() => setWorkspaceMode("sessions")}
 											openResource={actions.openResource}
+											section={roomSection}
+											onSectionChange={setRoomSection}
 										/>
 									) : (
 										<ConversationView
@@ -406,7 +454,7 @@ export function Workbench({
 						>
 							<GsapReveal animationKey={state.sessionId ?? "empty"} className="w-full shrink-0" distance={8} duration={0.26}>
 								{workspaceMode === "rooms" ? (
-									roomWorkspace.selectedRoom ? (
+									roomWorkspace.selectedRoom && roomSection === "chat" ? (
 										<Composer
 											state={state}
 											actions={actions}

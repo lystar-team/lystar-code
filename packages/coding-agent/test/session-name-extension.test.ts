@@ -47,7 +47,11 @@ function assistantResponse(text: string): AssistantMessage {
 	};
 }
 
+const tempDirs: string[] = [];
+
 function createExtensionTest(agentDir?: string, mode: ExtensionContext["mode"] = "print") {
+	const effectiveAgentDir = agentDir ?? mkdtempSync(join(tmpdir(), "pi-session-name-"));
+	if (!agentDir) tempDirs.push(effectiveAgentDir);
 	const state: TestState = {
 		sessionId: "session-1",
 		sessionFile: "/tmp/session-1.jsonl",
@@ -64,14 +68,14 @@ function createExtensionTest(agentDir?: string, mode: ExtensionContext["mode"] =
 		},
 		setSessionName,
 	} as unknown as ExtensionAPI;
-	createSessionNameExtension(agentDir)(pi);
+	createSessionNameExtension(effectiveAgentDir)(pi);
 
 	const modelRegistry = {
 		find: vi.fn((provider: string, modelId: string) =>
 			provider === activeModel.provider && modelId === activeModel.id ? activeModel : undefined,
 		),
 		getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "test-key" })),
-		complete: vi.fn(async () => assistantResponse("默认标题")),
+		streamSimple: vi.fn(() => ({ result: async () => assistantResponse("默认标题") })),
 	};
 	const context = {
 		mode,
@@ -103,8 +107,6 @@ async function flushAsyncWork(): Promise<void> {
 }
 
 describe("session name extension", () => {
-	const tempDirs: string[] = [];
-
 	afterEach(() => {
 		for (const tempDir of tempDirs.splice(0)) {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -126,17 +128,17 @@ describe("session name extension", () => {
 		await flushAsyncWork();
 
 		expect(test.modelRegistry.find).toHaveBeenCalledWith("upstream", "gpt-5.6-luna");
-		expect(test.modelRegistry.complete).toHaveBeenCalledWith(
+		expect(test.modelRegistry.streamSimple).toHaveBeenCalledWith(
 			activeModel,
 			expect.objectContaining({
 				messages: [expect.objectContaining({ content: [{ type: "text", text: "修复会话自动命名" }] })],
 			}),
-			expect.objectContaining({ reasoning: "medium", maxTokens: 64, sessionId: "session-1" }),
+			expect.objectContaining({ reasoning: "medium", maxTokens: 1024, sessionId: "session-1" }),
 		);
 		expect(test.setSessionName).toHaveBeenCalledWith("默认标题");
 	});
 
-	it("omits reasoning when title generation is configured with off", async () => {
+	it("omits reasoning when the title model supports off", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "pi-session-name-"));
 		tempDirs.push(agentDir);
 		writeFileSync(join(agentDir, "lystar.json"), JSON.stringify({ sessionName: { thinkingLevel: "off" } }));
@@ -147,27 +149,47 @@ describe("session name extension", () => {
 		await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);
 		await flushAsyncWork();
 
-		expect(test.modelRegistry.complete).toHaveBeenCalledWith(
+		expect(test.modelRegistry.streamSimple).toHaveBeenCalledWith(
 			activeModel,
 			expect.any(Object),
-			expect.not.objectContaining({ reasoning: expect.anything() }),
+			expect.objectContaining({ maxTokens: 64, reasoning: undefined }),
 		);
+	});
+
+	it("uses low when the title model does not support off", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-session-name-"));
+		tempDirs.push(agentDir);
+		writeFileSync(join(agentDir, "lystar.json"), JSON.stringify({ sessionName: { thinkingLevel: "off" } }));
+		const model = { ...activeModel, thinkingLevelMap: { off: null, minimal: null, low: "low" } } as Model<Api>;
+		const test = createExtensionTest(agentDir);
+		test.context.model = model;
+		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
+		test.state.entries.push({ type: "message", message: { role: "user", content: "修复标题" } });
+		await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);
+		await flushAsyncWork();
+
+		expect(test.modelRegistry.streamSimple).toHaveBeenCalledWith(
+			model,
+			expect.any(Object),
+			expect.objectContaining({ reasoning: "low", maxTokens: 1024 }),
+		);
+		expect(test.setSessionName).toHaveBeenCalledWith("默认标题");
 	});
 
 	it("starts RPC naming before the agent settles without blocking the main response", async () => {
 		const test = createExtensionTest(undefined, "rpc");
 		let resolveComplete: ((response: AssistantMessage) => void) | undefined;
-		test.modelRegistry.complete.mockImplementationOnce(
-			() =>
+		test.modelRegistry.streamSimple.mockImplementationOnce(() => ({
+			result: () =>
 				new Promise<AssistantMessage>((resolve) => {
 					resolveComplete = resolve;
 				}),
-		);
+		}));
 		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
 		await emit(test.handlers, "before_agent_start", { prompt: "首条 Prompt" }, test.context);
 		await flushAsyncWork();
 
-		expect(test.modelRegistry.complete).toHaveBeenCalled();
+		expect(test.modelRegistry.streamSimple).toHaveBeenCalled();
 		expect(test.setSessionName).not.toHaveBeenCalled();
 
 		resolveComplete?.(assistantResponse("自动标题"));
@@ -177,7 +199,11 @@ describe("session name extension", () => {
 
 	it("does not let a failed naming request affect the session", async () => {
 		const test = createExtensionTest();
-		test.modelRegistry.complete.mockRejectedValueOnce(new Error("provider unavailable"));
+		test.modelRegistry.streamSimple.mockImplementationOnce(() => ({
+			result: async () => {
+				throw new Error("provider unavailable");
+			},
+		}));
 		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
 		test.state.entries.push({ type: "message", message: { role: "user", content: "保留会话" } });
 		await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);
@@ -210,19 +236,19 @@ describe("session name extension", () => {
 			await emit(test.handlers, "session_start", { type: "session_start", reason: testCase.reason }, test.context);
 			await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);
 			await flushAsyncWork();
-			expect(test.modelRegistry.complete).not.toHaveBeenCalled();
+			expect(test.modelRegistry.streamSimple).not.toHaveBeenCalled();
 		}
 	});
 
 	it("does not overwrite a name changed while the request is pending", async () => {
 		const test = createExtensionTest();
 		let resolveComplete: ((response: AssistantMessage) => void) | undefined;
-		test.modelRegistry.complete.mockImplementationOnce(
-			() =>
+		test.modelRegistry.streamSimple.mockImplementationOnce(() => ({
+			result: () =>
 				new Promise<AssistantMessage>((resolve) => {
 					resolveComplete = resolve;
 				}),
-		);
+		}));
 		await emit(test.handlers, "session_start", { type: "session_start", reason: "startup" }, test.context);
 		test.state.entries.push({ type: "message", message: { role: "user", content: "不要覆盖手动名称" } });
 		await emit(test.handlers, "agent_settled", { type: "agent_settled" }, test.context);

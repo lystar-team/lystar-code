@@ -57,6 +57,7 @@ export interface ToolBatchProps {
 	open?: boolean;
 	onOpenChange?: (open: boolean) => void;
 	toolOpen?: ReadonlyMap<string, boolean>;
+	initialToolOpen?: ReadonlyMap<string, boolean>;
 	onToolOpenChange?: (toolId: string, open: boolean) => void;
 	autoCollapseWhenComplete?: ToolBatchAutoCollapse;
 	sessionId?: string;
@@ -284,6 +285,8 @@ function toolTitle(tool: ToolBatchTool): string {
 		return [parsed.pattern, typeof parsed.path === "string" ? parsed.path : undefined].filter(Boolean).join(" · ");
 	}
 	if (tool.diff?.files[0]?.path) return tool.diff.files[0].path;
+	if ((tool.name === "read" || tool.name === "edit" || tool.name === "write") && tool.summary === tool.name)
+		return "文件路径未记录";
 	return tool.summary || tool.name;
 }
 
@@ -327,8 +330,8 @@ const activeToolLabels: Record<string, string> = {
 	ls: "正在查看目录",
 };
 
-function toolRowActionLabel(name: string, state: ToolBatchState): string {
-	if (state === "input-available") return activeToolLabels[name] ?? "运行中";
+function toolRowActionLabel(name: string, state: ToolBatchState, preparing = false): string {
+	if (state === "input-available") return preparing && name === "write" ? "准备写入" : activeToolLabels[name] ?? "运行中";
 	if (state === "input-queued") return "已排队";
 	const labels: Record<string, string> = {
 		bash: "已运行",
@@ -386,9 +389,27 @@ export function toolRowTitle(tool: ToolBatchTool): string {
 	const skillName = skillNameFromTool(tool);
 	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
 	const title = toolTitle(tool);
-	const action = toolRowActionLabel(tool.name, tool.state);
+	const action = toolRowActionLabel(tool.name, tool.state, tool.preparing);
 	if (tool.name === "web_search" && title === "网页搜索") return action;
-	return title && title !== tool.name ? `${action} ${title}` : action;
+	const namedFile =
+		(tool.name === "read" || tool.name === "edit" || tool.name === "write") &&
+		parseToolSummary(tool.summary)?.path === title;
+	return title && (title !== tool.name || namedFile) ? `${action} ${title}` : action;
+}
+
+function hasVisibleDiff(diff?: ToolDiff): boolean {
+	return Boolean(diff?.files.some((file) => file.diff));
+}
+
+function isActiveFileChange(tool: ToolBatchTool): boolean {
+	return (
+		(tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch") &&
+		(tool.state === "input-available" || tool.state === "input-queued")
+	);
+}
+
+function visibleToolDetail(tool: ToolBatchTool): string | undefined {
+	return isActiveFileChange(tool) && tool.detail === tool.summary ? undefined : tool.detail;
 }
 
 function diffStats(diff?: ToolDiff): { additions: number; deletions: number } | undefined {
@@ -498,12 +519,16 @@ function activityStatusIcon(state: ToolBatchState): ReactNode {
 function readLineRange(tool: ToolBatchTool): string | undefined {
 	if (tool.name !== "read") return undefined;
 	const parsed = parseToolSummary(tool.summary);
-	const offset = typeof parsed?.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset > 0 ? parsed.offset : 1;
-	const limit = typeof parsed?.limit === "number" && Number.isInteger(parsed.limit) && parsed.limit > 0 ? parsed.limit : undefined;
 	const explicitRange = tool.detail?.match(/\[Showing lines (\d+)-(\d+) of /u);
 	if (explicitRange?.[1] && explicitRange[2]) return `第${explicitRange[1]}-${explicitRange[2]}行`;
+	if (tool.summary === tool.name || (!tool.summary && !parsed?.path)) return undefined;
+	const offset = typeof parsed?.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset > 0 ? parsed.offset : 1;
+	const limit = typeof parsed?.limit === "number" && Number.isInteger(parsed.limit) && parsed.limit > 0 ? parsed.limit : undefined;
 	if (tool.state === "output-available" && tool.detail) {
-		const content = tool.detail.replace(/\n*\[Showing lines \d+-\d+ of [^\]]+\]\s*$/u, "").replace(/\n+$/u, "");
+		const content = tool.detail
+			.replace(/\n*\[Showing lines \d+-\d+ of [^\]]+\]\s*$/u, "")
+			.replace(/\n*\[\d+ more lines in file\. Use offset=\d+ to continue\.\]\s*$/u, "")
+			.replace(/\n+$/u, "");
 		if (content) return `第${offset}-${offset + content.split(/\r?\n/u).length - 1}行`;
 	}
 	if (limit) return `第${offset}-${offset + limit - 1}行`;
@@ -538,17 +563,19 @@ function ToolActivityRow({
 	tool,
 	sessionId,
 	onOpenPath,
+	initialOpen = false,
 	open: controlledOpen,
 	onOpenChange,
 }: {
 	tool: ToolBatchTool;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
+	initialOpen?: boolean;
 	open?: boolean;
 	onOpenChange?: (open: boolean) => void;
 }) {
-	const [open, setOpen] = useControllableState({ defaultProp: false, prop: controlledOpen, onChange: onOpenChange });
-	const hasDetails = Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || webSearchSources(tool).length);
+	const [open, setOpen] = useControllableState({ defaultProp: initialOpen, prop: controlledOpen, onChange: onOpenChange });
+	const hasDetails = Boolean(isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length);
 	const stats = diffStats(tool.diff);
 	const lineRange = readLineRange(tool);
 	const { filename, directory } = activityPathParts(tool);
@@ -557,6 +584,7 @@ function ToolActivityRow({
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
 					aria-label={`${toolTitle(tool)}，${activityStatusLabel(tool.state)}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
+					data-transcript-resize-anchor
 					className="grid min-h-7 w-full min-w-0 grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
 					type="button"
 				>
@@ -602,6 +630,7 @@ function ToolActivityRow({
 			{hasDetails ? (
 				<GsapCollapsibleContent
 					open={open}
+					duration={tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch" ? 0 : undefined}
 					className="min-w-0 pb-1 pl-4 pt-0.5"
 					onClick={(event) => {
 						event.stopPropagation();
@@ -626,6 +655,7 @@ function ToolActivityGroup({
 	open,
 	onOpenChange,
 	toolOpen,
+	initialToolOpen,
 	onToolOpenChange,
 	sessionId,
 	onOpenPath,
@@ -636,6 +666,7 @@ function ToolActivityGroup({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	toolOpen?: ReadonlyMap<string, boolean>;
+	initialToolOpen?: ReadonlyMap<string, boolean>;
 	onToolOpenChange?: (toolId: string, open: boolean) => void;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
@@ -655,6 +686,7 @@ function ToolActivityGroup({
 			<CollapsibleTrigger asChild>
 				<button
 					aria-label={`${label}，${open ? "收起" : "展开"}`}
+					data-transcript-resize-anchor
 					className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
 				>
@@ -663,7 +695,7 @@ function ToolActivityGroup({
 					<ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool-activity:rotate-180" />
 				</button>
 			</CollapsibleTrigger>
-			<GsapCollapsibleContent open={open} className="pt-1.5">
+			<GsapCollapsibleContent open={open} duration={kind === "mutation" ? 0 : undefined} className="pt-1.5">
 				<div className="relative ml-1 grid min-w-0 gap-0 pl-4 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-border">
 					{tools.map((tool) => (
 						<ToolActivityRow
@@ -671,8 +703,9 @@ function ToolActivityGroup({
 							tool={tool}
 							sessionId={sessionId}
 							onOpenPath={onOpenPath}
+							initialOpen={initialToolOpen?.get(tool.id) ?? false}
 							open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
-							onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
+							onOpenChange={onToolOpenChange ? (nextOpen) => onToolOpenChange(tool.id, nextOpen) : undefined}
 						/>
 					))}
 				</div>
@@ -861,7 +894,7 @@ function ImageGenerationToolResult({ tool, sessionId }: { tool: ToolBatchTool; s
 
 	return (
 		<div className="grid min-w-0 w-full gap-6">
-			{items.map((item, index) => (
+			{items.length ? items.map((item, index) => (
 				<div className="grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] md:items-start" key={item.id}>
 					<GeneratedImageFrame item={item} onOpen={() => setViewerIndex(index)} status={status} />
 					{status === "complete" ? (
@@ -872,8 +905,8 @@ function ImageGenerationToolResult({ tool, sessionId }: { tool: ToolBatchTool; s
 						/>
 					) : null}
 				</div>
-			))}
-			<ResourceImageViewer items={items} open={viewerIndex !== undefined} initialIndex={viewerIndex ?? 0} onOpenChange={(nextOpen) => { if (!nextOpen) setViewerIndex(undefined); }} />
+			)) : <ImageGenerationProgress tool={tool} />}
+			{items.length ? <ResourceImageViewer items={items} open={viewerIndex !== undefined} initialIndex={viewerIndex ?? 0} onOpenChange={(nextOpen) => { if (!nextOpen) setViewerIndex(undefined); }} /> : null}
 		</div>
 	);
 }
@@ -928,19 +961,22 @@ const ImageGenerationProgress = memo(
 		const status = IMAGE_GENERATION_STATE[tool.state];
 		const detail = tool.detail?.trim();
 		const statusText = status === "error" ? detail || undefined : status === "complete" ? "图片结果正在写入会话" : undefined;
-		const metadata = status === "complete" ? imageGenerationPresentation(tool) : undefined;
+		const metadata = imageGenerationPresentation(tool);
 
 		return (
-			<div className={cn("grid min-w-0 gap-5", status === "complete" && "md:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] md:items-start")}>
-				<ImageGeneration className="w-full max-w-52" size="fluid" status={status} statusText={statusText} />
-				{metadata ? <ImageGenerationDetails model={metadata.model} prompt={metadata.prompt} /> : null}
+			<div className="grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] md:items-start">
+				<ImageGeneration className="w-full max-w-[32rem]" size="fluid" status={status} statusText={statusText} />
+				{metadata.prompt || status === "complete" ? (
+					<ImageGenerationDetails model={status === "complete" ? metadata.model : undefined} prompt={metadata.prompt} />
+				) : null}
 			</div>
 		);
 	},
 	(previous, next) => {
 		if (previous.tool.id !== next.tool.id || previous.tool.state !== next.tool.state) return false;
+		if (previous.tool.summary !== next.tool.summary) return false;
 		if (next.tool.state === "input-available" || next.tool.state === "input-queued") return true;
-		return previous.tool.summary === next.tool.summary && previous.tool.detail === next.tool.detail;
+		return previous.tool.detail === next.tool.detail;
 	},
 );
 
@@ -1056,6 +1092,8 @@ function ToolDetail({
 }) {
 	const plainText = tool.state === "input-available" || tool.state === "input-queued";
 	const title = toolTitle(tool);
+	const detail = visibleToolDetail(tool);
+	const diff = hasVisibleDiff(tool.diff) ? tool.diff : undefined;
 	const imagePreview = tool.images?.length ? (
 		<ImageToolGallery
 			tools={[tool]}
@@ -1110,18 +1148,18 @@ function ToolDetail({
 	return (
 		<div className="grid min-w-0 gap-1">
 			{imagePreview}
-			{tool.diff ? (
+			{diff ? (
 				<ToolDiffOutput
-					diff={tool.diff}
+					diff={diff}
 					fallbackPath={title}
 					onOpenPath={onOpenPath}
 					plainText={plainText}
 				/>
 			) : null}
-			{!tool.diff && tool.detail ? (
+			{!diff && detail ? (
 				<CodeBlock
 					className="my-0 border-border/60 bg-muted/25"
-					code={tool.detail}
+					code={detail}
 					language={"text" as BundledLanguage}
 					plainText
 				>
@@ -1132,6 +1170,9 @@ function ToolDetail({
 						</CodeBlockActions>
 					</CodeBlockHeader>
 				</CodeBlock>
+			) : null}
+			{!diff && !detail && isActiveFileChange(tool) ? (
+				<span className="text-xs text-muted-foreground">修改内容生成中</span>
 			) : null}
 		</div>
 	);
@@ -1178,7 +1219,7 @@ function ToolBatchRow({
 			? true
 			: tool.name === "web_search"
 				? true
-				: Boolean(tool.detail || tool.diff || tool.images?.length || tool.inputPreview || webSearchSources(tool).length || tool.subagents?.length);
+				: Boolean(isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length || tool.subagents?.length);
 
 	useEffect(() => {
 		if (
@@ -1213,7 +1254,7 @@ function ToolBatchRow({
 							className="flex min-w-0 flex-1 items-baseline overflow-hidden font-mono text-[13px]"
 							title={toolTitle(tool)}
 						>
-							<span className="mr-1.5 shrink-0">{toolRowActionLabel(tool.name, tool.state)}</span>
+							<span className="mr-1.5 shrink-0">{toolRowActionLabel(tool.name, tool.state, tool.preparing)}</span>
 							{pathParts.directory ? (
 								<span className="hidden min-w-0 truncate text-muted-foreground sm:inline">
 									{pathParts.directory}
@@ -1252,6 +1293,7 @@ function ToolBatchRow({
 			{hasDetails ? (
 				<GsapCollapsibleContent
 					open={open}
+					duration={standaloneMutation ? 0 : undefined}
 					data-transcript-resize-anchor
 					className={cn(
 						"min-w-0 pb-0.5 pl-6 pr-0 pt-0",
@@ -1297,6 +1339,7 @@ export const ToolBatch = memo(function ToolBatch({
 	onOpenPath,
 	onOpenSubagent,
 	toolOpen,
+	initialToolOpen,
 	onToolOpenChange,
 }: ToolBatchProps) {
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
@@ -1336,6 +1379,7 @@ export const ToolBatch = memo(function ToolBatch({
 				open={open}
 				onOpenChange={setOpen}
 				toolOpen={toolOpen}
+				initialToolOpen={initialToolOpen}
 				onToolOpenChange={onToolOpenChange}
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
@@ -1346,7 +1390,13 @@ export const ToolBatch = memo(function ToolBatch({
 	if (tools.length === 1 && tools[0]?.name === "bash" && tools[0].state === "output-error") {
 		return <CommandErrorPanel tool={tools[0]} open={open} onOpenChange={setOpen} className={className} />;
 	}
-	if (imageGeneration && imageGallery) {
+	if (
+		imageGeneration &&
+		(imageGallery ||
+			(tools.length === 1 &&
+				tools[0]?.name === "image_gen" &&
+				(tools[0].state === "input-available" || tools[0].state === "input-queued" || tools[0].state === "output-available")))
+	) {
 		return (
 			<div className={cn("grid min-w-0 gap-5", className)}>
 				{tools.map((tool) => (
@@ -1366,9 +1416,9 @@ export const ToolBatch = memo(function ToolBatch({
 						sessionId={sessionId}
 						onOpenPath={onOpenPath}
 						onOpenSubagent={onOpenSubagent}
-						initialOpen={false}
+						initialOpen={initialToolOpen?.get(tool.id) ?? false}
 						open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
-						onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
+						onOpenChange={onToolOpenChange ? (nextOpen) => onToolOpenChange(tool.id, nextOpen) : undefined}
 						autoCollapseWhenComplete={autoCollapseWhenComplete}
 					/>
 				))}
@@ -1485,8 +1535,9 @@ export const ToolBatch = memo(function ToolBatch({
 							sessionId={sessionId}
 							onOpenPath={onOpenPath}
 							onOpenSubagent={onOpenSubagent}
+							initialOpen={initialToolOpen?.get(tool.id) ?? false}
 							open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
-							onOpenChange={toolOpen ? (nextOpen) => onToolOpenChange?.(tool.id, nextOpen) : undefined}
+							onOpenChange={onToolOpenChange ? (nextOpen) => onToolOpenChange(tool.id, nextOpen) : undefined}
 						/>
 					))}
 				</div>

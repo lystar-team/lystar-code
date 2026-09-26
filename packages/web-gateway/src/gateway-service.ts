@@ -16,6 +16,7 @@ import {
 	restartRuntimeService,
 	runtimeTcpEndpoint,
 	stopRuntimeService,
+	stopRuntimeSession,
 	stopWebService,
 	type WebServiceInvocation,
 	type WebServiceSpec,
@@ -99,6 +100,10 @@ export interface WebComponentActionOptions extends WebServiceLaunchOptions {
 	component: WebComponent;
 	action: WebComponentAction;
 	force?: boolean;
+}
+
+export interface WebSessionStopOptions extends WebServiceLaunchOptions {
+	sessionId: string;
 }
 
 export async function runMacosPermissionsCommand(options: {
@@ -376,6 +381,17 @@ async function waitForFrontendReady(port: number, timeoutMs = 20_000): Promise<v
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	throw new Error(`Web 开发前端启动超时${lastError ? `：${lastError}` : ""}`);
+}
+
+export async function runWebSessionStop(options: WebSessionStopOptions): Promise<boolean> {
+	const configured = await loadConfiguredGateway(options);
+	const state = readState(options.agentDir, options.configFileName);
+	const config = configured ?? (state ? stateConfig(state, options) : undefined);
+	if (!config)
+		throw new Error(
+			`Web 尚未完成配置，请先运行 lc web。配置文件：${join(options.agentDir, options.configFileName ?? "web-config.json")}`,
+		);
+	return stopRuntimeSession(config.runtimeEndpoint, options.sessionId);
 }
 
 export async function getWebServicesStatus(options: WebServiceLaunchOptions): Promise<WebServicesStatus> {
@@ -722,7 +738,25 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 	}
 	if (options.action === "start") return ensureWebServices(options);
 	if (options.action === "restart") {
-		await runWebServiceAction({ ...options, action: "stop" });
+		const config = await loadConfiguredGateway(options);
+		if (!config) return ensureWebServices(options);
+		const frontend = frontendSpec(config, options);
+		if (frontend && getWebServiceStatus(frontend).running) {
+			stopWebService(frontend, true, { interactiveAdmin: options.interactiveAdmin ?? false });
+			await waitForServiceStopped(frontend);
+		}
+		// 先关闭入口，再强制终止 Runtime 中的任务和会话，避免 Gateway 重新拉起旧 Runtime。
+		await runWebComponentAction({ ...options, component: "gateway", action: "stop", force: true });
+		if (config.manageRuntime) {
+			await stopRuntimeService(
+				config.runtimeEndpoint,
+				true,
+				runtimeProfileFor(config),
+				serviceInvocation(options.runtimeInvocation),
+				options.interactiveAdmin ?? false,
+				config.agentDir,
+			);
+		}
 		return ensureWebServices(options);
 	}
 	return reconcileWebServices(options);

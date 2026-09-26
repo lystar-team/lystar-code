@@ -32,12 +32,26 @@ describe("协作会话展示数据", () => {
 		});
 		const unrelated = session({ id: "other" });
 
-		expect(collaborationSessionsForSession([child, unrelated, root], "child").map((item) => item.id)).toEqual([
+		expect(collaborationSessionsForSession([child, unrelated, root], "root").map((item) => item.id)).toEqual([
 			"root",
 			"child",
 		]);
 		expect(isCollaborationSession(child)).toBe(true);
 		expect(isCollaborationSession(root)).toBe(false);
+	});
+
+	it("子会话只显示自己的下级", () => {
+		const root = session({ id: "root" });
+		const child = session({ id: "child", parentId: "root", relation: "collaboration" });
+		const grandchild = session({ id: "grandchild", parentId: "child", relation: "collaboration" });
+		expect(collaborationSessionsForSession([root, child, grandchild], "child").map((item) => item.id)).toEqual([
+			"child",
+			"grandchild",
+		]);
+		expect(collaborationSessionsForSession([root, child, grandchild], "root").map((item) => item.id)).toEqual([
+			"root",
+			"child",
+		]);
 	});
 
 	it("为同一个会话生成稳定别名并识别智能体类型", () => {

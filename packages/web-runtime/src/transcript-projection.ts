@@ -373,7 +373,20 @@ function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): s
 	if (name === "bash" && typeof argumentsRecord?.command === "string") return argumentsRecord.command;
 	if (name === "read" || name === "edit" || name === "write" || name === "apply_patch") {
 		for (const key of ["path", "file_path", "filename"]) {
-			if (typeof argumentsRecord?.[key] === "string") return argumentsRecord[key];
+			if (typeof argumentsRecord?.[key] !== "string") continue;
+			const path = argumentsRecord[key];
+			if (name !== "read") return path === name ? JSON.stringify({ path }) : path;
+			const offset = argumentsRecord.offset;
+			const limit = argumentsRecord.limit;
+			return typeof offset === "number" || typeof limit === "number"
+				? JSON.stringify({
+						path,
+						...(typeof offset === "number" ? { offset } : {}),
+						...(typeof limit === "number" ? { limit } : {}),
+					})
+				: path === name
+					? JSON.stringify({ path })
+					: path;
 		}
 	}
 	return text(argumentsValue);
@@ -931,6 +944,7 @@ export function projectTranscriptItems(
 export function projectTranscriptBatch(
 	items: readonly TranscriptItem[],
 	knownAgentSteps: readonly AgentStep[] = [],
+	contextCalls: readonly TranscriptItem[] = [],
 ): TranscriptItem[] {
 	const stepByToolCall = new Map<string, string>();
 	const latestStepEntryIdsByStep = new Map<string, string>();
@@ -944,7 +958,7 @@ export function projectTranscriptBatch(
 		for (const toolCallId of step.toolCallIds) stepByToolCall.set(toolCallId, step.id);
 	}
 	const toolCalls = new Map<string, TranscriptToolCallProjection>();
-	for (const item of items) {
+	for (const item of [...contextCalls, ...items]) {
 		const payload = record(item.payload);
 		const entryMessage = record(payload?.message);
 		if (entryMessage?.role !== "assistant" || !Array.isArray(entryMessage.content)) continue;

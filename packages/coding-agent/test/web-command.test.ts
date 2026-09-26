@@ -8,6 +8,7 @@ import {
 	runWebControlCommand,
 	runWebPermissionsCommand,
 	runWebServiceCommand,
+	runWebSessionCommand,
 } from "../src/cli/web-command.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -24,6 +25,36 @@ afterEach(() => {
 });
 
 describe("Web control commands", () => {
+	it.each([undefined, "development"])("stops one Web Runtime session in %s mode", async (mode) => {
+		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-test";
+		if (mode) process.env.LYSTAR_CLI_MODE = mode;
+		else delete process.env.LYSTAR_CLI_MODE;
+		const runWebSessionStop = vi.fn(async () => true);
+		const output = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await runWebSessionCommand(["stop", "session-123"], { runWebSessionStop });
+
+		expect(runWebSessionStop).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: "session-123",
+				agentDir: "/tmp/lystar-web-command-test",
+				configFileName: mode ? "web-dev-config.json" : undefined,
+				defaultRuntimePort: mode ? 2423 : 1422,
+			}),
+		);
+		expect(output).toHaveBeenCalledWith("会话 session-123 已停止。");
+	});
+
+	it("reports idle sessions and rejects invalid session commands", async () => {
+		const runWebSessionStop = vi.fn(async () => false);
+		const output = vi.spyOn(console, "log").mockImplementation(() => {});
+		await runWebSessionCommand(["stop", "session-123"], { runWebSessionStop });
+		expect(output).toHaveBeenCalledWith("会话 session-123 没有运行中的任务。");
+		await expect(runWebSessionCommand(["stop"], { runWebSessionStop })).rejects.toThrow("用法：");
+		await expect(runWebSessionCommand(["stop", "one", "two"], { runWebSessionStop })).rejects.toThrow("用法：");
+		expect(runWebSessionStop).toHaveBeenCalledOnce();
+	});
+
 	it.each(["gateway", "runtime"] as const)("controls the bundled %s service directly", async (component) => {
 		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-test";
 		delete process.env.LYSTAR_CLI_MODE;
@@ -146,7 +177,7 @@ describe("Web control commands", () => {
 				frontendPort: 2420,
 			}),
 		);
-		expect(output).toHaveBeenCalledWith("开发 Web 前端、Gateway 和 Runtime 服务已启动。");
+		expect(output).toHaveBeenCalledWith("开发 Web 前端、Gateway 和 Runtime 服务已重启。");
 	});
 
 	it("reconciles post-update services with the explicit target version instead of the stale updater version", async () => {

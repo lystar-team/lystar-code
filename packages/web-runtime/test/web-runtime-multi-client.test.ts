@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ClientMessage, RUNTIME_PROTOCOL_VERSION, type ServerMessage } from "@lystar/code-web-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CreateAgentSessionRuntimeFactory } from "../../coding-agent/src/core/agent-session-runtime.ts";
 import {
 	createAgentSessionFromServices,
@@ -187,6 +187,54 @@ async function renameThroughService(
 }
 
 describe("Web Runtime 多端会话协作", () => {
+	it("按准确 ID 停止其他客户端持有的运行中会话，不删除会话", async () => {
+		const workspace = createSessionWorkspace();
+		const service = new WebRuntimeService(
+			new CodingAgentRuntimeAdapter({ agentDir: workspace.agentDir, createRuntime: workspace.createRuntime }),
+			{ agentDir: workspace.agentDir },
+		);
+		const owner = await acquireSession(service, workspace.sessionPath, "owner-client");
+		const runtime = await waitForRuntimeOwner(service, workspace.sessionPath);
+		const snapshot = runtime.getSnapshot.bind(runtime);
+		const sessionId = snapshot("available").id;
+		const snapshotMock = vi.spyOn(runtime, "getSnapshot").mockImplementation((access) => ({
+			...snapshot(access),
+			activity: "running",
+			phase: "turn",
+		}));
+		const abort = vi.spyOn(runtime, "abort").mockResolvedValue();
+		const clearQueue = vi.spyOn(runtime, "clearQueue");
+		const messages: ServerMessage[] = [];
+		const controller = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await controller.close();
+			await owner.connection.close();
+			await service.dispose();
+			rmSync(workspace.root, { recursive: true, force: true });
+		});
+		await controller.handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "stop-client" });
+		await controller.handle({
+			type: "request",
+			id: "wrong",
+			request: { command: "stop_session", sessionId: "other" },
+		});
+		const wrong = messages.find((item) => item.type === "response" && item.id === "wrong");
+		expect(wrong).toMatchObject({ ok: false, error: { code: "session_not_running" } });
+		expect(abort).not.toHaveBeenCalled();
+
+		await controller.handle({ type: "request", id: "stop", request: { command: "stop_session", sessionId } });
+		expect((await waitForResponse(messages, "stop")).result).toEqual({ stopped: true });
+		expect(abort).toHaveBeenCalledOnce();
+		expect(clearQueue).toHaveBeenCalledOnce();
+		snapshotMock.mockRestore();
+		await controller.handle({ type: "request", id: "idle", request: { command: "stop_session", sessionId } });
+		expect((await waitForResponse(messages, "idle")).result).toEqual({ stopped: false });
+		expect(abort).toHaveBeenCalledOnce();
+		expect(snapshot("available").id).toBe(sessionId);
+	});
+
 	it("本地控制端退出后仍为其他 Runtime 客户端保留会话", async () => {
 		const workspace = createSessionWorkspace();
 		const ownerAdapter = new CodingAgentRuntimeAdapter({

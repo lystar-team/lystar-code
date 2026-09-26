@@ -1,4 +1,4 @@
-import { Check, CircleAlert, Clock3, LoaderCircle, MessageSquare, Paperclip, UserPlus, Wrench } from "lucide-react";
+import { Check, CircleAlert, Clock3, Columns3, LoaderCircle, MessageSquare, Paperclip, UserPlus, Wrench } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { RoomMemberSelection, RoomWorkspaceController } from "../../state/use-room-workspace";
@@ -8,11 +8,19 @@ import { Conversation, ConversationContent } from "../ai-elements/conversation";
 import { MessageResponse } from "../ai-elements/message";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Tabs, TabsContent } from "../ui/tabs";
 import { AgentProfileCard } from "./agent-profile-card";
 import { AgentIdentityIcon, collaborationAlias } from "./collaboration-session";
 import { mergeRoomMessages } from "./room-message-utils";
 import { AgentAvatar } from "./room-workspace-agent-avatar";
 import type { WorkbenchActions } from "./types";
+import { RoomTaskBoard } from "./room-task-board";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar";
+
+const ROOM_TABS: ReadonlyArray<WorkbenchTabOption<"chat" | "board">> = [
+	{ icon: MessageSquare, label: "对话", value: "chat" },
+	{ icon: Columns3, label: "看板", value: "board" },
+];
 
 function formatMessageTime(value: string): string {
 	const date = new Date(value);
@@ -220,7 +228,7 @@ function InviteAgentDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader>
-					<DialogTitle>邀请 Agent</DialogTitle>
+					<DialogTitle>添加智能体</DialogTitle>
 					<DialogDescription>从智能体配置创建新的 Room 成员。加入后会从昵称库分配运行时昵称。</DialogDescription>
 				</DialogHeader>
 				<div className="grid gap-3 py-2">
@@ -250,7 +258,7 @@ function InviteAgentDialog({
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>取消</Button>
 					<Button disabled={submitting || !selection || profileCandidates.every((profile) => activeProfileIds.has(profile.name))} onClick={() => void submit()}>
-						{submitting ? "邀请中…" : "邀请并加入"}
+						{submitting ? "添加中…" : "添加到 Room"}
 					</Button>
 				</DialogFooter>
 			</DialogContent>
@@ -263,11 +271,15 @@ export function RoomWorkspace({
 	controller,
 	onModeChange,
 	openResource,
+	section,
+	onSectionChange,
 }: {
 	state: WorkbenchState;
 	controller: RoomWorkspaceController;
 	onModeChange: () => void;
 	openResource: WorkbenchActions["openResource"];
+	section: "chat" | "board";
+	onSectionChange: (section: "chat" | "board") => void;
 }) {
 	const selectedProject = state.projects.find((project) => project.id === controller.selectedRoomProjectId);
 	const memberSessions = useMemo(() => {
@@ -299,32 +311,46 @@ export function RoomWorkspace({
 	}
 
 	return (
-		<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-			<div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-5 py-3 sm:px-8">
+		<Tabs
+			value={section}
+			onValueChange={(value) => onSectionChange(value as "chat" | "board")}
+			className="min-h-0 flex-1 gap-0 overflow-hidden @container/room-workspace"
+		>
+			<div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-border/60 px-4 py-2 sm:px-8 @min-[48rem]/room-workspace:grid-cols-[minmax(0,1fr)_minmax(13rem,18rem)_minmax(0,1fr)]">
 				<div className="min-w-0">
 					<div className="flex items-center gap-2 text-sm font-medium">
 						<span>Room 成员</span>
 						<span className="text-xs font-normal text-muted-foreground">{activeMembers.length} 位</span>
 					</div>
 					<div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
-		{activeMembers.map((member) => (
-			<span
-				className="flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground"
-				key={member.sessionId}
-				title={member.profileName ?? undefined}
-			>
-				<AgentIdentityIcon member={member} session={memberSessions.get(member.sessionId)} className="size-3.5 object-contain" />
-				{sessionLabel(memberSessions.get(member.sessionId), member.sessionId, member)}
-			</span>
-		))}
+						{activeMembers.map((member) => (
+							<span
+								className="flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground"
+								key={member.sessionId}
+								title={member.profileName ?? undefined}
+							>
+								<AgentIdentityIcon member={member} session={memberSessions.get(member.sessionId)} className="size-3.5 object-contain" />
+								{sessionLabel(memberSessions.get(member.sessionId), member.sessionId, member)}
+							</span>
+						))}
 					</div>
 				</div>
-				<Button className="shrink-0" variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
+				<div className="col-span-2 row-start-2 w-full max-w-72 justify-self-center @min-[48rem]/room-workspace:col-span-1 @min-[48rem]/room-workspace:col-start-2 @min-[48rem]/room-workspace:row-start-1">
+					<WorkbenchTabBar activeId={section} tabs={ROOM_TABS} label="Room 视图" className="!w-full" />
+				</div>
+				<Button
+					className="col-start-2 row-start-1 shrink-0 justify-self-end px-2 @min-[48rem]/room-workspace:col-start-3"
+					variant="outline"
+					size="sm"
+					aria-label="添加智能体"
+					onClick={() => setInviteOpen(true)}
+				>
 					<UserPlus className="size-3.5" aria-hidden="true" />
-					邀请 Agent
+					<span className="hidden @min-[32rem]/room-workspace:inline">添加智能体</span>
 				</Button>
 			</div>
-			<Conversation className="min-h-0 flex-1">
+				<TabsContent value="chat" className="flex min-h-0 flex-1 flex-col">
+					<Conversation className="min-h-0 flex-1">
 				<ConversationContent className="mx-auto w-full max-w-[var(--conversation-width)] gap-5 px-5 py-6 sm:px-8">
 					{controller.roomMessagesLoading ? (
 							<div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground" role="status">
@@ -389,7 +415,11 @@ export function RoomWorkspace({
 							<div className="py-12 text-center text-sm text-muted-foreground">还没有消息，发送第一条协作消息。</div>
 						)}
 				</ConversationContent>
-			</Conversation>
+					</Conversation>
+				</TabsContent>
+				<TabsContent value="board" className="flex min-h-0 flex-1 flex-col">
+					<RoomTaskBoard controller={controller} />
+				</TabsContent>
 			<InviteAgentDialog
 				open={inviteOpen}
 				onOpenChange={setInviteOpen}
@@ -398,6 +428,6 @@ export function RoomWorkspace({
 				profilesLoading={controller.agentProfilesLoading}
 				onInvite={controller.inviteRoomMember}
 			/>
-		</div>
+		</Tabs>
 	);
 }

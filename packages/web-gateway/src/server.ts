@@ -23,6 +23,7 @@ import { type Duplex, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { crc32, createDeflateRaw } from "node:zlib";
 import {
+	type Command,
 	type CompletionResult,
 	type ContentChunk,
 	type GitBranches,
@@ -35,6 +36,7 @@ import {
 	type HostDirectoryListing,
 	isGitMutation,
 	type JsonValue,
+	MAX_TRANSCRIPT_PAGE_SIZE,
 	type ModelOptions,
 	type ModelProviderSummary,
 	type ModelSummary,
@@ -47,6 +49,7 @@ import {
 	type RuntimeProtocolClient,
 	type ServerEvent,
 	type SessionActivity,
+	type SessionInfoResult,
 	type SessionProgress,
 	type SessionStateSnapshot,
 	type SessionSummary,
@@ -84,6 +87,7 @@ import {
 	WebConfigStore,
 	type WebGatewayConfig,
 } from "./config.ts";
+import { logGatewayConnection, watchGatewayEventLoop } from "./connection-log.ts";
 import {
 	type CpuSnapshot,
 	calculateCpuUsage,
@@ -108,6 +112,7 @@ import {
 } from "./progress-coalescing.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
+import { PushNotifications, parsePushSubscription } from "./push-notifications.ts";
 import { markRoomAgentSessions } from "./room-session-visibility.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
@@ -266,6 +271,7 @@ interface BrowserContext {
 	connectPromise?: Promise<RuntimeProtocolClient>;
 	initial?: RuntimeInitialSnapshot;
 	leases: Map<string, ContextLease>;
+	leasesToRestore: Map<string, ContextLease>;
 	sockets: Set<WebSocket>;
 	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
@@ -276,6 +282,8 @@ interface BrowserContext {
 	bootstrapGeneration: number;
 	bootstrapCache?: BootstrapCache;
 	bootstrapPromise?: Promise<BootstrapResponse>;
+	bootstrapRetryTimer?: ReturnType<typeof setTimeout>;
+	bootstrapRetryAttempt: number;
 	resumeGeneration?: number;
 	resumeSessionIds: Set<string>;
 	activeRequests: number;
@@ -480,6 +488,7 @@ function toError(error: unknown): HttpError {
 		return new HttpError(409, code, "当前会话正在其他进程中使用");
 	if (code === "web_companion_protocol_incompatible")
 		return new HttpError(503, code, "当前 TUI 与 Web Runtime 的共享协议不兼容，请重启 TUI 后重试");
+	if (code === "session_operation_active") return new HttpError(409, code, message);
 	if (code === "invalid_session_lease") return new HttpError(409, code, "会话控制权已失效，请重新取得控制权");
 	if (code === "operation_request_conflict") return new HttpError(409, code, "同一请求编号对应了不同内容");
 	if (code === "operation_journal_corrupt") return new HttpError(503, code, "任务记录损坏，后台当前不可写");
@@ -947,10 +956,13 @@ export class WebGatewayServer {
 	private readonly connections = new Set<Socket>();
 	private closePromise?: Promise<void>;
 	private readonly heartbeatTimer: ReturnType<typeof setInterval>;
+	private readonly stopEventLoopWatch: () => void;
 	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly uploadedFiles = new Map<string, UploadedFile>();
 	private readonly projectWatchers = new Map<string, ProjectWatcher>();
 	private readonly productUpdate: ProductUpdateController;
+	private readonly pushNotifications: PushNotifications;
+	private pushContext?: BrowserContext;
 	private modelCatalogRevision = 1;
 	private readonly modelOptionsCache = new Map<string, { revision: number; value: ModelOptions }>();
 	private readonly modelOptionsPromises = new Map<string, Promise<ModelOptions>>();
@@ -958,6 +970,7 @@ export class WebGatewayServer {
 	private modelSettingsPromise?: Promise<ModelSettingsResult>;
 	private lastRuntimeModelCatalogEvent?: string;
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
+	private readonly socketIds = new WeakMap<WebSocket, string>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private readonly projectSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private previousCpuSnapshot?: CpuSnapshot;
@@ -970,6 +983,7 @@ export class WebGatewayServer {
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
 		this.productUpdate = new ProductUpdateController(config.agentDir);
+		this.pushNotifications = new PushNotifications(config.agentDir, config.serviceProfile);
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
 		this.server.on("connection", (socket) => {
 			this.connections.add(socket);
@@ -977,6 +991,7 @@ export class WebGatewayServer {
 		});
 		this.server.on("upgrade", (request, socket, head) => void this.handleUpgrade(request, socket, head));
 		this.webSockets.on("connection", (socket, request) => void this.handleWebSocket(socket, request));
+		this.stopEventLoopWatch = watchGatewayEventLoop();
 		this.heartbeatTimer = setInterval(() => this.checkWebSocketLiveness(), 15_000);
 		this.heartbeatTimer.unref?.();
 		this.uploadCleanupTimer = setInterval(() => void this.cleanupUploadedFiles(), UPLOAD_CLEANUP_MS);
@@ -986,6 +1001,7 @@ export class WebGatewayServer {
 	async listen(): Promise<void> {
 		await this.registry.load();
 		await this.projectGroups.load();
+		await this.pushNotifications.load();
 		await new Promise<void>((resolvePromise, reject) => {
 			this.server.once("error", reject);
 			this.server.listen(this.config.port, this.config.host, () => {
@@ -994,6 +1010,7 @@ export class WebGatewayServer {
 				resolvePromise();
 			});
 		});
+		this.ensurePushConnection();
 	}
 
 	close(): Promise<void> {
@@ -1003,6 +1020,7 @@ export class WebGatewayServer {
 
 	private async shutdown(): Promise<void> {
 		this.closed = true;
+		this.stopEventLoopWatch();
 		clearInterval(this.heartbeatTimer);
 		clearInterval(this.uploadCleanupTimer);
 		// 未完成的 HTTP 请求和未响应关闭帧的 WebSocket 不能阻塞重新监听。
@@ -1020,11 +1038,13 @@ export class WebGatewayServer {
 			for (const context of this.contexts.values()) {
 				if (context.idleTimer) clearTimeout(context.idleTimer);
 				if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
+				if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
 				this.clearPendingProgress(context);
 				for (const socket of context.sockets) socket.close(1001, "Web Gateway stopped");
 				await context.client?.close().catch(() => {});
 			}
 			this.contexts.clear();
+			this.pushContext = undefined;
 			await new Promise<void>((resolvePromise) => {
 				if (!this.listening) {
 					resolvePromise();
@@ -1058,6 +1078,7 @@ export class WebGatewayServer {
 		return {
 			id,
 			leases: new Map(),
+			leasesToRestore: new Map(),
 			sockets: new Set(),
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
@@ -1070,6 +1091,7 @@ export class WebGatewayServer {
 			activeRequests: 0,
 			pendingProgress: [],
 			reconnectAttempt: 0,
+			bootstrapRetryAttempt: 0,
 			connectionState: "unknown",
 		};
 	}
@@ -1127,27 +1149,33 @@ export class WebGatewayServer {
 
 	private scheduleContextCleanup(context: BrowserContext): void {
 		if (
+			(this.pushContext === context && this.pushNotifications.hasSubscriptions) ||
 			this.closed ||
 			this.contexts.get(context.id) !== context ||
 			context.sockets.size > 0 ||
 			context.activeRequests > 0 ||
 			context.connectPromise ||
 			context.reconnectTimer ||
+			context.bootstrapRetryTimer ||
 			context.idleTimer
 		)
 			return;
 		const timer = setTimeout(() => {
 			context.idleTimer = undefined;
 			if (
+				(this.pushContext === context && this.pushNotifications.hasSubscriptions) ||
 				context.sockets.size > 0 ||
 				context.activeRequests > 0 ||
 				context.connectPromise ||
 				context.reconnectTimer ||
+				context.bootstrapRetryTimer ||
 				this.contexts.get(context.id) !== context
 			)
 				return;
 			this.contexts.delete(context.id);
+			if (this.pushContext === context) this.pushContext = undefined;
 			context.leases.clear();
+			context.leasesToRestore.clear();
 			context.sessionListPromises.clear();
 			this.clearPendingProgress(context);
 			context.sessionListCache.clear();
@@ -1357,9 +1385,15 @@ export class WebGatewayServer {
 				connectedClient = result.client;
 				context.client = result.client;
 				context.initial = result.initial;
-				await this.restoreContextLeases(context, result.client);
+				void this.restoreContextLeases(context, result.client).catch((error: unknown) => {
+					logGatewayConnection("lease_restore_failed", {
+						clientInstanceId: context.id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
 				if (context.client !== result.client) throw new Error("Web Runtime 在恢复会话控制权时断开");
 				context.connectionState = "connected";
+				logGatewayConnection("runtime_connected", { clientInstanceId: context.id });
 				context.reconnectAttempt = 0;
 				if (wasDisconnected) this.invalidateModelCatalog();
 				if (wasDisconnected && context.sockets.size > 0) {
@@ -1370,7 +1404,8 @@ export class WebGatewayServer {
 			})
 			.finally(() => {
 				if (context.connectPromise === promise) context.connectPromise = undefined;
-				if (!context.client && context.sockets.size > 0) this.scheduleReconnect(context);
+				if (!context.client && (context.sockets.size > 0 || context === this.pushContext))
+					this.scheduleReconnect(context);
 				this.scheduleContextCleanup(context);
 			});
 		context.connectPromise = promise;
@@ -1379,6 +1414,10 @@ export class WebGatewayServer {
 
 	private handleRuntimeDisconnect(context: BrowserContext, client?: RuntimeProtocolClient, error?: Error): void {
 		if (this.closed || (client && context.client && context.client !== client)) return;
+		logGatewayConnection("runtime_disconnected", {
+			clientInstanceId: context.id,
+			error: error?.message ?? "connection_closed",
+		});
 		context.client = undefined;
 		context.initial = undefined;
 		this.clearPendingProgress(context);
@@ -1397,9 +1436,20 @@ export class WebGatewayServer {
 	}
 
 	private scheduleReconnect(context: BrowserContext): void {
-		if (this.closed || context.reconnectTimer || context.connectPromise || context.sockets.size === 0) return;
+		if (
+			this.closed ||
+			context.reconnectTimer ||
+			context.connectPromise ||
+			(context.sockets.size === 0 && !(this.pushContext === context && this.pushNotifications.hasSubscriptions))
+		)
+			return;
 		const delay = Math.min(5_000, 250 * 2 ** Math.min(context.reconnectAttempt, 5));
 		context.reconnectAttempt += 1;
+		logGatewayConnection("runtime_reconnect_scheduled", {
+			clientInstanceId: context.id,
+			delayMs: delay,
+			attempt: context.reconnectAttempt,
+		});
 		const timer = setTimeout(() => {
 			context.reconnectTimer = undefined;
 			void this.getClient(context).catch(() => {});
@@ -1413,32 +1463,35 @@ export class WebGatewayServer {
 		for (const socket of context.sockets) {
 			for (const sessionId of this.subscriptionsFor(socket)) subscribedSessionIds.add(sessionId);
 		}
-		const previousLeases = [...context.leases.entries()];
+		for (const [sessionId, lease] of context.leases) context.leasesToRestore.set(sessionId, lease);
+		context.leases.clear();
+		const previousLeases = [...context.leasesToRestore.entries()];
 		const restoreLease = async ([sessionId, previous]: [string, ContextLease]): Promise<void> => {
 			try {
-				const result = await client.request<{
-					lease: ContextLease;
-				}>({
+				const result = await client.request<{ lease: ContextLease }>({
 					command: "acquire_session",
 					sessionPath: previous.sessionPath,
 					clientInstanceId: context.id,
 				});
-				if (context.client !== client) {
-					context.leases.delete(sessionId);
-					return;
-				}
+				if (context.client !== client || context.leasesToRestore.get(sessionId) !== previous) return;
+				context.leasesToRestore.delete(sessionId);
 				context.leases.set(sessionId, result.lease);
+				context.bootstrapGeneration += 1;
+				context.bootstrapCache = undefined;
 				const payload = JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(result.lease) });
 				for (const socket of context.sockets) {
 					if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
 				}
 			} catch {
-				context.leases.delete(sessionId);
+				if (context.client === client && context.leasesToRestore.get(sessionId) === previous)
+					context.leasesToRestore.delete(sessionId);
 			}
 		};
-		context.leases.clear();
-		await Promise.all(previousLeases.filter(([sessionId]) => subscribedSessionIds.has(sessionId)).map(restoreLease));
-		await Promise.all(previousLeases.filter(([sessionId]) => !subscribedSessionIds.has(sessionId)).map(restoreLease));
+		const ordered = [
+			...previousLeases.filter(([sessionId]) => subscribedSessionIds.has(sessionId)),
+			...previousLeases.filter(([sessionId]) => !subscribedSessionIds.has(sessionId)),
+		];
+		await Promise.all(ordered.map(restoreLease));
 	}
 
 	private async buildBootstrap(context: BrowserContext): Promise<BootstrapResponse> {
@@ -1446,6 +1499,11 @@ export class WebGatewayServer {
 		if (cached && cached.generation === context.bootstrapGeneration) return cached.value;
 		if (context.bootstrapPromise) return context.bootstrapPromise;
 		const generation = context.bootstrapGeneration;
+		const startedAt = Date.now();
+		logGatewayConnection("bootstrap_started", {
+			clientInstanceId: context.id,
+			projects: this.registry.list().length,
+		});
 		const promise = (async () => {
 			const client = await this.getClient(context);
 			const projects = await Promise.all(
@@ -1493,7 +1551,19 @@ export class WebGatewayServer {
 		})();
 		context.bootstrapPromise = promise;
 		try {
-			return await promise;
+			const result = await promise;
+			logGatewayConnection("bootstrap_succeeded", {
+				clientInstanceId: context.id,
+				elapsedMs: Date.now() - startedAt,
+			});
+			return result;
+		} catch (error) {
+			logGatewayConnection("bootstrap_failed", {
+				clientInstanceId: context.id,
+				elapsedMs: Date.now() - startedAt,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
 		} finally {
 			if (context.bootstrapPromise === promise) context.bootstrapPromise = undefined;
 		}
@@ -1745,6 +1815,7 @@ export class WebGatewayServer {
 			const sessionId = sessionIdByPath.get(path);
 			if (!sessionId) return [];
 			context.leases.delete(sessionId);
+			context.leasesToRestore.delete(sessionId);
 			this.sessions.delete(sessionId);
 			if (this.sessionIdsByPath.get(path) === sessionId) this.sessionIdsByPath.delete(path);
 			return [sessionId];
@@ -1991,6 +2062,39 @@ export class WebGatewayServer {
 		context: BrowserContext,
 	): Promise<void> {
 		const parts = parsePathParts(url.pathname);
+		if (parts.length === 2 && parts[1] === "push") {
+			if (request.method === "GET") {
+				sendJson(response, 200, { publicKey: this.pushNotifications.publicKey });
+				return;
+			}
+			const body = await parseJsonBody(request);
+			if (request.method === "POST") {
+				let subscription: ReturnType<typeof parsePushSubscription>;
+				try {
+					subscription = parsePushSubscription(body.subscription);
+				} catch (error) {
+					throw new HttpError(
+						400,
+						"invalid_push_subscription",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+				await this.pushNotifications.subscribe(subscription);
+				this.ensurePushConnection();
+				sendJson(response, 200, { subscribed: true });
+				return;
+			}
+			if (request.method === "DELETE") {
+				const endpoint = stringValue(body.endpoint);
+				if (!endpoint) throw new HttpError(400, "invalid_push_subscription", "缺少推送订阅地址");
+				await this.pushNotifications.unsubscribe(endpoint);
+				if (this.pushContext && !this.pushNotifications.hasSubscriptions)
+					this.scheduleContextCleanup(this.pushContext);
+				sendJson(response, 200, { subscribed: false });
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "不支持的请求方法");
+		}
 		if (parts.length === 2 && parts[1] === "branding") {
 			await this.handleBranding(request, response);
 			return;
@@ -2598,6 +2702,129 @@ export class WebGatewayServer {
 				return;
 			}
 		}
+		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "tasks") {
+			const roomId = parts[4];
+			const client = await this.getClient(context);
+			if (request.method === "GET") {
+				const sessionId = stringValue(url.searchParams.get("sessionId"));
+				if (!sessionId) throw new HttpError(400, "room_session_required", "读取任务需要指定会话");
+				const session = await this.resolveSession(context, sessionId);
+				if (session.projectId !== project.id)
+					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+				sendJson(
+					response,
+					200,
+					await client.request<JsonValue>({
+						command: "room_task_list",
+						cwd: project.cwd,
+						roomId,
+						sessionId,
+					}),
+				);
+				return;
+			}
+			if (request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const sessionId = stringValue(body.sessionId);
+				if (!sessionId) throw new HttpError(400, "room_session_required", "创建任务需要指定会话");
+				const session = await this.resolveSession(context, sessionId);
+				if (session.projectId !== project.id)
+					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+				const title = stringValue(body.title)?.trim();
+				if (
+					!title ||
+					title.length > 200 ||
+					(body.description !== undefined &&
+						(typeof body.description !== "string" || body.description.length > 8000))
+				) {
+					throw new HttpError(400, "room_task_content_invalid", "任务标题或内容长度无效");
+				}
+				sendJson(
+					response,
+					201,
+					await client.request<JsonValue>({
+						command: "room_task_create",
+						cwd: project.cwd,
+						roomId,
+						sessionId,
+						title,
+						...(typeof body.description === "string" ? { description: body.description } : {}),
+					}),
+				);
+				return;
+			}
+		}
+		if (
+			parts.length >= 7 &&
+			parts[3] === "rooms" &&
+			parts[5] === "tasks" &&
+			(request.method === "PATCH" || request.method === "POST")
+		) {
+			const isComment = parts.length === 8 && parts[7] === "comments" && request.method === "POST";
+			if (!isComment && (parts.length !== 7 || request.method !== "PATCH"))
+				throw new HttpError(405, "method_not_allowed", "不支持的任务操作");
+			const body = await parseJsonBody(request);
+			const sessionId = stringValue(body.sessionId);
+			if (!sessionId) throw new HttpError(400, "room_session_required", "更新任务需要指定会话");
+			const session = await this.resolveSession(context, sessionId);
+			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+			let command: Command;
+			if (isComment) {
+				if (typeof body.body !== "string" || !body.body.trim() || body.body.length > 8000)
+					throw new HttpError(400, "room_task_comment_invalid", "评论内容长度无效");
+				command = {
+					command: "room_task_comment",
+					cwd: project.cwd,
+					roomId: parts[4],
+					taskId: parts[6],
+					sessionId,
+					body: body.body,
+				};
+			} else if (body.status !== undefined) {
+				const status = body.status;
+				if (status !== "todo" && status !== "doing" && status !== "blocked" && status !== "done")
+					throw new HttpError(400, "room_task_status_invalid", "任务状态无效");
+				if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 8000))
+					throw new HttpError(400, "room_task_note_invalid", "任务进展超过长度限制");
+				command = {
+					command: "room_task_update",
+					cwd: project.cwd,
+					roomId: parts[4],
+					taskId: parts[6],
+					sessionId,
+					status,
+					...(typeof body.note === "string" ? { note: body.note } : {}),
+				};
+			} else {
+				const title = body.title;
+				const description = body.description;
+				const assigneeSessionId = body.assigneeSessionId;
+				if (
+					(title === undefined && description === undefined && assigneeSessionId === undefined) ||
+					(title !== undefined && (typeof title !== "string" || !title.trim() || title.length > 200)) ||
+					(description !== undefined && (typeof description !== "string" || description.length > 8000)) ||
+					(assigneeSessionId !== undefined && assigneeSessionId !== null && !stringValue(assigneeSessionId))
+				)
+					throw new HttpError(400, "room_task_content_invalid", "任务标题、内容或负责人无效");
+				if (typeof assigneeSessionId === "string") {
+					const assignee = await this.resolveSession(context, assigneeSessionId);
+					if (assignee.projectId !== project.id)
+						throw new HttpError(400, "room_project_mismatch", "负责人不属于当前项目");
+				}
+				command = {
+					command: "room_task_edit",
+					cwd: project.cwd,
+					roomId: parts[4],
+					taskId: parts[6],
+					sessionId,
+					...(typeof title === "string" ? { title } : {}),
+					...(typeof description === "string" ? { description } : {}),
+					...(assigneeSessionId !== undefined ? { assigneeSessionId: assigneeSessionId as string | null } : {}),
+				};
+			}
+			sendJson(response, 200, await (await this.getClient(context)).request<JsonValue>(command));
+			return;
+		}
 		if (parts.length === 4 && parts[3] === "completions" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const text = typeof body.text === "string" ? body.text : "";
@@ -3149,6 +3376,16 @@ export class WebGatewayServer {
 			});
 			return;
 		}
+		if (parts.length === 4 && parts[3] === "usage" && request.method === "GET") {
+			const lease = await this.requireLease(context, sessionId);
+			const info = await client.request<SessionInfoResult>({
+				command: "get_session_info",
+				sessionPath: session.path,
+				leaseId: lease.leaseId,
+			});
+			sendJson(response, 200, { tokens: info.tokens });
+			return;
+		}
 		if (parts.length === 3 && request.method === "DELETE") {
 			const result = await this.deleteSessions(context, [sessionId]);
 			const failure = result.failures[0];
@@ -3187,6 +3424,7 @@ export class WebGatewayServer {
 						},
 					},
 				);
+				context.leasesToRestore.delete(sessionId);
 				context.leases.set(sessionId, result.lease);
 				this.invalidateBootstrap(context);
 				sendJson(response, 200, {
@@ -3197,6 +3435,7 @@ export class WebGatewayServer {
 				return;
 			}
 			if (request.method === "DELETE") {
+				context.leasesToRestore.delete(sessionId);
 				const lease = context.leases.get(sessionId);
 				if (lease) {
 					await client.request({ command: "release_session", sessionPath: session.path, leaseId: lease.leaseId });
@@ -3238,7 +3477,7 @@ export class WebGatewayServer {
 			if (childSession.parentSessionFile && childSession.parentSessionFile !== session.path)
 				throw new HttpError(404, "subagent_not_found", "Subagent 不属于当前会话");
 			const limitValue = Number(url.searchParams.get("limit") ?? "120");
-			const limit = Number.isInteger(limitValue) ? Math.min(200, Math.max(1, limitValue)) : 120;
+			const limit = Number.isInteger(limitValue) ? Math.min(MAX_TRANSCRIPT_PAGE_SIZE, Math.max(1, limitValue)) : 120;
 			const query = url.searchParams.get("search")?.trim();
 			if (query) {
 				sendJson(
@@ -3265,7 +3504,7 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 4 && parts[3] === "transcript" && request.method === "GET") {
 			const limitValue = Number(url.searchParams.get("limit") ?? "120");
-			const limit = Number.isInteger(limitValue) ? Math.min(200, Math.max(1, limitValue)) : 120;
+			const limit = Number.isInteger(limitValue) ? Math.min(MAX_TRANSCRIPT_PAGE_SIZE, Math.max(1, limitValue)) : 120;
 			const query = url.searchParams.get("search")?.trim();
 			if (query) {
 				sendJson(
@@ -4216,6 +4455,9 @@ export class WebGatewayServer {
 	private async pushBootstrap(context: BrowserContext): Promise<void> {
 		try {
 			const bootstrap = await this.buildBootstrap(context);
+			if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
+			context.bootstrapRetryTimer = undefined;
+			context.bootstrapRetryAttempt = 0;
 			this.broadcast(context, { type: "bootstrap", data: bootstrap });
 		} catch {
 			this.broadcast(context, {
@@ -4223,10 +4465,34 @@ export class WebGatewayServer {
 				connected: false,
 				message: "Web Host 恢复后读取工作区失败",
 			});
+			if (
+				this.closed ||
+				context.sockets.size === 0 ||
+				!context.client?.getSnapshot().connected ||
+				context.bootstrapRetryTimer
+			)
+				return;
+			const delay = Math.min(5_000, 250 * 2 ** Math.min(context.bootstrapRetryAttempt, 5));
+			context.bootstrapRetryAttempt += 1;
+			logGatewayConnection("bootstrap_retry_scheduled", { clientInstanceId: context.id, delayMs: delay });
+			context.bootstrapRetryTimer = setTimeout(() => {
+				context.bootstrapRetryTimer = undefined;
+				if (context.sockets.size === 0) {
+					this.scheduleContextCleanup(context);
+					return;
+				}
+				void this.pushBootstrap(context);
+			}, delay);
+			context.bootstrapRetryTimer.unref?.();
 		}
 	}
 
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
+		if (event.type === "turn_settled") {
+			if (context === this.pushContext && event.outcome !== "aborted")
+				void this.sendTurnPush(event).catch((error: unknown) => console.warn("回合推送失败", error));
+			return;
+		}
 		if (event.type === "model_catalog_changed") {
 			const hello = context.client?.getSnapshot().hello;
 			const eventKey = `${hello?.serverInstanceId ?? "runtime"}:${event.revision}`;
@@ -4277,6 +4543,7 @@ export class WebGatewayServer {
 			const sessionId = typeof projected.sessionId === "string" ? projected.sessionId : undefined;
 			if (sessionId) {
 				context.leases.delete(sessionId);
+				context.leasesToRestore.delete(sessionId);
 				context.sessionSummaryState.delete(sessionId);
 				context.sessionSnapshotState.delete(sessionId);
 				context.sessionDetailState.delete(sessionId);
@@ -4305,6 +4572,45 @@ export class WebGatewayServer {
 			return;
 		}
 		this.broadcast(context, projected);
+	}
+
+	private ensurePushConnection(): void {
+		if (!this.listening || !this.pushNotifications.hasSubscriptions || this.closed) return;
+		if (!this.pushContext) {
+			const context = this.createContext(scopedRuntimeClientId(this.config.serviceProfile, "web-push-listener"));
+			this.pushContext = context;
+			this.contexts.set(context.id, context);
+		}
+		this.touchContext(this.pushContext);
+		void this.getClient(this.pushContext).catch((error: unknown) => console.warn("Web Push 连接失败", error));
+	}
+
+	private async sendTurnPush(event: Extract<ServerEvent, { type: "turn_settled" }>): Promise<void> {
+		const ref = this.sessions.get(event.sessionId);
+		const project = ref
+			? this.registry.get(ref.projectId)
+			: this.registry
+					.list()
+					.find(
+						(candidate) =>
+							candidate.cwd === event.cwd ||
+							candidate.recentSessions?.some((session) => session.id === event.sessionId),
+					);
+		if (!project) return;
+		const sessionName =
+			event.sessionName ??
+			project.recentSessions?.find((session) => session.id === event.sessionId)?.name ??
+			"未命名会话";
+		const excerpt = Array.from(event.text.replace(/\s+/gu, " ").trim()).slice(0, 120).join("");
+		await this.pushNotifications.notify({
+			turnId: event.turnId,
+			sessionId: event.sessionId,
+			projectName: project.name,
+			sessionName,
+			text: event.outcome === "failed" ? "本轮处理失败" : excerpt || "回复已完成",
+			outcome: event.outcome === "failed" ? "failed" : "completed",
+		});
+		if (!this.pushNotifications.hasSubscriptions && this.pushContext) this.scheduleContextCleanup(this.pushContext);
 	}
 
 	private projectEvent(event: ServerEvent): Record<string, unknown> | undefined {
@@ -4395,11 +4701,22 @@ export class WebGatewayServer {
 	private sendWebSocket(socket: WebSocket, payload: string): void {
 		if (socket.readyState !== WebSocket.OPEN) return;
 		if (socket.bufferedAmount + Buffer.byteLength(payload) > 2 * 1024 * 1024) {
+			logGatewayConnection("websocket_backpressure", {
+				socketId: this.socketIds.get(socket),
+				bufferedBytes: socket.bufferedAmount,
+				payloadBytes: Buffer.byteLength(payload),
+			});
 			socket.terminate();
 			return;
 		}
 		socket.send(payload, (error) => {
-			if (error) socket.terminate();
+			if (error) {
+				logGatewayConnection("websocket_send_failed", {
+					socketId: this.socketIds.get(socket),
+					error: error.message,
+				});
+				socket.terminate();
+			}
 		});
 	}
 
@@ -4472,12 +4789,26 @@ export class WebGatewayServer {
 				}
 			}
 			this.sendWebSocket(socket, JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap }));
+			logGatewayConnection("session_subscription_sent", {
+				clientInstanceId: context.id,
+				socketId: this.socketIds.get(socket),
+				sessionId,
+				seq: currentSeq,
+				gap,
+			});
 			return;
 		}
 		this.sendWebSocket(
 			socket,
 			JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap: false }),
 		);
+		logGatewayConnection("session_subscription_sent", {
+			clientInstanceId: context.id,
+			socketId: this.socketIds.get(socket),
+			sessionId,
+			seq: currentSeq,
+			gap: false,
+		});
 	}
 
 	private sendToSessionUnsubscribers(context: BrowserContext, sessionId: string, value: unknown): void {
@@ -4575,6 +4906,10 @@ export class WebGatewayServer {
 			for (const socket of context.sockets) {
 				if (socket.readyState !== WebSocket.OPEN) continue;
 				if (this.socketLiveness.get(socket) === false) {
+					logGatewayConnection("websocket_heartbeat_timeout", {
+						socketId: this.socketIds.get(socket),
+						clientInstanceId: context.id,
+					});
 					socket.terminate();
 					continue;
 				}
@@ -4595,7 +4930,10 @@ export class WebGatewayServer {
 			this.webSockets.handleUpgrade(request, socket, head, (webSocket) =>
 				this.webSockets.emit("connection", webSocket, request),
 			);
-		} catch {
+		} catch (error) {
+			logGatewayConnection("websocket_upgrade_failed", {
+				errorCode: error instanceof HttpError ? error.code : "upgrade_failed",
+			});
 			if (context) this.scheduleContextCleanup(context);
 			socket.destroy();
 		}
@@ -4611,6 +4949,15 @@ export class WebGatewayServer {
 		context.resumeGeneration = undefined;
 		context.sockets.add(socket);
 		this.touchContext(context);
+		const socketId = randomUUID();
+		this.socketIds.set(socket, socketId);
+		const url = new URL(request.url ?? "/ws", `http://${request.headers.host ?? "localhost"}`);
+		const browserClientId = url.searchParams.get("clientId") ?? undefined;
+		logGatewayConnection("websocket_open", {
+			clientInstanceId: context.id,
+			socketId,
+			...(isValidClientId(browserClientId) ? { browserClientId } : {}),
+		});
 		this.socketLiveness.set(socket, true);
 		const subscriptions = this.subscriptionsFor(socket);
 		const projectSubscriptions = this.projectSubscriptionsFor(socket);
@@ -4653,8 +5000,14 @@ export class WebGatewayServer {
 			}
 			this.scheduleContextCleanup(context);
 		};
-		socket.on("close", removeSocket);
-		socket.on("error", removeSocket);
+		socket.on("close", (code: number) => {
+			logGatewayConnection("websocket_close", { clientInstanceId: context.id, socketId, code });
+			removeSocket();
+		});
+		socket.on("error", (error: Error) => {
+			logGatewayConnection("websocket_error", { clientInstanceId: context.id, socketId, error: error.message });
+			removeSocket();
+		});
 		try {
 			const cached = context.bootstrapCache;
 			if (
@@ -4678,6 +5031,11 @@ export class WebGatewayServer {
 			const bootstrap = await this.buildBootstrap(context);
 			this.sendWebSocket(socket, JSON.stringify({ type: "bootstrap", data: bootstrap }));
 		} catch (error) {
+			logGatewayConnection("websocket_bootstrap_failed", {
+				clientInstanceId: context.id,
+				socketId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			if (socket.readyState === WebSocket.OPEN) socket.close(1011, toError(error).message.slice(0, 120));
 		}
 	}

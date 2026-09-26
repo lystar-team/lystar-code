@@ -187,7 +187,7 @@ function AgentTagEditor({
 					}}
 				/>
 			</div>
-			<span className="text-xs font-normal text-muted-foreground">每个智能体可添加多个标签，邀请 Agent 时会显示这些标签。</span>
+			<span className="text-xs font-normal text-muted-foreground">每个智能体可添加多个标签，添加到 Room 时会显示这些标签。</span>
 		</div>
 	);
 }

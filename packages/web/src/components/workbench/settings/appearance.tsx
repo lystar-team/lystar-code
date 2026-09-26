@@ -1,7 +1,10 @@
-import { Check, Moon, Sun, SunMoon } from "lucide-react";
+import { Bell, Check, Moon, Sun, SunMoon } from "lucide-react";
 import type { AppInstallState } from "../../../state/use-app-install";
+import { usePushNotifications } from "../../../state/use-push-notifications";
 import type { ThemeMode, WorkbenchState } from "../../../state/use-workbench";
 import { cn } from "../../../lib/utils";
+import { Button } from "../../ui/button";
+import { Card, CardContent } from "../../ui/card";
 import { AppInstallSettings } from "./app-install";
 import { SettingSection } from "./shared";
 import type { WorkbenchActions } from "../types";
@@ -71,6 +74,8 @@ export function AppearanceSettings({
 	actions: WorkbenchActions;
 	appInstall: AppInstallState;
 }) {
+	const push = usePushNotifications();
+	const pushUnavailableOnIos = appInstall.isIos && !appInstall.isInstalled;
 	return (
 		<div className="grid min-w-0 gap-6">
 			<SettingSection title="主题">
@@ -104,6 +109,31 @@ export function AppearanceSettings({
 						);
 					})}
 				</div>
+			</SettingSection>
+			<SettingSection title="回合通知">
+				<Card className="py-0 shadow-none">
+					<CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+						<div className="flex items-start gap-3">
+							<Bell className="mt-1 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+							<div>
+								<p className="font-medium">浏览器通知</p>
+								<p className="mt-1 text-sm leading-6 text-muted-foreground">每轮结束后显示项目、会话和回复摘录。页面关闭后也能收到。</p>
+								{pushUnavailableOnIos ? <p className="mt-2 text-sm text-muted-foreground">iPhone 和 iPad 请先把应用添加到主屏幕。</p> : null}
+								{!appInstall.isSecureContext ? <p className="mt-2 text-sm text-muted-foreground">请使用 HTTPS 或 localhost 地址打开页面。</p> : null}
+								{push.status === "blocked" ? <p className="mt-2 text-sm text-muted-foreground">请在浏览器的网站设置中允许通知。</p> : null}
+								{push.error ? <p className="mt-2 text-sm text-destructive" role="alert">{push.error}</p> : null}
+							</div>
+						</div>
+						<Button
+							variant={push.status === "on" ? "outline" : "default"}
+							className="shrink-0"
+							disabled={push.busy || push.status === "loading" || push.status === "blocked" || push.status === "unsupported" || pushUnavailableOnIos}
+							onClick={() => void (push.status === "on" ? push.disable() : push.enable())}
+						>
+							{push.busy ? "正在处理" : push.status === "on" ? "关闭通知" : push.status === "unsupported" ? "浏览器不支持" : push.status === "loading" ? "正在检查" : "开启通知"}
+						</Button>
+					</CardContent>
+				</Card>
 			</SettingSection>
 			<AppInstallSettings appInstall={appInstall} productName={state.branding.name} />
 		</div>

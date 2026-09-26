@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { shouldJoinLiveToolBatch, shouldJoinToolBatch } from "../src/state/tool-batching.ts";
+import {
+	mergeImageGenerationSummary,
+	shouldJoinLiveToolBatch,
+	shouldJoinToolBatch,
+} from "../src/state/tool-batching.ts";
 
 type Tool = { name: string; summary: string };
 
@@ -41,6 +45,15 @@ describe("Web tool batching", () => {
 		expect(shouldJoinToolBatch(ordinaryRead, skillRead)).toBe(false);
 		expect(shouldJoinToolBatch(skillRead, ordinaryRead)).toBe(false);
 		expect(shouldJoinToolBatch(skillRead, skillRead)).toBe(false);
+	});
+
+	it("keeps image input parameters while progress text changes", () => {
+		const input = JSON.stringify({ prompt: "绘制桌面端与移动端导航方案", model: "auto" });
+		const revised = JSON.stringify({ prompt: "绘制桌面端与移动端导航方案效果图", model: "auto" });
+		expect(mergeImageGenerationSummary(undefined, input)).toBe(input);
+		expect(mergeImageGenerationSummary(input, "正在使用模型生成图片")).toBe(input);
+		expect(mergeImageGenerationSummary(input, revised)).toBe(revised);
+		expect(mergeImageGenerationSummary(revised, `${revised.slice(0, 12)}...`)).toBe(revised);
 	});
 
 	it("does not join batched tools across assistant messages", () => {

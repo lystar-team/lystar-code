@@ -128,7 +128,10 @@ export class AgentStepController {
 
 	associateTool(toolCallId: string): AgentStep | undefined {
 		const current = this.activeStep;
-		if (!current || current.toolCallIds.includes(toolCallId)) return current;
+		if (current?.toolCallIds.includes(toolCallId)) return current;
+		const associatedStepId = this.stepIdForTool(toolCallId);
+		if (associatedStepId) return this.steps.get(associatedStepId);
+		if (!current) return undefined;
 		const step = { ...current, toolCallIds: [...current.toolCallIds, toolCallId] };
 		this.persist(step);
 		return step;

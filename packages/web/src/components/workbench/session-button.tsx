@@ -4,6 +4,7 @@ import { memo, useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
 import { sessionTitle } from "../../state/use-workbench";
 import type { WebSessionSummary } from "../../types";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
 	ContextMenu,
@@ -147,18 +148,18 @@ function SessionButtonComponent({
 							<Button
 								className={cn(
 									"mobile-session-button h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 text-left text-xs",
-									collaboration || agentSession ? "!pl-10" : "!pl-8",
+									collaboration ? "!pl-10" : "!pl-8",
 								)}
 								variant={active ? "secondary" : "ghost"}
 								onClick={onClick}
 							>
-								{collaboration || agentSession ? (
+								{collaboration ? (
 									<AgentIdentityIcon
 										session={session}
 										className="size-3.5 shrink-0 object-contain text-muted-foreground"
 									/>
 								) : null}
-								<span className="project-list-item-label min-w-0 flex-1 truncate">
+								<span className={cn("project-list-item-label min-w-0 flex-1", agentSession ? "flex items-center gap-1.5" : "truncate")}>
 									{collaboration ? (
 										<>
 											<span className="font-medium text-foreground">{alias}</span>
@@ -166,8 +167,11 @@ function SessionButtonComponent({
 										</>
 									) : agentSession ? (
 										<>
-											<span className="font-medium text-foreground">{profileName}</span>
-											<span className="text-muted-foreground"> · {displayTitle}</span>
+											<span className="min-w-0 flex-1 truncate">{displayTitle}</span>
+											<Badge className="max-w-[45%] min-w-0 gap-1 px-1.5 py-0 text-[11px] leading-4 text-muted-foreground" variant="outline" title={profileName}>
+												<AgentIdentityIcon session={session} className="size-3 shrink-0 object-contain" />
+												<span className="truncate">{profileName}</span>
+											</Badge>
 										</>
 									) : (
 										displayTitle
@@ -226,7 +230,7 @@ function SessionButtonComponent({
 									) : (
 										<button
 											type="button"
-											className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] flex-1 cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left text-foreground"
+											className="project-list-item-label min-w-0 max-w-[calc(100vw-3rem)] flex-1 cursor-text truncate whitespace-nowrap bg-transparent p-0 text-left leading-5 text-foreground"
 											onClick={() => {
 												setRenameDraft(title);
 												setEditingTitle(true);
@@ -235,9 +239,9 @@ function SessionButtonComponent({
 											{displayTitle}
 										</button>
 									)}
-									<div className="flex shrink-0 items-start gap-2">
+									<div className="flex shrink-0 items-center gap-2">
 										<time
-											className="shrink-0 pt-1 text-xs text-muted-foreground"
+											className="shrink-0 text-xs text-muted-foreground"
 											dateTime={new Date(session.updatedAt).toISOString()}
 											title={absoluteTime}
 										>
@@ -245,7 +249,8 @@ function SessionButtonComponent({
 										</time>
 										<Button
 											aria-label={session.pinned ? "取消置顶会话" : "置顶会话"}
-											size="icon-sm"
+											size="icon-xs"
+											className="size-5"
 											variant="ghost"
 											onClick={(event) => {
 												event.stopPropagation();

@@ -6,6 +6,7 @@ import {
 	getWebServiceStatus,
 	installWebService,
 	removeWebService,
+	stopWebService,
 	type WebServiceSpec,
 } from "../src/service-manager.ts";
 
@@ -58,9 +59,54 @@ beforeEach(() => {
 });
 afterEach(() => {
 	Object.defineProperty(process, "platform", { value: originalPlatform });
+	vi.restoreAllMocks();
 });
 
 describe("platform service lifecycle", () => {
+	it("queues a systemd stop before force-killing and waits for the unit to stop", () => {
+		Object.defineProperty(process, "platform", { value: "linux" });
+		files.set(getWebServiceStatus(spec).servicePath!, "unit");
+		let stopRequested = false;
+		let killed = false;
+		let stopped = false;
+		vi.mocked(spawnSync).mockImplementation((command, args) => {
+			if (command !== "systemctl") return success();
+			if (args?.includes("is-active")) return stopped ? failure("inactive") : success("active");
+			if (args?.[1] === "stop" && args.includes("--no-block")) {
+				stopRequested = true;
+				return success();
+			}
+			if (args?.[1] === "kill") {
+				expect(stopRequested).toBe(true);
+				killed = true;
+				return success();
+			}
+			if (args?.[1] === "stop") {
+				expect(killed).toBe(true);
+				stopped = true;
+			}
+			return success();
+		});
+
+		expect(stopWebService(spec, true).running).toBe(false);
+		expect(stopped).toBe(true);
+	});
+
+	it("accepts a systemd unit that stops before the force-kill request", () => {
+		Object.defineProperty(process, "platform", { value: "linux" });
+		files.set(getWebServiceStatus(spec).servicePath!, "unit");
+		let stopped = false;
+		vi.mocked(spawnSync).mockImplementation((command, args) => {
+			if (command === "systemctl" && args?.includes("is-active"))
+				return stopped ? failure("inactive") : success("active");
+			if (command === "systemctl" && args?.[1] === "stop") stopped = true;
+			if (command === "systemctl" && args?.[1] === "kill") return failure("unit has no processes");
+			return success();
+		});
+
+		expect(stopWebService(spec, true).running).toBe(false);
+	});
+
 	it("does not mark a loaded macOS daemon without a PID as running", () => {
 		Object.defineProperty(process, "platform", { value: "darwin" });
 		const status = getWebServiceStatus(spec);
@@ -79,6 +125,24 @@ describe("platform service lifecycle", () => {
 			expect.anything(),
 		);
 		expect(vi.mocked(spawnSync).mock.calls.some(([, args]) => args?.includes("bootstrap"))).toBe(false);
+	});
+
+	it("force-stops a macOS LaunchAgent process before unloading it", () => {
+		Object.defineProperty(process, "platform", { value: "darwin" });
+		files.set(getWebServiceStatus(runtimeSpec).servicePath!, "plist");
+		vi.mocked(spawnSync).mockImplementation((command, args) =>
+			command === "launchctl" && args?.[0] === "print" ? success("pid = 4321") : success(),
+		);
+		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+
+		stopWebService(runtimeSpec, true);
+
+		expect(kill).toHaveBeenCalledWith(4321, "SIGKILL");
+		expect(spawnSync).toHaveBeenCalledWith(
+			"/bin/launchctl",
+			expect.arrayContaining(["bootout", expect.stringMatching(/^gui\/\d+\//u)]),
+			expect.anything(),
+		);
 	});
 
 	it("installs the macOS Runtime as a user LaunchAgent", () => {
@@ -170,6 +234,23 @@ describe("platform service lifecycle", () => {
 		installWebService(spec);
 		expect(files.get("/test/user space/agent/web/services/lystar-web-service-0.85.1-lystar.5.exe")).toBe("new-host");
 		expect(files.get("/test/user space/agent/web/services/lystar-web-service.exe")).toBe("old-host");
+	});
+
+	it("force-stops a Windows service process tree instead of waiting for graceful shutdown", () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		let killed = false;
+		vi.mocked(spawnSync).mockImplementation((command, args) => {
+			if (command === "sc.exe" && args?.[0] === "query")
+				return success(killed ? "STATE : 1 STOPPED" : "STATE : 4 RUNNING");
+			if (command === "sc.exe" && args?.[0] === "queryex") return success("PID : 4321");
+			if (command === "taskkill") killed = true;
+			return success();
+		});
+
+		stopWebService(spec, true);
+
+		expect(spawnSync).toHaveBeenCalledWith("taskkill", ["/PID", "4321", "/T", "/F"], expect.anything());
+		expect(killed).toBe(true);
 	});
 
 	it("removes a legacy macOS Runtime LaunchDaemon during LaunchAgent uninstall", () => {

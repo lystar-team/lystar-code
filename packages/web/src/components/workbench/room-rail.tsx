@@ -1,4 +1,4 @@
-import { ChevronDown, FolderTree, Plus, Search } from "lucide-react";
+import { ChevronDown, FolderTree, PanelLeftClose, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { cn } from "../../lib/utils";
@@ -33,6 +33,8 @@ export function RoomRail({
 	onCreateRoom,
 	onModeChange,
 	onNavigate,
+	withNavigationRail = false,
+	onCollapse,
 }: {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
@@ -45,6 +47,8 @@ export function RoomRail({
 	onCreateRoom?: (projectId: string, title: string, member: RoomMemberSelection) => Promise<void>;
 	onModeChange: (mode: WorkspaceMode) => void;
 	onNavigate?: () => void;
+	withNavigationRail?: boolean;
+	onCollapse?: () => void;
 }) {
 	const [query, setQuery] = useState("");
 	const [createOpen, setCreateOpen] = useState(false);
@@ -140,20 +144,29 @@ export function RoomRail({
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col bg-background">
-			<div className={cn("flex h-16 shrink-0 items-center justify-between px-4", onNavigate ? "pr-14 lg:pr-4" : "pr-4")}>
-				<div className="flex items-center gap-2.5 font-semibold tracking-tight">
-					<BrandLogo logo={state.branding.logo} className="size-7 rounded-md object-contain" />
-					<span>{state.branding.name}</span>
+			<div className={cn("flex h-16 shrink-0 items-center justify-between px-4", !withNavigationRail && onNavigate && "pr-14 lg:pr-4")}>
+				<div className="flex min-w-0 items-center gap-2.5 font-semibold tracking-tight">
+					{!withNavigationRail ? <BrandLogo logo={state.branding.logo} className="size-7 rounded-md object-contain" /> : null}
+					<span className="truncate">{state.branding.name}</span>
 				</div>
-				{onCreateRoom ? (
-					<Button size="icon" variant="ghost" onClick={openCreateDialog} aria-label="新建 Room">
-						<Plus className="size-4" />
-					</Button>
-				) : null}
+				<div className="flex items-center gap-0.5">
+					{onCreateRoom ? (
+						<Button size="icon" variant="ghost" onClick={openCreateDialog} aria-label="新建 Room" title="新建 Room">
+							<Plus className="size-4" />
+						</Button>
+					) : null}
+					{onCollapse ? (
+						<Button size="icon" variant="ghost" onClick={onCollapse} aria-label="收起项目栏" title="收起项目栏">
+							<PanelLeftClose className="size-4" />
+						</Button>
+					) : null}
+				</div>
 			</div>
-			<div className="px-3 pb-3">
-				<WorkspaceModeSwitch mode="rooms" onChange={onModeChange} />
-			</div>
+			{!withNavigationRail ? (
+				<div className="px-3 pb-3">
+					<WorkspaceModeSwitch mode="rooms" onChange={onModeChange} />
+				</div>
+			) : null}
 			<div className="px-3 pb-3">
 				<div className="relative">
 					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -162,7 +175,7 @@ export function RoomRail({
 						placeholder="搜索 Room"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
-						className="h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0"
+						className={cn("h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0", onNavigate && "min-h-11")}
 					/>
 				</div>
 			</div>
@@ -183,7 +196,7 @@ export function RoomRail({
 								return (
 									<Collapsible key={project.id} open={open} onOpenChange={() => toggleProject(project.id)}>
 										<CollapsibleTrigger asChild>
-											<Button className="h-8 w-full justify-start gap-2 px-2 text-xs" variant="ghost">
+											<Button className={cn("h-8 w-full justify-start gap-2 px-2 text-xs", onNavigate && "min-h-11")} variant="ghost">
 												<ChevronDown className={cn("size-3.5 shrink-0 transition-transform", !open && "-rotate-90")} />
 												<FolderTree className="size-4 shrink-0 text-muted-foreground" />
 															<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">{project.name}</span>
@@ -196,13 +209,17 @@ export function RoomRail({
 													const selected = selectedRoomId === summary.room.id;
 											return (
 														<button
-															className={cn(
-																"flex min-w-0 flex-col gap-1 rounded-md px-2.5 py-2 text-left transition-colors",
+																	className={cn(
+																		"flex min-w-0 flex-col gap-1 rounded-md px-2.5 py-2 text-left transition-colors",
+																		onNavigate && "min-h-11",
 																"hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
 																selected && "bg-muted",
 															)}
 															key={summary.room.id}
-															onClick={() => onSelectRoom(project.id, summary)}
+																	onClick={() => {
+																		onSelectRoom(project.id, summary);
+																		onNavigate?.();
+																	}}
 															type="button"
 														>
 															<span className="flex min-w-0 items-center gap-2">
@@ -226,7 +243,7 @@ export function RoomRail({
 					)}
 				</div>
 			</ScrollArea>
-			<RailFooter actions={actions} />
+			<RailFooter actions={actions} connectionState={state} updatesOnly={withNavigationRail} />
 			<Dialog open={createOpen} onOpenChange={setCreateOpen}>
 				<DialogContent>
 				<DialogHeader>

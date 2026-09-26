@@ -3,7 +3,7 @@ import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
 export const RUNTIME_PROTOCOL_VERSION = 10 as const;
-export const MAX_TRANSCRIPT_PAGE_SIZE = 200;
+export const MAX_TRANSCRIPT_PAGE_SIZE = 400;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
 
@@ -1635,6 +1635,54 @@ export const CommandSchema = Type.Union([
 		markRead: Type.Optional(Type.Boolean()),
 	}),
 	StrictObject({
+		command: Type.Literal("room_task_create"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		sessionId: Id,
+		title: Type.String({ minLength: 1, maxLength: 200 }),
+		description: Type.Optional(Type.String({ maxLength: 8000 })),
+	}),
+	StrictObject({
+		command: Type.Literal("room_task_list"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		sessionId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("room_task_claim"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		taskId: Id,
+		sessionId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("room_task_edit"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		taskId: Id,
+		sessionId: Id,
+		title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+		description: Type.Optional(Type.String({ maxLength: 8000 })),
+		assigneeSessionId: Type.Optional(Type.Union([Id, Type.Null()])),
+	}),
+	StrictObject({
+		command: Type.Literal("room_task_comment"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		taskId: Id,
+		sessionId: Id,
+		body: Type.String({ minLength: 1, maxLength: 8000 }),
+	}),
+	StrictObject({
+		command: Type.Literal("room_task_update"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		taskId: Id,
+		sessionId: Id,
+		status: Type.Union([Type.Literal("todo"), Type.Literal("doing"), Type.Literal("blocked"), Type.Literal("done")]),
+		note: Type.Optional(Type.String({ maxLength: 8000 })),
+	}),
+	StrictObject({
 		command: Type.Literal("read_transcript"),
 		sessionPath: Type.String({ minLength: 1 }),
 		cursor: Type.Optional(Id),
@@ -1755,6 +1803,7 @@ export const CommandSchema = Type.Union([
 		excludeFromContext: Type.Boolean(),
 	}),
 	StrictObject({ command: Type.Literal("abort_operation"), operationId: Id, leaseId: Id }),
+	StrictObject({ command: Type.Literal("stop_session"), sessionId: Id }),
 	StrictObject({ command: Type.Literal("get_operation"), operationId: Id }),
 	StrictObject({
 		command: Type.Literal("list_operations"),
@@ -2291,6 +2340,16 @@ export const ServerEventSchema = Type.Union([
 		agentSteps: Type.Optional(Type.Array(AgentStepSchema, { maxItems: 512 })),
 	}),
 	StrictObject({ type: Type.Literal("operation_updated"), operation: OperationSnapshotSchema }),
+	StrictObject({
+		type: Type.Literal("turn_settled"),
+		sessionPath: Type.String({ minLength: 1 }),
+		sessionId: Id,
+		cwd: Type.String({ minLength: 1 }),
+		sessionName: Type.Optional(Type.String()),
+		turnId: Id,
+		outcome: Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("aborted")]),
+		text: Type.String(),
+	}),
 	StrictObject({
 		type: Type.Literal("ui_request"),
 		id: Id,

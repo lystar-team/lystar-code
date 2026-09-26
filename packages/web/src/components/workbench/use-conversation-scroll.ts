@@ -6,6 +6,7 @@ import type { WorkbenchActions } from "./types";
 import type { ConversationTranscriptScrollState } from "./virtualized-transcript";
 
 const SESSION_SCROLL_CACHE_LIMIT = 8;
+export const HISTORY_LOAD_THRESHOLD = 240;
 
 type EarlierHistoryState = Pick<
 	WorkbenchState,
@@ -23,10 +24,12 @@ type ConversationScrollOptions = EarlierHistoryState & {
 
 export function shouldLoadEarlierHistory(
 	atTop: boolean,
+	userInitiated: boolean,
 	state: Pick<WorkbenchState, "hasMorePrevious" | "loadingEarlier" | "previousCursor" | "transcriptError">,
 	requestedCursor: string | undefined,
 ): boolean {
 	return (
+		userInitiated &&
 		atTop &&
 		state.hasMorePrevious &&
 		Boolean(state.previousCursor) &&
@@ -57,7 +60,9 @@ export function useConversationScroll({
 	activeSessionIdRef.current = sessionId;
 	const [isAtBottom, setIsAtBottom] = useState(true);
 	const [isAtTop, setIsAtTop] = useState(false);
+	const readingEarlierRef = useRef(false);
 	const historyLoadRequestedCursorRef = useRef<string>();
+	const historyLoadInFlightRef = useRef<{ sessionId: string; cursor: string }>();
 	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
 	const promptScrollRequestRef = useRef(promptScrollRequest);
 	const promptFollowRef = useRef(false);
@@ -143,11 +148,19 @@ export function useConversationScroll({
 		[],
 	);
 	const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
+		if (readingEarlierRef.current) {
+			setIsAtBottom(false);
+			return;
+		}
 		setIsAtBottom(atBottom);
 		if (atBottom) {
 			promptFollowRef.current = true;
 			setFollowOutput("auto");
 		}
+	}, []);
+	const pauseFollowOutput = useCallback(() => {
+		promptFollowRef.current = false;
+		setFollowOutput(false);
 	}, []);
 	const handleUserScrollAway = useCallback(() => {
 		scrollToBottomTweenRef.current?.kill();
@@ -160,33 +173,49 @@ export function useConversationScroll({
 		setFollowOutput(false);
 		setIsAtBottom(false);
 	}, []);
-	const requestEarlierHistory = useCallback(() => {
-		void loadEarlier().catch((error: unknown) => {
-			if (activeSessionIdRef.current === sessionId)
-				showToast(error instanceof Error ? error.message : String(error));
-		});
-	}, [loadEarlier, showToast, sessionId]);
-
-	useEffect(() => {
-		if (!isAtTop) {
-			historyLoadRequestedCursorRef.current = undefined;
-			return;
-		}
+	const requestEarlierHistory = useCallback(
+		(retry = false) => {
+			if (
+				!sessionId ||
+				!hasMorePrevious ||
+				!previousCursor ||
+				loadingEarlier ||
+				historyLoadInFlightRef.current ||
+				(!retry && (transcriptError || historyLoadRequestedCursorRef.current === previousCursor))
+			)
+				return;
+			historyLoadRequestedCursorRef.current = previousCursor;
+			const request = { sessionId, cursor: previousCursor };
+			historyLoadInFlightRef.current = request;
+			void loadEarlier()
+				.catch((error: unknown) => {
+					if (activeSessionIdRef.current === sessionId)
+						showToast(error instanceof Error ? error.message : String(error));
+				})
+				.finally(() => {
+					if (historyLoadInFlightRef.current === request) historyLoadInFlightRef.current = undefined;
+				});
+		},
+		[hasMorePrevious, loadEarlier, loadingEarlier, previousCursor, sessionId, showToast, transcriptError],
+	);
+	const handleUserScrollUp = useCallback(() => {
 		if (
-			!shouldLoadEarlierHistory(
+			shouldLoadEarlierHistory(
 				isAtTop,
+				true,
 				{ hasMorePrevious, loadingEarlier, previousCursor, transcriptError },
 				historyLoadRequestedCursorRef.current,
 			)
-		)
-			return;
-		historyLoadRequestedCursorRef.current = previousCursor;
-		requestEarlierHistory();
-	}, [isAtTop, requestEarlierHistory, hasMorePrevious, loadingEarlier, previousCursor, transcriptError]);
+		) {
+			readingEarlierRef.current = true;
+			requestEarlierHistory();
+		}
+	}, [hasMorePrevious, isAtTop, loadingEarlier, previousCursor, requestEarlierHistory, transcriptError]);
 
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === promptScrollRequest) return;
 		promptScrollRequestRef.current = promptScrollRequest;
+		readingEarlierRef.current = false;
 		promptFollowRef.current = true;
 		setFollowOutput("auto");
 		scrollToBottom();
@@ -203,6 +232,8 @@ export function useConversationScroll({
 
 	useLayoutEffect(() => {
 		historyLoadRequestedCursorRef.current = undefined;
+		historyLoadInFlightRef.current = undefined;
+		readingEarlierRef.current = false;
 		scrollToBottomTweenRef.current?.kill();
 		scrollToBottomTweenRef.current = null;
 		if (scrollToBottomSettleTimerRef.current !== undefined) {
@@ -231,6 +262,7 @@ export function useConversationScroll({
 	}, [scrollToBottom, sessionId, resetExpandedState]);
 
 	const handleReturnToBottom = useCallback(() => {
+		readingEarlierRef.current = false;
 		promptFollowRef.current = true;
 		animateScrollToBottom();
 	}, [animateScrollToBottom]);
@@ -243,7 +275,9 @@ export function useConversationScroll({
 		handleScrollStateCapture,
 		handleTranscriptScrollerRef,
 		handleUserScrollAway,
+		handleUserScrollUp,
 		handleVirtuosoRef,
+		pauseFollowOutput,
 		isAtBottom,
 		requestEarlierHistory,
 		scrollState: sessionId ? sessionScrollStatesRef.current.get(sessionId) : undefined,

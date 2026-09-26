@@ -5,6 +5,7 @@ const MAX_PROGRESS_TEXT_CHARS = 16 * 1024;
 const MAX_PROGRESS_DIFF_LINES = 120;
 const MAX_PREVIEW_PARAMETER_CHARS = 128 * 1024;
 const MAX_PREVIEW_EDIT_ENTRIES = 128;
+const STREAM_PREVIEW_INTERVAL_MS = 100;
 
 export type ToolActivityState = "preparing" | "queued" | "running" | "success" | "error" | "cancelled" | "interrupted";
 
@@ -359,7 +360,25 @@ function serializedText(value: unknown): string {
 export function toolInputSummary(name: string, value: unknown): string {
 	const input = toolRecord(value);
 	if (name === "bash" && typeof input?.command === "string") return boundedText(input.command);
-	if (name === "read") return toolPath(value) ?? name;
+	if (name === "read") {
+		const path = toolPath(value);
+		if (!path) return name;
+		const offset = input?.offset;
+		const limit = input?.limit;
+		return typeof offset === "number" || typeof limit === "number"
+			? JSON.stringify({
+					path,
+					...(typeof offset === "number" ? { offset } : {}),
+					...(typeof limit === "number" ? { limit } : {}),
+				})
+			: path === name
+				? JSON.stringify({ path })
+				: path;
+	}
+	if (name === "edit" || name === "write") {
+		const path = toolPath(value);
+		return path === name ? JSON.stringify({ path }) : (path ?? name);
+	}
 	if (isDiffTool(name)) return toolPath(value) ?? name;
 	return serializedText(value);
 }
@@ -390,6 +409,7 @@ interface InternalToolActivity {
 	progress?: string;
 	output?: string;
 	error?: string;
+	previewUpdatedAt?: number;
 	startedAt?: number;
 	updatedAt: number;
 	completedAt?: number;
@@ -525,7 +545,18 @@ export class ToolActivityTracker {
 			activity.state = "preparing";
 			activity.args = args;
 			activity.summary = this.summary(name, args);
-			if (includeDiff) activity.diff = toolProgressDiff(name, args) ?? activity.diff;
+			const now = Date.now();
+			if (
+				includeDiff ||
+				(isDiffTool(name) &&
+					(!activity.previewUpdatedAt || now - activity.previewUpdatedAt >= STREAM_PREVIEW_INTERVAL_MS))
+			) {
+				const preview = toolProgressDiff(name, args);
+				if (preview?.files.some((file) => file.diff)) {
+					activity.diff = preview;
+					activity.previewUpdatedAt = now;
+				} else if (includeDiff) activity.diff = preview ?? activity.diff;
+			}
 		}
 		return this.touch(activity);
 	}

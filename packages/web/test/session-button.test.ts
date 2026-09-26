@@ -24,17 +24,18 @@ describe("会话标题展示", () => {
 		expect((SessionButton as unknown as { $$typeof?: symbol }).$$typeof).toBe(Symbol.for("react.memo"));
 	});
 
-	it("智能体会话行显示智能体名称和图标身份", () => {
+	it("智能体会话与普通会话对齐，长名称省略且智能体胶囊靠右", () => {
+		const longTitle = "检查项目代码并确认会话列表布局".repeat(8);
 		const session: WebSessionSummary = {
 			id: "session-agent",
-			name: "检查项目代码",
+			name: longTitle,
 			profileId: "code-review",
 			profileName: "代码审阅",
 			profileIcon: "code",
 			createdAt: 1,
 			updatedAt: 1,
 			messageCount: 1,
-			firstMessage: "检查项目代码",
+			firstMessage: longTitle,
 			activity: "idle",
 			writeAccess: "available",
 		};
@@ -59,8 +60,13 @@ describe("会话标题展示", () => {
 			}),
 		);
 
-		expect(markup).toContain("代码审阅");
-		expect(markup).toContain("检查项目代码");
+		expect(markup).toContain("!pl-8");
+		expect(markup).not.toContain("!pl-10");
+		expect(markup).toContain(`class="min-w-0 flex-1 truncate">${truncateSessionTitle(longTitle)}</span>`);
+		expect(markup.indexOf(truncateSessionTitle(longTitle))).toBeLessThan(markup.indexOf("代码审阅"));
+		expect(markup).toContain('data-slot="badge"');
+		expect(markup).toContain('data-variant="outline"');
+		expect(markup).toMatch(/data-slot="badge"[^>]*class="[^"]*shrink-0[^"]*max-w-\[45%\]/u);
 		expect(markup).toContain("lucide-braces");
 	});
 
@@ -96,6 +102,7 @@ describe("会话标题展示", () => {
 			}),
 		);
 
+		expect(markup).toContain("!pl-8");
 		expect(markup).toContain('aria-label="删除会话：测试会话"');
 		expect(markup).toContain("group-hover/session:opacity-100");
 	});

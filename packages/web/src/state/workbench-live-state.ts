@@ -21,7 +21,7 @@ import {
 	reconcileQueuedUserPromptCounts,
 } from "./chat-lifecycle.ts";
 import { restoreCompactionState, updateCompactionState } from "./compaction-state.ts";
-import { mergeWebSearchToolSummary, shouldJoinLiveToolBatch } from "./tool-batching.ts";
+import { mergeImageGenerationSummary, mergeWebSearchToolSummary, shouldJoinLiveToolBatch } from "./tool-batching.ts";
 import type {
 	LiveTool,
 	LiveTurnItem,
@@ -230,7 +230,9 @@ export function liveToolFromActivity(activity: ToolActivity, previous: LiveTool 
 		summary:
 			activity.name === "web_search"
 				? mergeWebSearchToolSummary(previous?.summary, activity.summary, webSearch)
-				: activity.summary || previous?.summary || activity.name,
+				: activity.name === "image_gen"
+					? mergeImageGenerationSummary(previous?.summary, activity.summary)
+					: activity.summary || previous?.summary || activity.name,
 		state: activity.state,
 		status: toolActivityStatus(activity.state),
 		stepId: activity.stepId ?? previous?.stepId,
@@ -238,6 +240,28 @@ export function liveToolFromActivity(activity: ToolActivity, previous: LiveTool 
 		result: activity.output ?? activity.progress ?? activity.error ?? previous?.result,
 		...(webSearch ? { webSearch } : {}),
 		...(terminal ? { diff: activity.diff } : { diff: mergeToolDiff(previous?.diff, activity.diff) }),
+	};
+}
+
+export function liveToolFromUpdate(
+	progress: Extract<SessionProgress, { type: "tool_update" }>,
+	previous: LiveTool | undefined,
+	batchId: string,
+	summary: string,
+	webSearch?: LiveTool["webSearch"],
+): LiveTool {
+	return {
+		id: progress.toolCallId,
+		name: progress.name,
+		batchId,
+		summary: progress.name === "image_gen" ? mergeImageGenerationSummary(previous?.summary, summary) : summary,
+		state: previous?.state ?? (progress.name === "web_search" ? "running" : "preparing"),
+		status: "running",
+		result: progress.summary,
+		stepId: progress.stepId ?? previous?.stepId,
+		inputPreview: previous?.inputPreview,
+		...(webSearch ? { webSearch } : {}),
+		diff: mergeToolDiff(previous?.diff, progress.diff),
 	};
 }
 
@@ -580,27 +604,34 @@ export function applySubagentProgress(
 			const summary =
 				progress.name === "web_search"
 					? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
-					: progress.summary || previous?.summary || "正在执行";
+					: progress.name === "image_gen"
+						? mergeImageGenerationSummary(previous?.summary, progress.summary)
+						: progress.summary || previous?.summary || "正在执行";
 			const batchId =
 				previous?.batchId ??
 				subagentToolBatchId(current, progress.name, summary, progress.stepId, `subagent-tool:${nextLiveToolId()}`);
-			const status = progress.type === "tool_end" ? progress.status : "running";
-			return {
-				...current,
-				liveTools: {
-					...current.liveTools,
-					[progress.toolCallId]: {
+			const status: LiveTool["status"] = progress.type === "tool_end" ? progress.status : "running";
+			const tool =
+				progress.type === "tool_update"
+					? liveToolFromUpdate(progress, previous, batchId, summary, webSearch)
+					: {
 						id: progress.toolCallId,
 						name: progress.name,
 						batchId,
 						summary,
-						state: status === "success" ? "success" : status === "error" ? "error" : "running",
+						state: status === "success" ? "success" as const : status === "error" ? "error" as const : "running" as const,
 						status,
 						stepId: progress.stepId ?? previous?.stepId,
 						result: progress.summary,
+						...(progress.type === "tool_start" && previous?.inputPreview ? { inputPreview: true } : {}),
 						...(webSearch ? { webSearch } : {}),
 						diff: mergeToolDiff(previous?.diff, progress.diff),
-					},
+					};
+			return {
+				...current,
+				liveTools: {
+					...current.liveTools,
+					[progress.toolCallId]: tool,
 				},
 				liveTurnItems: previous
 					? current.liveTurnItems
@@ -611,7 +642,12 @@ export function applySubagentProgress(
 							nextLiveItemId(),
 							current.liveTurnId,
 						),
-				statusText: progress.type === "tool_end" ? `${progress.name} 已完成` : `正在执行 ${progress.name}`,
+				statusText:
+					progress.type === "tool_end"
+						? `${progress.name} 已完成`
+						: tool.state === "running"
+							? `正在执行 ${progress.name}`
+							: current.statusText,
 			};
 		}
 		case "queue_update":

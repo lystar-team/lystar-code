@@ -107,9 +107,9 @@ export interface WorkbenchStreamActionsContext {
 	pendingTextFrameRef: Ref<number | undefined>;
 	pendingTextTimeoutRef: Ref<number | undefined>;
 	transcriptTimerRef: Ref<number | undefined>;
-	transcriptRefreshPendingRef: Ref<string | undefined>;
 	sessionDetailCacheRef: Ref<Map<string, CachedSessionDetail>>;
 	sessionDetailSeqRef: Ref<Map<string, number>>;
+	sessionReadAtRef: Ref<Map<string, number>>;
 	scheduleSubagentTranscriptRefresh: (agentId: string, sessionId?: string) => void;
 	sessionSubscriptionWaitersRef: Ref<Map<string, Set<SessionSubscriptionWaiter>>>;
 	handledNotifyIdsRef: Ref<Set<string>>;
@@ -139,9 +139,9 @@ export function useWorkbenchStreamActions({
 	pendingTextFrameRef,
 	pendingTextTimeoutRef,
 	transcriptTimerRef,
-	transcriptRefreshPendingRef,
 	sessionDetailCacheRef,
 	sessionDetailSeqRef,
+	sessionReadAtRef,
 	scheduleSubagentTranscriptRefresh,
 	sessionSubscriptionWaitersRef,
 	handledNotifyIdsRef,
@@ -149,17 +149,9 @@ export function useWorkbenchStreamActions({
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
 			if (!sessionId) return;
-			if (stateRef.current.loadingEarlier) {
-				transcriptRefreshPendingRef.current = sessionId;
-				return;
-			}
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			transcriptTimerRef.current = window.setTimeout(() => {
 				transcriptTimerRef.current = undefined;
-				if (stateRef.current.loadingEarlier) {
-					transcriptRefreshPendingRef.current = sessionId;
-					return;
-				}
 				void loadTranscript(sessionId).catch((error) => showToast(errorMessage(error)));
 			}, 140);
 		},
@@ -172,7 +164,6 @@ export function useWorkbenchStreamActions({
 			window.clearTimeout(transcriptTimerRef.current);
 			transcriptTimerRef.current = undefined;
 		}
-		if (transcriptRefreshPendingRef.current === sessionId) transcriptRefreshPendingRef.current = undefined;
 	}, []);
 
 	const { flushPendingTextProgress, applyProgress } = useWorkbenchProgressActions({
@@ -201,18 +192,31 @@ export function useWorkbenchStreamActions({
 			const waiters = sessionSubscriptionWaitersRef.current.get(sessionId) ?? new Set<SessionSubscriptionWaiter>();
 			const shouldSubscribe = waiters.size === 0;
 			let waiter: SessionSubscriptionWaiter;
+			const startTimeout = () => {
+				const startedAt = Date.now();
+				waiter.timeoutId = window.setTimeout(() => {
+					console.warn("Web 会话订阅超时", {
+						sessionId,
+						elapsedMs: Date.now() - startedAt,
+						socketState: socket.readyState,
+					});
+					waiter.resolve("timeout");
+				}, 1500);
+			};
 			waiter = {
 				timeoutId: 0,
 				resolve: (result) => {
+					socket.removeEventListener("open", startTimeout);
 					window.clearTimeout(waiter.timeoutId);
 					waiters.delete(waiter);
 					if (!waiters.size) sessionSubscriptionWaitersRef.current.delete(sessionId);
 					resolve(result);
 				},
 			};
-			waiter.timeoutId = window.setTimeout(() => waiter.resolve("timeout"), 1500);
 			waiters.add(waiter);
 			sessionSubscriptionWaitersRef.current.set(sessionId, waiters);
+			if (socket.readyState === WebSocket.OPEN) startTimeout();
+			else socket.addEventListener("open", startTimeout, { once: true });
 			if (shouldSubscribe) webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
 		});
 	}, []);
@@ -231,6 +235,7 @@ export function useWorkbenchStreamActions({
 				return false;
 			}
 			if (result === "gap") {
+				console.info("Web 会话订阅断档", { sessionId, time: new Date().toISOString() });
 				await Promise.all([
 					loadSessionSnapshot(sessionId),
 					loadSessionOperations(sessionId),
@@ -283,6 +288,7 @@ export function useWorkbenchStreamActions({
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "session_subscription") {
+				console.info("Web 会话订阅确认", { sessionId: event.sessionId, seq: event.seq, gap: event.gap, time: new Date().toISOString() });
 				const selected = stateRef.current.sessionId === event.sessionId;
 				if (selected) sessionDetailSeqRef.current.set(event.sessionId, event.seq);
 				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
@@ -362,6 +368,7 @@ export function useWorkbenchStreamActions({
 				return;
 			}
 			if (event.type === "connection_state") {
+				console.info("Web Runtime 连接状态", { connected: event.connected, message: event.message, time: new Date().toISOString() });
 				const current = stateRef.current;
 				const sessionId = current.sessionId;
 				const shouldRestoreSubscription = event.connected && Boolean(sessionId) && !current.sessionReady;
@@ -429,8 +436,16 @@ export function useWorkbenchStreamActions({
 								operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
 						);
 					const unreadSessionIds = { ...current.unreadSessionIds };
+					const readAt = sessionReadAtRef.current.get(event.sessionId);
+					if (
+						(event.activity === "running" || event.activity === "waiting_for_input") &&
+						readAt !== undefined &&
+						(event.operationUpdatedAt === undefined || event.operationUpdatedAt > readAt)
+					) sessionReadAtRef.current.delete(event.sessionId);
+					const completedAt = event.operationUpdatedAt ?? previous?.operationUpdatedAt;
+					const alreadyRead = readAt !== undefined && (completedAt === undefined || completedAt <= readAt);
 					const terminal = TERMINAL_OPERATION_STATUSES.has(event.activity);
-					if ((terminal || (event.activity === "idle" && wasRunning)) && event.sessionId !== current.sessionId)
+					if ((terminal || (event.activity === "idle" && wasRunning)) && !alreadyRead && event.sessionId !== current.sessionId)
 						unreadSessionIds[event.sessionId] = true;
 					else if (event.activity !== "idle") delete unreadSessionIds[event.sessionId];
 					const projects = Object.hasOwn(event, "name")
@@ -543,8 +558,9 @@ export function useWorkbenchStreamActions({
 								liveTools: {},
 								liveSteps: {},
 								liveTurnItems: [],
-								liveTurnActive: false,
-								liveCompaction: undefined,
+							liveTurnActive: false,
+							lastOutputSpeed: undefined,
+							liveCompaction: undefined,
 								subagents: [],
 								subagentsLoading: false,
 								subagentsError: undefined,
@@ -658,10 +674,13 @@ export function useWorkbenchStreamActions({
 									operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
 							);
 						let unreadSessionIds = current.unreadSessionIds;
+						if (activity === "running" && previous && !["running", "waiting_for_input"].includes(previous.activity))
+							sessionReadAtRef.current.delete(event.sessionId);
 						if (
 							activity === "idle" &&
 							event.sessionId !== current.sessionId &&
 							wasRunning &&
+							!sessionReadAtRef.current.has(event.sessionId) &&
 							!unreadSessionIds[event.sessionId]
 						) {
 							unreadSessionIds = { ...unreadSessionIds, [event.sessionId]: true };
@@ -723,9 +742,13 @@ export function useWorkbenchStreamActions({
 						: undefined;
 					const unreadSessionIds = { ...current.unreadSessionIds };
 					if (operationSessionId) {
+						const readAt = sessionReadAtRef.current.get(operationSessionId);
+						if (operationIsActive && readAt !== undefined && event.operation.updatedAt > readAt)
+							sessionReadAtRef.current.delete(operationSessionId);
 						if (operationIsActive || operationSessionId === current.sessionId)
 							delete unreadSessionIds[operationSessionId];
-						else if (operationIsTerminal) unreadSessionIds[operationSessionId] = true;
+						else if (operationIsTerminal && (readAt === undefined || event.operation.updatedAt > readAt))
+							unreadSessionIds[operationSessionId] = true;
 					}
 					return {
 						...current,

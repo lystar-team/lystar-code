@@ -3,7 +3,7 @@ import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { formatElapsedDuration } from "./conversation-format";
 import type { LiveCompactionState } from "../../state/compaction-state";
-import { agentStepsFromIndex } from "../../state/session-timeline";
+import { agentStepsFromIndex, mergeAgentStepIndex } from "../../state/session-timeline";
 import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
 import type { LiveTurnItem, WorkbenchState } from "../../state/use-workbench";
 import type { PromptAttachmentPreview } from "../../types";
@@ -189,8 +189,15 @@ function groupAgentSteps(
 			ensureStep(item.step.id, item.step);
 			continue;
 		}
-		if (item.kind === "message" && item.entryId) {
-			const stepId = stepIdByMessageEntryId.get(item.entryId);
+		if ((item.kind === "message" || item.kind === "compaction") && item.entryId) {
+			let stepId = stepIdByMessageEntryId.get(item.entryId);
+			if (!stepId && item.kind === "compaction" && item.timestamp) {
+				const time = Date.parse(item.timestamp);
+				const activeSteps = [...steps.values()].filter(
+					(step) => step.endedAt !== undefined && step.startedAt <= time && time < step.endedAt,
+				);
+				if (activeSteps.length === 1) stepId = activeSteps[0]?.id;
+			}
 			if (stepId) {
 				const step = ensureStep(stepId);
 				if (step && !step.items.some((candidate) => candidate.key === item.key)) {
@@ -237,6 +244,8 @@ export function buildPersistedRenderItems(
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"] = [],
 	promptSendTimes: WorkbenchState["promptSendTimes"] = {},
 	agentSteps: WorkbenchState["agentSteps"] = {},
+	liveSteps: WorkbenchState["liveSteps"] = {},
+	liveTools: WorkbenchState["liveTools"] = {},
 ): ConversationContentRenderItem[] {
 	const rendered: Array<RawRenderItem> = [];
 	let batchTools: ToolBatchTool[] = [];
@@ -244,7 +253,10 @@ export function buildPersistedRenderItems(
 	let batchEntryId: string | undefined;
 	let batchStepId: string | undefined;
 	const latestSteps = new Map<string, { entryId: string; step: AgentStep }>(
-		agentStepsFromIndex(agentSteps).map((step) => [step.id, { entryId: `agent-step-index:${step.id}`, step }]),
+		agentStepsFromIndex(mergeAgentStepIndex(agentSteps, Object.values(liveSteps))).map((step) => [
+			step.id,
+			{ entryId: `agent-step-index:${step.id}`, step },
+		]),
 	);
 	for (const item of items) {
 		if (item.view?.type === "agent_step" && !latestSteps.has(item.view.step.id))
@@ -330,6 +342,7 @@ export function buildPersistedRenderItems(
 		}
 		if (viewModel.kind === "message") {
 			flushBatch();
+			if (viewModel.role === "assistant" && !viewModel.text.trim() && !viewModel.attachments.length) continue;
 			rendered.push({
 				kind: "message",
 				key: item.renderId,
@@ -350,12 +363,14 @@ export function buildPersistedRenderItems(
 			flushBatch();
 			const searchTool = viewModel.tools[0];
 			if (searchTool) {
-				appendPersistedStepAnchor(stepIdByToolCallId.get(searchTool.id), item.renderId);
+				const stepId = stepIdByToolCallId.get(searchTool.id) ?? liveTools[searchTool.id]?.stepId;
+				appendPersistedStepAnchor(stepId, item.renderId);
 				rendered.push({
 					kind: "tool-batch",
 					key: `web-search:${item.renderId}:${searchTool.id}`,
 					entryId: item.entryId,
 					tools: [searchTool],
+					stepId,
 				});
 			}
 			continue;
@@ -365,6 +380,7 @@ export function buildPersistedRenderItems(
 				const stepId =
 					item.view.calls.find((call) => call.id === tool.id)?.stepId ??
 					stepIdByToolCallId.get(tool.id) ??
+					liveTools[tool.id]?.stepId ??
 					stepIdByEntryId.get(item.entryId);
 				appendPersistedStepAnchor(stepId, item.renderId);
 				const result = toolIndex.results.get(tool.id);
@@ -392,13 +408,21 @@ export function buildPersistedRenderItems(
 			flushBatch();
 			const resultTool = viewModel.tools[0];
 			if (resultTool) {
-				appendPersistedStepAnchor(item.view.stepId ?? stepIdByToolCallId.get(resultTool.id), item.renderId);
+				const liveTool = liveTools[resultTool.id];
+				const summary =
+					(resultTool.name === "read" || resultTool.name === "edit" || resultTool.name === "write") &&
+					resultTool.summary === resultTool.name &&
+					liveTool?.summary !== resultTool.name
+						? liveTool?.summary
+						: undefined;
+				const stepId = item.view.stepId ?? stepIdByToolCallId.get(resultTool.id) ?? liveTool?.stepId;
+				appendPersistedStepAnchor(stepId, item.renderId);
 				rendered.push({
 					kind: "tool-batch",
 					key: `tool-result:${item.renderId}:${resultTool.id}`,
 					entryId: item.entryId,
-					tools: [resultTool],
-					stepId: item.view.stepId,
+					tools: [summary ? { ...resultTool, summary } : resultTool],
+					stepId,
 				});
 			}
 			continue;
@@ -452,19 +476,22 @@ export function appendLiveRenderItems(
 ): ConversationContentRenderItem[] {
 	const next = [...rendered];
 	const stepIdByToolCallId = new Map<string, string>();
+	for (const entry of next) {
+		if (entry.kind !== "agent-step") continue;
+		for (const toolCallId of entry.step.toolCallIds) stepIdByToolCallId.set(toolCallId, entry.step.id);
+	}
 	for (const step of Object.values(liveSteps)) {
 		for (const toolCallId of step.toolCallIds) stepIdByToolCallId.set(toolCallId, step.id);
 	}
 	const hasRenderItemKey = (key: string) =>
 		next.some((entry) => entry.key === key || (entry.kind === "agent-step" && entry.items.some((item) => item.key === key)));
 	const appendStepItem = (stepId: string, item: AgentStepChildRenderItem): boolean => {
-		const step = liveSteps[stepId];
-		if (!step) return false;
 		const key = `agent-step:${stepId}`;
 		const existing = next.find((entry): entry is AgentStepRenderItem => entry.kind === "agent-step" && entry.key === key);
+		const step = liveSteps[stepId] ?? existing?.step;
+		if (!step) return false;
 		if (existing) {
 			existing.live = true;
-			existing.step = step;
 			if (!existing.items.some((candidate) => candidate.key === item.key)) existing.items.push(item);
 		} else {
 			next.push({ kind: "agent-step", key, live: true, step, items: [item] });

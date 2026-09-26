@@ -209,6 +209,7 @@ export {
 	type RichTextRenderResult,
 	renderTerminalRichText,
 } from "./rich-text-renderer.ts";
+export { createRoomClaimTool } from "./room-claim-tool.ts";
 export type {
 	SessionCoordinator,
 	SessionCoordinatorCreateInput,
@@ -267,13 +268,16 @@ export type {
 	SessionRoomSenderType,
 	SessionRoomSendResult,
 	SessionRoomSummary,
+	SessionRoomTask,
+	SessionRoomTaskStatus,
+	SessionRoomTaskUpdate,
 } from "./session-room.ts";
 export {
 	SessionShareError,
 	type SessionShareResult,
 	shareSessionAsPrivateGist,
 } from "./session-share.ts";
-export { createSessionsTool } from "./session-tool.ts";
+export { createRoomTasksTool, createSessionsTool } from "./session-tool.ts";
 export {
 	type DefaultProjectTrust,
 	type Settings,

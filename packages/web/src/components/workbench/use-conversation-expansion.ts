@@ -24,16 +24,16 @@ export function initialToolStackPresentation(tools: readonly ToolBatchTool[]): T
 export function useConversationExpansion() {
 	const [expandedWorkProcesses, setExpandedWorkProcesses] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 	const [expandedAgentSteps, setExpandedAgentSteps] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-	const [expandedToolBatches, setExpandedToolBatches] = useState<ReadonlyMap<string, boolean>>(() => new Map());
-	const [expandedToolRows, setExpandedToolRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+	const expandedToolBatches = useRef(new Map<string, boolean>()).current;
+	const expandedToolRows = useRef(new Map<string, boolean>()).current;
 	const toolStackPresentationsRef = useRef(new Map<string, ToolStackPresentation>());
 	const resetExpandedState = useCallback(() => {
 		setExpandedWorkProcesses(new Map());
 		setExpandedAgentSteps(new Map());
-		setExpandedToolBatches(new Map());
-		setExpandedToolRows(new Map());
+		expandedToolBatches.clear();
+		expandedToolRows.clear();
 		toolStackPresentationsRef.current.clear();
-	}, []);
+	}, [expandedToolBatches, expandedToolRows]);
 	const updateExpandedWorkProcess = useCallback((key: string, open: boolean) => {
 		setExpandedWorkProcesses((current) => {
 			if ((current.get(key) ?? false) === open) return current;
@@ -52,23 +52,13 @@ export function useConversationExpansion() {
 		});
 	}, []);
 	const updateExpandedToolBatch = useCallback((key: string, open: boolean) => {
-		setExpandedToolBatches((current) => {
-			if ((current.get(key) ?? false) === open) return current;
-			const next = new Map(current);
-			if (open) next.set(key, true);
-			else next.delete(key);
-			return next;
-		});
-	}, []);
+		if (open) expandedToolBatches.set(key, true);
+		else expandedToolBatches.delete(key);
+	}, [expandedToolBatches]);
 	const updateExpandedToolRow = useCallback((toolId: string, open: boolean) => {
-		setExpandedToolRows((current) => {
-			if ((current.get(toolId) ?? false) === open) return current;
-			const next = new Map(current);
-			if (open) next.set(toolId, true);
-			else next.delete(toolId);
-			return next;
-		});
-	}, []);
+		if (open) expandedToolRows.set(toolId, true);
+		else expandedToolRows.delete(toolId);
+	}, [expandedToolRows]);
 	const getToolStackPresentation = useCallback((key: string, tools: readonly ToolBatchTool[]) => {
 		let presentation = toolStackPresentationsRef.current.get(key);
 		if (!presentation) {

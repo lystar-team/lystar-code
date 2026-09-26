@@ -383,7 +383,7 @@ export class TranscriptReader {
 	async read(
 		sessionPath: string,
 		options: { cursor?: string; limit: number; emptyGeneration?: string },
-	): Promise<TranscriptPage> {
+	): Promise<TranscriptPage & { contextCalls?: TranscriptItem[] }> {
 		const resolvedPath = resolve(sessionPath);
 		const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
 		let handle: Awaited<ReturnType<typeof open>>;
@@ -565,10 +565,68 @@ export class TranscriptReader {
 			}
 			items.reverse();
 			const transcriptItems = items.map(toTranscriptItem);
+			const missingFileCalls = new Set<string>();
+			for (const entry of items) {
+				const message = entry.message as
+					| { role?: string; toolCallId?: string; toolName?: string; content?: unknown }
+					| undefined;
+				if (
+					message?.role === "toolResult" &&
+					typeof message.toolCallId === "string" &&
+					(message.toolName === "read" || message.toolName === "edit" || message.toolName === "write")
+				) {
+					missingFileCalls.add(message.toolCallId);
+				}
+			}
+			for (const entry of items) {
+				const message = entry.message as { role?: string; content?: unknown } | undefined;
+				if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+				for (const part of message.content) {
+					if (part && typeof part === "object" && "id" in part && typeof part.id === "string") {
+						missingFileCalls.delete(part.id);
+					}
+				}
+			}
+			const contextCalls: TranscriptItem[] = [];
+			if (missingFileCalls.size > 0 && wantedId !== null && nextOffset > 0) {
+				let contextWantedId: string | null = wantedId;
+				await scanReverse(handle, nextOffset, this.maxJsonlLineBytes, (line) => {
+					if (contextWantedId === null) return true;
+					const entry = parseLine(line);
+					if (!entry || entry.type === "session" || entry.id !== contextWantedId) return false;
+					contextWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+					const message = entry.message as { role?: string; content?: unknown } | undefined;
+					if (message?.role !== "assistant" || !Array.isArray(message.content)) return false;
+					const calls = message.content.filter(
+						(part) =>
+							part &&
+							typeof part === "object" &&
+							"type" in part &&
+							part.type === "toolCall" &&
+							"id" in part &&
+							typeof part.id === "string" &&
+							missingFileCalls.has(part.id),
+					);
+					if (calls.length === 0) return false;
+					contextCalls.push(
+						toTranscriptItem({
+							...entry,
+							message: { role: "assistant", content: calls },
+						}),
+					);
+					for (const call of calls) {
+						if (call && typeof call === "object" && "id" in call && typeof call.id === "string") {
+							missingFileCalls.delete(call.id);
+						}
+					}
+					return missingFileCalls.size === 0;
+				});
+			}
 			const pageAgentSteps = relevantAgentSteps(transcriptItems, allAgentSteps);
 			const hasMorePrevious = wantedId !== null && nextOffset > 0;
 			return {
 				items: transcriptItems,
+				...(contextCalls.length > 0 ? { contextCalls } : {}),
 				...(pageAgentSteps.length > 0 ? { agentSteps: pageAgentSteps } : {}),
 				previousCursor: hasMorePrevious
 					? encodeCursor({

@@ -1,22 +1,9 @@
-import { collaborationAlias } from "./collaboration-session";
+import { collaborationAlias, DEFAULT_ROOM_AGENT_ALIASES } from "@lystar/code-web-protocol";
 import type { WebRoomMember } from "../../types";
 
 const ROOM_NICKNAME_POOL_KEY = "lystar-room-nickname-pool";
 
-export const DEFAULT_ROOM_NICKNAMES = [
-	"霜叶",
-	"海盐",
-	"纸鸢",
-	"星野",
-	"青岚",
-	"松墨",
-	"云砚",
-	"川柏",
-	"月白",
-	"南枝",
-	"远山",
-	"清和",
-] as const;
+export const DEFAULT_ROOM_NICKNAMES = DEFAULT_ROOM_AGENT_ALIASES;
 
 function normalizeNicknames(values: readonly string[]): string[] {
 	return [...new Set(values.map((value) => value.trim()).filter(Boolean))];

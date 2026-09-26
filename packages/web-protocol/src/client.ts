@@ -29,6 +29,16 @@ export interface TranscriptHead {
 	stale: boolean;
 }
 
+export interface RuntimeRequestDiagnostic {
+	clientInstanceId: string;
+	requestId: string;
+	command: Command["command"];
+	phase: "start" | "end";
+	outcome?: "ok" | "error" | "timeout" | "disconnected";
+	elapsedMs?: number;
+	errorCode?: string;
+}
+
 export interface RequestOptions {
 	/** Use 0 only for a command that intentionally has no deadline. */
 	timeoutMs?: number;
@@ -73,6 +83,7 @@ export class RuntimeProtocolClient {
 			resolve: (value: unknown) => void;
 			reject: (error: Error) => void;
 			onResult?: (value: unknown) => void;
+			finish: (outcome: "ok" | "error" | "timeout" | "disconnected", errorCode?: string) => void;
 			timeout?: ReturnType<typeof setTimeout>;
 		}
 	>();
@@ -92,13 +103,18 @@ export class RuntimeProtocolClient {
 	private readonly transport: ByteTransport;
 	private readonly trustedServerMessages: boolean;
 	private readonly protocolVersion: number;
+	private readonly onRequestDiagnostic?: (diagnostic: RuntimeRequestDiagnostic) => void;
 	private closed = false;
 	readonly clientInstanceId: string;
 
 	constructor(
 		transport: ByteTransport,
 		clientInstanceId: string,
-		options: { trustedServerMessages?: boolean; protocolVersion?: number } = {},
+		options: {
+			trustedServerMessages?: boolean;
+			protocolVersion?: number;
+			onRequestDiagnostic?: (diagnostic: RuntimeRequestDiagnostic) => void;
+		} = {},
 	) {
 		const protocolVersion = options.protocolVersion ?? RUNTIME_PROTOCOL_VERSION;
 		if (!Number.isInteger(protocolVersion) || protocolVersion < 0)
@@ -107,6 +123,7 @@ export class RuntimeProtocolClient {
 		this.clientInstanceId = clientInstanceId;
 		this.trustedServerMessages = options.trustedServerMessages === true;
 		this.protocolVersion = protocolVersion;
+		this.onRequestDiagnostic = options.onRequestDiagnostic;
 		this.decoder = options.trustedServerMessages ? new TrustedServerMessageDecoder() : new ServerMessageDecoder();
 	}
 
@@ -146,17 +163,39 @@ export class RuntimeProtocolClient {
 		if (this.closed) throw new Error("Web Runtime 连接已关闭");
 		const id = createClientRequestId();
 		const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+		const startedAt = Date.now();
+		const report = (
+			phase: RuntimeRequestDiagnostic["phase"],
+			outcome?: RuntimeRequestDiagnostic["outcome"],
+			errorCode?: string,
+		) => {
+			try {
+				this.onRequestDiagnostic?.({
+					clientInstanceId: this.clientInstanceId,
+					requestId: id,
+					command: request.command,
+					phase,
+					...(outcome ? { outcome, elapsedMs: Date.now() - startedAt } : {}),
+					...(errorCode ? { errorCode } : {}),
+				});
+			} catch {
+				// 诊断回调不能改变请求的结果或传输状态。
+			}
+		};
 		const result = new Promise<T>((resolve, reject) => {
 			const pending = {
 				resolve: (value: unknown) => resolve(value as T),
 				reject,
 				onResult: options.onResult,
+				finish: (outcome: "ok" | "error" | "timeout" | "disconnected", errorCode?: string) =>
+					report("end", outcome, errorCode),
 				timeout: undefined as ReturnType<typeof setTimeout> | undefined,
 			};
 			if (timeoutMs > 0) {
 				pending.timeout = globalThis.setTimeout(() => {
 					if (!this.pending.delete(id)) return;
 					const timeoutError = new Error(options.timeoutMessage ?? `Web Runtime请求超时：${request.command}`);
+					pending.finish("timeout", "request_timeout");
 					reject(timeoutError);
 					this.handleClose(timeoutError);
 					void this.transport.close().catch(() => {});
@@ -164,6 +203,7 @@ export class RuntimeProtocolClient {
 			}
 			this.pending.set(id, pending);
 		});
+		report("start");
 		// 响应等待与发送并行：发送受阻时，请求超时也必须能够结束调用。
 		void Promise.resolve()
 			.then(() => this.transport.send(encodeClientMessage({ type: "request", id, request })))
@@ -230,15 +270,19 @@ export class RuntimeProtocolClient {
 			if (message.ok) {
 				try {
 					pending.onResult?.(message.result);
+					pending.finish("ok");
 					pending.resolve(message.result);
 				} catch (error) {
+					pending.finish("error", "result_callback_error");
 					pending.reject(error instanceof Error ? error : new Error(String(error)));
 					throw error;
 				}
-			} else
+			} else {
+				pending.finish("error", message.error.code);
 				pending.reject(
 					new RuntimeProtocolError(message.error.code, message.error.message, message.error.retryable),
 				);
+			}
 			return;
 		}
 		this.applyEvent(message.event);
@@ -302,6 +346,7 @@ export class RuntimeProtocolClient {
 		const reason = error ?? new Error("Web Runtime连接已关闭");
 		for (const pending of this.pending.values()) {
 			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
+			pending.finish("disconnected", error instanceof RuntimeProtocolError ? error.code : "connection_closed");
 			pending.reject(reason);
 		}
 		this.pending.clear();

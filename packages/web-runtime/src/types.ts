@@ -52,7 +52,14 @@ import type {
 export type QueueAction = "remove" | "steer";
 
 export interface RuntimeEvent {
-	type: "progress" | "entry_committed" | "state_changed" | "subagent_updated" | "ui_request" | "disconnected";
+	type:
+		| "progress"
+		| "entry_committed"
+		| "state_changed"
+		| "subagent_updated"
+		| "turn_settled"
+		| "ui_request"
+		| "disconnected";
 	payload: JsonValue | SessionProgress;
 }
 

@@ -1,5 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { ClientMessageDecoder, encodeTrustedServerMessage, type ServerMessage } from "@lystar/code-web-protocol";
+import { logRuntimeConnection } from "./connection-log.ts";
 import type { WebRuntimeService } from "./service.ts";
 
 export const MAX_RUNTIME_WRITE_BYTES = 32 * 1024 * 1024;
@@ -87,28 +88,71 @@ export function createBoundedWriter(stream: Writable): (bytes: Uint8Array) => Pr
 
 export async function runRuntimeStream(service: WebRuntimeService, input: Readable, output: Writable): Promise<void> {
 	const write = createBoundedWriter(output);
-	const connection = service.createConnection((message: ServerMessage) => write(encodeTrustedServerMessage(message)));
+	let clientInstanceId: string | undefined;
+	const connection = service.createConnection((message: ServerMessage) => {
+		if (message.type === "response" && !message.ok)
+			logRuntimeConnection("request_error", {
+				clientInstanceId,
+				requestId: message.id,
+				errorCode: message.error.code,
+			});
+		return write(encodeTrustedServerMessage(message));
+	});
 	const decoder = new ClientMessageDecoder();
 	let processing = Promise.resolve();
 	let handshake = Promise.resolve();
 	let transcriptProcessing = Promise.resolve();
+	const acquisitions = new Set<Promise<void>>();
 	let queuedRequests = 0;
 	let queuedBytes = 0;
 	let closed = false;
 	const fail = (error: unknown) => {
+		logRuntimeConnection("connection_failure", {
+			clientInstanceId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		input.destroy(error instanceof Error ? error : new Error(String(error)));
 	};
 	const onData = (chunk: Buffer) => {
 		try {
 			for (const message of decoder.push(chunk)) {
+				if (message.type === "hello") {
+					clientInstanceId = message.clientInstanceId;
+					logRuntimeConnection("connection_open", { clientInstanceId });
+				}
+				const receivedAt = performance.now();
 				const byteLength = Buffer.byteLength(JSON.stringify(message));
 				queuedBytes += byteLength;
 				if (++queuedRequests > 128 || queuedBytes > MAX_RUNTIME_WRITE_BYTES)
 					throw new Error("Runtime 输入队列超过限制");
+				if (message.type === "request")
+					logRuntimeConnection("request_queued", {
+						clientInstanceId,
+						requestId: message.id,
+						command: message.request.command,
+						queueDepth: queuedRequests,
+					});
 				const handle = async () => {
+					const startedAt = performance.now();
+					const handled = !closed;
 					try {
-						if (!closed) await connection.handle(message);
+						if (handled && message.type === "request")
+							logRuntimeConnection("request_started", {
+								clientInstanceId,
+								requestId: message.id,
+								command: message.request.command,
+								queueWaitMs: Math.round(startedAt - receivedAt),
+							});
+						if (handled) await connection.handle(message);
 					} finally {
+						if (message.type === "request")
+							logRuntimeConnection(handled ? "request_finished" : "request_skipped", {
+								clientInstanceId,
+								requestId: message.id,
+								command: message.request.command,
+								queueWaitMs: Math.round(startedAt - receivedAt),
+								...(handled ? { processMs: Math.round(performance.now() - startedAt) } : {}),
+							});
 						queuedRequests--;
 						queuedBytes -= byteLength;
 					}
@@ -117,6 +161,10 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 					void handle().catch(fail);
 				} else if (message.type === "request" && message.request.command === "read_transcript") {
 					transcriptProcessing = Promise.all([handshake, transcriptProcessing]).then(handle).catch(fail);
+				} else if (message.type === "request" && message.request.command === "acquire_session") {
+					const acquisition = handshake.then(handle).catch(fail);
+					acquisitions.add(acquisition);
+					void acquisition.finally(() => acquisitions.delete(acquisition));
 				} else {
 					processing = processing.then(handle).catch(fail);
 					if (message.type === "hello") handshake = processing;
@@ -136,7 +184,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 			const onEnd = () => {
 				try {
 					decoder.end();
-					void Promise.all([processing, transcriptProcessing]).then(() => {
+					void Promise.all([processing, transcriptProcessing, ...acquisitions]).then(() => {
 						cleanup();
 						resolve();
 					}, onError);
@@ -159,6 +207,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 		});
 	} finally {
 		closed = true;
+		logRuntimeConnection("connection_closed", { clientInstanceId, queuedRequests });
 		input.off("data", onData);
 		await connection.close();
 	}

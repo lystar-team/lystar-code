@@ -13,12 +13,13 @@ import {
 	applyToolActivityState,
 	detachFinalTextFromCompletedStep,
 	ensureLiveCompactionMarker,
+	liveToolFromUpdate,
 	markLiveUserPromptProcessing,
 	mergeToolDiff,
 	nextLiveToolBatchId,
 	runningAgentStepId,
 } from "./workbench-live-state.ts";
-import { mergeWebSearchToolSummary } from "./tool-batching.ts";
+import { mergeImageGenerationSummary, mergeWebSearchToolSummary } from "./tool-batching.ts";
 import { gitCredentialAuthorizationMessageFromProgress, sessionActivityFromProgress } from "./workbench-state.ts";
 import type { WorkbenchState } from "./workbench-types.ts";
 
@@ -119,7 +120,9 @@ export function useWorkbenchProgressActions({
 						const summary =
 							progress.name === "web_search"
 								? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
-								: progress.summary ?? previous?.summary ?? "正在执行";
+								: progress.name === "image_gen"
+									? mergeImageGenerationSummary(previous?.summary, progress.summary)
+									: progress.summary ?? previous?.summary ?? "正在执行";
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
@@ -142,6 +145,7 @@ export function useWorkbenchProgressActions({
 									state: "running",
 									status: "running",
 									stepId: progress.stepId ?? previous?.stepId,
+									...(previous?.inputPreview ? { inputPreview: true } : {}),
 									...(webSearch ? { webSearch } : {}),
 									diff: mergeToolDiff(previous?.diff, progress.diff),
 								},
@@ -168,7 +172,9 @@ export function useWorkbenchProgressActions({
 						const summary =
 							progress.name === "web_search"
 								? mergeWebSearchToolSummary(previous?.summary, progress.summary, webSearch)
-								: progress.summary || previous?.summary || "正在执行";
+								: progress.name === "image_gen"
+									? mergeImageGenerationSummary(previous?.summary, progress.summary)
+									: progress.summary || previous?.summary || "正在执行";
 						const batchId =
 							previous?.batchId ??
 							nextLiveToolBatchId(
@@ -183,18 +189,7 @@ export function useWorkbenchProgressActions({
 							...current,
 							liveTools: {
 								...current.liveTools,
-								[progress.toolCallId]: {
-									id: progress.toolCallId,
-									name: progress.name,
-									batchId,
-									summary,
-									state: "running",
-									result: progress.summary,
-									status: "running",
-									stepId: progress.stepId ?? previous?.stepId,
-									...(webSearch ? { webSearch } : {}),
-									diff: mergeToolDiff(previous?.diff, progress.diff),
-								},
+								[progress.toolCallId]: liveToolFromUpdate(progress, previous, batchId, summary, webSearch),
 							},
 							liveTurnItems: previous
 								? current.liveTurnItems
@@ -359,7 +354,15 @@ export function useWorkbenchProgressActions({
 					case "status":
 						return { ...current, statusText: progress.status };
 					case "usage":
-						return current;
+						return progress.usage.elapsedMs && progress.usage.outputTokens
+							? {
+									...current,
+									lastOutputSpeed: {
+										outputTokens: progress.usage.outputTokens,
+										elapsedMs: progress.usage.elapsedMs,
+									},
+								}
+							: current;
 				}
 			});
 		},

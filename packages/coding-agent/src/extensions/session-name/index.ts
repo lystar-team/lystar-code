@@ -25,6 +25,7 @@ const SESSION_NAME_SYSTEM_PROMPT = [
 ].join("\n");
 
 const SESSION_NAME_MAX_TOKENS = 64;
+const SESSION_NAME_REASONING_MAX_TOKENS = 1024;
 const SESSION_NAME_MAX_LENGTH = 30;
 
 interface PendingNameRequest {
@@ -103,13 +104,13 @@ async function generateSessionName(
 		headers: auth.headers,
 		env: auth.env,
 		signal,
-		maxTokens: SESSION_NAME_MAX_TOKENS,
+		maxTokens: clampedThinkingLevel === "off" ? SESSION_NAME_MAX_TOKENS : SESSION_NAME_REASONING_MAX_TOKENS,
 		cacheRetention: "none" as const,
 		sessionId,
 		reasoning: clampedThinkingLevel === "off" ? undefined : clampedThinkingLevel,
 	};
 
-	const response: AssistantMessage = await ctx.modelRegistry.complete(model, context, options);
+	const response: AssistantMessage = await ctx.modelRegistry.streamSimple(model, context, options).result();
 	if (response.stopReason !== "stop" && response.stopReason !== "length") return undefined;
 
 	return normalizeSessionName(contentText(response.content, ""));

@@ -35,6 +35,7 @@ import {
 	type TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { CollaborationWorkspaceManager } from "./collaboration-workspace.ts";
+import { logRuntimeConnection } from "./connection-log.ts";
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
@@ -48,6 +49,7 @@ import {
 import { roomAttachmentInput } from "./session-room-attachments.ts";
 import { SessionRoomCoordinator } from "./session-room-coordinator.ts";
 import { SessionRoomStore } from "./session-room-store.ts";
+import { readTranscriptPageWithinFrameBudget } from "./transcript-page-budget.ts";
 import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
@@ -88,7 +90,14 @@ const SESSION_HANDOFF_RECONNECT_INTERVAL_MS = 100;
 const SESSION_HANDOFF_RECONNECT_TIMEOUT_MS = 60_000;
 const SESSION_HANDOFF_LOCAL_FALLBACK_MS = 5_000;
 const ROOM_READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
-const ROOM_ALLOWED_TOOL_NAMES = new Set([...ROOM_READ_ONLY_TOOL_NAMES, "edit", "write"]);
+const ROOM_ALLOWED_TOOL_NAMES = new Set([
+	...ROOM_READ_ONLY_TOOL_NAMES,
+	"edit",
+	"write",
+	"sessions",
+	"room_claim",
+	"room_tasks",
+]);
 const ROOM_WRITE_TOOL_NAMES = new Set(["edit", "write"]);
 
 function resolveCapabilityPath(candidate: string): string {
@@ -1257,17 +1266,82 @@ export class WebRuntimeService {
 						...(request.markRead !== undefined ? { markRead: request.markRead } : {}),
 					}),
 				);
+			case "room_task_create":
+				return jsonValue(
+					await this.roomCoordinator.api().taskCreate({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						sessionId: request.sessionId,
+						title: request.title,
+						description: request.description,
+					}),
+				);
+			case "room_task_list":
+				return jsonValue(
+					await this.roomCoordinator.api().taskList({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						sessionId: request.sessionId,
+					}),
+				);
+			case "room_task_claim":
+				return jsonValue(
+					await this.roomCoordinator.api().taskClaim({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						taskId: request.taskId,
+						sessionId: request.sessionId,
+					}),
+				);
+			case "room_task_edit":
+				return jsonValue(
+					await this.roomCoordinator.api().taskEdit({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						taskId: request.taskId,
+						sessionId: request.sessionId,
+						...(request.title !== undefined ? { title: request.title } : {}),
+						...(request.description !== undefined ? { description: request.description } : {}),
+						...(request.assigneeSessionId !== undefined ? { assigneeSessionId: request.assigneeSessionId } : {}),
+					}),
+				);
+			case "room_task_comment":
+				return jsonValue(
+					await this.roomCoordinator.api().taskComment({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						taskId: request.taskId,
+						sessionId: request.sessionId,
+						body: request.body,
+					}),
+				);
+			case "room_task_update":
+				return jsonValue(
+					await this.roomCoordinator.api().taskUpdate({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						taskId: request.taskId,
+						sessionId: request.sessionId,
+						status: request.status,
+						note: request.note,
+					}),
+				);
 			case "read_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const page = await this.transcriptReader.read(sessionPath, {
-					...request,
-					emptyGeneration: this.runtimes.get(sessionPath)?.getSnapshot(this.writeAccess(sessionPath, connection))
-						.transcriptGeneration,
-				});
-				return jsonValue({
-					...page,
-					requestContext: request.context,
-					items: this.projectTranscriptItems(sessionPath, page.items, page.agentSteps),
+				return readTranscriptPageWithinFrameBudget(request.limit, async (limit) => {
+					const page = await this.transcriptReader.read(sessionPath, {
+						...request,
+						limit,
+						emptyGeneration: this.runtimes
+							.get(sessionPath)
+							?.getSnapshot(this.writeAccess(sessionPath, connection)).transcriptGeneration,
+					});
+					const { contextCalls, ...transcriptPage } = page;
+					return {
+						...transcriptPage,
+						requestContext: request.context,
+						items: this.projectTranscriptItems(sessionPath, page.items, page.agentSteps, contextCalls),
+					};
 				});
 			}
 			case "search_transcript": {
@@ -1526,6 +1600,38 @@ export class WebRuntimeService {
 				this.operationAbortControllers.get(operation.operationId)?.abort();
 				if (operation.type !== "share_session") await this.runtimes.get(operation.sessionPath)?.abort();
 				return this.journal.get(operation.operationId) ?? operation;
+			}
+			case "stop_session": {
+				const matches = [...this.runtimes.values()].filter(
+					(runtime) => runtime.getSnapshot("available").id === request.sessionId,
+				);
+				if (matches.length === 0)
+					throw Object.assign(new Error(`未找到正在运行的会话：${request.sessionId}`), {
+						code: "session_not_running",
+					});
+				if (matches.length > 1) throw new Error(`会话 ID 不唯一：${request.sessionId}`);
+				const runtime = matches[0];
+				const sessionPath = canonicalSessionPath(runtime.sessionPath);
+				const operationId = this.activeOperationBySession.get(sessionPath);
+				const operation = operationId ? this.journal.get(operationId) : undefined;
+				const activeOperation = operation !== undefined && ACTIVE_OPERATION_STATUSES.has(operation.status);
+				if (!this.isRuntimeActive(runtime) && !this.coordinatorTasks.has(sessionPath) && !activeOperation) {
+					return { stopped: false };
+				}
+				if (activeOperation && operationId) {
+					const reserved = !this.scheduledOperations.has(operationId);
+					this.updateOperation(operationId, "aborted");
+					this.cancelPendingUi(operationId);
+					this.operationAbortControllers.get(operationId)?.abort();
+					if (reserved) this.activeOperationBySession.delete(sessionPath);
+				}
+				this.cancelPendingUi(`session-coordinator:${sessionPath}`);
+				await runtime.clearQueue();
+				await runtime.abort();
+				const task = this.coordinatorTasks.get(sessionPath);
+				if (task) await task.catch(() => {});
+				await this.sendSessionSnapshots(runtime);
+				return { stopped: true };
 			}
 			case "get_operation": {
 				const operation = this.journal.get(request.operationId);
@@ -2654,9 +2760,10 @@ export class WebRuntimeService {
 		sessionPath: string,
 		items: readonly TranscriptItem[],
 		agentSteps: readonly AgentStep[] = [],
+		contextCalls: readonly TranscriptItem[] = [],
 	): TranscriptItem[] {
 		const compactItems = items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item));
-		return projectTranscriptBatch(compactItems, agentSteps);
+		return projectTranscriptBatch(compactItems, agentSteps, contextCalls);
 	}
 
 	private sessionTranscriptFact(
@@ -3227,6 +3334,17 @@ export class WebRuntimeService {
 						agentSteps: payload.agentSteps,
 						items: this.projectTranscriptItems(sessionPath, payload.items, payload.agentSteps),
 					});
+				} else if (event.type === "turn_settled") {
+					this.flushSessionProgress(sessionPath);
+					const payload = event.payload as {
+						turnId: string;
+						outcome: "completed" | "failed" | "aborted";
+						text: string;
+						sessionId: string;
+						cwd: string;
+						sessionName?: string;
+					};
+					void this.broadcast({ type: "turn_settled", sessionPath, ...payload });
 				} else if (event.type === "subagent_updated") {
 					this.flushSessionProgress(sessionPath);
 					const payload = event.payload as { snapshot: SubagentSnapshot; progress?: SessionProgress[] };
@@ -3381,6 +3499,20 @@ export class WebRuntimeService {
 		);
 	}
 
+	private async activateRuntimeExtensions(runtime: RuntimeSession): Promise<void> {
+		if (!runtime.activateExtensionLifecycle) return;
+		if (this.isRuntimeActive(runtime)) {
+			// Room 任务仍在运行时，扩展生命周期会等待 idle；获取会话不应等待这个 Turn。
+			void runtime.activateExtensionLifecycle().catch((error: unknown) => {
+				logRuntimeConnection("extension_lifecycle_failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+			return;
+		}
+		await runtime.activateExtensionLifecycle();
+	}
+
 	private async ensureRuntime(
 		sessionPath: string,
 		onUiRequest: UiRequestHandler,
@@ -3396,7 +3528,7 @@ export class WebRuntimeService {
 		const pending = this.runtimeOpenings.get(sessionPath);
 		if (pending) {
 			const runtime = await pending;
-			if (!options.deferExtensionLifecycle) await runtime.activateExtensionLifecycle?.();
+			if (!options.deferExtensionLifecycle) await this.activateRuntimeExtensions(runtime);
 			return runtime;
 		}
 		const opening = Promise.resolve().then(async () => {
@@ -3438,7 +3570,7 @@ export class WebRuntimeService {
 		this.runtimeOpenings.set(sessionPath, opening);
 		try {
 			const runtime = await opening;
-			if (!options.deferExtensionLifecycle) await runtime.activateExtensionLifecycle?.();
+			if (!options.deferExtensionLifecycle) await this.activateRuntimeExtensions(runtime);
 			return runtime;
 		} finally {
 			if (this.runtimeOpenings.get(sessionPath) === opening) this.runtimeOpenings.delete(sessionPath);

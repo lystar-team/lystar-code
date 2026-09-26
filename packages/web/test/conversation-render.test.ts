@@ -1,20 +1,23 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { CompactionCard } from "../src/components/workbench/compaction-card.tsx";
 import {
+	activityRowGap,
 	appendLiveRenderItems,
 	buildConversationRenderItems,
 	buildPersistedRenderItems,
 	formatElapsedDuration,
 	initialTranscriptDisplayState,
 	LiveElapsedHeader,
-	toolActivityGap,
 } from "../src/components/workbench/conversation.tsx";
 import { HookActivityGroup } from "../src/components/workbench/hook-activity-group.tsx";
 import { activeThinkingText, THINKING_SHIMMER_HEIGHT, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
 import { TranscriptItemView, TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
 import {
+	buildTranscriptHeightEstimates,
 	CONVERSATION_EDGE_PADDING,
+	DEFAULT_TRANSCRIPT_GAP,
 	resolveTranscriptFirstItemIndex,
 } from "../src/components/workbench/virtualized-transcript.tsx";
 import type { WorkbenchState } from "../src/state/use-workbench";
@@ -327,13 +330,164 @@ describe("conversation render items", () => {
 			"tool-stack",
 			"item",
 		]);
-		expect(toolActivityGap(active[2]!, active[3]!)).toBe(12);
-		expect(toolActivityGap(process.items[0]!, process.items[1]!)).toBe(12);
-		expect(toolActivityGap(process.items[1]!, process.items[2]!)).toBe(12);
+		expect(activityRowGap(active[2]!, active[3]!)).toBe(DEFAULT_TRANSCRIPT_GAP);
+		expect(activityRowGap(process.items[0]!, process.items[1]!)).toBe(DEFAULT_TRANSCRIPT_GAP);
+		expect(activityRowGap(process.items[1]!, process.items[2]!)).toBe(DEFAULT_TRANSCRIPT_GAP);
 		for (let index = 3; index < process.items.length; index++) {
-			expect(toolActivityGap(process.items[index - 1]!, process.items[index]!)).toBe(0);
+			expect(activityRowGap(process.items[index - 1]!, process.items[index]!)).toBe(0);
 		}
-		expect(toolActivityGap(active[0]!, active[2]!)).toBe(12);
+		expect(activityRowGap(active[0]!, active[2]!)).toBe(DEFAULT_TRANSCRIPT_GAP);
+	});
+
+	it("Task、Tool 和压缩状态行在实时会话与历史工作过程内保持连续", () => {
+		const timestamp = "2026-09-24T00:00:00Z";
+		const steps = ["step-1", "step-2", "step-3"].map((id) => ({
+			id,
+			title: id,
+			status: "completed" as const,
+			toolCallIds: [],
+			messageEntryIds: [],
+			startedAt: 1,
+			endedAt: 2,
+		}));
+		const transcript: WorkbenchState["transcript"] = [
+			{ entryId: "user", parentId: null, timestamp, kind: "message", view: { type: "user", text: "检查项目" } },
+			...steps.slice(0, 2).map((step) => ({
+				entryId: step.id,
+				parentId: "user",
+				timestamp,
+				kind: "custom" as const,
+				view: { type: "agent_step" as const, step },
+			})),
+			{
+				entryId: "tool-1",
+				parentId: "step-2",
+				timestamp,
+				kind: "message",
+				view: { type: "tool_call", calls: [{ id: "read-1", name: "read", summary: "README.md" }] },
+			},
+			{
+				entryId: "step-3",
+				parentId: "tool-1",
+				timestamp,
+				kind: "custom",
+				view: { type: "agent_step", step: steps[2]! },
+			},
+			{
+				entryId: "tool-2",
+				parentId: "step-3",
+				timestamp,
+				kind: "message",
+				view: { type: "tool_call", calls: [{ id: "bash-1", name: "bash", summary: "pwd" }] },
+			},
+			{
+				entryId: "compaction",
+				parentId: "tool-2",
+				timestamp,
+				kind: "compaction",
+				view: { type: "summary", variant: "compaction", title: "上下文压缩", text: "已整理。" },
+			},
+			{
+				entryId: "final",
+				parentId: "compaction",
+				timestamp,
+				kind: "message",
+				view: { type: "assistant", text: "检查完成。" },
+			},
+		];
+		const persisted = buildPersistedRenderItems(transcript, emptyToolIndex);
+		const active = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, true);
+		const completed = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
+		const activity = active.slice(2, -1);
+		const process = completed.find((entry) => entry.kind === "work-process");
+		if (!process || process.kind !== "work-process") throw new Error("缺少工作过程");
+
+		expect(activity.map((entry) => entry.kind)).toEqual([
+			"agent-step",
+			"agent-step",
+			"tool-stack",
+			"agent-step",
+			"tool-stack",
+			"compaction",
+		]);
+		expect(buildTranscriptHeightEstimates(activity, () => 32, activityRowGap)).toEqual([32, 32, 32, 32, 32, 32]);
+		expect(process.items.map((entry) => entry.kind)).toEqual(activity.map((entry) => entry.kind));
+		for (let index = 1; index < process.items.length; index++) {
+			expect(activityRowGap(process.items[index - 1]!, process.items[index]!)).toBe(0);
+		}
+		expect(activityRowGap(active[1]!, activity[0]!)).toBe(DEFAULT_TRANSCRIPT_GAP);
+		expect(activityRowGap(activity.at(-1)!, active.at(-1)!)).toBe(DEFAULT_TRANSCRIPT_GAP);
+		expect(activityRowGap(process, completed.at(-1)!)).toBe(DEFAULT_TRANSCRIPT_GAP);
+	});
+
+	it("步骤控制工具产生的空回复不占据两条 Task 之间的行", () => {
+		const timestamp = "2026-09-24T00:00:00Z";
+		const step = (id: string, status: "completed" | "running") => ({
+			id,
+			title: id,
+			status,
+			toolCallIds: [],
+			messageEntryIds: [],
+			startedAt: 1,
+			...(status === "completed" ? { endedAt: 2 } : {}),
+		});
+		const transcript: WorkbenchState["transcript"] = [
+			{
+				entryId: "first",
+				renderId: "first",
+				parentId: null,
+				timestamp,
+				kind: "custom",
+				view: { type: "agent_step", step: step("first", "completed") },
+			},
+			{
+				entryId: "step-control",
+				renderId: "step-control",
+				parentId: "first",
+				timestamp,
+				kind: "message",
+				view: { type: "assistant", text: "" },
+			},
+			{
+				entryId: "second",
+				renderId: "second",
+				parentId: "step-control",
+				timestamp,
+				kind: "custom",
+				view: { type: "agent_step", step: step("second", "running") },
+			},
+		];
+		const persisted = buildPersistedRenderItems(transcript, emptyToolIndex);
+		for (const responseActive of [true, false]) {
+			const items = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, responseActive);
+			expect(items.map((item) => item.kind)).toEqual(["agent-step", "agent-step"]);
+			expect(activityRowGap(items[0]!, items[1]!)).toBe(0);
+		}
+		const imageOnly = buildPersistedRenderItems(
+			[
+				{
+					...transcript[1]!,
+					view: {
+						type: "assistant",
+						text: "",
+						images: [{ contentRef: "image-1", mimeType: "image/png", byteLength: 4 }],
+					},
+				},
+			],
+			emptyToolIndex,
+		);
+		expect(imageOnly).toMatchObject([{ kind: "message", attachments: [{ id: "image-1" }] }]);
+	});
+
+	it("压缩状态和摘要标题采用与 Task、Tool 一致的行高", () => {
+		const live = renderToStaticMarkup(
+			createElement(CompactionCard, {
+				state: { status: "running", reason: "manual", summaryCountAtStart: 0 },
+			}),
+		);
+		const summary = renderToStaticMarkup(createElement(CompactionCard, { text: "已整理。" }));
+		expect(live).toContain("min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5");
+		expect(summary).toContain("min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5");
 	});
 
 	it("成功 Hook 不进入对话，失败 Hook 在所属回合显示一条提示", () => {
@@ -1000,6 +1154,7 @@ describe("conversation render items", () => {
 			step: { id: step.id, title: "读取项目说明", status: "completed" },
 			items: [
 				{ kind: "tool-stack", stepId: step.id },
+				{ kind: "compaction", entryId: "compaction-step", text: "保留当前检查目标与已读取结果。" },
 				{
 					kind: "tool-stack",
 					stepId: step.id,
@@ -1025,13 +1180,7 @@ describe("conversation render items", () => {
 				},
 			],
 		});
-		expect(workProcess.items).toContainEqual(
-			expect.objectContaining({
-				kind: "compaction",
-				entryId: "compaction-step",
-				text: "保留当前检查目标与已读取结果。",
-			}),
-		);
+		expect(workProcess.items.some((item) => item.kind === "compaction")).toBe(false);
 		expect(completed.map((item) => item.kind)).toEqual(["message", "work-process", "result-boundary", "message"]);
 		expect(completed.some((item) => item.kind === "result-boundary")).toBe(true);
 	});
@@ -1338,6 +1487,52 @@ describe("conversation render items", () => {
 				prependedPage.map((item) => item.key),
 			),
 		).toBe(999);
+	});
+
+	it("追加工具调用时保留已有工具组的 key", () => {
+		const result = {
+			entryId: "current-result",
+			renderId: "current-result",
+			parentId: "current-call",
+			timestamp: "2026-09-17T00:00:03.000Z",
+			kind: "message" as const,
+			view: {
+				type: "tool_result" as const,
+				callId: "current-tool",
+				name: "read",
+				summary: "当前文件",
+				status: "success" as const,
+				detail: "读取完成",
+			},
+		};
+		const call = (entryId: string, id: string, parentId: string | null) => ({
+			entryId,
+			renderId: entryId,
+			parentId,
+			timestamp: "2026-09-17T00:00:01.000Z",
+			kind: "message" as const,
+			view: { type: "tool_call" as const, calls: [{ id, name: "read", summary: "读取文件" }] },
+		});
+		const firstCall = call("current-call", "current-tool", null);
+		const nextCall = call("next-call", "next-tool", result.entryId);
+		const nextResult = {
+			...result,
+			entryId: "next-result",
+			renderId: "next-result",
+			parentId: nextCall.entryId,
+			view: { ...result.view, callId: "next-tool" },
+		};
+		const oldPage = buildPersistedRenderItems([firstCall, result], {
+			...emptyToolIndex,
+			callIds: new Set(["current-tool"]),
+		});
+		const fullPage = buildPersistedRenderItems([firstCall, result, nextCall, nextResult], {
+			...emptyToolIndex,
+			callIds: new Set(["current-tool", "next-tool"]),
+		});
+
+		expect(oldPage[0]).toMatchObject({ kind: "tool-stack", key: "tool-stack:tool-batch:current-call:current-tool" });
+		expect(fullPage[0]).toMatchObject({ kind: "tool-stack", key: oldPage[0]?.key });
 	});
 
 	it("显示转录中的模型请求错误而不是空行", () => {

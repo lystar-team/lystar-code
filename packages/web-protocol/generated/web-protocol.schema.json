@@ -527,6 +527,272 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "cwd",
+                    "roomId",
+                    "sessionId",
+                    "title"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_task_create"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 8000
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_task_list"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "taskId",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_task_claim"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "taskId",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_task_edit"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 8000
+                    },
+                    "assigneeSessionId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "taskId",
+                    "sessionId",
+                    "body"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_task_comment"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "body": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 8000
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "roomId",
+                    "taskId",
+                    "sessionId",
+                    "status"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "room_task_update"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "todo"
+                        },
+                        {
+                          "type": "string",
+                          "const": "doing"
+                        },
+                        {
+                          "type": "string",
+                          "const": "blocked"
+                        },
+                        {
+                          "type": "string",
+                          "const": "done"
+                        }
+                      ]
+                    },
+                    "note": {
+                      "type": "string",
+                      "maxLength": 8000
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "sessionPath",
                     "limit"
                   ],
@@ -547,7 +813,7 @@
                     "limit": {
                       "type": "integer",
                       "minimum": 1,
-                      "maximum": 200
+                      "maximum": 400
                     },
                     "context": {
                       "type": "object",
@@ -1231,6 +1497,25 @@
                       "maxLength": 4096
                     },
                     "leaseId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "sessionId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "stop_session"
+                    },
+                    "sessionId": {
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 4096
@@ -7565,6 +7850,65 @@
                         }
                       },
                       "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sessionPath",
+                    "sessionId",
+                    "cwd",
+                    "turnId",
+                    "outcome",
+                    "text"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "turn_settled"
+                    },
+                    "sessionPath": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sessionName": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "outcome": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "completed"
+                        },
+                        {
+                          "type": "string",
+                          "const": "failed"
+                        },
+                        {
+                          "type": "string",
+                          "const": "aborted"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
                     }
                   },
                   "additionalProperties": false

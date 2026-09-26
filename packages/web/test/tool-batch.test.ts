@@ -72,6 +72,61 @@ describe("Skill read tool display", () => {
 		expect(markup.match(/\+11/gu)).toHaveLength(1);
 	});
 
+	it("shows the write result when its diff contains only file statistics", () => {
+		const tool: ToolBatchTool = {
+			id: "write-stats-only",
+			name: "write",
+			summary: "src/app.ts",
+			state: "output-available",
+			detail: "Successfully wrote to src/app.ts",
+			diff: { files: [{ path: "src/app.ts", operation: "updated", additions: 1, deletions: 1 }] },
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
+
+		expect(markup).toContain("收起详情");
+		expect(markup).toContain("Successfully wrote to src/app.ts");
+		expect(markup).toContain("+1");
+	});
+
+	it("labels incoming write parameters as preparation rather than a completed file write", () => {
+		const tool: ToolBatchTool = {
+			id: "write-preparing",
+			name: "write",
+			summary: "src/app.ts",
+			state: "input-available",
+			preparing: true,
+			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 0, diff: "+content" }] },
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+
+		expect(markup).toContain("准备写入");
+		expect(markup).toContain("展开详情");
+	});
+
+	it("keeps the edit card expandable before and after its streaming preview arrives", () => {
+		const tool: ToolBatchTool = {
+			id: "edit-stream",
+			name: "edit",
+			summary: "src/app.ts",
+			state: "input-available",
+			detail: "src/app.ts",
+			diff: { files: [{ path: "src/app.ts" }] },
+		};
+		const pendingMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
+		const previewMarkup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [{ ...tool, inputPreview: true, diff: { files: [{ path: "src/app.ts", diff: "+new" }] } }],
+				initialOpen: true,
+			}),
+		);
+
+		expect(pendingMarkup).toContain("收起详情");
+		expect(pendingMarkup).toContain("修改内容生成中");
+		expect(pendingMarkup).not.toContain("复制结果");
+		expect(previewMarkup).toContain("收起详情");
+		expect(previewMarkup).toContain('data-diff-line="added"');
+	});
+
 	it("renders consecutive reads as one real tool activity group", () => {
 		const tools: ToolBatchTool[] = [
 			readTool("src/services/lease-service.ts", "output-available"),
@@ -249,6 +304,27 @@ describe("Skill read tool display", () => {
 		expect(completedMarkup).toContain("-2");
 		expect(activeMarkup).toContain("正在编辑");
 		expect(activeMarkup).toContain("tool-batch.tsx");
+	});
+
+	it("restores an open file row when the tool card is mounted again", () => {
+		const tool: ToolBatchTool = {
+			id: "edit-restored",
+			name: "edit",
+			summary: "src/app.ts",
+			state: "output-available",
+			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 0, diff: "+new line" }] },
+		};
+		const markup = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [tool, { ...tool, id: "edit-other", summary: "src/other.ts" }],
+				initialOpen: true,
+				initialToolOpen: new Map([[tool.id, true]]),
+			}),
+		);
+
+		expect(markup).toContain("收起详情");
+		expect(markup).toContain('data-diff-line="added"');
+		expect(markup).toContain(">new line</span>");
 	});
 
 	it("renders command batches with the same compact activity structure", () => {
@@ -462,7 +538,11 @@ describe("Skill read tool display", () => {
 
 		expect(runningMarkup).toContain('data-slot="image-generation" data-state="generating"');
 		expect(runningMarkup).toContain("正在生成图片");
-		expect(runningMarkup).toContain("lucide-loader-circle");
+		expect(runningMarkup).toContain("提示词");
+		expect(runningMarkup).toContain("蓝色纸张上的白色圆形");
+		expect(runningMarkup).toContain("max-w-[32rem]");
+		expect(runningMarkup).not.toContain("未返回提示词");
+		expect(runningMarkup).not.toContain("请求模型");
 
 		const completed: ToolBatchTool = {
 			...running,
@@ -483,12 +563,49 @@ describe("Skill read tool display", () => {
 
 		expect(toolBatchSummaryLabel([completed])).toBe("已生成 1 张图片");
 		expect(completedMarkup).toContain('data-slot="image-generation"');
+		expect(completedMarkup).toContain("max-w-[32rem]");
 		expect(completedMarkup).toContain("请求模型");
 		expect(completedMarkup).toMatch(/<button[^>]*text-\[13px\]![^>]*leading-5![^>]*>.*?查看大图/su);
 		expect(completedMarkup).toContain("查看大图");
 		expect(completedMarkup).toContain("gpt-image-2.5-flare");
 		expect(completedMarkup).toContain("蓝色纸张上的白色圆形");
 		expect(completedMarkup).toContain("没有图片内容");
+	});
+
+	it("keeps two independent generations visible with the same prompt layout", () => {
+		const markup = renderToStaticMarkup(
+			createElement(
+				"div",
+				null,
+				createElement(ToolBatch, {
+					tools: [
+						{
+							id: "image-1",
+							name: "image_gen",
+							summary: JSON.stringify({ prompt: "第一张" }),
+							state: "output-available",
+							images: [{ contentRef: "first", mimeType: "image/png", byteLength: 3 }],
+						},
+					],
+				}),
+				createElement(ToolBatch, {
+					tools: [
+						{
+							id: "image-2",
+							name: "image_gen",
+							summary: JSON.stringify({ prompt: "第二张" }),
+							state: "input-available",
+						},
+					],
+				}),
+			),
+		);
+
+		expect(markup.match(/data-slot="image-generation"/gu)).toHaveLength(2);
+		expect(markup.match(/>提示词</gu)).toHaveLength(2);
+		expect(markup).toContain("第一张");
+		expect(markup).toContain("第二张");
+		expect(markup.match(/max-w-\[32rem\]/gu)).toHaveLength(2);
 	});
 
 	it("shows the prompt in image generation details", () => {

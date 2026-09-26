@@ -12,6 +12,101 @@ afterEach(() => {
 });
 
 describe("SessionRoomCoordinator", () => {
+	it("resumes per-target pending deliveries after restart and clears the journal after completion", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-replay-"));
+		tempDirs.push(root);
+		const path = join(root, "rooms.jsonl");
+		const store = new SessionRoomStore(path);
+		const now = new Date().toISOString();
+		const room = store.createRoom(
+			{
+				id: "room-recovery",
+				cwd: root,
+				title: "恢复",
+				ownerSessionId: "owner",
+				mode: "group",
+				createdAt: now,
+				updatedAt: now,
+			},
+			{ roomId: "room-recovery", sessionId: "owner", role: "owner", joinedAt: now, lastReadSeq: 0 },
+		);
+		store.joinMember({
+			roomId: room.room.id,
+			sessionId: "worker",
+			role: "member",
+			profileId: "worker",
+			joinedAt: now,
+			lastReadSeq: 0,
+		});
+		const message = store.appendMessage({
+			roomId: room.room.id,
+			senderSessionId: "owner",
+			senderType: "user",
+			route: "direct",
+			targetSessionIds: ["worker"],
+			kind: "message",
+			body: "恢复任务",
+			idempotencyKey: "recover-1",
+			createdAt: new Date().toISOString(),
+		}).message;
+		expect(new SessionRoomStore(path).pending()).toMatchObject([
+			{ message: { id: message.id }, targetSessionId: "worker" },
+		]);
+		const delivered: string[] = [];
+		new SessionRoomCoordinator({
+			store: new SessionRoomStore(path),
+			deliver: async ({ message: target }) => {
+				delivered.push(target.id);
+			},
+		});
+		await expect.poll(() => delivered).toEqual([message.id]);
+		await expect.poll(() => new SessionRoomStore(path).pending()).toEqual([]);
+	});
+
+	it("rejects a reply based on an older user message and duplicate Agent answers", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-stale-reply-"));
+		tempDirs.push(root);
+		const api = new SessionRoomCoordinator({
+			store: new SessionRoomStore(join(root, "rooms.jsonl")),
+			deliver: async () => {},
+		}).api();
+		const room = await api.create({ cwd: root, ownerSessionId: "owner" });
+		for (const sessionId of ["worker-a", "worker-b"])
+			await api.join({ cwd: root, roomId: room.room.id, sessionId, profileId: sessionId });
+		const first = await api.send({
+			cwd: root,
+			roomId: room.room.id,
+			senderSessionId: "owner",
+			senderType: "user",
+			route: "broadcast",
+			body: "第一条",
+		});
+		const reply = {
+			cwd: root,
+			roomId: room.room.id,
+			route: "direct" as const,
+			targetSessionIds: ["owner"],
+			kind: "answer" as const,
+			body: "结果",
+			basedOnSeq: first.message.seq,
+		};
+		await api.send({ ...reply, senderSessionId: "worker-a" });
+		await expect(api.send({ ...reply, senderSessionId: "worker-b" })).rejects.toMatchObject({
+			code: "room_reply_duplicate",
+		});
+		await api.send({
+			cwd: root,
+			roomId: room.room.id,
+			senderSessionId: "owner",
+			senderType: "user",
+			route: "broadcast",
+			body: "第二条",
+		});
+		await expect(api.send({ ...reply, senderSessionId: "worker-a", body: "新回复" })).rejects.toMatchObject({
+			code: "room_reply_stale",
+		});
+	});
+
 	it("persists and delivers broadcast messages, then deduplicates retries", async () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-room-coordinator-"));
 		tempDirs.push(root);

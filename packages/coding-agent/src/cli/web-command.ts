@@ -23,6 +23,15 @@ type WebCommandSettings = {
 	defaultRuntimePort: number;
 };
 interface WebGatewayModule {
+	runWebSessionStop(options: {
+		sessionId: string;
+		agentDir: string;
+		configFileName?: string;
+		defaultPort?: number;
+		defaultRuntimePort?: number;
+		gatewayInvocation: RuntimeInvocation;
+		runtimeInvocation?: RuntimeInvocation;
+	}): Promise<boolean>;
 	runWebComponentAction(options: {
 		component: "gateway" | "runtime";
 		action: WebComponentAction;
@@ -220,6 +229,28 @@ async function runPostServiceMacosPermissions(
 	}
 }
 
+export async function runWebSessionCommand(
+	args: readonly string[],
+	gatewayModule?: Pick<WebGatewayModule, "runWebSessionStop">,
+): Promise<void> {
+	const settings = webCommandSettings();
+	if (args.length !== 2 || args[0] !== "stop" || !args[1]?.trim()) {
+		throw new Error(`用法：${settings.commandName} session stop <sessionId>`);
+	}
+	const sessionId = args[1].trim();
+	const module = gatewayModule ?? (await loadGatewayModule());
+	const stopped = await module.runWebSessionStop({
+		sessionId,
+		agentDir: getAgentDir(),
+		configFileName: settings.configFileName,
+		defaultPort: settings.defaultPort,
+		defaultRuntimePort: settings.defaultRuntimePort,
+		gatewayInvocation: foregroundWebInvocation(),
+		runtimeInvocation: sourceRuntimeInvocation(),
+	});
+	console.log(stopped ? `会话 ${sessionId} 已停止。` : `会话 ${sessionId} 没有运行中的任务。`);
+}
+
 export async function runWebServiceCommand(
 	args: readonly string[],
 	options: WebServiceCommandOptions = {},
@@ -289,7 +320,7 @@ export async function runWebServiceCommand(
 			const serviceLabel = frontendInvocation
 				? "开发 Web 前端、Gateway 和 Runtime 服务"
 				: "Web Gateway 和 Web Runtime 服务";
-			console.log(`${serviceLabel}${action === "stop" ? "已停止" : "已启动"}。`);
+			console.log(`${serviceLabel}${action === "stop" ? "已停止" : action === "restart" ? "已重启" : "已启动"}。`);
 			if (process.platform === "darwin" && interactive && (action === "install" || action === "reconcile")) {
 				await runPostServiceMacosPermissions(options.permissionsGatewayModule);
 			}

@@ -1,5 +1,6 @@
 import type { Server } from "node:net";
 import { join } from "node:path";
+import { logRuntimeConnection, watchRuntimeEventLoop } from "./connection-log.ts";
 import { closeIpcRuntime, defaultRuntimeEndpoint, runIpcRelay, serveIpcRuntime } from "./ipc.ts";
 import { CodingAgentRuntimeAdapter, getRuntimeAgentDir } from "./runtime-adapter.ts";
 import {
@@ -50,6 +51,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 	let service: WebRuntimeService | undefined;
 	let server: Server | undefined;
 	let shuttingDown = false;
+	const stopEventLoopWatch = command === "serve" ? watchRuntimeEventLoop() : undefined;
 
 	async function closeServer(): Promise<void> {
 		const activeServer = server;
@@ -67,6 +69,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 	const shutdown = async () => {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		if (command === "serve") logRuntimeConnection("shutdown_requested");
 		await closeServer();
 		await disposeService();
 	};
@@ -143,6 +146,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			} else {
 				server = await serveIpcRuntime(service, endpoint);
 				writeRuntimePid(endpoint);
+				logRuntimeConnection("listening", { profile: serviceProfile ?? "default" });
 				await new Promise<void>((resolve, reject) => {
 					server?.once("close", resolve);
 					server?.once("error", reject);
@@ -155,6 +159,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			"用法：lystar-web-runtime [stdio|serve [--endpoint <地址>]|probe|status|install [--interactive-admin]|ensure|connect --stdio|stop [--force]|uninstall [--force]]",
 		);
 	} finally {
+		stopEventLoopWatch?.();
 		process.off("SIGTERM", onSignal);
 		process.off("SIGINT", onSignal);
 		if (process.platform !== "win32") process.off("SIGUSR2", onRestart);

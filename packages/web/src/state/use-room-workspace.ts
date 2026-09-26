@@ -8,7 +8,7 @@ import {
 	type PendingRoomAgentReply,
 } from "../components/workbench/room-message-utils";
 import { allocateRoomNickname, readRoomNicknamePool } from "../components/workbench/room-agent-identity";
-import type { SubagentConfig, WebProject, WebRoomMessage, WebRoomSummary } from "../types";
+import type { SubagentConfig, WebProject, WebRoomMessage, WebRoomSummary, WebRoomTask, WebRoomTaskStatus } from "../types";
 
 interface UseRoomWorkspaceOptions {
 	active: boolean;
@@ -38,6 +38,13 @@ export interface RoomWorkspaceController {
 	selectedRoomMessages: WebRoomMessage[];
 	roomMessagesLoading: boolean;
 	roomMessagesError?: string;
+	roomTasks: WebRoomTask[];
+	roomTasksLoading: boolean;
+	roomTasksError?: string;
+	createRoomTask: (title: string, description: string) => Promise<void>;
+	updateRoomTask: (taskId: string, status: WebRoomTaskStatus, note?: string) => Promise<void>;
+	editRoomTask: (taskId: string, changes: { title?: string; description?: string; assigneeSessionId?: string | null }) => Promise<void>;
+	commentRoomTask: (taskId: string, body: string) => Promise<void>;
 	pendingAgentReplies: PendingRoomAgentReply[];
 	roomSending: boolean;
 	agentProfiles: SubagentConfig[];
@@ -96,6 +103,9 @@ export function useRoomWorkspace({
 	const [selectedRoomMessages, setSelectedRoomMessages] = useState<WebRoomMessage[]>([]);
 	const [roomMessagesLoading, setRoomMessagesLoading] = useState(false);
 	const [roomMessagesError, setRoomMessagesError] = useState<string>();
+	const [roomTasks, setRoomTasks] = useState<WebRoomTask[]>([]);
+	const [roomTasksLoading, setRoomTasksLoading] = useState(false);
+	const [roomTasksError, setRoomTasksError] = useState<string>();
 	const [pendingAgentReplies, setPendingAgentReplies] = useState<PendingRoomAgentReply[]>([]);
 	const [roomSending, setRoomSending] = useState(false);
 	const [agentProfiles, setAgentProfiles] = useState<SubagentConfig[]>([]);
@@ -143,6 +153,7 @@ export function useRoomWorkspace({
 				setSelectedRoomProjectId(undefined);
 				setSelectedRoomSessionId(undefined);
 				setSelectedRoomMessages([]);
+				setRoomTasks([]);
 			}
 		} catch (error) {
 			if (requestId === roomsRequestIdRef.current && !roomsInitializedRef.current) {
@@ -199,6 +210,8 @@ export function useRoomWorkspace({
 			setSelectedRoomProjectId(projectId);
 			setSelectedRoomSessionId(senderSessionId);
 			setSelectedRoomMessages([]);
+			setRoomTasks([]);
+			setRoomTasksError(undefined);
 			setRoomMessagesError(undefined);
 			setRoomMessagesLoading(true);
 			try {
@@ -272,6 +285,56 @@ export function useRoomWorkspace({
 		const timer = window.setInterval(() => void poll(), 2_000);
 		return () => window.clearInterval(timer);
 	}, [selectedRoom?.room.id, selectedRoomProjectId, selectedRoomSessionId]);
+
+	const refreshRoomTasks = useCallback(async () => {
+		const projectId = selectedRoomProjectId;
+		const roomId = selectedRoom?.room.id;
+		const memberSessionId = selectedRoomSessionId;
+		if (!projectId || !roomId || !memberSessionId) return;
+		const key = roomKey(projectId, roomId);
+		try {
+			const tasks = await webApi.roomTasks(projectId, roomId, memberSessionId);
+			if (selectedRoomKeyRef.current !== key) return;
+			setRoomTasks(tasks);
+			setRoomTasksError(undefined);
+		} catch (error) {
+			if (selectedRoomKeyRef.current === key) setRoomTasksError(error instanceof Error ? error.message : String(error));
+		} finally {
+			if (selectedRoomKeyRef.current === key) setRoomTasksLoading(false);
+		}
+	}, [selectedRoom?.room.id, selectedRoomProjectId, selectedRoomSessionId]);
+
+	useEffect(() => {
+		if (!active || !selectedRoom) return;
+		setRoomTasksLoading(true);
+		void refreshRoomTasks();
+		const timer = window.setInterval(() => void refreshRoomTasks(), 3_000);
+		return () => window.clearInterval(timer);
+	}, [active, refreshRoomTasks, selectedRoom?.room.id]);
+
+	const createRoomTask = useCallback(async (title: string, description: string) => {
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		await webApi.createRoomTask(selectedRoomProjectId, selectedRoom.room.id, selectedRoomSessionId, title, description);
+		await refreshRoomTasks();
+	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
+
+	const updateRoomTask = useCallback(async (taskId: string, status: WebRoomTaskStatus, note?: string) => {
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		await webApi.updateRoomTask(selectedRoomProjectId, selectedRoom.room.id, taskId, selectedRoomSessionId, status, note);
+		await refreshRoomTasks();
+	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
+
+	const editRoomTask = useCallback(async (taskId: string, changes: { title?: string; description?: string; assigneeSessionId?: string | null }) => {
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		await webApi.editRoomTask(selectedRoomProjectId, selectedRoom.room.id, taskId, selectedRoomSessionId, changes);
+		await refreshRoomTasks();
+	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
+
+	const commentRoomTask = useCallback(async (taskId: string, body: string) => {
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		await webApi.commentRoomTask(selectedRoomProjectId, selectedRoom.room.id, taskId, selectedRoomSessionId, body);
+		await refreshRoomTasks();
+	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
 
 	const selectedProject = useMemo(
 		() => projects.find((project) => project.id === selectedRoomProjectId),
@@ -458,6 +521,13 @@ export function useRoomWorkspace({
 		selectedRoomMessages,
 		roomMessagesLoading,
 		roomMessagesError,
+		roomTasks,
+		roomTasksLoading,
+		roomTasksError,
+		createRoomTask,
+		updateRoomTask,
+		editRoomTask,
+		commentRoomTask,
 		pendingAgentReplies,
 		roomSending,
 		agentProfiles,

@@ -87,6 +87,74 @@ describe("Runtime 发送生命周期", () => {
 			output.destroy();
 		}
 	});
+	it("等待会话获取时，同一连接仍能处理快照和另一个会话获取", async () => {
+		const input = new PassThrough();
+		const output = new Writable({
+			write(_chunk, _encoding, done) {
+				done();
+			},
+		});
+		let releaseFirst!: () => void;
+		let releaseSecond!: () => void;
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const secondGate = new Promise<void>((resolve) => {
+			releaseSecond = resolve;
+		});
+		const handled: string[] = [];
+		const service = {
+			createConnection() {
+				return {
+					async handle(message: ClientMessage) {
+						if (message.type !== "request") return;
+						handled.push(message.id);
+						if (message.id === "first") await firstGate;
+						if (message.id === "second") await secondGate;
+					},
+					async close() {},
+				};
+			},
+		} as unknown as WebRuntimeService;
+		const running = runRuntimeStream(service, input, output);
+		const send = (message: ClientMessage) => input.write(encodeClientMessage(message));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			send({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "client" });
+			send({
+				type: "request",
+				id: "first",
+				request: { command: "acquire_session", sessionPath: "/first", clientInstanceId: "client" },
+			});
+			send({
+				type: "request",
+				id: "second",
+				request: { command: "acquire_session", sessionPath: "/second", clientInstanceId: "client" },
+			});
+			send({ type: "request", id: "snapshot", request: { command: "get_snapshot" } });
+			await Promise.race([
+				new Promise<void>((resolve) => {
+					const check = () => {
+						if (handled.includes("first") && handled.includes("second") && handled.includes("snapshot"))
+							resolve();
+						else setTimeout(check, 1);
+					};
+					check();
+				}),
+				new Promise<void>((_resolve, reject) => {
+					timer = setTimeout(() => reject(new Error("会话获取阻塞了其他请求")), 500);
+				}),
+			]);
+			expect(handled).toEqual(["first", "second", "snapshot"]);
+		} finally {
+			if (timer) clearTimeout(timer);
+			releaseFirst();
+			releaseSecond();
+			input.end();
+			await running;
+			output.destroy();
+		}
+	});
 	it("等待 drain 时关闭会结束写入", async () => {
 		const stream = slowStream();
 		const write = writeBounded(stream, Buffer.from("中文"));

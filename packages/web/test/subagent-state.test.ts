@@ -61,6 +61,53 @@ describe("Subagent workbench state", () => {
 		expect(state.liveTurnActive).toBe(false);
 	});
 
+	it("keeps a tool in preparation through streamed argument updates until execution starts", () => {
+		let itemIndex = 0;
+		let batchIndex = 0;
+		let state = createSubagentConversationState(snapshot());
+		const next = (progress: SessionProgress) => {
+			state = applySubagentProgress(
+				state,
+				progress,
+				() => `item-${++itemIndex}`,
+				() => `batch-${++batchIndex}`,
+			);
+		};
+		const update: SessionProgress = {
+			type: "tool_update",
+			toolCallId: "write-1",
+			name: "write",
+			summary: "src/app.ts",
+		};
+		next({ type: "phase", phase: "turn" });
+		next(update);
+		expect(state.liveTools["write-1"]?.state).toBe("preparing");
+		for (let revision = 1; revision <= 3; revision++) {
+			next({
+				type: "tool_state",
+				activity: {
+					activityEpoch: "write-stream",
+					revision,
+					toolCallId: "write-1",
+					name: "write",
+					state: "preparing",
+					summary: "src/app.ts",
+					inputPreview: true,
+					updatedAt: revision,
+				},
+			});
+			next(update);
+			expect(state.liveTools["write-1"]).toMatchObject({ state: "preparing", inputPreview: true });
+			expect(state.statusText).toBe("准备 write");
+		}
+		next({ type: "tool_start", toolCallId: "write-1", name: "write", summary: "src/app.ts" });
+		next(update);
+		expect(state.liveTools["write-1"]?.state).toBe("running");
+		next({ type: "tool_end", toolCallId: "write-1", name: "write", status: "success", summary: "已写入" });
+		next(update);
+		expect(state.liveTools["write-1"]?.state).toBe("success");
+	});
+
 	it("moves the final assistant text outside a completed task", () => {
 		let itemIndex = 0;
 		let batchIndex = 0;

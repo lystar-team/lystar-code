@@ -28,6 +28,7 @@ import type {
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-web-protocol";
+import { OutputSpeedTracker } from "./output-speed.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 import { webSearchProgressFromCall, webSearchProgressSummary } from "./web-search-progress.ts";
 
@@ -384,6 +385,7 @@ export class WebCompanionRuntime implements RuntimeSession {
 	private heartbeat?: ReturnType<typeof setInterval>;
 	private snapshotValue: WebCompanionSnapshot;
 	private liveMessage?: { text: string; thinking: string };
+	private readonly outputSpeed = new OutputSpeedTracker();
 	private revision = 0;
 	private disposed = false;
 	private capabilities: WebCompanionCapability[];
@@ -796,6 +798,18 @@ export class WebCompanionRuntime implements RuntimeSession {
 			return;
 		}
 		if (message.type === "agent_event") {
+			const event = record(message.event);
+			const assistant = record(event?.message);
+			const stream = record(event?.assistantMessageEvent);
+			if (event?.type === "message_start" && assistant?.role === "assistant") this.outputSpeed.start();
+			if (
+				event?.type === "message_update" &&
+				assistant?.role === "assistant" &&
+				(stream?.type === "text_delta" || stream?.type === "thinking_delta") &&
+				typeof stream.delta === "string" &&
+				stream.delta.length > 0
+			)
+				this.outputSpeed.outputDelta();
 			for (const progress of projectAgentEvent(message.event)) {
 				if (this.liveMessage) {
 					if (progress.type === "assistant_delta") this.liveMessage.text += progress.text;
@@ -804,6 +818,13 @@ export class WebCompanionRuntime implements RuntimeSession {
 						this.liveMessage = { text: "", thinking: "" };
 				}
 				this.emit({ type: "progress", payload: progress });
+			}
+			if (event?.type === "message_end" && assistant?.role === "assistant") {
+				const outputSpeed = this.outputSpeed.finish(
+					usage(assistant.usage)?.outputTokens,
+					typeof assistant.stopReason === "string" ? assistant.stopReason : undefined,
+				);
+				if (outputSpeed) this.emit({ type: "progress", payload: { type: "usage", usage: outputSpeed } });
 			}
 			return;
 		}

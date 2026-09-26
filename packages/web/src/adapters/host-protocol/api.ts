@@ -1,5 +1,7 @@
-import { createUuid } from "@lystar/code-web-protocol";
+import { createUuid, type SessionInfoResult } from "@lystar/code-web-protocol";
 import type {
+	WebRoomTask,
+	WebRoomTaskStatus,
 	BootstrapResponse,
 	DirectoryListing,
 	FileMetadataResponse,
@@ -293,6 +295,49 @@ export class WebApi {
 		);
 	}
 
+	async roomTasks(projectId: string, roomId: string, sessionId: string): Promise<WebRoomTask[]> {
+		return this.request<WebRoomTask[]>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks?sessionId=${encodeURIComponent(sessionId)}`,
+		);
+	}
+
+	async createRoomTask(projectId: string, roomId: string, sessionId: string, title: string, description: string): Promise<WebRoomTask> {
+		return this.request<WebRoomTask>(`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks`, {
+			method: "POST",
+			body: JSON.stringify({ sessionId, title, description }),
+		});
+	}
+
+	async editRoomTask(
+		projectId: string,
+		roomId: string,
+		taskId: string,
+		sessionId: string,
+		changes: { title?: string; description?: string; assigneeSessionId?: string | null },
+	): Promise<WebRoomTask> {
+		return this.request<WebRoomTask>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}`,
+			{ method: "PATCH", body: JSON.stringify({ sessionId, ...changes }) },
+		);
+	}
+
+	async commentRoomTask(projectId: string, roomId: string, taskId: string, sessionId: string, body: string): Promise<WebRoomTask> {
+		return this.request<WebRoomTask>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/comments`,
+			{ method: "POST", body: JSON.stringify({ sessionId, body }) },
+		);
+	}
+
+	async updateRoomTask(
+		projectId: string, roomId: string, taskId: string, sessionId: string,
+		status: WebRoomTaskStatus, note?: string,
+	): Promise<WebRoomTask> {
+		return this.request<WebRoomTask>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}`,
+			{ method: "PATCH", body: JSON.stringify({ sessionId, status, ...(note ? { note } : {}) }) },
+		);
+	}
+
 	async completions(
 		projectId: string,
 		text: string,
@@ -508,6 +553,10 @@ export class WebApi {
 		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}`);
 	}
 
+	async sessionUsage(sessionId: string): Promise<Pick<SessionInfoResult, "tokens">> {
+		return this.request<Pick<SessionInfoResult, "tokens">>(`/api/sessions/${encodeURIComponent(sessionId)}/usage`);
+	}
+
 	async control(sessionId: string): Promise<{ owned: boolean; lease: WebLease; snapshot: WebSessionSnapshot }> {
 		return this.request<{ owned: boolean; lease: WebLease; snapshot: WebSessionSnapshot }>(
 			`/api/sessions/${encodeURIComponent(sessionId)}/control`,
@@ -569,14 +618,42 @@ export class WebApi {
 		);
 	}
 
-	async uploadFile(file: File): Promise<FileUploadResponse> {
-		return this.request<FileUploadResponse>("/api/uploads/file", {
-			method: "POST",
-			headers: {
-				"Content-Type": file.type || "application/octet-stream",
-				"X-LYStar-File-Name": encodeURIComponent(file.name),
-			},
-			body: file,
+	async uploadFile(file: File, onProgress?: (loaded: number, transmitted: boolean) => void): Promise<FileUploadResponse> {
+		const headers = {
+			"Content-Type": file.type || "application/octet-stream",
+			"X-LYStar-File-Name": encodeURIComponent(file.name),
+		};
+		if (!onProgress) return this.request<FileUploadResponse>("/api/uploads/file", { method: "POST", headers, body: file });
+
+		return new Promise<FileUploadResponse>((resolve, reject) => {
+			const request = new XMLHttpRequest();
+			request.open("POST", "/api/uploads/file");
+			for (const [name, value] of new Headers({ ...jsonHeaders(), ...headers })) request.setRequestHeader(name, value);
+			request.upload.onprogress = (event) => {
+				if (event.lengthComputable) onProgress(Math.min(file.size, event.loaded), false);
+			};
+			request.upload.onload = () => onProgress(file.size, true);
+			request.onerror = () => reject(new Error("文件上传失败，请检查网络后重试"));
+			request.onabort = () => reject(new Error("文件上传已取消"));
+			request.onload = () => {
+				if (request.status === 401) {
+					reject(new UnauthorizedError());
+					return;
+				}
+				let value: FileUploadResponse | { error?: { message?: string } };
+				try {
+					value = JSON.parse(request.responseText) as FileUploadResponse | { error?: { message?: string } };
+				} catch {
+					reject(new Error(`上传响应无效（${request.status}）`));
+					return;
+				}
+				if (request.status < 200 || request.status >= 300) {
+					reject(new Error("error" in value ? value.error?.message || `请求失败（${request.status}）` : `请求失败（${request.status}）`));
+					return;
+				}
+				resolve(value as FileUploadResponse);
+			};
+			request.send(file);
 		});
 	}
 
@@ -1061,28 +1138,32 @@ export class WebApi {
 		socket.send(JSON.stringify({ type: "unsubscribe_project", projectId }));
 	}
 
-	connect(onEvent: (event: GatewayEvent) => void, onClose: () => void): WebSocket {
+	connect(onEvent: (event: GatewayEvent) => void, onClose: (event: CloseEvent) => void): WebSocket {
 		const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 		const token = encodeURIComponent(localStorage.getItem(TOKEN_KEY)?.trim() ?? "");
+		const browserClientId = clientId();
 		const socket = new WebSocket(
-			`${protocol}//${location.host}/ws?token=${token}&clientId=${encodeURIComponent(clientId())}`,
+			`${protocol}//${location.host}/ws?token=${token}&clientId=${encodeURIComponent(browserClientId)}`,
 		);
+		console.info("Web 连接事件", { event: "websocket_opening", clientId: browserClientId, time: new Date().toISOString() });
 		let closed = false;
-		const notifyClose = () => {
+		const notifyClose = (event: CloseEvent) => {
 			if (closed) return;
 			closed = true;
-			onClose();
+			console.info("Web 连接事件", { event: "websocket_closed", clientId: browserClientId, code: event.code, reason: event.reason, time: new Date().toISOString() });
+			onClose(event);
 		};
 		socket.addEventListener("message", (message) => {
 			try {
 				onEvent(JSON.parse(String(message.data)) as GatewayEvent);
 			} catch (error) {
-				console.error("Web 实时消息处理失败，需要重新同步", error);
+				console.error("Web 实时消息处理失败，需要重新同步", { clientId: browserClientId, error });
 				socket.close(4001, "实时消息处理失败");
 			}
 		});
 		socket.addEventListener("close", notifyClose, { once: true });
 		socket.addEventListener("error", () => {
+			console.error("Web 连接事件", { event: "websocket_error", clientId: browserClientId, time: new Date().toISOString() });
 			// close 事件负责触发唯一一次重连，避免 error+close 导致重复创建 WebSocket。
 		});
 		return socket;

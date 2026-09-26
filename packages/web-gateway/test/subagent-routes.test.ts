@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import type { Command, SubagentSnapshot, TranscriptPage } from "@lystar/code-web-protocol";
+import {
+	type Command,
+	MAX_TRANSCRIPT_PAGE_SIZE,
+	type SubagentSnapshot,
+	type TranscriptPage,
+} from "@lystar/code-web-protocol";
 import type { ProjectRegistry } from "../src/project-registry.ts";
 import { WebGatewayServer } from "../src/server.ts";
 
@@ -308,5 +313,31 @@ test("Subagent 会话路由复用父会话归属和控制 Lease", async (t) => {
 		leaseId: "lease-one",
 		clientInstanceId: "browser-one",
 		clientRequestId: "continue-one",
+	});
+
+	const parentPage = responseCapture();
+	await routes.handleSessions(
+		request("GET"),
+		parentPage.response,
+		new URL("http://localhost/api/sessions/session-one/transcript?limit=999"),
+		context,
+		["api", "sessions", "session-one", "transcript"],
+	);
+	assert.equal(parentPage.result().status, 200);
+	assert.deepEqual(commands.at(-1), { command: "read_transcript", sessionPath, limit: MAX_TRANSCRIPT_PAGE_SIZE });
+
+	const childPage = responseCapture();
+	await routes.handleSessions(
+		request("GET"),
+		childPage.response,
+		new URL("http://localhost/api/sessions/session-one/subagents/run-1%3A1/transcript?limit=999"),
+		context,
+		["api", "sessions", "session-one", "subagents", "run-1:1", "transcript"],
+	);
+	assert.equal(childPage.result().status, 200);
+	assert.deepEqual(commands.at(-1), {
+		command: "read_transcript",
+		sessionPath: childSessionPath,
+		limit: MAX_TRANSCRIPT_PAGE_SIZE,
 	});
 });

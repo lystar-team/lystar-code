@@ -60,6 +60,31 @@ export interface SessionRoomMessage {
 	createdAt: string;
 }
 
+export type SessionRoomTaskStatus = "todo" | "doing" | "blocked" | "done";
+
+export interface SessionRoomTaskUpdate {
+	actorSessionId: string;
+	status: SessionRoomTaskStatus;
+	note?: string;
+	kind?: "comment";
+	createdAt: string;
+}
+
+export interface SessionRoomTask {
+	id: string;
+	roomId: string;
+	title: string;
+	description: string;
+	status: SessionRoomTaskStatus;
+	createdBySessionId: string;
+	assigneeSessionId?: string;
+	resultMessageId?: string;
+	resultText?: string;
+	updates: readonly SessionRoomTaskUpdate[];
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface SessionRoomSummary {
 	room: SessionRoom;
 	members: readonly SessionRoomMember[];
@@ -128,4 +153,37 @@ export interface SessionRoomApi {
 		limit?: number;
 		markRead?: boolean;
 	}): Promise<SessionRoomReadResult>;
+	taskCreate(input: {
+		cwd: string;
+		roomId: string;
+		sessionId: string;
+		title: string;
+		description?: string;
+	}): Promise<SessionRoomTask>;
+	taskList(input: { cwd: string; roomId: string; sessionId: string }): Promise<SessionRoomTask[]>;
+	taskClaim(input: { cwd: string; roomId: string; taskId: string; sessionId: string }): Promise<SessionRoomTask>;
+	taskUpdate(input: {
+		cwd: string;
+		roomId: string;
+		taskId: string;
+		sessionId: string;
+		status: SessionRoomTaskStatus;
+		note?: string;
+	}): Promise<SessionRoomTask>;
+	taskEdit(input: {
+		cwd: string;
+		roomId: string;
+		taskId: string;
+		sessionId: string;
+		title?: string;
+		description?: string;
+		assigneeSessionId?: string | null;
+	}): Promise<SessionRoomTask>;
+	taskComment(input: {
+		cwd: string;
+		roomId: string;
+		taskId: string;
+		sessionId: string;
+		body: string;
+	}): Promise<SessionRoomTask>;
 }

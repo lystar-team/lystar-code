@@ -7,13 +7,7 @@ function tool(id: string, name: string, state: ToolBatchTool["state"]): ToolBatc
 }
 
 describe("conversation rendering stability", () => {
-	it("loads earlier history when pagination becomes available while the viewport remains at the top", () => {
-		const unavailable = {
-			hasMorePrevious: false,
-			loadingEarlier: false,
-			previousCursor: undefined,
-			transcriptError: undefined,
-		};
+	it("does not load earlier history from the top state without an upward reading action", () => {
 		const available = {
 			hasMorePrevious: true,
 			loadingEarlier: false,
@@ -21,14 +15,17 @@ describe("conversation rendering stability", () => {
 			transcriptError: undefined,
 		};
 
-		expect(shouldLoadEarlierHistory(true, unavailable, undefined)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, available, undefined)).toBe(true);
-		expect(shouldLoadEarlierHistory(false, available, undefined)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, { ...available, loadingEarlier: true }, undefined)).toBe(false);
-		expect(shouldLoadEarlierHistory(true, { ...available, transcriptError: "加载失败" }, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, false, available, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, true, available, undefined)).toBe(true);
+		expect(shouldLoadEarlierHistory(false, true, available, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, true, { ...available, hasMorePrevious: false }, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, true, { ...available, loadingEarlier: true }, undefined)).toBe(false);
+		expect(shouldLoadEarlierHistory(true, true, { ...available, transcriptError: "加载失败" }, undefined)).toBe(
+			false,
+		);
 	});
 
-	it("requests each new cursor at the top once without waiting for the viewport to leave", () => {
+	it("waits for another upward action after a page changes the cursor", () => {
 		const firstPageState = {
 			hasMorePrevious: true,
 			loadingEarlier: false,
@@ -37,12 +34,11 @@ describe("conversation rendering stability", () => {
 		};
 		const nextPageState = { ...firstPageState, previousCursor: "before-older-entry" };
 
-		expect(shouldLoadEarlierHistory(true, firstPageState, undefined)).toBe(true);
-		expect(shouldLoadEarlierHistory(true, { ...firstPageState, loadingEarlier: true }, "before-entry")).toBe(false);
-		expect(shouldLoadEarlierHistory(true, firstPageState, "before-entry")).toBe(false);
-		expect(shouldLoadEarlierHistory(true, nextPageState, "before-entry")).toBe(true);
-		expect(shouldLoadEarlierHistory(false, nextPageState, "before-entry")).toBe(false);
-		expect(shouldLoadEarlierHistory(true, nextPageState, "before-older-entry")).toBe(false);
+		expect(shouldLoadEarlierHistory(true, true, firstPageState, undefined)).toBe(true);
+		expect(shouldLoadEarlierHistory(true, true, firstPageState, "before-entry")).toBe(false);
+		expect(shouldLoadEarlierHistory(true, false, nextPageState, "before-entry")).toBe(false);
+		expect(shouldLoadEarlierHistory(true, true, nextPageState, "before-entry")).toBe(true);
+		expect(shouldLoadEarlierHistory(true, true, nextPageState, "before-older-entry")).toBe(false);
 	});
 
 	it("keeps active and single tools as stable rows across state updates", () => {

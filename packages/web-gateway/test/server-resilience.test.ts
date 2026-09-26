@@ -21,6 +21,7 @@ interface TestContext {
 	id: string;
 	client?: RuntimeProtocolClient;
 	leases: Map<string, TestLease>;
+	leasesToRestore: Map<string, TestLease>;
 	sockets: Set<WebSocket>;
 	bootstrapGeneration: number;
 	bootstrapCache?: {
@@ -584,6 +585,72 @@ test("Gateway 优先恢复已订阅会话的租约", async (t) => {
 			},
 		},
 	]);
+});
+
+test("Gateway 租约恢复并行执行，旧连接的迟到结果不会覆盖新连接", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("parallel-lease-restore");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	internal.subscriptionsFor(socket.webSocket).add("slow-session");
+	for (const sessionId of ["slow-session", "fast-session"]) {
+		context.leases.set(sessionId, {
+			leaseId: `old:${sessionId}`,
+			leaseGeneration: 1,
+			sessionPath: `/tmp/${sessionId}.jsonl`,
+			createdAt: 1,
+			updatedAt: 1,
+		});
+	}
+	let finishSlow!: (lease: { lease: TestLease }) => void;
+	const slow = new Promise<{ lease: TestLease }>((resolve) => {
+		finishSlow = resolve;
+	});
+	const restored = (sessionPath: string, generation: number): { lease: TestLease } => ({
+		lease: {
+			leaseId: `restored:${generation}:${sessionPath}`,
+			leaseGeneration: generation,
+			sessionPath,
+			createdAt: generation,
+			updatedAt: generation,
+		},
+	});
+	const requested: string[] = [];
+	const first = {
+		request<T>(request: { sessionPath: string }): Promise<T> {
+			requested.push(request.sessionPath);
+			return (
+				request.sessionPath.includes("slow-session") ? slow : Promise.resolve(restored(request.sessionPath, 2))
+			) as Promise<T>;
+		},
+	} as unknown as RuntimeProtocolClient;
+	context.client = first;
+	const firstRestoration = internal.restoreContextLeases(context, first);
+	try {
+		await wait(0);
+		assert.deepEqual(requested, ["/tmp/slow-session.jsonl", "/tmp/fast-session.jsonl"]);
+		assert.equal(context.leases.get("fast-session")?.leaseGeneration, 2);
+		assert.equal(context.leasesToRestore.has("slow-session"), true);
+		const second = {
+			request<T>(request: { sessionPath: string }): Promise<T> {
+				return Promise.resolve(restored(request.sessionPath, 3)) as Promise<T>;
+			},
+		} as unknown as RuntimeProtocolClient;
+		context.client = second;
+		await internal.restoreContextLeases(context, second);
+		assert.equal(context.leases.get("slow-session")?.leaseGeneration, 3);
+		assert.equal(context.leases.get("fast-session")?.leaseGeneration, 3);
+		assert.equal(context.leasesToRestore.size, 0);
+		finishSlow(restored("/tmp/slow-session.jsonl", 2));
+		await firstRestoration;
+		assert.equal(context.leases.get("slow-session")?.leaseGeneration, 3);
+		assert.equal(socket.sent.filter((event) => (event as { type?: string }).type === "session_lease").length, 1);
+	} finally {
+		finishSlow(restored("/tmp/slow-session.jsonl", 2));
+		await firstRestoration;
+	}
 });
 
 test("Gateway 首次订阅也返回确认序号", async (t) => {

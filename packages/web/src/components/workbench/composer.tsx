@@ -13,6 +13,7 @@ import { ResourceImageViewer } from "../ai-elements/resource-preview";
 import { PromptCompletionMenu, PromptCompletionProvider, PromptCompletionTextarea } from "../ai-elements/prompt-completion-menu";
 import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputProvider, PromptInputSelect, PromptInputSelectContent, PromptInputSelectItem, PromptInputSelectTrigger, PromptInputSelectValue, PromptInputSubmit, PromptInputTools, usePromptInputAttachments, usePromptInputController } from "../ai-elements/prompt-input";
 import { ContextRing } from "./context-ring";
+import { ComposerSessionStats } from "./composer-session-stats";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -43,6 +44,15 @@ type EditAttachmentStatus = {
 	requestKey: string;
 	state: "loading" | "ready" | "error";
 	message?: string;
+};
+
+type PromptUploadProgress = {
+	sessionId: string;
+	filename: string;
+	fileIndex: number;
+	fileCount: number;
+	percent: number;
+	phase: "uploading" | "processing" | "sending";
 };
 
 async function transcriptAttachmentFile(
@@ -80,6 +90,7 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.liveCompaction === next.liveCompaction &&
 		previous.liveTools === next.liveTools &&
 		previous.liveTurnActive === next.liveTurnActive &&
+		previous.lastOutputSpeed === next.lastOutputSpeed &&
 		previous.models === next.models &&
 		previous.providers === next.providers &&
 		previous.queuedUserPrompts === next.queuedUserPrompts &&
@@ -123,6 +134,8 @@ export const Composer = memo(function Composer({
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
 	const [queueActionId, setQueueActionId] = useState<string>();
 	const [editAttachmentStatus, setEditAttachmentStatus] = useState<EditAttachmentStatus>();
+	const [uploadProgress, setUploadProgress] = useState<PromptUploadProgress>();
+	const visibleUploadProgress = uploadProgress?.sessionId === state.sessionId ? uploadProgress : undefined;
 	const activeEditRequest = !roomMode && editRequest?.sessionId === state.sessionId ? editRequest : undefined;
 	const editRequestRef = useRef(activeEditRequest);
 	editRequestRef.current = activeEditRequest;
@@ -321,6 +334,21 @@ export const Composer = memo(function Composer({
 									</Button>
 								</div>
 							) : null}
+							{visibleUploadProgress ? (
+								<div className="mb-2 rounded-xl border border-border/70 bg-muted/25 px-3 py-2 text-xs">
+									<div className="flex items-center justify-between gap-2" role="status">
+										<span>{visibleUploadProgress.phase === "uploading"
+											? `上传文件 ${visibleUploadProgress.fileIndex + 1}/${visibleUploadProgress.fileCount}`
+											: visibleUploadProgress.phase === "processing" ? "正在处理文件" : "正在发送消息"}</span>
+										{visibleUploadProgress.phase === "uploading" ? <span className="tabular-nums">{visibleUploadProgress.percent}%</span> : null}
+									</div>
+									<div className="mt-1 truncate text-muted-foreground" title={visibleUploadProgress.filename}>{visibleUploadProgress.filename}</div>
+									{visibleUploadProgress.phase !== "sending" ? (
+										<progress aria-label="文件上传进度" className="mt-2 h-1.5 w-full accent-primary" max={100}
+											value={visibleUploadProgress.phase === "processing" ? 100 : visibleUploadProgress.percent} />
+									) : null}
+								</div>
+							) : null}
 							<PromptCompletionMenu />
 							<PromptInput
 								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[var(--radius)] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
@@ -371,10 +399,27 @@ export const Composer = memo(function Composer({
 													: state.composerMode;
 										if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										const uploadedFiles = [];
-										for (const file of files) {
+										const totalBytes = files.reduce((sum, file) => sum + (file.sourceFile?.size ?? 0), 0);
+										let completedBytes = 0;
+										for (const [fileIndex, file] of files.entries()) {
 											if (!file.sourceFile) throw new Error("附件读取失败，请重新选择文件");
-											uploadedFiles.push(await webApi.uploadFile(file.sourceFile));
+											const filename = file.filename || file.sourceFile.name;
+											const currentCompletedBytes = completedBytes;
+											setUploadProgress({ sessionId: submissionSessionId, filename, fileIndex, fileCount: files.length,
+												percent: Math.floor(currentCompletedBytes / totalBytes * 100) || 0, phase: "uploading" });
+											uploadedFiles.push(await webApi.uploadFile(file.sourceFile, (loaded, transmitted) => {
+												const percent = Math.floor((currentCompletedBytes + loaded) / totalBytes * 100) || 0;
+												setUploadProgress((previous) => {
+													if (previous?.sessionId !== submissionSessionId || previous.fileIndex !== fileIndex) return previous;
+													const phase = transmitted ? "processing" : "uploading";
+													return previous.percent === percent && previous.phase === phase ? previous : { ...previous, percent, phase };
+												});
+											}));
+											completedBytes += file.sourceFile.size;
+											if (sessionIdRef.current !== submissionSessionId) throw new Error("会话已切换，请确认后重新提交");
 										}
+										if (files.length) setUploadProgress((previous) => previous?.sessionId === submissionSessionId
+											? { ...previous, percent: 100, phase: "sending" } : previous);
 										const promptText = !roomMode && uploadedFiles.length
 											? `${text}\n\n${uploadedFiles.map((file, index) => internalFileReference(file.path, files[index]?.filename, files[index]?.mediaType || file.mimeType, index)).join("\n")}`
 											: text;
@@ -407,6 +452,7 @@ export const Composer = memo(function Composer({
 										throw error;
 									} finally {
 										submittingSessionIdsRef.current.delete(submissionSessionId);
+										setUploadProgress((previous) => previous?.sessionId === submissionSessionId ? undefined : previous);
 									}
 								}}
 							>
@@ -417,7 +463,7 @@ export const Composer = memo(function Composer({
 										onStatus={handleEditAttachmentStatus}
 									/>
 								) : null}
-								<PromptInputHeader className="empty:hidden">
+								<PromptInputHeader className="min-w-0 empty:hidden">
 									<ComposerAttachments />
 								</PromptInputHeader>
 								<PromptInputBody>
@@ -439,9 +485,20 @@ export const Composer = memo(function Composer({
 								</PromptInputBody>
 								<PromptInputFooter className="items-center !pb-2">
 									<PromptInputTools className="shrink-0">
-									<FileUploadButton disabled={disabled || editAttachmentState === "loading"} />
-								</PromptInputTools>
-								<PromptInputTools className="min-w-0 flex-1 justify-end gap-1">
+										<FileUploadButton disabled={disabled || editAttachmentState === "loading" || Boolean(visibleUploadProgress)} />
+									</PromptInputTools>
+									{!roomMode && state.sessionId ? (
+										<ComposerSessionStats
+											key={state.sessionId}
+											sessionId={state.sessionId}
+											revision={state.session?.transcriptRevision}
+											phase={state.session?.phase}
+											ready={state.sessionReady}
+											connected={state.connected}
+											lastOutputSpeed={state.lastOutputSpeed}
+										/>
+									) : null}
+									<PromptInputTools className="min-w-0 flex-1 justify-end gap-0.5 md:shrink-0 md:flex-none md:gap-1">
 									{roomMode ? <span className="px-2 text-xs text-muted-foreground">Room 协作</span> : <ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />}
 									{roomMode ? null : <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
 											<ModelSelectorTrigger asChild>
@@ -449,7 +506,7 @@ export const Composer = memo(function Composer({
 													className="data-[state=open]:bg-accent"
 													disabled={!state.sessionId}
 												>
-													<span className="max-w-40 truncate">
+													<span className="max-w-24 truncate md:max-w-40">
 														{formatModelDisplayName(
 															selectedModel ??
 																(state.session?.model ? { id: state.session.model.id } : undefined),
@@ -524,6 +581,7 @@ export const Composer = memo(function Composer({
 											submitDisabled={
 												disabled ||
 												!state.sessionId ||
+												Boolean(visibleUploadProgress) ||
 												(Boolean(activeEditRequest) && editAttachmentState !== "ready")
 											}
 										/>
@@ -959,7 +1017,7 @@ function ComposerAttachments() {
 
 	return (
 		<>
-			<Attachments variant="inline">
+			<Attachments variant="inline" className="w-full min-w-0">
 				{attachments.files.map((file) => {
 					const imageIndex = previewItems.findIndex((item) => item.id === file.id);
 					const previewable = imageIndex >= 0;
@@ -982,11 +1040,13 @@ function ComposerAttachments() {
 							role={previewable ? "button" : undefined}
 							tabIndex={previewable ? 0 : undefined}
 							aria-label={previewable ? `预览 ${file.filename ?? "图片"}` : undefined}
-							className={previewable ? "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : undefined}
+							className={previewable
+								? "min-w-0 max-w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								: "min-w-0 max-w-full"}
 						>
 							<AttachmentPreview />
 							<AttachmentInfo showMediaType={!previewable} />
-							<AttachmentRemove label="移除附件" />
+							<AttachmentRemove label="移除附件" className="shrink-0" />
 						</Attachment>
 					);
 				})}

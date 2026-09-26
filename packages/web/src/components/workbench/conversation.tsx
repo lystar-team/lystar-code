@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
+import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { WebSessionSummary } from "../../types";
 import { CompactionCard } from "./compaction-card";
@@ -39,7 +40,7 @@ import { PrependAnchoredConversationTranscript } from "./prepend-anchored-transc
 import { DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
 import { CollaborationFeed } from "./collaboration-feed";
-import { useConversationScroll } from "./use-conversation-scroll";
+import { HISTORY_LOAD_THRESHOLD, useConversationScroll } from "./use-conversation-scroll";
 import { useConversationExpansion } from "./use-conversation-expansion";
 export { shouldLoadEarlierHistory } from "./use-conversation-scroll";
 export { initialToolStackPresentation } from "./use-conversation-expansion";
@@ -85,7 +86,6 @@ export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queue
 };
 
 
-const HISTORY_LOAD_THRESHOLD = 240;
 const CONVERSATION_RENDER_CACHE_LIMIT = 8;
 const EMPTY_LIVE_STEPS = Object.freeze({}) as WorkbenchState["liveSteps"];
 
@@ -180,8 +180,8 @@ export function initialTranscriptDisplayState(
 	return state.transcriptError ? "error" : "ready";
 }
 
-function isToolActivityEntry(entry: ConversationRenderItem): boolean {
-	if (entry.kind === "tool-stack") return true;
+function isActivityRow(entry: ConversationRenderItem): boolean {
+	if (entry.kind === "tool-stack" || entry.kind === "agent-step" || entry.kind === "compaction") return true;
 	if (entry.kind !== "item") return false;
 	switch (entry.item.view?.type) {
 		case "tool_call":
@@ -196,8 +196,8 @@ function isToolActivityEntry(entry: ConversationRenderItem): boolean {
 	}
 }
 
-export function toolActivityGap(previous: ConversationRenderItem, current: ConversationRenderItem): number {
-	return isToolActivityEntry(previous) && isToolActivityEntry(current) ? 0 : DEFAULT_TRANSCRIPT_GAP;
+export function activityRowGap(previous: ConversationRenderItem, current: ConversationRenderItem): number {
+	return isActivityRow(previous) && isActivityRow(current) ? 0 : DEFAULT_TRANSCRIPT_GAP;
 }
 
 function attachmentListsEqual(
@@ -242,11 +242,12 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 		return (
 			candidate?.id === tool.id &&
 			candidate.name === tool.name &&
-			(streamingImageGeneration || candidate.summary === tool.summary) &&
+			candidate.summary === tool.summary &&
 			candidate.state === tool.state &&
 			(streamingImageGeneration || candidate.detail === tool.detail) &&
 			JSON.stringify(candidate.subagents) === JSON.stringify(tool.subagents) &&
 			candidate.inputPreview === tool.inputPreview &&
+			candidate.preparing === tool.preparing &&
 			JSON.stringify(tool.webSearch) === JSON.stringify(candidate.webSearch) &&
 			toolSourcesEqual(tool.sources ?? tool.webSearch?.sources, candidate.sources ?? candidate.webSearch?.sources) &&
 			candidate.images === tool.images &&
@@ -430,12 +431,14 @@ export function ConversationView({
 			state.pendingUserPrompts,
 			state.promptSendTimes,
 			state.agentSteps,
+			liveSteps,
+			state.liveTools,
 		);
 		const renderItems = buildConversationRenderItems(
 			persistedRenderItems,
 			state.liveTurnItems,
 			state.liveTools,
-			toolIndex.callIds,
+			committedToolCallIds(state.transcript),
 			state.liveCompaction,
 			state.liveTurnId,
 			responseActive,
@@ -542,7 +545,9 @@ function ConversationBody({
 		handleScrollStateCapture,
 		handleTranscriptScrollerRef,
 		handleUserScrollAway,
+		handleUserScrollUp,
 		handleVirtuosoRef,
+		pauseFollowOutput,
 		isAtBottom,
 		requestEarlierHistory,
 		scrollState,
@@ -565,7 +570,6 @@ function ConversationBody({
 		(entry: TranscriptToolStackRenderItem) => {
 			const current = renderStateRef.current;
 			const tools = entry.batches.flatMap((batch) => batch.tools);
-			const controlCollapsedState = entry.collapseForResult;
 			const presentation = getToolStackPresentation(entry.key, tools);
 			if (presentation === "rows") {
 				return (
@@ -575,9 +579,8 @@ function ConversationBody({
 								key={tool.id}
 								className="tool-batch-render-item"
 								tools={[tool]}
-								initialOpen={false}
-								open={controlCollapsedState ? expandedToolRows.get(tool.id) ?? false : undefined}
-								onOpenChange={controlCollapsedState ? (open) => updateExpandedToolRow(tool.id, open) : undefined}
+								initialOpen={expandedToolRows.get(tool.id) ?? false}
+								onOpenChange={(open) => updateExpandedToolRow(tool.id, open)}
 								sessionId={current.sessionId}
 								onOpenPath={(path) => void openResource(path)}
 								onOpenSubagent={openSubagent}
@@ -592,11 +595,10 @@ function ConversationBody({
 					className="tool-batch-render-item"
 					tools={tools}
 					summaryLabel={tools.length > 1 ? toolBatchSummaryLabel(tools) : undefined}
-					initialOpen={false}
-					open={controlCollapsedState ? expandedToolBatches.get(entry.key) ?? false : undefined}
-					onOpenChange={controlCollapsedState ? (open) => updateExpandedToolBatch(entry.key, open) : undefined}
-					toolOpen={controlCollapsedState ? expandedToolRows : undefined}
-					onToolOpenChange={controlCollapsedState ? updateExpandedToolRow : undefined}
+					initialOpen={expandedToolBatches.get(entry.key) ?? false}
+					onOpenChange={(open) => updateExpandedToolBatch(entry.key, open)}
+					initialToolOpen={expandedToolRows}
+					onToolOpenChange={updateExpandedToolRow}
 					sessionId={current.sessionId}
 					onOpenPath={(path) => void openResource(path)}
 					onOpenSubagent={openSubagent}
@@ -776,7 +778,7 @@ function ConversationBody({
 									<div
 										className="min-w-0"
 										key={item.key}
-										style={index > 0 ? { marginTop: toolActivityGap(entry.items[index - 1]!, item) } : undefined}
+										style={index > 0 ? { marginTop: activityRowGap(entry.items[index - 1]!, item) } : undefined}
 									>
 										{renderConversationContentItem(item)}
 									</div>
@@ -797,12 +799,7 @@ function ConversationBody({
 				? 1
 				: entry.kind === "live-elapsed"
 					? 32
-					: entry.kind === "work-process" ||
-						entry.kind === "agent-step" ||
-						entry.kind === "hook-group" ||
-						entry.kind === "tool-stack" ||
-						entry.kind === "compaction" ||
-						isToolActivityEntry(entry)
+				: entry.kind === "work-process" || entry.kind === "hook-group" || isActivityRow(entry)
 					? 32
 					: 80,
 		[],
@@ -812,7 +809,7 @@ function ConversationBody({
 		(previous: ConversationRenderItem, current: ConversationRenderItem) => {
 			if (current.kind === "result-boundary") return 8;
 			if (previous.kind === "result-boundary") return DEFAULT_TRANSCRIPT_GAP;
-			return toolActivityGap(previous, current);
+			return activityRowGap(previous, current);
 		},
 		[],
 	);
@@ -823,13 +820,7 @@ function ConversationBody({
 			正在加载更早消息
 		</div>
 	) : state.hasMorePrevious && state.transcriptError ? (
-		<Button
-			className="mx-auto"
-			size="sm"
-			variant="outline"
-				disabled={state.loadingEarlier}
-				onClick={requestEarlierHistory}
-		>
+		<Button className="mx-auto" size="sm" variant="outline" onClick={() => requestEarlierHistory(true)}>
 			重新加载更早消息
 		</Button>
 	) : null;
@@ -870,6 +861,8 @@ function ConversationBody({
 					onScrollStateCapture={handleScrollStateCapture}
 					onScrollerRef={handleTranscriptScrollerRef}
 					onUserScrollAway={handleUserScrollAway}
+					onUserScrollUp={handleUserScrollUp}
+					onExpansionIntent={pauseFollowOutput}
 					sessionKey={state.sessionId ?? "empty"}
 					virtuosoRef={handleVirtuosoRef}
 				/>

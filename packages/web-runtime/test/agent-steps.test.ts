@@ -93,6 +93,56 @@ describe("AgentStepController", () => {
 		]);
 	});
 
+	it("压缩条目关联活动步骤后可从提交索引和历史快照找回", () => {
+		const root = mkdtempSync(join(tmpdir(), "agent-steps-compaction-"));
+		cleanupPaths.push(root);
+		const cwd = join(root, "project");
+		mkdirSync(cwd, { recursive: true });
+		const manager = SessionManager.create(cwd, join(root, "sessions"));
+		const controller = new AgentStepController(manager);
+		const step = controller.start("整理资料");
+		const firstKeptEntryId = manager.getLeafId();
+		if (!firstKeptEntryId) throw new Error("缺少步骤条目");
+		const compactionId = manager.appendCompaction("保留已整理资料", firstKeptEntryId, 12_000);
+		controller.associateMessage(compactionId);
+		controller.finishActive("completed");
+		const compaction = manager.getEntry(compactionId);
+		if (!compaction) throw new Error("缺少压缩条目");
+
+		expect(controller.stepsForEntries([compaction])).toEqual([
+			expect.objectContaining({ id: step.id, messageEntryIds: [compactionId] }),
+		]);
+		expect(new AgentStepController(manager).stepsForEntries([compaction])).toEqual([
+			expect.objectContaining({ id: step.id, messageEntryIds: [compactionId] }),
+		]);
+	});
+
+	it("工具准备时确定归属，步骤切换后不把同一工具归入新步骤", () => {
+		const root = mkdtempSync(join(tmpdir(), "agent-steps-preparing-"));
+		cleanupPaths.push(root);
+		const cwd = join(root, "project");
+		const sessionDir = join(root, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		const manager = SessionManager.create(cwd, sessionDir);
+		const controller = new AgentStepController(manager);
+		const first = controller.start("修改页面");
+
+		controller.associateTool("edit-1");
+		expect(controller.stepIdForTool("edit-1")).toBe(first.id);
+		const second = controller.start("检查结果");
+		controller.associateTool("edit-1");
+		controller.associateTool("read-1");
+
+		expect(controller.stepIdForTool("edit-1")).toBe(first.id);
+		expect(controller.activeStep?.toolCallIds).toEqual(["read-1"]);
+		expect(controller.stepsForEntries(manager.getEntries())).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: first.id, toolCallIds: ["edit-1"] }),
+				expect.objectContaining({ id: second.id, toolCallIds: ["read-1"] }),
+			]),
+		);
+	});
+
 	it("从已有自定义条目恢复活动步骤和工具归属", () => {
 		const root = mkdtempSync(join(tmpdir(), "agent-steps-restore-"));
 		cleanupPaths.push(root);

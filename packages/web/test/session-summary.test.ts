@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { webApi } from "../src/adapters/host-protocol/api.ts";
 import {
 	mergeSessionSummaries,
 	projectInspectorStateForSelection,
 	updateSessionSummaryFirstMessage,
 } from "../src/state/use-workbench.ts";
+import { acknowledgeSessionRead, initialState, updateSessionActivity } from "../src/state/workbench-state.ts";
 import type { WebProject, WebSessionSummary } from "../src/types.ts";
 
 function session(overrides: Partial<WebSessionSummary> = {}): WebSessionSummary {
@@ -43,6 +45,26 @@ describe("session summary lifecycle", () => {
 			firstMessage: "首条 Prompt",
 			name: "自动标题",
 		});
+	});
+
+	it("打开执行完毕的会话不会被 idle 快照移出已完成列表，新一轮执行仍更新状态", () => {
+		const completed = [project(session({ activity: "completed" }))];
+		expect(updateSessionActivity(completed, "session-1", "idle")).toBe(completed);
+		const running = updateSessionActivity(completed, "session-1", "running");
+		expect(running[0]?.sessions[0]?.activity).toBe("running");
+		expect(updateSessionActivity(running, "session-1", "failed")[0]?.sessions[0]?.activity).toBe("failed");
+		expect(updateSessionActivity([project(session())], "session-1", "idle")[0]?.sessions[0]?.activity).toBe("idle");
+	});
+
+	it("跨窗口已读只清除同一次执行的蓝点，不清除更新的执行结果", () => {
+		vi.spyOn(webApi, "hasToken").mockReturnValue(false);
+		const current = {
+			...initialState(),
+			projects: [project(session({ activity: "completed", operationUpdatedAt: 30 }))],
+			unreadSessionIds: { "session-1": true as const },
+		};
+		expect(acknowledgeSessionRead(current, "session-1", 29)).toBe(current);
+		expect(acknowledgeSessionRead(current, "session-1", 30).unreadSessionIds).toEqual({});
 	});
 
 	it("跨项目切换时清空旧项目的审阅状态", () => {

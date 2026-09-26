@@ -13,13 +13,13 @@ export type SessionDetailCache = Pick<
 	| "toolActivityEpoch"
 	| "toolActivityRevision"
 	| "hasMorePrevious"
-	| "loadingEarlier"
 	| "liveTools"
 	| "liveSteps"
 	| "liveTurnItems"
 	| "liveTurnId"
 	| "liveTurnStartRevision"
 	| "liveTurnActive"
+	| "lastOutputSpeed"
 	| "liveCompaction"
 	| "pendingUserPrompts"
 	| "promptSendTimes"
@@ -40,13 +40,13 @@ export function sessionDetailCacheFromState(state: WorkbenchState): SessionDetai
 		toolActivityEpoch: state.toolActivityEpoch,
 		toolActivityRevision: state.toolActivityRevision,
 		hasMorePrevious: state.hasMorePrevious,
-		loadingEarlier: state.loadingEarlier,
 		liveTools: state.liveTools,
 		liveSteps: state.liveSteps,
 		liveTurnItems: state.liveTurnItems,
 		liveTurnId: state.liveTurnId,
 		liveTurnStartRevision: state.liveTurnStartRevision,
 		liveTurnActive: state.liveTurnActive,
+		lastOutputSpeed: state.lastOutputSpeed,
 		liveCompaction: state.liveCompaction,
 		pendingUserPrompts: state.pendingUserPrompts,
 		promptSendTimes: state.promptSendTimes,

@@ -1,24 +1,19 @@
-import { FolderOpen, GitBranch, GitFork, type LucideProps, X, Zap } from "lucide-react";
-import { type ComponentType, useEffect, useRef, useState } from "react";
+import { FolderOpen, GitBranch, GitFork, X, Zap } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { InspectorMode, WorkbenchState } from "../../state/use-workbench";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { Tabs, TabsContent } from "../ui/tabs";
 import { GsapReveal } from "../ui/gsap-reveal";
-import {
-	ExpandableActionBar,
-	ExpandableActionBarHighlight,
-	ExpandableActionBarLabel,
-	useExpandableActionBarItem,
-} from "../motion/expandable-action-bar";
 import { FilesPanel } from "./files-panel";
 import { GitPanel } from "./git-panel";
 import { RunPanel } from "./run-panel";
 import { SessionTreePanel } from "./session-tree-panel";
 import { SubagentPanel } from "./subagent-panel";
 import type { WorkbenchActions } from "./types";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar";
 
 function useMediaQuery(query: string): boolean {
 	const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
@@ -34,56 +29,12 @@ function useMediaQuery(query: string): boolean {
 	return matches;
 }
 
-type InspectorTabIcon = ComponentType<LucideProps>;
-
-const INSPECTOR_TABS: ReadonlyArray<{ icon: InspectorTabIcon; label: string; value: InspectorMode }> = [
+const INSPECTOR_TABS: ReadonlyArray<WorkbenchTabOption<InspectorMode>> = [
 	{ icon: FolderOpen, label: "文件", value: "files" },
 	{ icon: GitBranch, label: "Git", value: "git" },
 	{ icon: Zap, label: "运行", value: "runs" },
 	{ icon: GitFork, label: "分支", value: "tree" },
 ];
-
-function InspectorTabTrigger({ icon: Icon, label, value }: { icon: InspectorTabIcon; label: string; value: InspectorMode }) {
-	const item = useExpandableActionBarItem(value);
-
-	return (
-		<TabsTrigger
-			value={value}
-			aria-label={label}
-			title={item.labelVisible ? undefined : label}
-			onFocus={item.onFocus}
-			onPointerEnter={item.onPointerEnter}
-			className={cn(
-				// 用 beUI 轨道的胶囊形态覆盖基础 TabsTrigger 的等分样式，选中底色交给滑动高亮。
-				"isolate relative !h-7 !min-w-0 !flex-1 !gap-0 !rounded-full !border-0 !px-1.5 !py-0 !text-xs !font-medium !text-muted-foreground after:!hidden",
-				"data-[state=active]:!bg-transparent data-[state=active]:!text-foreground",
-			)}
-		>
-			<ExpandableActionBarHighlight itemId={value} />
-			<Icon className="size-3.5 shrink-0" aria-hidden="true" />
-			<ExpandableActionBarLabel visible={item.labelVisible}>{label}</ExpandableActionBarLabel>
-		</TabsTrigger>
-	);
-}
-
-function InspectorTabBar({ value }: { value: InspectorMode }) {
-	return (
-		<TabsList className="mx-4 mt-3 !h-auto !w-auto self-stretch !justify-start !gap-0 !rounded-none !border-0 !bg-transparent !p-0">
-			{/* 四个 Tab 的文字默认全部呈现：轨道常驻展开，悬停和聚焦只驱动高亮滑动。 */}
-			<ExpandableActionBar
-				activeId={value}
-				defaultExpanded
-				expandOnFocus={false}
-				expandOnHover={false}
-				size="sm"
-			>
-				{INSPECTOR_TABS.map((tab) => (
-					<InspectorTabTrigger key={tab.value} {...tab} />
-				))}
-			</ExpandableActionBar>
-		</TabsList>
-	);
-}
 
 export function InspectorPanel({
 	state,
@@ -120,7 +71,7 @@ export function InspectorPanel({
 				onValueChange={(value) => void actions.openInspector(value as InspectorMode)}
 				className="min-h-0 w-full min-w-0 flex-1 gap-0"
 			>
-				<InspectorTabBar value={state.inspectorMode} />
+				<WorkbenchTabBar activeId={state.inspectorMode} tabs={INSPECTOR_TABS} label="审阅视图" className="mx-4 mt-3" />
 				<TabsContent className="min-h-0 w-full min-w-0 flex-1 overflow-hidden" value="files">
 					<GsapReveal animationKey={state.inspectorMode} className="h-full min-h-0 w-full" distance={10} duration={0.28}>
 						<FilesPanel state={state} actions={actions} />

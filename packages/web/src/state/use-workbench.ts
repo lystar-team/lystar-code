@@ -1,4 +1,4 @@
-import type { SessionProgress } from "@lystar/code-web-protocol";
+import { MAX_TRANSCRIPT_PAGE_SIZE, type SessionProgress } from "@lystar/code-web-protocol";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import type { ProjectGroup, UiRequestEvent, WebLease, WebOperation, WebProject } from "../types.ts";
@@ -31,6 +31,7 @@ import {
 } from "./workbench-live-state.ts";
 import {
 	ACTIVE_OPERATION_STATUSES,
+	acknowledgeSessionRead,
 	applyTheme,
 	browserNetworkOnline,
 	errorMessage,
@@ -88,8 +89,6 @@ export type {
 	WorkbenchState,
 } from "./workbench-types.ts";
 
-const TRANSCRIPT_PAGE_SIZE = 120;
-
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
 type PendingTextProgress = { selection: number; sessionId: string; progress: LiveTextProgress };
 type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
@@ -107,8 +106,9 @@ export function useWorkbench() {
 	const reconnectTimerRef = useRef<number | undefined>(undefined);
 	const reconnectAttemptRef = useRef(0);
 	const bootstrapLoadedRef = useRef(false);
+	const sessionReadAtRef = useRef(new Map<string, number>());
+	const sessionReadChannelRef = useRef<BroadcastChannel>();
 	const transcriptTimerRef = useRef<number | undefined>(undefined);
-	const transcriptRefreshPendingRef = useRef<string | undefined>(undefined);
 	const liveToolBatchRef = useRef(0);
 	const liveTurnItemRef = useRef(0);
 	const pendingTextProgressRef = useRef<PendingTextProgress[]>([]);
@@ -162,6 +162,11 @@ export function useWorkbench() {
 		stateRef.current = next;
 		setState(next);
 		return next;
+	}, []);
+	const onSessionRead = useCallback((sessionId: string) => {
+		const readAt = Date.now();
+		sessionReadAtRef.current.set(sessionId, readAt);
+		sessionReadChannelRef.current?.postMessage({ type: "session_read", sessionId, readAt });
 	}, []);
 	const transitionState = useCallback(
 		(update: WorkbenchState | ((current: WorkbenchState) => WorkbenchState)) => {
@@ -321,13 +326,19 @@ export function useWorkbench() {
 	);
 
 	const loadTranscript = useCallback(
-		async (sessionId = stateRef.current.sessionId, cursor?: string, deferCommit = false) => {
+		async (sessionId = stateRef.current.sessionId, cursor?: string, deferCommit = false, completeHistory = false) => {
 			if (!sessionId) return;
 			const requestedHistory = {
 				generation: stateRef.current.transcriptGeneration,
 				leafId: stateRef.current.transcriptLeafId,
 			};
-			const requestId = ++transcriptRequestRef.current;
+			const historySelection = selectionRef.current;
+			const historyStillCurrent = () =>
+				selectionRef.current === historySelection &&
+				stateRef.current.sessionId === sessionId &&
+				stateRef.current.transcriptGeneration === requestedHistory.generation &&
+				stateRef.current.previousCursor === cursor;
+			const requestId = cursor ? transcriptRequestRef.current : ++transcriptRequestRef.current;
 			if (!cursor && (!stateRef.current.transcriptPageLoaded || stateRef.current.transcriptError)) {
 				updateState((current) =>
 					current.sessionId === sessionId
@@ -336,25 +347,55 @@ export function useWorkbench() {
 				);
 			}
 			try {
-				const result = await webApi.transcript(sessionId, { cursor, limit: TRANSCRIPT_PAGE_SIZE });
-				if (requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId) return;
+				let result = await webApi.transcript(sessionId, { cursor, limit: MAX_TRANSCRIPT_PAGE_SIZE });
+				if (cursor && completeHistory) {
+					const pages = [result];
+					const firstPage = result;
+					const visitedCursors = new Set([cursor]);
+					while (result.hasMorePrevious && result.previousCursor) {
+						if (!historyStillCurrent()) return;
+						if (visitedCursors.has(result.previousCursor)) throw new Error("历史游标未前进");
+						visitedCursors.add(result.previousCursor);
+						const older = await webApi.transcript(sessionId, {
+							cursor: result.previousCursor,
+							limit: MAX_TRANSCRIPT_PAGE_SIZE,
+						});
+						if (
+							older.transcriptGeneration !== firstPage.transcriptGeneration ||
+							older.leafId !== firstPage.leafId
+						)
+							throw new Error("历史记录发生变化，请重新打开会话");
+						pages.push(older);
+						result = older;
+					}
+					result = {
+						...result,
+						items: pages.slice().reverse().flatMap((page) => page.items),
+						agentSteps: pages.flatMap((page) => page.agentSteps ?? []),
+					};
+				}
+				if (cursor ? !historyStillCurrent() : requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId)
+					return;
 				(deferCommit && !cursor ? transitionState : updateState)((current) => {
-					const currentHistoryChangedSinceRequest = isTranscriptResponseObsolete(
-						requestedHistory,
-						{
-							generation: current.transcriptGeneration,
-							leafId: current.transcriptLeafId,
-						},
-						result,
-					);
+					if (current.sessionId !== sessionId) return current;
+					const currentHistoryChangedSinceRequest = cursor
+						? requestedHistory.generation !== current.transcriptGeneration ||
+							(requestedHistory.leafId !== current.transcriptLeafId &&
+								!current.transcript.some((item) => item.entryId === requestedHistory.leafId))
+						: isTranscriptResponseObsolete(
+								requestedHistory,
+								{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
+								result,
+							);
 					const sameHistory =
-						isSameTranscriptHistory(
-							{
-								generation: current.transcriptGeneration,
-								leafId: current.transcriptLeafId,
-							},
+						(isSameTranscriptHistory(
+							{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
 							result,
-						) &&
+						) ||
+							(current.transcriptGeneration === result.transcriptGeneration &&
+								(!cursor ||
+									(requestedHistory.leafId === result.leafId &&
+										current.transcript.some((item) => item.entryId === requestedHistory.leafId))))) &&
 						!(
 							current.transcriptPageLoaded &&
 							current.transcriptGeneration === undefined &&
@@ -367,8 +408,8 @@ export function useWorkbench() {
 						current.transcriptRevision > result.transcriptRevision;
 					const incomingAgentStepsChanged = agentStepIndexChanged(current.agentSteps, result.agentSteps);
 					if (currentHistoryChangedSinceRequest)
-						return cursor ? current : { ...current, transcriptLoading: false };
-					if (cursor && !sameHistory) return current;
+						return cursor ? { ...current, transcriptError: "历史记录已更新，请重新打开会话" } : { ...current, transcriptLoading: false };
+					if (cursor && !sameHistory) return { ...current, transcriptError: "历史记录已更新，请重新打开会话" };
 					if (staleRevision && !cursor) {
 						return cursor
 							? current
@@ -457,7 +498,7 @@ export function useWorkbench() {
 					};
 				});
 			} catch (error) {
-				if (requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId) {
+				if ((cursor ? historyStillCurrent() : requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId)) {
 					updateState((current) => ({
 						...current,
 						transcriptLoading: false,
@@ -576,7 +617,7 @@ export function useWorkbench() {
 			try {
 				const result = await webApi.subagentTranscript(sessionId, agentId, {
 					...(cursor ? { cursor } : {}),
-					limit: TRANSCRIPT_PAGE_SIZE,
+					limit: MAX_TRANSCRIPT_PAGE_SIZE,
 				});
 				if (
 					subagentTranscriptRequestRef.current.get(key) !== requestId ||
@@ -755,9 +796,9 @@ export function useWorkbench() {
 		pendingTextFrameRef,
 		pendingTextTimeoutRef,
 		transcriptTimerRef,
-		transcriptRefreshPendingRef,
 		sessionDetailCacheRef,
 		sessionDetailSeqRef,
+		sessionReadAtRef,
 		scheduleSubagentTranscriptRefresh,
 		sessionSubscriptionWaitersRef,
 		handledNotifyIdsRef,
@@ -773,10 +814,12 @@ export function useWorkbench() {
 			return;
 		const attempt = reconnectAttemptRef.current;
 		reconnectAttemptRef.current += 1;
+		const delayMs = reconnectDelayMs(attempt);
+		console.info("Web 连接重试", { attempt: attempt + 1, delayMs, time: new Date().toISOString() });
 		reconnectTimerRef.current = window.setTimeout(() => {
 			reconnectTimerRef.current = undefined;
 			if (mountedRef.current) resumeConnectionRef.current();
-		}, reconnectDelayMs(attempt));
+		}, delayMs);
 	}, []);
 
 	const connectStream = useCallback(() => {
@@ -793,6 +836,7 @@ export function useWorkbench() {
 		}
 		const generation = streamGenerationRef.current + 1;
 		streamGenerationRef.current = generation;
+		console.info("Web 实时连接开始", { generation, sessionId: stateRef.current.sessionId, time: new Date().toISOString() });
 		if (reconnectTimerRef.current) {
 			window.clearTimeout(reconnectTimerRef.current);
 			reconnectTimerRef.current = undefined;
@@ -813,8 +857,9 @@ export function useWorkbench() {
 				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
 				handleEvent(event);
 			},
-			() => {
+			(event) => {
 				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
+				console.info("Web 实时连接结束", { generation, code: event.code, sessionId: stateRef.current.sessionId, time: new Date().toISOString() });
 				socketRef.current = undefined;
 				settleSessionSubscriptionWaiters("closed");
 				if (!mountedRef.current) return;
@@ -945,7 +990,9 @@ export function useWorkbench() {
 				loading: !current.transcriptPageLoaded,
 			}));
 			try {
+				const bootstrapStartedAt = Date.now();
 				const data = await webApi.bootstrap();
+				console.info("Web 工作区同步完成", { elapsedMs: Date.now() - bootstrapStartedAt, time: new Date().toISOString() });
 				applyBootstrap(data);
 				connectStream();
 				void refreshGitCredentialAuthorization();
@@ -959,7 +1006,12 @@ export function useWorkbench() {
 								project.sessions.some((session) => session.id === lastSession.sessionId),
 						)
 					: undefined;
+				const requestedSessionId = new URLSearchParams(window.location.search).get("sessionId");
+				const requestedProject = requestedSessionId
+					? data.projects.find((project) => project.sessions.some((session) => session.id === requestedSessionId))
+					: undefined;
 				const firstProject =
+					requestedProject ??
 					data.projects.find((project) => project.id === stateRef.current.currentProjectId && !project.archived) ??
 					lastSessionProject ??
 					data.projects
@@ -970,7 +1022,7 @@ export function useWorkbench() {
 					updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
 					const socket = socketRef.current;
 					if (socket) webApi.subscribeProject(socket, firstProject.id);
-					await loadProjectTreeRef.current();
+					void loadProjectTreeRef.current().catch((error) => showToast(errorMessage(error)));
 					const sessions =
 						stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ??
 						firstProject.sessions;
@@ -979,12 +1031,20 @@ export function useWorkbench() {
 							? sessions.find((session) => session.id === lastSession?.sessionId)
 							: undefined;
 					const firstSession =
+						sessions.find((session) => session.id === requestedSessionId) ??
 						sessions.find((session) => session.id === stateRef.current.sessionId) ??
 						rememberedSession ??
 						sessions[0];
-					if (firstSession) await selectSessionRef.current(firstSession.id);
+					if (firstSession)
+						void selectSessionRef.current(firstSession.id).catch((error) => showToast(errorMessage(error)));
+				}
+				if (requestedSessionId) {
+					const url = new URL(window.location.href);
+					url.searchParams.delete("sessionId");
+					window.history.replaceState(window.history.state, "", url);
 				}
 			} catch (error) {
+				console.error("Web 工作区同步失败", { error, time: new Date().toISOString() });
 				if (error instanceof UnauthorizedError) {
 					bootstrapLoadedRef.current = false;
 					reconnectAttemptRef.current = 0;
@@ -1023,6 +1083,7 @@ export function useWorkbench() {
 		refreshGitCredentialAuthorization,
 		refreshModelOptions,
 		scheduleReconnect,
+		showToast,
 		updateState,
 	]);
 	initializeRef.current = initialize;
@@ -1065,6 +1126,7 @@ export function useWorkbench() {
 		socketRef.current?.close();
 		socketRef.current = undefined;
 		webApi.clearToken();
+		sessionReadAtRef.current.clear();
 		sessionDetailCacheRef.current.clear();
 		sessionDetailSeqRef.current.clear();
 		updateState(() => ({
@@ -1099,6 +1161,7 @@ export function useWorkbench() {
 		updateState,
 		transitionState,
 		showToast,
+		onSessionRead,
 		refreshProjectSessions,
 		loadTranscript,
 		loadSubagents,
@@ -1122,7 +1185,6 @@ export function useWorkbench() {
 		projectTreeGenerationRef,
 		sessionTreeRequestRef,
 		transcriptTimerRef,
-		transcriptRefreshPendingRef,
 		transcriptRequestRef,
 		pendingUserPromptRef,
 		sessionDetailCacheRef,
@@ -1263,6 +1325,19 @@ export function useWorkbench() {
 	refreshProjectFilesRef.current = refreshProjectFiles;
 	refreshModelOptionsRef.current = refreshModelOptions;
 	refreshModelSettingsRef.current = refreshModelSettings;
+
+	useEffect(() => {
+		if (
+			!state.sessionId ||
+			!state.transcriptPageLoaded ||
+			!state.hasMorePrevious ||
+			!state.previousCursor ||
+			state.loadingEarlier ||
+			state.transcriptError
+		)
+			return;
+		void loadEarlier().catch(() => {});
+	}, [loadEarlier, state.sessionId, state.transcriptPageLoaded, state.hasMorePrevious, state.previousCursor, state.loadingEarlier, state.transcriptError]);
 
 	const actions = useMemo(
 		() => ({
@@ -1440,6 +1515,38 @@ export function useWorkbench() {
 			showToast,
 		],
 	);
+
+	useEffect(() => {
+		if (typeof BroadcastChannel === "undefined") return;
+		const channel = new BroadcastChannel("lystar.web.session-read");
+		sessionReadChannelRef.current = channel;
+		channel.onmessage = (event: MessageEvent<unknown>) => {
+			const data = event.data;
+			if (!data || typeof data !== "object" || !("type" in data) || data.type !== "session_read" ||
+				!("sessionId" in data) || typeof data.sessionId !== "string" ||
+				!("readAt" in data) || typeof data.readAt !== "number" || !Number.isFinite(data.readAt)) return;
+			const sessionId = data.sessionId;
+			const readAt = Math.max(sessionReadAtRef.current.get(sessionId) ?? 0, data.readAt);
+			sessionReadAtRef.current.set(sessionId, readAt);
+			updateState((current) => acknowledgeSessionRead(current, sessionId, readAt));
+		};
+		return () => {
+			channel.close();
+			if (sessionReadChannelRef.current === channel) sessionReadChannelRef.current = undefined;
+		};
+	}, [updateState]);
+
+	useEffect(() => {
+		if (!("serviceWorker" in navigator)) return;
+		const handleNotificationClick = (event: MessageEvent<unknown>) => {
+			const data = event.data;
+			if (!data || typeof data !== "object" || !("type" in data) || data.type !== "open_session" ||
+				!("sessionId" in data) || typeof data.sessionId !== "string") return;
+			void selectSessionRef.current(data.sessionId).catch((error) => showToast(errorMessage(error)));
+		};
+		navigator.serviceWorker.addEventListener("message", handleNotificationClick);
+		return () => navigator.serviceWorker.removeEventListener("message", handleNotificationClick);
+	}, [showToast]);
 
 	useEffect(() => {
 		if (!state.currentProjectId || !state.sessionId) return;

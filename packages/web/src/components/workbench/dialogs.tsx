@@ -120,11 +120,11 @@ export function DirectoryDialog({
 							) : null}
 						</div>
 						<ScrollArea className="h-72 rounded-md border">
-							<div className="grid gap-1 p-2">
+							<div className="grid gap-0 p-2">
 								{listing.entries.map((entry) => (
 									<Button
 										key={entry.path}
-										className="justify-start gap-2 text-xs"
+										className="h-7 justify-start gap-2 py-1 text-xs"
 										variant={selectedDirectory === entry.path ? "secondary" : "ghost"}
 										onClick={() => setSelectedDirectory(entry.path)}
 										onDoubleClick={() => {

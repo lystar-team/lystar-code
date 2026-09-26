@@ -24,6 +24,9 @@ describe("composer render state", () => {
 	it("运行态字段变化时不会复用旧停止按钮", () => {
 		const current = composerState();
 		expect(composerStateEqual(current, { ...current, liveTurnActive: false })).toBe(false);
+		expect(composerStateEqual(current, { ...current, lastOutputSpeed: { outputTokens: 100, elapsedMs: 800 } })).toBe(
+			false,
+		);
 		expect(
 			composerStateEqual(current, {
 				...current,

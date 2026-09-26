@@ -44,6 +44,8 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	createRoomClaimTool,
+	createRoomTasksTool,
 	createSessionsTool,
 	DefaultPackageManager,
 	discoverAgentDefinitions,
@@ -163,6 +165,7 @@ import {
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
 import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
+import { OutputSpeedTracker } from "./output-speed.ts";
 import {
 	migrateLegacyWebAttachments,
 	rebindSessionAttachments,
@@ -1795,6 +1798,8 @@ class CoreRuntimeSession implements RuntimeSession {
 	private pendingTurnInputs = 0;
 	private turnInputQueue: Promise<void> = Promise.resolve();
 	private readonly activePromptOperations = new Set<Promise<AgentTurnContext | undefined>>();
+	private readonly outputSpeed = new OutputSpeedTracker();
+	private turnAssistantText?: string;
 
 	constructor(
 		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
@@ -2173,8 +2178,6 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async activateExtensionLifecycle(): Promise<void> {
-		await this.turnInputQueue;
-		await Promise.allSettled([...this.activePromptOperations]);
 		await this.runtime.activateExtensionLifecycle();
 	}
 
@@ -2442,6 +2445,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	private async bindCurrentSession(): Promise<void> {
+		this.outputSpeed.start();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.unsubscribeSteps?.();
@@ -2535,6 +2539,22 @@ class CoreRuntimeSession implements RuntimeSession {
 		});
 		this.unsubscribe = session.subscribe((event) => {
 			this.stateRevision++;
+			if (event.type === "agent_start") this.turnAssistantText = undefined;
+			if (
+				event.type === "message_end" &&
+				event.message.role === "assistant" &&
+				(event.message.stopReason === "stop" || event.message.stopReason === "length")
+			)
+				this.turnAssistantText = contentText(event.message.content, "");
+			if (event.type === "message_start" && event.message.role === "assistant") this.outputSpeed.start();
+			if (
+				event.type === "message_update" &&
+				event.message.role === "assistant" &&
+				(event.assistantMessageEvent.type === "text_delta" ||
+					event.assistantMessageEvent.type === "thinking_delta") &&
+				event.assistantMessageEvent.delta
+			)
+				this.outputSpeed.outputDelta();
 			if (
 				event.type === "entry_appended" &&
 				event.entry.type === "custom" &&
@@ -2542,6 +2562,16 @@ class CoreRuntimeSession implements RuntimeSession {
 				event.entry.customType !== AGENT_STEP_CUSTOM_TYPE
 			) {
 				this.activeExtensionActivities.at(-1)?.relatedEntryIds.push(event.entry.id);
+			}
+			if (event.type === "entry_appended" && event.entry.type === "compaction") {
+				this.stepController.associateMessage(event.entry.id);
+			}
+			if (
+				event.type === "tool_activity" &&
+				(event.activity.state === "preparing" || event.activity.state === "queued") &&
+				!AGENT_STEP_TOOL_NAMES.has(event.activity.name)
+			) {
+				this.stepController.associateTool(event.activity.toolCallId);
 			}
 			if (event.type === "tool_execution_start" && !AGENT_STEP_TOOL_NAMES.has(event.toolName)) {
 				this.stepController.associateTool(event.toolCallId);
@@ -2565,15 +2595,37 @@ class CoreRuntimeSession implements RuntimeSession {
 				}
 			}
 			if (event.type === "agent_settled") {
-				const outcome = session.getTurnResult(event.turn.turnId)?.outcome;
+				const result = session.getTurnResult(event.turn.turnId);
+				const outcome = result?.outcome;
 				const status = outcome === "failed" ? "failed" : outcome === "aborted" ? "interrupted" : "completed";
 				this.stepController.finishActive(status);
+				if (result) {
+					const snapshot = this.getSnapshot("owned");
+					this.emit({
+						type: "turn_settled",
+						payload: {
+							turnId: event.turn.turnId,
+							outcome: result.outcome,
+							text: Array.from((this.turnAssistantText ?? "").replace(/\s+/gu, " ").trim())
+								.slice(0, 120)
+								.join(""),
+							sessionId: snapshot.id,
+							cwd: snapshot.cwd,
+							...(snapshot.name ? { sessionName: snapshot.name } : {}),
+						},
+					});
+					this.turnAssistantText = undefined;
+				}
 			}
 			if (event.type === "message_end" || event.type === "entry_appended") {
 				queueMicrotask(() => this.emitCommittedEntries());
 			}
 			for (const progress of projectRuntimeProgress(event)) {
 				this.emit({ type: "progress", payload: progressWithAgentStep(progress, this.stepController) });
+			}
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				const outputSpeed = this.outputSpeed.finish(event.message.usage.output, event.message.stopReason);
+				if (outputSpeed) this.emit({ type: "progress", payload: { type: "usage", usage: outputSpeed } });
 			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
@@ -4546,6 +4598,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					customTools: [
 						...createAgentStepTools(stepController),
 						createSessionsTool(() => this.sessionCoordinator),
+						createRoomClaimTool(() => this.sessionCoordinator),
+						createRoomTasksTool(() => this.sessionCoordinator),
 					],
 				})),
 				services,

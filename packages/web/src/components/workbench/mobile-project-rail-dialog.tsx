@@ -153,7 +153,7 @@ export function MobileProjectRailDialog({
 		<>
 			<Button
 				ref={triggerRef}
-				className="lg:hidden"
+				className="size-11"
 				size="icon"
 				variant="ghost"
 				aria-expanded={open}
@@ -167,7 +167,7 @@ export function MobileProjectRailDialog({
 				type="button"
 				tabIndex={-1}
 				aria-hidden="true"
-				className="fixed inset-0 z-50 cursor-default border-0 bg-black/50 p-0 lg:hidden"
+				className="fixed inset-0 z-50 cursor-default border-0 bg-black/50 p-0"
 				onClick={close}
 				style={{ opacity: 0, visibility: "hidden" }}
 			/>
@@ -177,13 +177,13 @@ export function MobileProjectRailDialog({
 				aria-label="项目与会话"
 				aria-modal="true"
 				aria-hidden={!open}
-				className="fixed inset-y-0 left-0 z-50 flex w-[min(88vw,360px)] flex-col border-r border-border/60 bg-background shadow-lg will-change-transform lg:hidden"
+				className="mobile-project-rail fixed inset-y-0 left-0 z-50 flex w-[min(88vw,360px)] flex-col border-r border-border/60 bg-background pt-[env(safe-area-inset-top)] shadow-lg will-change-transform"
 				style={{ opacity: 0, visibility: "hidden" }}
 			>
 				<Button
-					ref={closeButtonRef}
-					className="absolute top-4 right-3 z-20"
-					size="icon-sm"
+				ref={closeButtonRef}
+				className="absolute top-[calc(0.75rem+env(safe-area-inset-top))] right-3 z-20 size-11"
+				size="icon-sm"
 					variant="ghost"
 					aria-label="关闭项目和会话"
 					onClick={close}

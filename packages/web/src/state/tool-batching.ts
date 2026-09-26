@@ -56,6 +56,14 @@ export function mergeWebSearchToolSummary(
 	return mergeWebSearchSummary(previous, structured === "网页搜索" ? next : structured);
 }
 
+export function mergeImageGenerationSummary(previous: string | undefined, next: string | undefined): string {
+	const incomingPrompt = parseToolSummary(next ?? "")?.prompt;
+	if (typeof incomingPrompt === "string" && incomingPrompt.trim()) return next ?? "";
+	const previousPrompt = parseToolSummary(previous ?? "")?.prompt;
+	if (typeof previousPrompt === "string" && previousPrompt.trim()) return previous ?? "";
+	return next || previous || "image_gen";
+}
+
 export function shouldJoinToolBatch(
 	previousTool: ToolBatchDescriptor | undefined,
 	nextTool: ToolBatchDescriptor,

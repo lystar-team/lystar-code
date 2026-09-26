@@ -33,3 +33,8 @@ export const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waitin
 export const SIDEBAR_MIN_WIDTH = 280;
 export const SIDEBAR_MAX_WIDTH = 560;
 export const SIDEBAR_DEFAULT_WIDTH = 392;
+
+export function sidebarWidthFromPointer(clientX: number, sidebarLeft: number): number {
+	const width = clientX - sidebarLeft;
+	return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
+}

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import { ToolActivityTracker } from "../src/core/tool-activity.ts";
 
@@ -84,7 +84,7 @@ describe("ToolActivityTracker", () => {
 		expect(success?.revision).toBeGreaterThan(preparing?.revision ?? 0);
 	});
 
-	it("流式编辑参数不在每个增量上重算完整 Diff", () => {
+	it("流式编辑参数出现内容后展示预览，完成后采用最终参数", () => {
 		const tracker = new ToolActivityTracker();
 		const startArgs = { path: "src/app.ts", edits: [] };
 		const streamedArgs = { path: "src/app.ts", edits: [{ oldText: "old\n", newText: "new\n" }] };
@@ -119,11 +119,48 @@ describe("ToolActivityTracker", () => {
 		)[0];
 
 		expect(start).toMatchObject({ diff: { files: [{ path: "src/app.ts" }] } });
-		expect(delta).toMatchObject({ state: "preparing", diff: { files: [{ path: "src/app.ts" }] } });
+		expect(delta).toMatchObject({
+			state: "preparing",
+			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 1, diff: "-old\n+new" }] },
+		});
 		expect(queued).toMatchObject({
 			state: "queued",
 			diff: { files: [{ path: "src/app.ts", additions: 1, deletions: 1, diff: "-old\n+new" }] },
 		});
+	});
+
+	it("流式写入预览按时间间隔更新，不逐片重算", () => {
+		const now = vi.spyOn(Date, "now");
+		try {
+			const tracker = new ToolActivityTracker();
+			const update = (content: string, type: "toolcall_start" | "toolcall_delta") =>
+				tracker.apply(
+					event({
+						type: "message_update",
+						message: {
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: "write-stream",
+									name: "write",
+									arguments: { path: "src/file.ts", content },
+								},
+							],
+						},
+						assistantMessageEvent: { type, contentIndex: 0 },
+					}),
+				)[0];
+			now.mockReturnValue(1_000);
+			expect(update("", "toolcall_start")?.diff?.files[0]?.diff).toBeUndefined();
+			expect(update("a", "toolcall_delta")?.diff?.files[0]?.diff).toBe("+a");
+			now.mockReturnValue(1_050);
+			expect(update("ab", "toolcall_delta")?.diff?.files[0]?.diff).toBe("+a");
+			now.mockReturnValue(1_100);
+			expect(update("abc", "toolcall_delta")?.diff?.files[0]?.diff).toBe("+abc");
+		} finally {
+			now.mockRestore();
+		}
 	});
 
 	it("终态后忽略迟到的进行时更新", () => {
