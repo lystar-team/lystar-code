@@ -41,7 +41,13 @@ vi.mock("@lystar/code-web-runtime", async (importOriginal) => {
 		ensureRuntimeService: vi.fn(async () => {
 			state.runtimeRunning = true;
 		}),
+		installRuntimeService: vi.fn(async () => {
+			state.runtimeRunning = true;
+		}),
 		ensureWebService: vi.fn(() => {
+			state.gatewayRunning = true;
+		}),
+		installWebService: vi.fn(() => {
 			state.gatewayRunning = true;
 		}),
 	};
@@ -84,6 +90,58 @@ describe("Web service restart", () => {
 			expect(webRuntime.stopRuntimeService).not.toHaveBeenCalled();
 		},
 	);
+
+	it("reinstalls development services with the current invocation on restart", async () => {
+		state.gatewayRunning = true;
+		state.runtimeRunning = true;
+		state.busy = true;
+		const options = await serviceOptions("web-dev-config.json");
+		const frontendInvocation = { command: "npm", args: ["run", "dev"], cwd: options.agentDir };
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ ok: true, host: "connected" })),
+		);
+
+		await runWebServiceAction({
+			...options,
+			frontendInvocation,
+			frontendPort: 2420,
+			action: "restart",
+		});
+
+		expect(webRuntime.installRuntimeService).toHaveBeenCalledWith("tcp://127.0.0.1:2423", false, {
+			profile: "development",
+			invocation: {
+				program: options.runtimeInvocation.command,
+				args: options.runtimeInvocation.args,
+				cwd: options.runtimeInvocation.cwd,
+			},
+			agentDir: options.agentDir,
+			environment: expect.objectContaining({ LYSTAR_CLI_MODE: "development" }),
+		});
+		expect(webRuntime.installWebService).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "gateway",
+				profile: "development",
+				invocation: expect.objectContaining({ program: options.gatewayInvocation.command }),
+			}),
+			{ interactiveAdmin: false },
+		);
+		expect(webRuntime.installWebService).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "frontend",
+				profile: "development",
+				invocation: {
+					program: frontendInvocation.command,
+					args: frontendInvocation.args,
+					cwd: frontendInvocation.cwd,
+				},
+			}),
+			{ interactiveAdmin: false },
+		);
+		expect(webRuntime.ensureRuntimeService).not.toHaveBeenCalled();
+		expect(webRuntime.ensureWebService).not.toHaveBeenCalled();
+	});
 
 	it.each([undefined, "web-dev-config.json"])(
 		"forces active Runtime sessions to stop for %s",

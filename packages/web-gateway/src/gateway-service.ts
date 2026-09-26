@@ -757,7 +757,6 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 				config.agentDir,
 			);
 		}
-		return ensureWebServices(options);
 	}
 	return reconcileWebServices(options);
 }
