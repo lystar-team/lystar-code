@@ -466,7 +466,7 @@ describe("Tool recovery observe ledger", () => {
 		expect(ledger).toHaveLength(1);
 		expect(ledger[0]).toMatchObject({
 			toolName: "read",
-			failureCode: "UNCLASSIFIED",
+			failureCode: "TARGET_NOT_FOUND",
 			action: "stop",
 			outcome: "failed",
 		});

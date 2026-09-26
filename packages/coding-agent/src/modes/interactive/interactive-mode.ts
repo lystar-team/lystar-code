@@ -9,7 +9,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt, Transport } from "@earendil-works/pi-ai";
-import type { AssistantMessage, ImageContent, Message, Model, Usage } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	type ImageContent,
+	isRetryableAssistantError,
+	type Message,
+	type Model,
+	type Usage,
+} from "@earendil-works/pi-ai/compat";
 import type {
 	AltScreenSearchTarget,
 	AutocompleteItem,
@@ -62,6 +69,8 @@ import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../.
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import { CACHE_TTL_MS, type CacheMiss, collectCacheMisses, detectCacheMiss } from "../../core/cache-stats.ts";
+import { formatCacheWarmingUsage } from "../../core/cache-warmer.ts";
+import { findExtensionStackMatches, recordCrash } from "../../core/crash-log.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../../core/defaults.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -79,6 +88,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -88,7 +98,12 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
-import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import {
+	type SessionEntry,
+	SessionManager,
+	sessionEntryToContextMessages,
+	type UsageEntry,
+} from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, ThinkingDisplayMode, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
@@ -128,6 +143,7 @@ import { getGitRuntime, killTrackedDetachedChildren } from "../../utils/shell.ts
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureManagedWindowsBash, ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
+import { reportBug } from "./bug-report.ts";
 import { type AgentWorkbenchAgent, AgentWorkbenchComponent } from "./components/agent-workbench.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -235,7 +251,7 @@ interface Expandable {
 
 interface WorkingStatusEditor extends EditorComponent {
 	readonly embedWorkingStatus: boolean;
-	setWorkingStatusIndicator(indicator: WorkingStatusIndicator | undefined): void;
+	setWorkingStatusIndicator(indicator: StatusIndicator | undefined): void;
 }
 
 function isWorkingStatusEditor(editor: EditorComponent): editor is WorkingStatusEditor {
@@ -356,6 +372,23 @@ function isDeadTerminalError(error: unknown): boolean {
 	}
 	const code = (error as NodeJS.ErrnoException).code;
 	return code !== undefined && DEAD_TERMINAL_ERROR_CODES.has(code);
+}
+
+export function formatCrashExtensionHint(extensionMatches: readonly string[] | undefined): string | undefined {
+	const matches = Array.isArray(extensionMatches)
+		? extensionMatches.filter((match): match is string => typeof match === "string" && match.length > 0)
+		: [];
+	if (matches.length === 0) return undefined;
+	const quoted = matches.map((match) => `\`${match}\``);
+	const labels =
+		quoted.length === 1
+			? quoted[0]
+			: quoted.length === 2
+				? quoted.join(" and ")
+				: `${quoted.slice(0, -1).join(", ")}, and ${quoted[quoted.length - 1]}`;
+	const noun = matches.length === 1 ? "extension" : "extensions";
+	const pronoun = matches.length === 1 ? "it" : "them";
+	return `A stack frame came from loaded ${noun} ${labels}, which may be involved. Try disabling ${pronoun} with \`${APP_NAME} config\`, or run \`${APP_NAME} -ne\` to confirm.`;
 }
 
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
@@ -636,6 +669,7 @@ export class InteractiveMode {
 	private changelogMarkdown: string | undefined = undefined;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
+	private bugReportHintShown = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
 	private lastStatusSpacer: Spacer | undefined = undefined;
@@ -644,6 +678,7 @@ export class InteractiveMode {
 
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
+	private readonly entriesRenderedByBoundaryCompaction = new Set<string>();
 	private streamingMessage: AssistantMessage | undefined = undefined;
 
 	// Tool execution tracking: toolCallId -> component
@@ -2400,9 +2435,69 @@ export class InteractiveMode {
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
 		const message = error instanceof Error ? error.message : String(error);
 		this.showError(`${prefix}: ${message}`);
+		const extensionHint = this.getCrashExtensionHint(error);
+		if (extensionHint) {
+			this.chatContainer.addChild(new Text(theme.fg("warning", extensionHint), this.outputPad, 0));
+		}
+		if (this.recordCrash("fatal_error", error)) {
+			this.chatContainer.addChild(new Text(theme.fg("muted", this.crashReportInstructions()), this.outputPad, 0));
+		}
 		stopThemeWatcher();
 		this.stop("transcript");
 		process.exit(1);
+	}
+
+	private getCrashExtensionHint(error: unknown): string | undefined {
+		try {
+			return formatCrashExtensionHint(
+				findExtensionStackMatches(
+					error instanceof Error ? error.stack : undefined,
+					this.session.resourceLoader.getExtensions().extensions,
+				),
+			);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Persist a crash so the next start can point the user at `/bug`. Returns false when nothing was written. */
+	private recordCrash(kind: "uncaught_exception" | "fatal_error", error: unknown): boolean {
+		try {
+			return (
+				recordCrash({
+					kind,
+					error,
+					sessionFile: this.session.sessionFile,
+					cwd: this.session.sessionManager.getCwd(),
+				}) !== undefined
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	private crashReportInstructions(): string {
+		const resume = this.session.sessionFile ? `run \`${APP_NAME} -r\` to resume the session, then` : "start pi and";
+		return `To report this crash: ${resume} run /bug. The crash details are attached automatically.`;
+	}
+
+	private suggestBugReport(): void {
+		if (this.bugReportHintShown) return;
+		this.bugReportHintShown = true;
+		this.chatContainer.addChild(
+			new Text(
+				theme.fg("muted", `If this looks like a ${APP_NAME} bug, /bug sends a report to the developers.`),
+				this.outputPad,
+				0,
+			),
+		);
+		this.ui.requestRender();
+	}
+
+	private maybeSuggestBugReport(message: AssistantMessage): void {
+		if (message.stopReason !== "error" || isRetryableAssistantError(message)) return;
+		if (/\b(?:abort(?:ed)?|cancel(?:l?ed)?)\b/i.test(message.errorMessage ?? "")) return;
+		this.suggestBugReport();
 	}
 
 	private renderCurrentSessionState(): void {
@@ -2500,7 +2595,7 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private setEditorWorkingStatusIndicator(indicator: WorkingStatusIndicator | undefined): boolean {
+	private setEditorWorkingStatusIndicator(indicator: StatusIndicator | undefined): boolean {
 		this.defaultEditor.setWorkingStatusIndicator(undefined);
 		if (!isWorkingStatusEditor(this.editor)) return false;
 		this.editor.setWorkingStatusIndicator(indicator);
@@ -2513,7 +2608,7 @@ export class InteractiveMode {
 		this.activeWorkingIndicatorEmbedded = false;
 		this.statusContainer.clear();
 		this.setEditorWorkingStatusIndicator(undefined);
-		if (indicator instanceof WorkingStatusIndicator && this.setEditorWorkingStatusIndicator(indicator)) {
+		if (this.setEditorWorkingStatusIndicator(indicator)) {
 			this.activeWorkingIndicatorEmbedded = true;
 			return;
 		}
@@ -2525,7 +2620,7 @@ export class InteractiveMode {
 			return;
 		}
 		const clearedIndicator = this.activeStatusIndicator;
-		const clearedIndicatorWasEmbedded = clearedIndicator?.kind === "working" && this.activeWorkingIndicatorEmbedded;
+		const clearedIndicatorWasEmbedded = this.activeWorkingIndicatorEmbedded;
 		clearedIndicator?.dispose();
 		this.activeStatusIndicator = undefined;
 		this.activeWorkingIndicatorEmbedded = false;
@@ -3536,6 +3631,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/bug" || text.startsWith("/bug ")) {
+				await this.handleBugCommand(text.startsWith("/bug ") ? text.slice(5).trim() : undefined);
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/copy") {
 				await this.handleCopyCommand();
 				this.editor.setText("");
@@ -3981,8 +4081,46 @@ export class InteractiveMode {
 				break;
 
 			case "entry_appended":
+				if (this.entriesRenderedByBoundaryCompaction.delete(event.entry.id)) break;
 				if (event.entry.type === "custom") {
 					this.addCustomEntryToChat(event.entry);
+					this.ui.requestRender();
+				} else if (event.entry.type === "usage" && event.entry.kind === "cache_warm") {
+					this.addCacheWarmingUsage(event.entry);
+					this.ui.requestRender();
+				} else if (event.entry.type === "custom_message" && event.entry.display) {
+					this.addMessageToChat(
+						createCustomMessage(
+							event.entry.customType,
+							event.entry.content,
+							event.entry.display,
+							event.entry.details,
+							event.entry.timestamp,
+						),
+					);
+					this.ui.requestRender();
+				} else if (event.entry.type === "compaction") {
+					const entries = this.sessionManager.buildContextEntries();
+					if (entries[0]?.id !== event.entry.id) break;
+					this.chatContainer.clear();
+					const branch = this.sessionManager.getBranch();
+					const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
+					const entriesAfterCompaction = new Set(branch.slice(compactionIndex + 1).map((entry) => entry.id));
+					const retainedEntries = entries.slice(1);
+					this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
+					this.addMessageToChat(
+						createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp),
+					);
+					if (event.entry.usage) {
+						this.addCompactionCostNotice({
+							type: "compaction_cost",
+							kind: "compaction",
+							usage: event.entry.usage,
+						});
+					}
+					this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
+					for (const entryId of entriesAfterCompaction) this.entriesRenderedByBoundaryCompaction.add(entryId);
+					this.footer.invalidate();
 					this.ui.requestRender();
 				}
 				break;
@@ -4128,6 +4266,7 @@ export class InteractiveMode {
 							}
 						}
 						this.pendingTools.clear();
+						this.maybeSuggestBugReport(this.streamingMessage);
 					} else {
 						// Args are now complete - trigger diff computation for edit tools
 						for (const [, component] of this.pendingTools.entries()) {
@@ -4702,6 +4841,12 @@ export class InteractiveMode {
 	 * Render billing usage for a compaction or branch summary. The notice is derived
 	 * from persisted summary usage and is not stored as a separate session entry.
 	 */
+	private addCacheWarmingUsage(entry: UsageEntry): void {
+		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(theme.fg("dim", formatCacheWarmingUsage(entry)), 1, 0));
+	}
+
 	private addCompactionCostNotice(notice: CompactionCostNotice): void {
 		if (!this.settingsManager.getShowCacheMissNotices()) return;
 
@@ -4715,8 +4860,34 @@ export class InteractiveMode {
 		);
 	}
 
+	private static countDroppedThinkingBlocks(message: AssistantMessage): number {
+		return (message.diagnostics ?? []).reduce((count, diagnostic) => {
+			if (diagnostic.type !== "anthropic_input_transformations") return count;
+			const transformations = diagnostic.details?.transformations;
+			if (!Array.isArray(transformations)) return count;
+			return (
+				count +
+				transformations.filter(
+					(transformation) =>
+						typeof transformation === "object" &&
+						transformation !== null &&
+						transformation.type === "thinking_dropped",
+				).length
+			);
+		}, 0);
+	}
+
 	private maybeShowAssistantDiagnostics(message: AssistantMessage): void {
 		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		const droppedCount = InteractiveMode.countDroppedThinkingBlocks(message);
+		if (droppedCount === 0) return;
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry?.type !== "message" || entry.message.role !== "assistant") continue;
+			if (droppedCount <= InteractiveMode.countDroppedThinkingBlocks(entry.message)) return;
+			break;
+		}
 
 		for (const diagnostic of message.diagnostics ?? []) {
 			if (diagnostic.type !== "anthropic_input_transformations") continue;
@@ -5133,6 +5304,11 @@ export class InteractiveMode {
 		} catch {}
 		console.error(`${APP_NAME} exiting due to uncaughtException:`);
 		console.error(error);
+		const extensionHint = this.getCrashExtensionHint(error);
+		if (extensionHint) console.error(`\n${extensionHint}`);
+		if (this.recordCrash("uncaught_exception", error)) {
+			console.error(`\n${this.crashReportInstructions()}`);
+		}
 		process.exit(1);
 	}
 
@@ -6496,6 +6672,11 @@ export class InteractiveMode {
 						await this.session.abort();
 					}
 
+					if (this.session.isCompacting) {
+						this.showError("请等待当前压缩或会话树切换完成后再导航。");
+						return;
+					}
+
 					// Set up escape handler and status indicator if summarizing
 					let showingSummaryIndicator = false;
 					const originalOnEscape = this.defaultEditor.onEscape;
@@ -6913,6 +7094,7 @@ export class InteractiveMode {
 
 		let selectedModel: Model<any> | undefined;
 		let selectionError: string | undefined;
+		let selectionPending = false;
 		if (isUnknownModel(previousModel)) {
 			const availableModels = this.session.modelRuntime.getAvailableSnapshot();
 			const providerModels = availableModels.filter((model) => model.provider === providerId);
@@ -6921,7 +7103,7 @@ export class InteractiveMode {
 			} else if (!hasDefaultModelProvider(providerId)) {
 				selectionError = `${actionLabel}，但 Provider“${providerId}”没有配置默认模型。请使用 /model 选择模型。`;
 			} else if (providerModels.length === 0) {
-				selectionError = `${actionLabel}，但该 Provider 暂无可用模型。请使用 /model 选择模型。`;
+				selectionPending = true;
 			} else {
 				const defaultModelId = defaultModelPerProvider[providerId];
 				selectedModel = providerModels.find((model) => model.id === defaultModelId);
@@ -6959,11 +7141,34 @@ export class InteractiveMode {
 		const timeout = setTimeout(() => controller.abort(), 15_000);
 		void this.session.modelRuntime
 			.refresh({ providers: [providerId], signal: controller.signal })
-			.then((result) => {
+			.then(async (result) => {
 				if (result.aborted) {
 					this.showWarning(`${actionLabel}，但刷新模型目录超时，当前使用缓存模型。`);
 				} else if (result.errors.size > 0) {
 					this.showWarning(`${actionLabel}，但模型目录刷新失败，当前使用缓存模型。`);
+				}
+				if (selectionPending && isUnknownModel(this.session.model)) {
+					const providerModels = this.session.modelRuntime
+						.getAvailableSnapshot()
+						.filter((model) => model.provider === providerId);
+					const defaultModelId = hasDefaultModelProvider(providerId)
+						? defaultModelPerProvider[providerId]
+						: undefined;
+					const discoveredModel = providerModels.find((model) => model.id === defaultModelId) ?? providerModels[0];
+					if (!discoveredModel) {
+						this.showError(`${actionLabel}，但该 Provider 暂无可用模型。请使用 /model 选择模型。`);
+					} else {
+						try {
+							await this.session.setModel(discoveredModel, { persist: true });
+							this.showStatus(`${actionLabel}，已选择 ${discoveredModel.id}，凭据保存到 ${getAuthPath()}`);
+							void this.maybeWarnAboutAnthropicSubscriptionAuth(discoveredModel);
+							this.checkDaxnutsEasterEgg(discoveredModel);
+						} catch (error: unknown) {
+							this.showError(
+								`${actionLabel}，但选择默认模型失败：${error instanceof Error ? error.message : String(error)}。请使用 /model 重新选择。`,
+							);
+						}
+					}
 				}
 				this.updateAvailableProviderCount();
 				this.footer.invalidate();
@@ -7373,6 +7578,21 @@ export class InteractiveMode {
 		} finally {
 			restoreEditor();
 		}
+	}
+
+	private async handleBugCommand(hint: string | undefined): Promise<void> {
+		await reportBug(
+			{
+				session: this.session,
+				ui: this.ui,
+				editorContainer: this.editorContainer,
+				editor: this.editor,
+				keybindings: this.keybindings,
+				showStatus: (message) => this.showStatus(message),
+				showError: (message) => this.showError(message),
+			},
+			hint,
+		);
 	}
 
 	private async handleCopyCommand(
@@ -8032,12 +8252,18 @@ export class InteractiveMode {
 		const extensionRunner = this.session.extensionRunner;
 
 		// Emit user_bash event to let extensions intercept
-		const eventResult = await extensionRunner.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.sessionManager.getCwd(),
-		});
+		let eventResult: Awaited<ReturnType<typeof extensionRunner.emitUserBash>>;
+		try {
+			eventResult = await extensionRunner.emitUserBash({
+				type: "user_bash",
+				command,
+				excludeFromContext,
+				cwd: this.sessionManager.getCwd(),
+			});
+		} catch (error) {
+			this.showError(`Shell 命令执行失败：${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {

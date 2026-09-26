@@ -108,9 +108,18 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain(expected);
 		});
 
-		test("includes concise progress and shared mutation guidance for active mutation tools", () => {
+		test("deduplicates mutation guidance supplied by active tools", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "edit", "write"],
+				toolGuidelines: {
+					edit: [
+						"For each file, make at most one mutation call per assistant response; combine all changes into one edit or write call.",
+					],
+					write: [
+						"For each file, make at most one mutation call per assistant response; combine all changes into one edit or write call.",
+					],
+				},
+				promptGuidelines: ["Before calling tools for a non-trivial task"],
 				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
@@ -135,9 +144,11 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).toContain(
-				"- Resolve docs/... and examples/... against these absolute paths, not the current working directory",
+				"When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
-			expect(prompt).toContain("environment variables, read the relevant docs before implementation");
+			expect(prompt).toContain(
+				"When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
+			);
 		});
 	});
 
@@ -169,7 +180,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("custom prompt tool contract", () => {
-		test("includes active tool declarations and guidelines", () => {
+		test("preserves an explicit custom prompt without injecting default tool rules", () => {
 			const prompt = buildSystemPrompt({
 				customPrompt: "Custom system prompt.",
 				selectedTools: ["read", "edit"],
@@ -183,11 +194,7 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain(
-				"Available tools for this session:\n- read: Read file contents\n- edit: Make precise file edits",
-			);
-			expect(prompt).toContain("- Treat the tool declarations supplied with the request as authoritative.");
-			expect(prompt).toContain("- Use edit for targeted file changes.");
+			expect(prompt).toBe(`Custom system prompt.\n\n<cwd>\n${process.cwd()}\n</cwd>`);
 		});
 	});
 

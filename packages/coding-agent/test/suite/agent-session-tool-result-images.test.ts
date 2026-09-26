@@ -90,11 +90,14 @@ describe("AgentSession tool result images", () => {
 	});
 
 	it("honors images.autoResize being disabled", async () => {
+		const resizeOptions = { maxWidth: 1200, maxHeight: 1000, maxBytes: 500000, jpegQuality: 70 };
 		const harness = await createHarness({
 			tools: [screenshotTool],
 			settings: { images: { autoResize: false } },
 		});
 		harnesses.push(harness);
+		if (!harness.session.model) throw new Error("Expected a model");
+		harness.session.model.inputLimits = { images: { resize: resizeOptions } };
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("screenshot", {})], { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),

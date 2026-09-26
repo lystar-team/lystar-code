@@ -1,14 +1,12 @@
-# Windows Setup
+# Run Pi on Windows
 
 LYStar requires a Bash-compatible shell for the built-in `bash` Tool. On Windows x64, the installer and first interactive startup provision a LYStar-managed MinGit Bash under `~/.pi/agent/bin/mingit/`; users do not need a system Git installation.
 
 Pi uses Git Bash by default on Windows. Checked locations (in order):
 
-1. Custom path from `~/.pi/agent/settings.json`
-2. Git Bash (`C:\Program Files\Git\bin\bash.exe`)
-3. `bash.exe` on PATH (Cygwin, MSYS2, WSL)
+Follow the main [Quickstart](quickstart.md) to install and authenticate Pi. Use this page to choose and configure its command environment.
 
-For most users, [Git for Windows](https://git-scm.com/download/win) is sufficient.
+## Choose native Windows or WSL
 
 The managed archive is pinned to MinGit `2.55.0.3` and a fixed SHA-256. LYStar downloads from npmmirror first and falls back to the official Git for Windows Release, validates Bash and Git in staging, then replaces the shared managed directory atomically.
 
@@ -29,7 +27,7 @@ Interactive standalone launches open the Windows-only `lystar-terminal.exe` host
 
 ## PowerShell Tool
 
-The optional `powershell` tool runs commands through `pwsh.exe` when available, otherwise Windows PowerShell. It starts PowerShell with `-NoProfile -NonInteractive -ExecutionPolicy Bypass`. Administrator-enforced execution policies can still take precedence.
+## Use Git Bash on native Windows
 
 Use `defaultTools` to enable it alongside the built-in tools. To replace the model-facing `bash` tool:
 
@@ -39,19 +37,15 @@ Use `defaultTools` to enable it alongside the built-in tools. To replace the mod
 }
 ```
 
-Or enable both while comparing behavior:
+Restart Pi, then ask it to run a harmless PowerShell command. The `!` and `!!` editor commands continue to use Bash. The `powershell` tool is available only when Pi runs as a native Windows process.
 
-```json
-{
-  "defaultTools": ["read", "bash", "powershell", "edit", "write"]
-}
-```
+See [Settings](settings.md#tools) for other tool combinations.
 
 The `!` and `!!` editor commands continue to use Bash.
 
 `PI_OFFLINE=1` disables implicit downloads. An explicit `shellPath` still overrides the managed shell:
 
-## Custom Bash Path
+Set `shellPath` when Bash is installed somewhere Pi does not discover automatically:
 
 ```json
 {

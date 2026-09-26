@@ -10,7 +10,6 @@ import { formatToolSummary, getToolSummary } from "../../modes/interactive/compo
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { splitBom } from "../../utils/text.ts";
-import { getExperimentalToolSampling } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import {
@@ -713,7 +712,7 @@ export function createEditToolDefinition(
 			if (typeof path !== "string") return [];
 			return [await getMutationQueueKey(resolveToCwd(path, ctx?.cwd || cwd))];
 		},
-		constrainedSampling: getExperimentalToolSampling(),
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		renderShell: "self",
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {

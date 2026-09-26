@@ -26,9 +26,10 @@ import type {
 	AgentTool,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
+	FinishTurn,
 	PrepareNextTurnContext,
+	PrepareRequest,
 	QueueMode,
-	ShouldStopAfterTurnContext,
 	StreamFn,
 	ToolExecutionMode,
 } from "./types.ts";
@@ -121,9 +122,10 @@ export interface AgentOptions {
 	onResponse?: SimpleStreamOptions["onResponse"];
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
-	prepareRequest?: (context: AgentContext, signal?: AbortSignal) => AgentContext | Promise<AgentContext>;
+	finishTurn?: FinishTurn;
 	validateRequest?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
-	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext, signal?: AbortSignal) => boolean | Promise<boolean>;
+	shouldStopAfterTurn?: (context: PrepareNextTurnContext, signal?: AbortSignal) => boolean | Promise<boolean>;
+	prepareRequest?: PrepareRequest;
 	prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
@@ -157,19 +159,16 @@ class PendingMessageQueue {
 		return this.messages.length > 0;
 	}
 
-	drain(): AgentMessage[] {
-		if (this.mode === "all") {
-			const drained = this.messages.slice();
-			this.messages = [];
-			return drained;
-		}
-
+	peek(): AgentMessage[] {
+		if (this.mode === "all") return this.messages.slice();
 		const first = this.messages[0];
-		if (!first) {
-			return [];
-		}
-		this.messages = this.messages.slice(1);
-		return [first];
+		return first ? [first] : [];
+	}
+
+	drain(): AgentMessage[] {
+		const drained = this.peek();
+		this.messages = this.messages.slice(drained.length);
+		return drained;
 	}
 
 	removeAt(index: number): AgentMessage | undefined {
@@ -214,12 +213,10 @@ export class Agent {
 		context: AfterToolCallContext,
 		signal?: AbortSignal,
 	) => Promise<AfterToolCallResult | undefined>;
-	public prepareRequest?: (context: AgentContext, signal?: AbortSignal) => AgentContext | Promise<AgentContext>;
+	public finishTurn?: FinishTurn;
 	public validateRequest?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
-	public shouldStopAfterTurn?: (
-		context: ShouldStopAfterTurnContext,
-		signal?: AbortSignal,
-	) => boolean | Promise<boolean>;
+	public shouldStopAfterTurn?: (context: PrepareNextTurnContext, signal?: AbortSignal) => boolean | Promise<boolean>;
+	public prepareRequest?: PrepareRequest;
 	public prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
@@ -253,9 +250,10 @@ export class Agent {
 		this.onResponse = runtimeOptions.onResponse;
 		this.beforeToolCall = runtimeOptions.beforeToolCall;
 		this.afterToolCall = runtimeOptions.afterToolCall;
-		this.prepareRequest = runtimeOptions.prepareRequest;
+		this.finishTurn = runtimeOptions.finishTurn;
 		this.validateRequest = runtimeOptions.validateRequest;
 		this.shouldStopAfterTurn = runtimeOptions.shouldStopAfterTurn;
+		this.prepareRequest = runtimeOptions.prepareRequest;
 		this.prepareNextTurn = runtimeOptions.prepareNextTurn;
 		this.prepareNextTurnWithContext = runtimeOptions.prepareNextTurnWithContext;
 		this.steeringQueue = new PendingMessageQueue(runtimeOptions.steeringMode ?? "one-at-a-time");
@@ -349,6 +347,12 @@ export class Agent {
 	/** Returns true when either queue still contains pending messages. */
 	hasQueuedMessages(): boolean {
 		return this.steeringQueue.hasItems() || this.followUpQueue.hasItems();
+	}
+
+	/** Preview the messages selected for the next turn without consuming them. */
+	peekQueuedMessages(): AgentMessage[] {
+		const steering = this.steeringQueue.peek();
+		return steering.length > 0 ? steering : this.followUpQueue.peek();
 	}
 
 	/** Active abort signal for the current run, if any. */
@@ -485,9 +489,7 @@ export class Agent {
 
 	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
-		const prepareRequest = this.prepareRequest;
-		const validateRequest = this.validateRequest;
-		const shouldStopAfterTurn = this.shouldStopAfterTurn;
+
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
@@ -501,11 +503,18 @@ export class Agent {
 			toolRecoveryController: this.toolRecoveryController,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
-			prepareRequest: prepareRequest ? async (context) => await prepareRequest(context, this.signal) : undefined,
-			validateRequest: validateRequest ? async (context) => await validateRequest(context, this.signal) : undefined,
-			shouldStopAfterTurn: shouldStopAfterTurn
-				? async (context) => await shouldStopAfterTurn(context, this.signal)
-				: undefined,
+			finishTurn:
+				this.finishTurn || this.shouldStopAfterTurn
+					? async (context, signal) => {
+							const decision = await this.finishTurn?.(context, signal);
+							if (decision?.action === "end") return decision;
+							return (await this.shouldStopAfterTurn?.(context, signal))
+								? { action: "end" }
+								: decision || undefined;
+						}
+					: undefined,
+			validateRequest: this.validateRequest,
+			prepareRequest: this.prepareRequest,
 			prepareNextTurn:
 				this.prepareNextTurnWithContext || this.prepareNextTurn
 					? async (context) => {

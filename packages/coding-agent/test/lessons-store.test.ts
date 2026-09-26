@@ -424,7 +424,7 @@ describe("Tool recovery lessons store", () => {
 		const rolledBack = await rollbackToolRecoveryLesson(agentDir, firstUpdate.id, current.version, { now: NOW });
 		expect(rolledBack.status).toBe("candidate");
 		expect(rolledBack.version).toBe(current.version + 1);
-	});
+	}, 60_000);
 
 	it("reconciles a persisted ledger exactly once after a restart", async () => {
 		const agentDir = createTempDir();

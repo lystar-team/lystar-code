@@ -132,7 +132,7 @@ describe("Radius provider", () => {
 			authContext: emptyAuthContext,
 		});
 
-		expect(runtime.getModels(RADIUS_PROVIDER_ID)).toEqual([]);
+		expect(runtime.getAvailableSnapshot().filter((model) => model.provider === RADIUS_PROVIDER_ID)).toEqual([]);
 		expect(fetch).not.toHaveBeenCalled();
 	});
 

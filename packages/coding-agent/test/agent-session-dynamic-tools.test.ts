@@ -162,9 +162,7 @@ describe("AgentSession dynamic tool registration", () => {
 		expect(session.getActiveToolNames()).toContain("dynamic_tool");
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).toContain("- Use dynamic_tool when the user asks for dynamic behavior tests.");
-		expect(session.systemPrompt).toContain(
-			"The apply_patch tool is unavailable. Use edit with unique oldText/newText replacements for file changes.",
-		);
+		expect(session.getActiveToolNames()).not.toContain("apply_patch");
 
 		session.dispose();
 	});

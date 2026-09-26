@@ -165,7 +165,7 @@ describe("post-login model discovery", () => {
 			ui: { requestRender: vi.fn() },
 		};
 		await complete.call(context, "radius", "Radius", "oauth", unknownModel);
-		expect(context.showStatus).toHaveBeenCalledWith(expect.stringContaining("Credentials saved"));
+		expect(context.showStatus).toHaveBeenCalledWith(expect.stringContaining("已登录 Radius，凭据保存到"));
 		expect(context.showError).not.toHaveBeenCalled();
 		expect(setModel).not.toHaveBeenCalled();
 
@@ -198,7 +198,7 @@ describe("post-login model discovery", () => {
 		const login = await startLogin();
 		await login.discover([]);
 		expect(login.setModel).not.toHaveBeenCalled();
-		expect(login.showError).toHaveBeenCalledWith(expect.stringContaining("no models are available"));
+		expect(login.showError).toHaveBeenCalledWith(expect.stringContaining("暂无可用模型"));
 	});
 
 	it("preserves a model selected during refresh", async () => {
@@ -212,8 +212,8 @@ describe("post-login model discovery", () => {
 	it("bounds refresh to 15 seconds", async () => {
 		const login = await startLogin();
 		await vi.advanceTimersByTimeAsync(15_000);
-		expect(login.showWarning).toHaveBeenCalledWith(expect.stringContaining("timed out"));
-		expect(login.showError).toHaveBeenCalledWith(expect.stringContaining("no models are available"));
+		expect(login.showWarning).toHaveBeenCalledWith(expect.stringContaining("超时"));
+		expect(login.showError).toHaveBeenCalledWith(expect.stringContaining("暂无可用模型"));
 		expect(login.setModel).not.toHaveBeenCalled();
 	});
 });

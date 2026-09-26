@@ -54,7 +54,7 @@ type NoticeContext = {
 	sessionManager: { getBranch(): Array<{ type: "message"; message: AssistantMessage }> };
 };
 
-const maybeShowThinkingDropNotice = Reflect.get(InteractiveMode.prototype, "maybeShowThinkingDropNotice") as (
+const maybeShowAssistantDiagnostics = Reflect.get(InteractiveMode.prototype, "maybeShowAssistantDiagnostics") as (
 	this: NoticeContext,
 	message: AssistantMessage,
 ) => void;
@@ -67,16 +67,16 @@ describe("InteractiveMode assistant diagnostics", () => {
 			settingsManager: { getShowCacheMissNotices: () => true },
 			sessionManager: { getBranch: () => [] },
 		};
-		maybeShowThinkingDropNotice.call(enabled, message);
+		maybeShowAssistantDiagnostics.call(enabled, message);
 		const output = stripAnsi(enabled.chatContainer.render(120).join("\n"));
-		expect(output).toContain("Anthropic dropped 3 thinking blocks (details in session)");
+		expect(output).toContain("Anthropic dropped 3 thinking blocks");
 
 		const disabled = {
 			chatContainer: new Container(),
 			settingsManager: { getShowCacheMissNotices: () => false },
 			sessionManager: { getBranch: () => [] },
 		};
-		maybeShowThinkingDropNotice.call(disabled, message);
+		maybeShowAssistantDiagnostics.call(disabled, message);
 		expect(disabled.chatContainer.children).toHaveLength(0);
 	});
 
@@ -88,7 +88,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 			sessionManager: { getBranch: () => [{ type: "message" as const, message }] },
 		};
 
-		maybeShowThinkingDropNotice.call(context, { ...message, timestamp: 2 });
+		maybeShowAssistantDiagnostics.call(context, { ...message, timestamp: 2 });
 
 		expect(context.chatContainer.children).toHaveLength(0);
 	});

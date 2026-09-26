@@ -20,6 +20,7 @@ test("native image errors abort paste without reading text or changing the edito
 	const context = {
 		editor: { insertTextAtCursor: vi.fn() },
 		ui: { requestRender: vi.fn() },
+		showWarning: vi.fn(),
 	};
 	const prototype = InteractiveMode.prototype as unknown as {
 		handleClipboardPaste(this: typeof context): Promise<void>;
@@ -28,4 +29,5 @@ test("native image errors abort paste without reading text or changing the edito
 	expect(readClipboardText).not.toHaveBeenCalled();
 	expect(context.editor.insertTextAtCursor).not.toHaveBeenCalled();
 	expect(context.ui.requestRender).not.toHaveBeenCalled();
+	expect(context.showWarning).toHaveBeenCalledWith(expect.stringContaining("粘贴剪贴板失败"));
 });

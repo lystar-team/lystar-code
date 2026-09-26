@@ -8,7 +8,7 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { assistantMsg, userMsg } from "./utilities.ts";
 
-const busyMessage = "Wait for the current compaction or tree navigation to finish before navigating the session tree.";
+const busyMessage = "请等待当前压缩或会话树切换完成后再导航。";
 
 function createTreeUI() {
 	const sessionManager = SessionManager.inMemory();
@@ -34,6 +34,7 @@ function createTreeUI() {
 		defaultEditor: { onEscape },
 		editor: { getText: () => "", setText: vi.fn() },
 		chatContainer: new Container(),
+		workspace: { resetScrollback: vi.fn() },
 		isInitialized: true,
 		footer: { invalidate: vi.fn() },
 		ui: { terminal: { rows: 24, setProgress: vi.fn() }, requestRender: vi.fn() },
@@ -42,7 +43,7 @@ function createTreeUI() {
 		) => {
 			selector = create(vi.fn()).component;
 		},
-		showExtensionSelector: vi.fn(async () => "No summary"),
+		showExtensionSelector: vi.fn(async () => "不生成摘要"),
 		// Dispose newly created indicators so a failing regression cannot leak spinner timers.
 		showStatusIndicator: vi.fn((indicator: StatusIndicator) => indicator.dispose()),
 		clearStatusIndicator: vi.fn(),
@@ -70,7 +71,7 @@ describe("InteractiveMode tree navigation availability", () => {
 	beforeEach(() => initTheme("dark"));
 
 	// Regression for #9178 / PR #9179: rejection must not replace the active operation's UI.
-	it.each(["Summarize", "No summary"])("preserves operation UI when choosing %s while busy", async (choice) => {
+	it.each(["生成摘要", "不生成摘要"])("preserves operation UI when choosing %s while busy", async (choice) => {
 		const { ui, onEscape, select } = createTreeUI();
 		const originalLeafId = ui.sessionManager.getLeafId();
 		ui.showExtensionSelector.mockImplementation(async () => {
@@ -95,7 +96,7 @@ describe("InteractiveMode tree navigation availability", () => {
 		ui.session.isCompacting = true;
 		ui.showExtensionSelector.mockImplementation(async () => {
 			ui.session.isCompacting = false;
-			return "No summary";
+			return "不生成摘要";
 		});
 
 		await select();
@@ -126,7 +127,7 @@ describe("InteractiveMode tree navigation availability", () => {
 	it("rechecks availability after the response abort settles", async () => {
 		const { ui, onEscape, select } = createTreeUI();
 		ui.session.isStreaming = true;
-		ui.showExtensionSelector.mockResolvedValue("Summarize");
+		ui.showExtensionSelector.mockResolvedValue("生成摘要");
 		ui.session.abort.mockImplementation(async () => {
 			ui.session.isStreaming = false;
 			ui.session.isCompacting = true;

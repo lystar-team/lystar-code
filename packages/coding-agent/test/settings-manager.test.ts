@@ -47,7 +47,12 @@ describe("SettingsManager", () => {
 		it("uses Codex-style agent retry defaults", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
 
-			expect(manager.getRetrySettings()).toEqual({ enabled: true, maxRetries: 5, baseDelayMs: 1000 });
+			expect(manager.getRetrySettings()).toEqual({
+				enabled: true,
+				maxRetries: 5,
+				baseDelayMs: 1000,
+				maxAgentDelayMs: 60000,
+			});
 		});
 	});
 
@@ -384,8 +389,8 @@ describe("SettingsManager", () => {
 		it("defaults and overrides agent retry delay cap", () => {
 			expect(SettingsManager.inMemory().getRetrySettings()).toEqual({
 				enabled: true,
-				maxRetries: 3,
-				baseDelayMs: 2000,
+				maxRetries: 5,
+				baseDelayMs: 1000,
 				maxAgentDelayMs: 60000,
 			});
 			expect(

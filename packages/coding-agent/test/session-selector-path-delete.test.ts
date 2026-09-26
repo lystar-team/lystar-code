@@ -235,7 +235,7 @@ describe("session selector path/delete interactions", () => {
 		const list = selector.getSessionList();
 		list.handleInput(CTRL_D);
 		list.handleInput("\r");
-		await waitFor(() => !existsSync(sessionPath));
+		await waitFor(() => !existsSync(sessionPath) && !existsSync(ledgerPath));
 		expect(existsSync(ledgerPath)).toBe(false);
 	});
 
@@ -299,7 +299,7 @@ describe("session selector path/delete interactions", () => {
 
 		expect(allLoadCalls).toBe(1);
 		expect(selector.getSessionList().getSelectedSessionPath()).toBe(allSessions[0]!.path);
-		expect(selector.render(120).join("\n")).toContain("Loading");
+		expect(selector.render(120).join("\n")).toContain("加载中");
 
 		allDeferred.resolve(allSessions);
 		await flushPromises();

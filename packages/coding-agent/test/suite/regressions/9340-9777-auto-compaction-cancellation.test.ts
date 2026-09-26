@@ -62,16 +62,20 @@ describe("automatic compaction cancellation regressions", () => {
 		harness.setResponses([
 			fauxAssistantMessage("", { stopReason: "error", errorMessage: "Synthetic network failure" }),
 		]);
+		let compactionsAtAbort: number | undefined;
 		harness.session.subscribe((event) => {
 			if (event.type === "message_end" && event.message.role === "assistant") {
+				compactionsAtAbort = harness.eventsOfType("compaction_start").length;
 				harness.session.abortCompaction();
 				void harness.session.abort();
 			}
 		});
 
-		await harness.session.prompt("z".repeat(1000));
+		await harness.session.prompt("z".repeat(200));
 
-		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(compactionsAtAbort).toBeDefined();
+		expect(harness.eventsOfType("compaction_start")).toHaveLength(compactionsAtAbort!);
 	});
 
 	// Regression test for #9777.

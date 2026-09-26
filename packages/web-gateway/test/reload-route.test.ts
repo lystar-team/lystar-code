@@ -72,6 +72,7 @@ test("Web 批量删除路由只发送一个 Runtime 请求", async (t) => {
 	const context = {
 		id: "browser-one",
 		leases: new Map(),
+		leasesToRestore: new Set(),
 		sockets: new Set(),
 		sessionListPromises: new Map(),
 		sessionListCache: new Map(),

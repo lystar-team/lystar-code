@@ -230,7 +230,6 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 
 async function prepareInitialMessage(
 	parsed: Args,
-	autoResizeImages: boolean,
 	stdinContent?: string,
 ): Promise<{
 	initialMessage?: string;
@@ -240,7 +239,8 @@ async function prepareInitialMessage(
 		return buildInitialMessage({ parsed, stdinContent });
 	}
 
-	const { text, images } = await processFileArguments(parsed.fileArgs, { autoResizeImages });
+	// AgentSession resizes these after extension hooks select the request model.
+	const { text, images } = await processFileArguments(parsed.fileArgs, { autoResizeImages: false });
 	return buildInitialMessage({
 		parsed,
 		fileText: text,
@@ -265,12 +265,8 @@ async function findLocalSessionByExactId(
 	cwd: string,
 	sessionDir?: string,
 ): Promise<{ type: "local"; path: string } | undefined> {
-	const localSessions = await SessionManager.list(cwd, sessionDir, undefined, {
-		metadataOnly: true,
-		includeAllMessagesText: false,
-	});
-	const localMatch = localSessions.find((s) => s.id === sessionId);
-	return localMatch ? { type: "local", path: localMatch.path } : undefined;
+	const path = SessionManager.findById(cwd, sessionId, sessionDir);
+	return path ? { type: "local", path } : undefined;
 }
 
 async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
@@ -279,7 +275,9 @@ async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: 
 		return { type: "path", path: resolvePath(sessionArg, cwd) };
 	}
 
-	// Try to match as session ID in current project first
+	// Exact IDs need only a header lookup; prefixes still require a listing.
+	const exactPath = SessionManager.findById(cwd, sessionArg, sessionDir);
+	if (exactPath) return { type: "local", path: exactPath };
 	const localSessions = await SessionManager.list(cwd, sessionDir, undefined, {
 		metadataOnly: true,
 		includeAllMessagesText: false,
@@ -1058,11 +1056,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("readPipedStdin");
 
-	const { initialMessage, initialImages } = await prepareInitialMessage(
-		parsed,
-		settingsManager.getImageAutoResize(),
-		stdinContent,
-	);
+	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, stdinContent);
 	time("prepareInitialMessage");
 	// pi reads user-authored themes, so it opts into full validation before any theme loads.
 	setThemeJsonValidator(validateThemeJson);

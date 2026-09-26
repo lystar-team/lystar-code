@@ -973,10 +973,16 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.header.setLoading(true);
 		this.requestRender();
 
-		const onProgress = (loaded: number, total: number) => {
+		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
 			if (this.loadingAbort.signal.aborted) return;
-			if (scope !== this.scope) return;
 			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (partialSessions) {
+				const sessions = [...partialSessions];
+				if (scope === "all") this.allSessions = sessions;
+				else this.currentSessions = sessions;
+				if (scope === this.scope) this.sessionList.setSessions(sessions, showCwd);
+			}
+			if (scope !== this.scope) return;
 			this.header.setProgress(loaded, total);
 			this.requestRender();
 		};
@@ -1054,16 +1060,14 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.scope = "all";
 			this.header.setScope(this.scope);
 
-			if (this.allSessions !== null) {
-				this.header.setLoading(false);
-				this.sessionList.setSessions(this.allSessions, true);
+			if (this.allSessions !== null || this.allLoading) {
+				this.header.setLoading(this.allLoading);
+				this.sessionList.setSessions(this.allSessions ?? [], true);
 				this.requestRender();
 				return;
 			}
 
-			if (!this.allLoading) {
-				void this.loadScope("all", "toggle");
-			}
+			void this.loadScope("all", "toggle");
 			return;
 		}
 

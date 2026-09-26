@@ -178,7 +178,7 @@ describe("AgentSession compaction characterization", () => {
 			initialActiveToolNames: [],
 			extensionFactories: [
 				(pi) => {
-					pi.on("input", async () => ({ action: "transform", text: "你".repeat(30) }));
+					pi.on("input", async () => ({ action: "transform", text: "你".repeat(150) }));
 				},
 			],
 		});
@@ -575,7 +575,8 @@ describe("AgentSession compaction characterization", () => {
 		expect(transformContext).not.toHaveBeenCalled();
 		expect(getCurrentSystemPrompt(requestContext?.messages ?? [])).not.toBe(harness.session.agent.state.systemPrompt);
 		expect(getCurrentTools(requestContext?.messages ?? [])).toEqual([]);
-		expect(JSON.stringify(requestContext?.messages)).toContain("<conversation>");
+		// Regression test for #9652: split-turn summaries use a clear Markdown conversation boundary.
+		expect(JSON.stringify(requestContext?.messages)).toContain("# Conversation\\n[User]: message to compact");
 		expect(requestOptions).toMatchObject({ cacheRetention: "none" });
 		expect(requestOptions?.sessionId).not.toBe("active-routing-session");
 		expect(requestOptions?.transport).toBeUndefined();
@@ -707,7 +708,7 @@ describe("AgentSession compaction characterization", () => {
 			const order: string[] = [];
 			const observedSettings: unknown[] = [];
 			const harness = await createHarness({
-				models: [{ id: "faux-1", contextWindow: 2600, maxTokens: 100 }],
+				models: [{ id: "faux-1", contextWindow: 3000, maxTokens: 100 }],
 				settings: {
 					compaction: modelOverride
 						? {
@@ -1018,7 +1019,7 @@ describe("AgentSession compaction characterization", () => {
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 
 		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(true);
-	});
+	}, 60_000);
 
 	it("does not retry overflow recovery more than once", async () => {
 		const harness = await createHarness();

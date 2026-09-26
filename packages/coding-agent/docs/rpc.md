@@ -1,38 +1,38 @@
 # RPC Mode
 
-RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
+RPC mode runs Pi as a long-lived subprocess controlled through JSON records on stdin and stdout. Use it for language-independent integrations, process isolation, IDEs, and custom user interfaces.
 
-**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@earendil-works/pi-coding-agent` instead of spawning a subprocess. See [`src/core/agent-session.ts`](../src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
+For an in-process Node.js or Bun integration, prefer the [SDK](sdk.md). For a subprocess-based TypeScript integration, prefer the exported `RpcClient`, which starts Pi, correlates responses, exposes typed command methods, and delivers events to listeners.
 
-## Starting RPC Mode
+| Interface | Process boundary | Control model | Best fit |
+|---|---|---|---|
+| [SDK](sdk.md) | In process | Direct TypeScript methods and events | Node.js or Bun hosts that want complete API access |
+| RPC | Child process | JSONL commands, responses, and events | Other languages, isolated processes, IDEs, or custom clients |
+
+## Start RPC mode
 
 ```bash
-pi --mode rpc [options]
+pi --mode rpc --no-session
 ```
 
-Common options:
-- `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
-- `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
-- `--name <name>` / `-n <name>`: Set the session display name at startup
-- `--no-session`: Disable session persistence
-- `--session-dir <path>`: Custom session storage directory
+Normal CLI options still select the working folder, model, tools, resources, and session behavior. Common choices include `--provider`, `--model`, `--name`, `--no-session`, and `--session-dir`. See [Command Line](cli.md) for the complete, version-specific interface; `pi --help` is authoritative for the installed version.
 
-## Protocol Overview
+RPC mode rejects `@file` prompt arguments. Send prompts through the [`prompt`](rpc-commands.md#prompt) command instead.
 
-- **Commands**: JSON objects sent to stdin, one per line
-- **Responses**: JSON objects with `type: "response"` indicating command success/failure
-- **Events**: Agent events streamed to stdout as JSON lines
+## Protocol records
 
-All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`. `bash_execution_update` events also include the `id` of their originating `bash` command.
+The protocol has four record families:
 
-### Framing
+| Direction | Record | Purpose |
+|---|---|---|
+| stdin | Command | Ask Pi to prompt, inspect state, change configuration, or manage the session |
+| stdout | `response` | Report whether one command succeeded and return any command data |
+| stdout | Session event | Stream run, message, tool, queue, compaction, and retry activity |
+| Both | Extension UI record | Forward supported extension interactions between Pi and the client |
 
-RPC mode uses strict JSONL semantics with LF (`\n`) as the only record delimiter.
+See [RPC Commands](rpc-commands.md), [JSON Event Stream](json.md), and [RPC Extension UI](rpc-extension-ui.md) for the canonical record definitions.
 
-This matters for clients:
-- Split records on `\n` only
-- Accept optional `\r\n` input by stripping a trailing `\r`
-- Do not use generic line readers that treat Unicode separators as newlines
+### Correlate commands and responses
 
 In particular, Node `readline` is not protocol-compliant for RPC mode because it also splits on `U+2028` and `U+2029`, which are valid inside JSON strings.
 
@@ -1362,138 +1362,56 @@ Responses are sent for dialog methods only (`select`, `confirm`, `input`, `edito
 #### Confirmation response (confirm)
 
 ```json
-{"type": "extension_ui_response", "id": "uuid-2", "confirmed": true}
+{"id":"req-1","type":"get_state"}
+{"id":"req-1","type":"response","command":"get_state","success":true,"data":{"...":"..."}}
 ```
 
-#### Cancellation response (any dialog)
+Use unique IDs whenever more than one command can be outstanding. Command handling is asynchronous, so clients should correlate by ID rather than response order.
 
-Dismiss any dialog method. The extension receives `undefined` (for select/input/editor) or `false` (for confirm).
+Session events generally have no command ID because they describe session activity. `bash_execution_update` is the exception: when the originating [`bash`](rpc-commands.md#bash) command has an ID, its output events repeat that ID.
+
+An `extension_ui_response` uses the ID supplied by its `extension_ui_request`. It does not produce a normal command response.
+
+## Framing
+
+RPC uses strict JSONL framing. Write one complete JSON object per record and terminate it with LF (`\n`). Read stdout as a byte or UTF-8 stream and split records only on LF. Strip an optional preceding carriage return to accept CRLF input.
+
+Do not use a generic line reader that treats Unicode line or paragraph separators as record boundaries. In particular, Node.js `readline` also splits on `U+2028` and `U+2029`, which are valid inside JSON strings.
+
+Read stdout continuously. Pi honors stdout backpressure, but a client that stops reading can stall the process. Honor stdin backpressure when writing commands. Stdout is reserved for protocol records; diagnostics and application logging go to stderr.
+
+## Run lifecycle
+
+A successful `prompt` response means the prompt was accepted, queued, or handled. It does not mean model work completed:
 
 ```json
-{"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
+{"id":"req-2","type":"prompt","message":"Review this repository"}
+{"id":"req-2","type":"response","command":"prompt","success":true}
 ```
 
-## Error Handling
+Continue consuming [events](json.md) after that response. `agent_end` marks the end of one low-level agent run, but retries, overflow recovery, compaction, steering, or follow-up work can still follow. Wait for `agent_settled` when the client needs to know Pi will not continue automatically.
 
-Failed commands return a response with `success: false`:
+Subscribe before sending a prompt to avoid missing a fast completion. `RpcClient.promptAndWait()` does this internally. If using separate `RpcClient` calls, install the event listener before `prompt()` and call `waitForIdle()` only while a run is active.
+
+## Errors
+
+A failed command returns one response with `success: false`:
 
 ```json
-{
-  "type": "response",
-  "command": "set_model",
-  "success": false,
-  "error": "Model not found: invalid/model"
-}
+{"id":"req-3","type":"response","command":"set_model","success":false,"error":"Model not found: invalid/model"}
 ```
 
-Parse errors:
+Malformed JSON produces a parse response without a request ID:
 
 ```json
-{
-  "type": "response",
-  "command": "parse",
-  "success": false,
-  "error": "Failed to parse command: Unexpected token..."
-}
+{"type":"response","command":"parse","success":false,"error":"Failed to parse command: Unexpected token..."}
 ```
 
-## Types
+A success response only covers command handling. Provider failures and aborts after a prompt is accepted appear in the message and event stream.
 
-Source files:
-- [`packages/ai/src/types.ts`](../../ai/src/types.ts) - `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
-- [`packages/agent/src/types.ts`](../../agent/src/types.ts) - `AgentMessage`, `AgentEvent`
-- [`src/core/messages.ts`](../src/core/messages.ts) - `BashExecutionMessage`
-- [`src/modes/json-event.ts`](../src/modes/json-event.ts) - `JsonAgentSessionEvent`
-- [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
+Clients must also handle child-process startup failures, unexpected exits, stderr diagnostics, cancellation, and their own deadlines. Do not parse stderr as protocol data.
 
-### Model
-
-```json
-{
-  "id": "claude-sonnet-4-20250514",
-  "name": "Claude Sonnet 4",
-  "api": "anthropic-messages",
-  "provider": "anthropic",
-  "baseUrl": "https://api.anthropic.com",
-  "reasoning": true,
-  "input": ["text", "image"],
-  "contextWindow": 200000,
-  "maxTokens": 16384,
-  "cost": {
-    "input": 3.0,
-    "output": 15.0,
-    "cacheRead": 0.3,
-    "cacheWrite": 3.75
-  }
-}
-```
-
-### UserMessage
-
-```json
-{
-  "role": "user",
-  "content": "Hello!",
-  "timestamp": 1733234567890,
-  "attachments": []
-}
-```
-
-The `content` field can be a string or an array of `TextContent`/`ImageContent` blocks.
-
-### AssistantMessage
-
-```json
-{
-  "role": "assistant",
-  "content": [
-    {"type": "text", "text": "Hello! How can I help?"},
-    {"type": "thinking", "thinking": "User is greeting me..."},
-    {"type": "toolCall", "id": "call_123", "name": "bash", "arguments": {"command": "ls"}}
-  ],
-  "api": "anthropic-messages",
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-20250514",
-  "usage": {
-    "input": 100,
-    "output": 50,
-    "cacheRead": 0,
-    "cacheWrite": 0,
-    "cost": {"input": 0.0003, "output": 0.00075, "cacheRead": 0, "cacheWrite": 0, "total": 0.00105}
-  },
-  "stopReason": "stop",
-  "timestamp": 1733234567890
-}
-```
-
-Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`
-
-### ToolResultMessage
-
-```json
-{
-  "role": "toolResult",
-  "toolCallId": "call_123",
-  "toolName": "bash",
-  "content": [{"type": "text", "text": "total 48\ndrwxr-xr-x ..."}],
-  "usage": {
-    "input": 100,
-    "output": 50,
-    "cacheRead": 0,
-    "cacheWrite": 0,
-    "totalTokens": 150,
-    "cost": {"input": 0.0003, "output": 0.00075, "cacheRead": 0, "cacheWrite": 0, "total": 0.00105}
-  },
-  "isError": false,
-  "timestamp": 1733234567890
-}
-```
-
-`usage` is optional and reports nested LLM work performed by the tool. When present, it contributes to session token and cost totals.
-
-### BashExecutionMessage
-
-Created by the `bash` RPC command (not by LLM tool calls):
+## Shutdown
 
 ```json
 {
@@ -1508,111 +1426,102 @@ Created by the `bash` RPC command (not by LLM tool calls):
 }
 ```
 
-### Attachment
+An extension can also request shutdown through its extension context. Pi completes shutdown after the current command or after the active run emits `agent_settled`.
 
-```json
-{
-  "id": "img1",
-  "type": "image",
-  "fileName": "photo.jpg",
-  "mimeType": "image/jpeg",
-  "size": 102400,
-  "content": "base64-encoded-data...",
-  "extractedText": null,
-  "preview": null
-}
-```
+## Minimal client
 
-## Example: Basic Client (Python)
+This Python example uses a binary pipe reader, which splits on LF without treating Unicode separators as protocol boundaries:
 
 ```python
-import subprocess
 import json
+import subprocess
 
-proc = subprocess.Popen(
+process = subprocess.Popen(
     ["pi", "--mode", "rpc", "--no-session"],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
-    text=True
 )
 
-def send(cmd):
-    proc.stdin.write(json.dumps(cmd) + "\n")
-    proc.stdin.flush()
+assert process.stdin is not None
+assert process.stdout is not None
 
-def read_events():
-    for line in proc.stdout:
-        yield json.loads(line)
+command = {"id": "prompt-1", "type": "prompt", "message": "Hello"}
+process.stdin.write(json.dumps(command).encode("utf-8") + b"\n")
+process.stdin.flush()
 
-# Send prompt
-send({"type": "prompt", "message": "Hello!"})
-
-# Process events
-for event in read_events():
-    if event.get("type") == "message_update":
-        delta = event.get("assistantMessageEvent", {})
-        if delta.get("type") == "text_delta":
-            print(delta["delta"], end="", flush=True)
-    
-    if event.get("type") == "agent_end":
+while line := process.stdout.readline():
+    record = json.loads(line)
+    if record.get("type") == "message_update":
+        update = record["assistantMessageEvent"]
+        if update["type"] == "text_delta":
+            print(update["delta"], end="", flush=True)
+    elif record.get("type") == "agent_settled":
         print()
         break
+
+process.stdin.close()
+process.wait()
 ```
 
-## Example: Interactive Client (Node.js)
+For maintained TypeScript clients, use the checked [RPC client example](../examples/rpc-client.ts). It requires a built Pi CLI because the repository example points to `dist/cli.js`.
 
-See [`test/rpc-example.ts`](../test/rpc-example.ts) for a complete interactive example, or [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts) for a typed client implementation.
+## Reference
 
-For a complete example of handling the extension UI protocol, see [`examples/rpc-extension-ui.ts`](../examples/rpc-extension-ui.ts) which pairs with the [`examples/extensions/rpc-demo.ts`](../examples/extensions/rpc-demo.ts) extension.
+- [RPC Commands](rpc-commands.md): every stdin command and response
+- [JSON Event Stream](json.md): shared stdout session events and streaming reconstruction
+- [RPC Extension UI](rpc-extension-ui.md): dialogs, notifications, responses, and limitations
+- [Message Types](message-types.md): messages and content blocks used by responses and events
+- [Session File Format](session-format.md): entries returned by session commands
+- [`rpc-types.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts): exported TypeScript protocol definitions
+- [`RpcClient`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts): subprocess client implementation
 
-```javascript
-const { spawn } = require("child_process");
-const { StringDecoder } = require("string_decoder");
+## Moved reference anchors
 
-const agent = spawn("pi", ["--mode", "rpc", "--no-session"]);
+The detailed references formerly on this page now have dedicated pages. These anchors preserve existing links.
 
-function attachJsonlReader(stream, onLine) {
-    const decoder = new StringDecoder("utf8");
-    let buffer = "";
+<a id="prompt"></a>
+<a id="steer"></a>
+<a id="follow_up"></a>
+<a id="abort"></a>
+<a id="clear_queue"></a>
+<a id="new_session"></a>
+<a id="get_state"></a>
+<a id="get_messages"></a>
+<a id="set_model"></a>
+<a id="cycle_model"></a>
+<a id="get_available_models"></a>
+<a id="set_thinking_level"></a>
+<a id="cycle_thinking_level"></a>
+<a id="get_available_thinking_levels"></a>
+<a id="set_steering_mode"></a>
+<a id="set_follow_up_mode"></a>
+<a id="compact"></a>
+<a id="set_auto_compaction"></a>
+<a id="set_auto_retry"></a>
+<a id="abort_retry"></a>
+<a id="bash"></a>
+<a id="abort_bash"></a>
+<a id="get_session_stats"></a>
+<a id="export_html"></a>
+<a id="switch_session"></a>
+<a id="fork"></a>
+<a id="clone"></a>
+<a id="get_fork_messages"></a>
+<a id="get_entries"></a>
+<a id="get_tree"></a>
+<a id="get_last_assistant_text"></a>
+<a id="set_session_name"></a>
+<a id="get_commands"></a>
 
-    stream.on("data", (chunk) => {
-        buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
+Command details moved to [RPC Commands](rpc-commands.md).
 
-        while (true) {
-            const newlineIndex = buffer.indexOf("\n");
-            if (newlineIndex === -1) break;
+<a id="message_update-streaming"></a>
+<a id="bash_execution_update"></a>
+<a id="compaction_start--compaction_end"></a>
+<a id="summarization_retry_scheduled--summarization_retry_attempt_start--summarization_retry_finished"></a>
 
-            let line = buffer.slice(0, newlineIndex);
-            buffer = buffer.slice(newlineIndex + 1);
-            if (line.endsWith("\r")) line = line.slice(0, -1);
-            onLine(line);
-        }
-    });
+Event details moved to [JSON Event Stream](json.md).
 
-    stream.on("end", () => {
-        buffer += decoder.end();
-        if (buffer.length > 0) {
-            onLine(buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer);
-        }
-    });
-}
+<a id="extension-ui-protocol"></a>
 
-attachJsonlReader(agent.stdout, (line) => {
-    const event = JSON.parse(line);
-
-    if (event.type === "message_update") {
-        const { assistantMessageEvent } = event;
-        if (assistantMessageEvent.type === "text_delta") {
-            process.stdout.write(assistantMessageEvent.delta);
-        }
-    }
-});
-
-// Send prompt
-agent.stdin.write(JSON.stringify({ type: "prompt", message: "Hello" }) + "\n");
-
-// Abort on Ctrl+C
-process.on("SIGINT", () => {
-    agent.stdin.write(JSON.stringify({ type: "abort" }) + "\n");
-});
-```
+Extension interaction details moved to [RPC Extension UI](rpc-extension-ui.md).
