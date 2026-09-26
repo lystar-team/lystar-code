@@ -127,6 +127,7 @@ export interface SessionRoomApi {
 		profileIcon?: string;
 	}): Promise<SessionRoomSummary>;
 	leave(input: { cwd: string; roomId: string; sessionId: string }): Promise<SessionRoomSummary>;
+	rename(input: { cwd: string; roomId: string; sessionId: string; nickname: string }): Promise<SessionRoomSummary>;
 	list(input: { cwd: string; sessionId: string }): Promise<SessionRoomSummary[]>;
 	listAll(input: { cwd: string }): Promise<SessionRoomSummary[]>;
 	send(input: {

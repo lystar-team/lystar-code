@@ -90,6 +90,38 @@ describe("SessionRoomStore", () => {
 		});
 	});
 
+	it("persists a member nickname without renaming another member of the same profile", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-rename-"));
+		tempDirs.push(root);
+		const path = join(root, "rooms.jsonl");
+		const store = new SessionRoomStore(path);
+		const { room, owner } = createRoom();
+		store.createRoom(room, owner);
+		for (const [sessionId, nickname] of [
+			["worker-a", "霜叶"],
+			["worker-b", "海盐"],
+		] as const) {
+			store.joinMember({
+				roomId: room.id,
+				sessionId,
+				nickname,
+				profileId: "worker",
+				role: "member",
+				joinedAt: owner.joinedAt,
+				lastReadSeq: 0,
+			});
+		}
+		expect(() => store.renameMember(room.id, "owner", "新名")).toThrowError(/只能修改/);
+		expect(() => store.renameMember(room.id, "worker-a", "海盐")).toThrowError(/同名/);
+		expect(() => store.renameMember(room.id, "worker-a", "有 空格")).toThrowError(/昵称只能包含/);
+		expect(
+			store.renameMember(room.id, "worker-a", "星河").members.find((member) => member.sessionId === "worker-a"),
+		).toMatchObject({ nickname: "星河", profileId: "worker" });
+		const restored = new SessionRoomStore(path);
+		expect(restored.member(room.id, "worker-a").nickname).toBe("星河");
+		expect(restored.member(room.id, "worker-b").nickname).toBe("海盐");
+	});
+
 	it("keeps a left member in history but blocks new messages", () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-room-leave-"));
 		tempDirs.push(root);

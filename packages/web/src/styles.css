@@ -121,6 +121,11 @@ select {
 	font: inherit;
 }
 
+.room-member-chip {
+	font-size: 0.75rem;
+	line-height: 1rem;
+}
+
 button:focus-visible,
 [role="button"]:focus-visible,
 [data-slot="dropdown-menu-trigger"]:focus-visible,

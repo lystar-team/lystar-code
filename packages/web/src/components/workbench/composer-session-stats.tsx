@@ -1,5 +1,5 @@
 import type { SessionInfoResult } from "@lystar/code-web-protocol";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "../ui/popover";
 
@@ -86,14 +86,6 @@ export function ComposerSessionStats({
 	const [tokens, setTokens] = useState<Tokens>();
 	const [openMetric, setOpenMetric] = useState<Metric>();
 	const [mobileMetric, setMobileMetric] = useState<Metric>("tps");
-	const statsRef = useRef<HTMLDivElement>(null);
-	const mobileAnchorRef = useRef({
-		getBoundingClientRect: () => {
-			const shell = statsRef.current?.closest<HTMLElement>('[data-slot="input-group"]');
-			const rect = shell?.getBoundingClientRect();
-			return rect ? new DOMRect(rect.left + 12, rect.top, 1, 1) : new DOMRect();
-		},
-	});
 
 	useEffect(() => {
 		if (!ready || !connected || (phase !== "idle" && phase !== "waiting_for_input" && phase !== "interrupted")) return;
@@ -122,9 +114,8 @@ export function ComposerSessionStats({
 	};
 
 	return (
-		<div aria-label="会话统计" className="min-w-0 shrink-0 md:flex-1 md:overflow-x-auto" ref={statsRef} role="group">
+		<div aria-label="会话统计" className="min-w-0 shrink-0 md:flex-1 md:overflow-x-auto" role="group">
 			<Popover>
-				<PopoverAnchor virtualRef={mobileAnchorRef} />
 				<PopoverTrigger asChild>
 					<button
 						type="button"
@@ -134,12 +125,15 @@ export function ComposerSessionStats({
 						统计
 					</button>
 				</PopoverTrigger>
+				<PopoverAnchor asChild>
+					<span aria-hidden="true" className="pointer-events-none absolute left-3 top-2 size-px" />
+				</PopoverAnchor>
 				<PopoverContent
 					align="start"
 					aria-label="会话统计"
 					collisionPadding={8}
 					side="top"
-					sideOffset={8}
+					sideOffset={16}
 					className="max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border-border bg-popover p-3 shadow-md md:hidden"
 				>
 					<div className="mb-2 text-sm font-medium">会话统计</div>

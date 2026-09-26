@@ -130,7 +130,7 @@ export function AppearanceSettings({
 							disabled={push.busy || push.status === "loading" || push.status === "blocked" || push.status === "unsupported" || pushUnavailableOnIos}
 							onClick={() => void (push.status === "on" ? push.disable() : push.enable())}
 						>
-							{push.busy ? "正在处理" : push.status === "on" ? "关闭通知" : push.status === "unsupported" ? "浏览器不支持" : push.status === "loading" ? "正在检查" : "开启通知"}
+							{push.busy ? "正在处理" : push.status === "on" ? "关闭通知" : push.status === "unsupported" ? "浏览器不支持" : push.status === "loading" ? "正在检查" : push.status === "off" && push.error ? "重试开启通知" : "开启通知"}
 						</Button>
 					</CardContent>
 				</Card>

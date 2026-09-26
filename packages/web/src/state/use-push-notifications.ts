@@ -9,6 +9,14 @@ function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {
 	return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
 }
 
+export function pushErrorMessage(reason: unknown): string {
+	const message = reason instanceof Error ? reason.message : String(reason);
+	if (/Registration failed - push service error/iu.test(message)) {
+		return "浏览器推送服务注册失败，通知权限已允许，但还不能接收后台通知。如果使用安卓 Chrome，请检查 Google Play 服务和网络连接，再重试。";
+	}
+	return message;
+}
+
 export function usePushNotifications() {
 	const [status, setStatus] = useState<PushStatus>("loading");
 	const [error, setError] = useState<string>();
@@ -60,7 +68,7 @@ export function usePushNotifications() {
 			}
 			setStatus("on");
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(pushErrorMessage(reason));
 		} finally {
 			setBusy(false);
 		}

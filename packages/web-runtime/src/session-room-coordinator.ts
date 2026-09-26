@@ -80,6 +80,7 @@ export class SessionRoomCoordinator {
 			create: (input) => this.create(input),
 			join: (input) => this.join(input),
 			leave: (input) => this.leave(input),
+			rename: (input) => this.rename(input),
 			list: (input) => this.list(input),
 			listAll: (input) => this.listAll(input),
 			send: (input) => this.send(input),
@@ -153,6 +154,12 @@ export class SessionRoomCoordinator {
 		const summary = this.store.leaveMember(input.roomId, input.sessionId, new Date().toISOString());
 		for (const task of assigned) await this.offerTask(this.store.task(input.roomId, task.id), room.ownerSessionId);
 		return summary;
+	}
+
+	private async rename(input: Parameters<SessionRoomApi["rename"]>[0]): Promise<SessionRoomSummary> {
+		const room = this.store.room(input.roomId);
+		if (resolve(input.cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		return this.store.renameMember(input.roomId, input.sessionId, input.nickname);
 	}
 
 	private async list(input: Parameters<SessionRoomApi["list"]>[0]): Promise<SessionRoomSummary[]> {

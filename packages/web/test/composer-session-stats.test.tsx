@@ -16,6 +16,9 @@ describe("composer session stats", () => {
 		);
 		expect(html.match(/type="button"/gu)).toHaveLength(5);
 		expect(html).toContain("aria-label=\"查看会话统计\"");
+		expect(html).toContain("data-slot=\"popover-anchor\"");
+		expect(html).toContain("pointer-events-none absolute left-3 top-2 size-px");
+		expect(html.indexOf('data-slot="popover-anchor"')).toBeGreaterThan(html.indexOf('aria-label="查看会话统计"'));
 		expect(html).toContain("TPS 131 tok/s，查看详情");
 		expect(html).toContain("缓存命中 —，查看详情");
 		expect(html).toContain("输入 —，查看详情");

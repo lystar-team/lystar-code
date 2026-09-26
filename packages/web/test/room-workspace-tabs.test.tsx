@@ -20,11 +20,11 @@ const controller = {
 	roomTasksLoading: false,
 } as unknown as RoomWorkspaceController;
 
-function markup(section: "chat" | "board"): string {
+function markup(section: "chat" | "board", roomController = controller): string {
 	return renderToStaticMarkup(
 		<RoomWorkspace
 			state={{ projects: [] } as WorkbenchState}
-			controller={controller}
+			controller={roomController}
 			onModeChange={() => {}}
 			openResource={(() => {}) as WorkbenchActions["openResource"]}
 			section={section}
@@ -48,6 +48,25 @@ describe("Room 视图切换", () => {
 		expect(html).toContain('aria-label="看板"');
 		expect(html).toContain('data-slot="tabs-content"');
 		expect(html).toContain("还没有消息，发送第一条协作消息。");
+	});
+
+	it("相同配置的成员分别有移除入口，主智能体没有", () => {
+		const owner = controller.selectedRoom!.members[0]!;
+		const html = markup("chat", {
+			...controller,
+			selectedRoom: {
+				...controller.selectedRoom!,
+				members: [
+					owner,
+					{ ...owner, sessionId: "worker-1", role: "member", nickname: "星河", profileId: "worker", profileName: "worker" },
+					{ ...owner, sessionId: "worker-2", role: "member", nickname: "云杉", profileId: "worker", profileName: "worker" },
+				],
+			},
+		});
+		expect(html).toContain('aria-label="管理智能体 星河（worker）"');
+		expect(html).toContain('aria-label="管理智能体 云杉（worker）"');
+		expect(html).not.toContain('aria-label="管理智能体 你');
+		expect(html.match(/data-slot="dropdown-menu-trigger"/g)).toHaveLength(2);
 	});
 
 	it("切换到看板时展示任务列", () => {

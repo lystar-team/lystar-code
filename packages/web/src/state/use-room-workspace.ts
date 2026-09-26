@@ -54,6 +54,7 @@ export interface RoomWorkspaceController {
 	createRoom: (projectId: string, title: string, member: RoomMemberSelection) => Promise<void>;
 	inviteRoomMember: (member: RoomMemberSelection) => Promise<void>;
 	leaveRoomMember: (sessionId: string) => Promise<void>;
+	renameRoomMember: (sessionId: string, nickname: string) => Promise<void>;
 	refreshRooms: () => Promise<void>;
 	sendRoomMessage: (body: string, attachments?: Array<{ path: string; mimeType: string; filename: string }>) => Promise<void>;
 }
@@ -438,6 +439,20 @@ export function useRoomWorkspace({
 		[selectedRoom, selectedRoomProjectId, sessionId],
 	);
 
+	const renameRoomMember = useCallback(async (memberSessionId: string, nickname: string) => {
+		const projectId = selectedRoomProjectId;
+		const room = selectedRoom;
+		if (!projectId || !room) throw new Error("请先选择 Room");
+		const renamed = await webApi.renameRoomMember(projectId, room.room.id, memberSessionId, nickname);
+		if (selectedRoomKeyRef.current === roomKey(projectId, room.room.id)) setSelectedRoom(renamed);
+		setRoomsByProject((current) => ({
+			...current,
+			[projectId]: (current[projectId] ?? []).map((candidate) =>
+				candidate.room.id === renamed.room.id ? renamed : candidate,
+			),
+		}));
+	}, [selectedRoom, selectedRoomProjectId]);
+
 	const sendRoomMessage = useCallback(
 		async (body: string, attachments?: Array<{ path: string; mimeType: string; filename: string }>) => {
 			const projectId = selectedRoomProjectId;
@@ -537,6 +552,7 @@ export function useRoomWorkspace({
 		createRoom,
 		inviteRoomMember,
 		leaveRoomMember,
+		renameRoomMember,
 		refreshRooms,
 		sendRoomMessage,
 	};

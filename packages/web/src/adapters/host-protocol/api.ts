@@ -254,6 +254,13 @@ export class WebApi {
 		);
 	}
 
+	async renameRoomMember(projectId: string, roomId: string, sessionId: string, nickname: string): Promise<WebRoomSummary> {
+		return this.request<WebRoomSummary>(
+			`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/rename-member`,
+			{ method: "POST", body: JSON.stringify({ sessionId, nickname }) },
+		);
+	}
+
 	async roomMessages(
 		projectId: string,
 		roomId: string,

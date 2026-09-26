@@ -3673,6 +3673,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			name: definition.name,
 			description: definition.description,
 			scope: definition.scope,
+			...(definition.scope !== "builtin" ? { fileName: basename(definition.filePath) } : {}),
 			...(definition.tags ? { tags: definition.tags } : {}),
 			...(definition.icon ? { icon: definition.icon } : {}),
 			...(definition.provider ? { provider: definition.provider } : {}),

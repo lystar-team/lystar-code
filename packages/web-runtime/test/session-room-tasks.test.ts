@@ -99,6 +99,29 @@ describe("Room 看板任务", () => {
 		expect(released).toMatchObject({ status: "todo", resultMessageId: undefined, resultText: undefined });
 	});
 
+	it("改名后 @新昵称仍能通知原智能体", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "lystar-room-renamed-mention-"));
+		tempDirs.push(cwd);
+		const delivered: SessionRoomDeliveryInput[] = [];
+		const api = new SessionRoomCoordinator({
+			store: new SessionRoomStore(join(cwd, "rooms.jsonl")),
+			deliver: async (input) => {
+				delivered.push(input);
+			},
+		}).api();
+		const room = await api.create({ cwd, ownerSessionId: "owner" });
+		await api.join({ cwd, roomId: room.room.id, sessionId: "worker", profileId: "worker", nickname: "霜叶" });
+		const renamed = await api.rename({ cwd, roomId: room.room.id, sessionId: "worker", nickname: "星河" });
+		expect(renamed.members.find((member) => member.sessionId === "worker")).toMatchObject({
+			nickname: "星河",
+			profileId: "worker",
+		});
+		const task = await api.taskCreate({ cwd, roomId: room.room.id, sessionId: "owner", title: "核对" });
+		await api.taskComment({ cwd, roomId: room.room.id, taskId: task.id, sessionId: "owner", body: "@星河 请核对" });
+		await expect.poll(() => delivered.filter(({ message }) => message.kind === "message")).toHaveLength(1);
+		expect(delivered.find(({ message }) => message.kind === "message")?.targetSessionId).toBe("worker");
+	});
+
 	it("旧 Room 成员没有昵称时，评论 @展示昵称可通知对应 Agent", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "lystar-room-task-legacy-mention-"));
 		tempDirs.push(cwd);

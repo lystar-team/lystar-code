@@ -39,6 +39,7 @@ describe("subagent config adapter", () => {
 			ui,
 		);
 		const saved = configs.find((config) => config.scope === "user" && config.name === "reviewer");
+		expect(saved?.fileName).toBe("reviewer.md");
 		expect(saved?.contentHash).toBeDefined();
 		expect(
 			parseSubagentMarkdown(readFileSync(join(agentDir, "agents", "reviewer.md"), "utf8"), "reviewer"),
@@ -66,6 +67,7 @@ describe("subagent config adapter", () => {
 			ui,
 		);
 		const renamed = configs.find((config) => config.scope === "user" && config.name === "review-specialist");
+		expect(renamed?.fileName).toBe("review-specialist.md");
 		expect(renamed?.contentHash).toBeDefined();
 		expect(configs.some((config) => config.scope === "user" && config.name === "reviewer")).toBe(false);
 

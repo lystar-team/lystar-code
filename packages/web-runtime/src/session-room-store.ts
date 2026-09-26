@@ -10,12 +10,14 @@ import type {
 	SessionRoomTask,
 	SessionRoomTaskStatus,
 } from "@earendil-works/pi-coding-agent/core";
+import { collaborationAlias } from "@lystar/code-web-protocol";
 
 type RoomJournalRecord =
 	| { type: "room_created"; room: SessionRoom }
 	| { type: "room_updated"; room: SessionRoom }
 	| { type: "member_joined"; member: SessionRoomMember }
 	| { type: "member_left"; roomId: string; sessionId: string; leftAt: string }
+	| { type: "member_renamed"; roomId: string; sessionId: string; nickname: string }
 	| { type: "cursor_advanced"; roomId: string; sessionId: string; lastReadSeq: number }
 	| { type: "message_appended"; message: SessionRoomMessage }
 	| { type: "delivery_pending"; roomId: string; messageId: string; targetSessionId: string }
@@ -69,6 +71,7 @@ function parseJournalRecord(line: string): RoomJournalRecord {
 		value.type !== "room_updated" &&
 		value.type !== "member_joined" &&
 		value.type !== "member_left" &&
+		value.type !== "member_renamed" &&
 		value.type !== "cursor_advanced" &&
 		value.type !== "message_appended" &&
 		value.type !== "delivery_pending" &&
@@ -159,6 +162,32 @@ export class SessionRoomStore {
 			{ type: "member_joined", member: joined },
 		]);
 		return this.summary(room.id);
+	}
+
+	renameMember(roomId: string, sessionId: string, nickname: string): SessionRoomSummary {
+		const room = this.room(roomId);
+		const member = this.member(roomId, sessionId);
+		if (member.leftAt !== undefined || member.role !== "member")
+			throw roomError("只能修改 Room 中智能体的昵称", "room_member_rename_forbidden");
+		const name = nickname.trim();
+		if (!name || name.length > 128 || !/^[\p{L}\p{N}_-]+$/u.test(name))
+			throw roomError("昵称只能包含文字、数字、下划线或连字符，且不能超过 128 字符", "room_member_nickname_invalid");
+		if (
+			name === "你" ||
+			this.members(roomId).some(
+				(candidate) =>
+					candidate.sessionId !== sessionId &&
+					candidate.leftAt === undefined &&
+					(candidate.nickname?.trim() || collaborationAlias(candidate.sessionId)) === name,
+			)
+		)
+			throw roomError("Room 中已有同名成员", "room_member_nickname_conflict");
+		if (member.nickname === name) return this.summary(roomId);
+		this.commit([
+			{ type: "room_updated", room: { ...room, updatedAt: new Date().toISOString() } },
+			{ type: "member_renamed", roomId, sessionId, nickname: name },
+		]);
+		return this.summary(roomId);
 	}
 
 	leaveMember(roomId: string, sessionId: string, leftAt: string): SessionRoomSummary {
@@ -588,6 +617,12 @@ export class SessionRoomStore {
 				const member = this.membersByRoom.get(record.roomId)?.get(record.sessionId);
 				if (member)
 					this.membersByRoom.get(record.roomId)!.set(record.sessionId, { ...member, leftAt: record.leftAt });
+				return;
+			}
+			case "member_renamed": {
+				const member = this.membersByRoom.get(record.roomId)?.get(record.sessionId);
+				if (member)
+					this.membersByRoom.get(record.roomId)!.set(record.sessionId, { ...member, nickname: record.nickname });
 				return;
 			}
 			case "cursor_advanced": {

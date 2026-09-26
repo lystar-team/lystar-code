@@ -1236,6 +1236,15 @@ export class WebRuntimeService {
 						sessionId: request.sessionId,
 					}),
 				);
+			case "room_member_rename":
+				return jsonValue(
+					await this.roomCoordinator.api().rename({
+						cwd: canonicalProjectCwd(request.cwd),
+						roomId: request.roomId,
+						sessionId: request.sessionId,
+						nickname: request.nickname,
+					}),
+				);
 			case "room_send":
 				return jsonValue(
 					await this.roomCoordinator.api().send({

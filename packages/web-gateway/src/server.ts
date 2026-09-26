@@ -2621,6 +2621,25 @@ export class WebGatewayServer {
 			sendJson(response, 200, left);
 			return;
 		}
+		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "rename-member" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const sessionId = stringValue(body.sessionId);
+			const nickname = stringValue(body.nickname);
+			if (!sessionId) throw new HttpError(400, "room_session_required", "修改昵称需要指定会话");
+			if (!nickname) throw new HttpError(400, "room_nickname_required", "昵称不能为空");
+			const session = await this.resolveSession(context, sessionId);
+			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
+			const renamed = await (await this.getClient(context)).request<JsonValue>({
+				command: "room_member_rename",
+				cwd: project.cwd,
+				roomId: parts[4],
+				sessionId,
+				nickname,
+			});
+			this.invalidateBootstrap(context);
+			sendJson(response, 200, renamed);
+			return;
+		}
 		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "messages") {
 			const roomId = parts[4];
 			const client = await this.getClient(context);

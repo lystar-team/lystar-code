@@ -987,6 +987,7 @@ export const SubagentConfigSchema = StrictObject({
 	name: Type.String({ minLength: 1, maxLength: 128 }),
 	description: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 	scope: SubagentConfigScopeSchema,
+	fileName: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 	icon: Type.Optional(Id),
 	provider: Type.Optional(Id),
 	model: Type.Optional(Id),
@@ -1588,6 +1589,13 @@ export const CommandSchema = Type.Union([
 		cwd: Type.String({ minLength: 1 }),
 		roomId: Id,
 		sessionId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("room_member_rename"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		sessionId: Id,
+		nickname: Type.String({ minLength: 1, maxLength: 128 }),
 	}),
 	StrictObject({
 		command: Type.Literal("room_send"),
