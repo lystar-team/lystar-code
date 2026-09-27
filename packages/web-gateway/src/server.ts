@@ -115,7 +115,7 @@ import {
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { PushNotifications, parsePushSubscription } from "./push-notifications.ts";
-import { markRoomAgentSessions } from "./room-session-visibility.ts";
+import { markRoomAgentSessions, type RoomSessionMembership } from "./room-session-visibility.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -417,6 +417,11 @@ function sessionActivityFromOperation(status: OperationSnapshot["status"]): Sess
 }
 
 type GatewaySessionSummary = SessionSummary & { roomMember?: true };
+
+interface ProjectSessionsResult {
+	sessions: SessionSummary[];
+	rooms: readonly RoomSessionMembership[];
+}
 
 interface SessionListCache {
 	generation: number;
@@ -954,6 +959,10 @@ export class WebGatewayServer {
 	readonly registry: ProjectRegistry;
 	readonly projectGroups: ProjectGroupRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
+	private readonly roomMembershipCache = new Map<string, readonly RoomSessionMembership[]>();
+	private readonly roomMembershipRequests = new Map<string, Promise<ProjectSessionsResult>>();
+	private readonly roomMembershipGeneration = new Map<string, number>();
+	private roomMembershipEpoch = 0;
 	private readonly sessions = new Map<string, SessionRef>();
 	private readonly sessionIdsByPath = new Map<string, string>();
 	private readonly webSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
@@ -1056,6 +1065,8 @@ export class WebGatewayServer {
 				await context.client?.close().catch(() => {});
 			}
 			this.contexts.clear();
+			this.roomMembershipCache.clear();
+			this.roomMembershipRequests.clear();
 			this.pushContext = undefined;
 			await new Promise<void>((resolvePromise) => {
 				if (!this.listening) {
@@ -1209,6 +1220,7 @@ export class WebGatewayServer {
 	private invalidateBootstrap(context: BrowserContext): void {
 		context.bootstrapGeneration += 1;
 		context.sessionListGeneration += 1;
+		if (context.sockets.size === 0) this.invalidateSessionDetails(context);
 		if (context.sockets.size === 0 && context.activeRequests === 0) return;
 		context.sessionListCache.clear();
 		context.sessionListPromises.clear();
@@ -1441,6 +1453,10 @@ export class WebGatewayServer {
 		context.leaseRestoreTimer = undefined;
 		this.clearPendingProgress(context);
 		this.invalidateBootstrap(context);
+		if (context.sockets.size > 0) this.invalidateSessionDetails(context);
+		this.roomMembershipEpoch += 1;
+		this.roomMembershipCache.clear();
+		this.roomMembershipRequests.clear();
 		const shouldNotify = context.connectionState !== "disconnected" && context.sockets.size > 0;
 		context.connectionState = "disconnected";
 		if (shouldNotify) {
@@ -1644,17 +1660,49 @@ export class WebGatewayServer {
 		const generation = context.sessionListGeneration;
 		const request = (async () => {
 			const client = await this.getClient(context);
-			const [sessions, rooms] = await Promise.all([
-				client.request<SessionSummary[]>({
-					command: "list_sessions",
-					cwd: project.cwd,
-					metadataOnly: true,
-				}),
-				client.request<Array<{ members: Array<{ sessionId: string; role: "owner" | "member" }> }>>({
-					command: "room_project_list",
-					cwd: project.cwd,
-				}),
-			]);
+			const cachedRooms = this.roomMembershipCache.get(project.cwd);
+			const pendingRooms = this.roomMembershipRequests.get(project.cwd);
+			const membershipGeneration = this.roomMembershipGeneration.get(project.cwd) ?? 0;
+			const membershipEpoch = this.roomMembershipEpoch;
+			let result: ProjectSessionsResult;
+			if (cachedRooms || pendingRooms) {
+				const [sessions, rooms] = await Promise.all([
+					client.request<SessionSummary[]>(
+						{ command: "list_sessions", cwd: project.cwd, metadataOnly: true },
+						{ keepConnectionOnTimeout: true },
+					),
+					pendingRooms
+						? pendingRooms.then(
+								(response) => response.rooms,
+								() =>
+									client.request<RoomSessionMembership[]>(
+										{ command: "room_project_list", cwd: project.cwd },
+										{ keepConnectionOnTimeout: true },
+									),
+							)
+						: Promise.resolve(cachedRooms ?? []),
+				]);
+				result = { sessions, rooms };
+			} else {
+				const request = client.request<ProjectSessionsResult>(
+					{ command: "list_project_sessions", cwd: project.cwd },
+					{ keepConnectionOnTimeout: true },
+				);
+				this.roomMembershipRequests.set(project.cwd, request);
+				try {
+					result = await request;
+				} finally {
+					if (this.roomMembershipRequests.get(project.cwd) === request)
+						this.roomMembershipRequests.delete(project.cwd);
+				}
+			}
+			const { sessions, rooms } = result;
+			if (
+				!cachedRooms &&
+				membershipEpoch === this.roomMembershipEpoch &&
+				membershipGeneration === (this.roomMembershipGeneration.get(project.cwd) ?? 0)
+			)
+				this.roomMembershipCache.set(project.cwd, rooms);
 			const sessionsById = new Map<string, SessionSummary>();
 			for (const session of sessions) {
 				const existing = sessionsById.get(session.id);
@@ -2602,6 +2650,9 @@ export class WebGatewayServer {
 			watcher?.watcher.close();
 			this.projectWatchers.delete(projectId);
 			await this.registry.remove(projectId);
+			this.roomMembershipGeneration.set(project.cwd, (this.roomMembershipGeneration.get(project.cwd) ?? 0) + 1);
+			this.roomMembershipCache.delete(project.cwd);
+			this.roomMembershipRequests.delete(project.cwd);
 			await this.projectGroups.assignProject(projectId);
 			this.invalidateAllBootstraps();
 			sendJson(response, 200, { removed: true });
@@ -4602,6 +4653,17 @@ export class WebGatewayServer {
 	}
 
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
+		if (event.type === "room_updated") {
+			if (event.membersChanged) {
+				this.roomMembershipGeneration.set(event.cwd, (this.roomMembershipGeneration.get(event.cwd) ?? 0) + 1);
+				this.roomMembershipCache.delete(event.cwd);
+				this.roomMembershipRequests.delete(event.cwd);
+				this.invalidateBootstrap(context);
+			}
+			const projected = this.projectEvent(event);
+			if (projected && context.sockets.size > 0) this.broadcast(context, projected);
+			return;
+		}
 		if (event.type === "turn_settled") {
 			if (context === this.pushContext && event.outcome !== "aborted")
 				void this.sendTurnPush(event).catch((error: unknown) => console.warn("回合推送失败", error));
@@ -4759,6 +4821,20 @@ export class WebGatewayServer {
 			const projectId = this.registry.list().find((project) => project.cwd === event.cwd)?.id;
 			return { type: "sessions_changed", ...(projectId ? { projectId } : {}) };
 		}
+		if (event.type === "room_updated") {
+			const projectId = this.registry.list().find((project) => project.cwd === event.cwd)?.id;
+			return projectId
+				? {
+						type: "room_updated",
+						projectId,
+						roomId: event.roomId,
+						latestSeq: event.latestSeq,
+						messagesChanged: event.messagesChanged,
+						tasksChanged: event.tasksChanged,
+						membersChanged: event.membersChanged,
+					}
+				: undefined;
+		}
 		if (event.type === "transcript_changed") {
 			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
 			return sessionId ? { type: "transcript_changed", sessionId } : undefined;
@@ -4852,6 +4928,14 @@ export class WebGatewayServer {
 		return subscriptions;
 	}
 
+	private invalidateSessionDetails(context: BrowserContext): void {
+		for (const state of context.sessionDetailState.values()) {
+			state.nextSeq += 1;
+			state.events.length = 0;
+			state.bytes = 0;
+		}
+	}
+
 	private detailStateFor(context: BrowserContext, sessionId: string): SessionDetailState {
 		let state = context.sessionDetailState.get(sessionId);
 		if (!state) {
@@ -4892,9 +4976,11 @@ export class WebGatewayServer {
 		}
 		const state = context.sessionDetailState.get(sessionId);
 		const currentSeq = state?.nextSeq ?? 0;
+		this.detailStateFor(context, sessionId);
 		if (lastSeq !== undefined) {
 			const oldestSeq = state?.events[0]?.seq;
 			const gap =
+				!state ||
 				lastSeq > currentSeq ||
 				(currentSeq > lastSeq && oldestSeq === undefined) ||
 				(oldestSeq !== undefined && lastSeq < oldestSeq - 1);

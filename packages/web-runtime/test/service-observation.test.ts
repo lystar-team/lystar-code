@@ -93,6 +93,27 @@ describe("WebRuntimeService Session observation", () => {
 		]);
 		expect(metadataSummaries[0]).not.toHaveProperty("allMessagesText");
 
+		await handle({
+			type: "request",
+			id: "room",
+			request: { command: "room_create", cwd, ownerSessionId: metadataSummaries[0]!.id },
+		});
+		await handle({ type: "request", id: "project-sessions", request: { command: "list_project_sessions", cwd } });
+		const combinedResponse = messages.find(
+			(message) => message.type === "response" && message.id === "project-sessions" && message.ok,
+		);
+		if (!combinedResponse || combinedResponse.type !== "response" || !combinedResponse.ok) {
+			throw new Error("Missing combined Session and Room response");
+		}
+		expect(combinedResponse.result).toEqual({
+			sessions: [expect.objectContaining({ path: sessionPath, messageCount: 0, firstMessage: "未命名会话" })],
+			rooms: [
+				expect.objectContaining({
+					members: [expect.objectContaining({ sessionId: metadataSummaries[0]!.id, role: "owner" })],
+				}),
+			],
+		});
+
 		messages.length = 0;
 		await external.runBash("printf second", false, () => {});
 		await waitFor(() =>

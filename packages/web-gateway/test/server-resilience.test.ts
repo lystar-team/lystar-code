@@ -54,6 +54,7 @@ interface GatewayInternals {
 	server: Server;
 	createContext(id: string): TestContext;
 	handleHostEvent(context: TestContext, event: ServerEvent): void;
+	handleRuntimeDisconnect(context: TestContext): void;
 	handleWebSocket(socket: WebSocket, request: IncomingMessage): Promise<void>;
 	restoreContextLeases(context: TestContext, client: RuntimeProtocolClient): Promise<void>;
 	checkWebSocketLiveness(): void;
@@ -746,6 +747,68 @@ test("Gateway 首次订阅也返回确认序号", async (t) => {
 
 	assert.deepEqual(socket.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: false }]);
 });
+test("Gateway 无遗漏的重连沿用首次订阅基线", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("quiet-reconnect");
+	const first = createSocket();
+	context.sockets.add(first.webSocket);
+	internal.subscribeSession(context, first.webSocket, "session-1");
+	context.sockets.delete(first.webSocket);
+	const resumed = createSocket();
+	context.sockets.add(resumed.webSocket);
+	internal.subscribeSession(context, resumed.webSocket, "session-1", 0);
+	assert.deepEqual(resumed.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: false }]);
+});
+
+test("Gateway 断线期间漏掉历史事件后要求对账，且详情序号不回绕", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("missed-history");
+	const sessionPath = "/tmp/missed-history.jsonl";
+	internal.sessionIdsByPath.set(sessionPath, "session-1");
+	const first = createSocket();
+	context.sockets.add(first.webSocket);
+	internal.subscribeSession(context, first.webSocket, "session-1");
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath,
+		progress: { type: "assistant_delta", text: "开始" },
+	});
+	await wait(75);
+	context.sockets.delete(first.webSocket);
+	context.resumeSessionIds.add("session-1");
+	internal.handleHostEvent(context, { type: "transcript_changed", sessionPath });
+	internal.handleHostEvent(context, {
+		type: "session_progress",
+		sessionPath,
+		progress: { type: "assistant_delta", text: "继续" },
+	});
+	const resumed = createSocket();
+	context.sockets.add(resumed.webSocket);
+	internal.subscribeSession(context, resumed.webSocket, "session-1", 1);
+	assert.deepEqual(resumed.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 3, gap: true }]);
+	const next = createSocket();
+	internal.subscribeSession(context, next.webSocket, "session-1", 3);
+	assert.deepEqual(next.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 3, gap: false }]);
+});
+
+test("Gateway Runtime 断开后即使详情序号为零也要求对账", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("runtime-missed");
+	const first = createSocket();
+	context.sockets.add(first.webSocket);
+	internal.subscribeSession(context, first.webSocket, "session-1");
+	internal.handleRuntimeDisconnect(context);
+	const resumed = createSocket();
+	internal.subscribeSession(context, resumed.webSocket, "session-1", 0);
+	assert.deepEqual(resumed.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 1, gap: true }]);
+});
+
 test("Gateway 可用 lastSeq 重放未订阅期间的详情事件", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());
@@ -866,7 +929,7 @@ test("Gateway 断线期间保留上次订阅会话的进度序列", async (t) =>
 	]);
 });
 
-test("Gateway 在没有浏览器连接时丢弃未订阅会话的高频 session_progress", async (t) => {
+test("Gateway 丢弃未订阅进度并标记无基线的重连断档", async (t) => {
 	const server = new WebGatewayServer(createConfig());
 	t.after(() => void server.close());
 	const internal = internals(server);
@@ -882,5 +945,5 @@ test("Gateway 在没有浏览器连接时丢弃未订阅会话的高频 session_
 	const socket = createSocket();
 	internal.subscribeSession(context, socket.webSocket, "session-1", 0);
 
-	assert.deepEqual(socket.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: false }]);
+	assert.deepEqual(socket.sent, [{ type: "session_subscription", sessionId: "session-1", seq: 0, gap: true }]);
 });

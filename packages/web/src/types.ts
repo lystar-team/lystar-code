@@ -317,6 +317,15 @@ export type GatewayEvent =
 	| { type: "project_files_changed"; projectId: string; paths: string[] }
 	| { type: "sessions_changed"; projectId?: string }
 	| {
+			type: "room_updated";
+			projectId: string;
+			roomId: string;
+			latestSeq: number;
+			messagesChanged: boolean;
+			tasksChanged: boolean;
+			membersChanged: boolean;
+	  }
+	| {
 			type: "session_summary";
 			sessionId: string;
 			activity: WebSessionSummary["activity"];

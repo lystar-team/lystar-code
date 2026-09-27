@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import type { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ByteTransport, RuntimeProtocolClient, ServerEvent } from "@lystar/code-web-protocol";
+import type { ByteTransport, Command, RuntimeProtocolClient, ServerEvent } from "@lystar/code-web-protocol";
 import {
 	type OperationSnapshot,
 	RuntimeProtocolClient as ProtocolClient,
@@ -141,6 +141,57 @@ function withRuntimeEndpoint(args: readonly string[], endpoint: string): string[
 
 const runtimeStartupPromises = new Map<string, Promise<void>>();
 const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waiting_for_input"]);
+const ISOLATED_READ_COMMANDS = new Set<Command["command"]>([
+	"list_sessions",
+	"list_project_sessions",
+	"room_list",
+	"room_project_list",
+	"room_task_list",
+	"read_transcript",
+	"search_transcript",
+	"inspect_session",
+	"get_operation",
+	"list_operations",
+	"list_models",
+	"list_model_providers",
+	"list_model_options",
+	"list_skills",
+	"list_harness_imports",
+	"list_project_instructions",
+	"list_host_instructions",
+	"list_subagent_configs",
+	"list_directories",
+	"get_completions",
+	"get_about",
+	"get_changelog",
+	"get_diagnostics",
+	"get_connection_status",
+	"get_git_status",
+	"get_git_diff",
+	"get_git_stats",
+	"get_git_branches",
+	"get_git_history",
+	"get_git_commit",
+	"resolve_project_resource",
+	"resolve_external_resource",
+	"read_project_resource",
+	"read_external_resource",
+	"read_content",
+	"list_settings",
+	"get_project_trust",
+	"list_packages",
+	"get_session_tree",
+	"get_session_info",
+	"list_fork_messages",
+	"list_subagents",
+	"read_subagent",
+	"read_image_content",
+]);
+
+export function isIsolatedRuntimeRead(request: Command): boolean {
+	if (request.command === "room_read") return request.markRead === false;
+	return ISOLATED_READ_COMMANDS.has(request.command);
+}
 
 function incompatibleRuntimeVersion(error: unknown): number | undefined {
 	if (error instanceof RuntimeProtocolError && error.code !== "version") return undefined;
@@ -298,6 +349,7 @@ async function openRuntimeClient(
 	}
 	const client = new ProtocolClient(transport, clientInstanceId, {
 		trustedServerMessages: true,
+		keepConnectionOnRequestTimeout: isIsolatedRuntimeRead,
 		onRequestDiagnostic: (diagnostic) =>
 			logGatewayConnection("runtime_request", {
 				...diagnostic,

@@ -119,6 +119,24 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_project_sessions"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "cwd",
                     "ownerSessionId"
                   ],
@@ -5745,7 +5763,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 10
+              "const": 11
             },
             "productVersion": {
               "type": "string",
@@ -5753,7 +5771,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 10
+              "const": 11
             },
             "serverInstanceId": {
               "type": "string",
@@ -6564,6 +6582,47 @@
                     "cwd": {
                       "type": "string",
                       "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "cwd",
+                    "roomId",
+                    "latestSeq",
+                    "messagesChanged",
+                    "tasksChanged",
+                    "membersChanged"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "room_updated"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "roomId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "latestSeq": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "messagesChanged": {
+                      "type": "boolean"
+                    },
+                    "tasksChanged": {
+                      "type": "boolean"
+                    },
+                    "membersChanged": {
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false

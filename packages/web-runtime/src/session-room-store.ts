@@ -101,8 +101,18 @@ export interface SessionRoomMessageDraft {
 	createdAt: string;
 }
 
+export interface SessionRoomStoreChange {
+	cwd: string;
+	roomId: string;
+	latestSeq: number;
+	messagesChanged: boolean;
+	tasksChanged: boolean;
+	membersChanged: boolean;
+}
+
 export class SessionRoomStore {
 	private readonly path: string;
+	private readonly onChange?: (change: SessionRoomStoreChange) => void;
 	private readonly rooms = new Map<string, SessionRoom>();
 	private readonly membersByRoom = new Map<string, Map<string, SessionRoomMember>>();
 	private readonly messages = new Map<string, SessionRoomMessage[]>();
@@ -111,8 +121,9 @@ export class SessionRoomStore {
 	private readonly tasksByRoom = new Map<string, Map<string, SessionRoomTask>>();
 	private readonly pendingDeliveries = new Map<string, { message: SessionRoomMessage; targetSessionId: string }>();
 
-	constructor(path: string) {
+	constructor(path: string, onChange?: (change: SessionRoomStoreChange) => void) {
 		this.path = resolve(path);
+		this.onChange = onChange;
 		mkdirSync(dirname(this.path), { recursive: true });
 		if (!existsSync(this.path)) return;
 		const content = readFileSync(this.path, "utf8");
@@ -591,6 +602,37 @@ export class SessionRoomStore {
 	private commit(records: readonly RoomJournalRecord[]): void {
 		appendFileSync(this.path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
 		for (const record of records) this.apply(record);
+		if (!this.onChange) return;
+		const changed = new Map<string, Omit<SessionRoomStoreChange, "cwd" | "roomId" | "latestSeq">>();
+		for (const record of records) {
+			if (record.type === "cursor_advanced" || record.type === "delivery_pending" || record.type === "delivery_done")
+				continue;
+			const roomId =
+				record.type === "room_created" || record.type === "room_updated"
+					? record.room.id
+					: record.type === "member_joined"
+						? record.member.roomId
+						: record.type === "message_appended"
+							? record.message.roomId
+							: record.type === "task_created" || record.type === "task_updated"
+								? record.task.roomId
+								: record.roomId;
+			const flags = changed.get(roomId) ?? { messagesChanged: false, tasksChanged: false, membersChanged: false };
+			if (record.type === "message_appended") flags.messagesChanged = true;
+			if (record.type === "task_created" || record.type === "task_updated") flags.tasksChanged = true;
+			if (["room_created", "member_joined", "member_left", "member_renamed"].includes(record.type))
+				flags.membersChanged = true;
+			changed.set(roomId, flags);
+		}
+		for (const [roomId, flags] of changed) {
+			const room = this.rooms.get(roomId);
+			if (!room) continue;
+			try {
+				this.onChange({ cwd: room.cwd, roomId, latestSeq: this.messages.get(roomId)?.at(-1)?.seq ?? 0, ...flags });
+			} catch {
+				// 通知失败不能把已写入的 Room 记录当作失败操作重试。
+			}
+		}
 	}
 
 	private apply(record: RoomJournalRecord): void {

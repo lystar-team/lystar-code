@@ -43,6 +43,8 @@ export interface RequestOptions {
 	/** Use 0 only for a command that intentionally has no deadline. */
 	timeoutMs?: number;
 	timeoutMessage?: string;
+	/** 仅用于已发送的只读请求：超时后忽略迟到响应，不关闭其他请求的连接。 */
+	keepConnectionOnTimeout?: boolean;
 	/** 在响应帧位置建立同步基线，必须先于同批后续事件执行。 */
 	onResult?: (value: unknown) => void;
 }
@@ -104,6 +106,7 @@ export class RuntimeProtocolClient {
 	private readonly trustedServerMessages: boolean;
 	private readonly protocolVersion: number;
 	private readonly onRequestDiagnostic?: (diagnostic: RuntimeRequestDiagnostic) => void;
+	private readonly keepConnectionOnRequestTimeout?: (request: Command) => boolean;
 	private closed = false;
 	readonly clientInstanceId: string;
 
@@ -114,6 +117,7 @@ export class RuntimeProtocolClient {
 			trustedServerMessages?: boolean;
 			protocolVersion?: number;
 			onRequestDiagnostic?: (diagnostic: RuntimeRequestDiagnostic) => void;
+			keepConnectionOnRequestTimeout?: (request: Command) => boolean;
 		} = {},
 	) {
 		const protocolVersion = options.protocolVersion ?? RUNTIME_PROTOCOL_VERSION;
@@ -124,6 +128,7 @@ export class RuntimeProtocolClient {
 		this.trustedServerMessages = options.trustedServerMessages === true;
 		this.protocolVersion = protocolVersion;
 		this.onRequestDiagnostic = options.onRequestDiagnostic;
+		this.keepConnectionOnRequestTimeout = options.keepConnectionOnRequestTimeout;
 		this.decoder = options.trustedServerMessages ? new TrustedServerMessageDecoder() : new ServerMessageDecoder();
 	}
 
@@ -163,7 +168,10 @@ export class RuntimeProtocolClient {
 		if (this.closed) throw new Error("Web Runtime 连接已关闭");
 		const id = createClientRequestId();
 		const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+		const keepConnectionOnTimeout =
+			options.keepConnectionOnTimeout ?? this.keepConnectionOnRequestTimeout?.(request) ?? false;
 		const startedAt = Date.now();
+		let sent = false;
 		const report = (
 			phase: RuntimeRequestDiagnostic["phase"],
 			outcome?: RuntimeRequestDiagnostic["outcome"],
@@ -197,6 +205,7 @@ export class RuntimeProtocolClient {
 					const timeoutError = new Error(options.timeoutMessage ?? `Web Runtime请求超时：${request.command}`);
 					pending.finish("timeout", "request_timeout");
 					reject(timeoutError);
+					if (keepConnectionOnTimeout && sent) return;
 					this.handleClose(timeoutError);
 					void this.transport.close().catch(() => {});
 				}, timeoutMs);
@@ -207,6 +216,9 @@ export class RuntimeProtocolClient {
 		// 响应等待与发送并行：发送受阻时，请求超时也必须能够结束调用。
 		void Promise.resolve()
 			.then(() => this.transport.send(encodeClientMessage({ type: "request", id, request })))
+			.then(() => {
+				sent = true;
+			})
 			.catch((error) => {
 				this.handleClose(error instanceof Error ? error : new Error(String(error)));
 				void this.transport.close().catch(() => {});

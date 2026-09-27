@@ -2,7 +2,7 @@ import Type, { type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 10 as const;
+export const RUNTIME_PROTOCOL_VERSION = 11 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 400;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
@@ -1559,6 +1559,10 @@ export const CommandSchema = Type.Union([
 		metadataOnly: Type.Optional(Type.Boolean()),
 	}),
 	StrictObject({
+		command: Type.Literal("list_project_sessions"),
+		cwd: Type.String({ minLength: 1 }),
+	}),
+	StrictObject({
 		command: Type.Literal("room_create"),
 		cwd: Type.String({ minLength: 1 }),
 		ownerSessionId: Id,
@@ -2322,6 +2326,15 @@ export const ServerEventSchema = Type.Union([
 	StrictObject({ type: Type.Literal("session_snapshot"), snapshot: SessionStateSnapshotSchema }),
 	StrictObject({ type: Type.Literal("session_removed"), sessionPath: Type.String({ minLength: 1 }) }),
 	StrictObject({ type: Type.Literal("sessions_changed"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		type: Type.Literal("room_updated"),
+		cwd: Type.String({ minLength: 1 }),
+		roomId: Id,
+		latestSeq: Type.Integer({ minimum: 0 }),
+		messagesChanged: Type.Boolean(),
+		tasksChanged: Type.Boolean(),
+		membersChanged: Type.Boolean(),
+	}),
 	StrictObject({
 		type: Type.Literal("model_catalog_changed"),
 		revision: Type.Integer({ minimum: 1 }),

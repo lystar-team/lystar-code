@@ -186,6 +186,10 @@ class FakeRuntime implements RuntimeSession {
 			onChunk("x".repeat(17 * 1024));
 			return { output: "x".repeat(17 * 1024), exitCode: 0, cancelled: false };
 		}
+		if (command === "burst-output") {
+			for (let index = 0; index < 1_000; index++) onChunk("x");
+			return { output: "x".repeat(1_000), exitCode: 0, cancelled: false };
+		}
 		if (this.counts.block_bash) {
 			await new Promise<void>((resolve) => {
 				this.releaseBash = resolve;
@@ -801,13 +805,43 @@ describe("WebRuntimeService journaled writes", () => {
 			.filter(isBashProgress);
 		expect(progress).toEqual([
 			{ type: "bash", command: "printf ok", output: "" },
-			{ type: "bash", command: "printf ok", output: "first" },
 			{ type: "bash", command: "printf ok", output: "first-second" },
 			{ type: "bash", command: "printf ok", output: "first-second" },
 		]);
 		expect(
 			active.connection.messages.find((message) => message.type === "response" && message.id === "bash"),
 		).toMatchObject({ ok: true, result: { operation: { type: "run_bash" } } });
+	});
+
+	it("合并高频 Shell 输出并在完成前保留完整末尾", async () => {
+		const setupValue = setup();
+		const active = await lease(setupValue.service, setupValue.sessionPath);
+		await active.connection.handle({
+			type: "request",
+			id: "bash-burst",
+			request: {
+				command: "run_bash",
+				sessionPath: setupValue.sessionPath,
+				leaseId: active.leaseId,
+				clientInstanceId: "client",
+				clientRequestId: "bash-burst",
+				commandText: "burst-output",
+				excludeFromContext: true,
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const outputEvents = active.connection.messages
+			.filter((message) => message.type === "event" && message.event.type === "operation_updated")
+			.map((message) =>
+				message.type === "event" && message.event.type === "operation_updated"
+					? message.event.operation.progress
+					: undefined,
+			)
+			.filter(isBashProgress);
+		expect(outputEvents).toHaveLength(3);
+		expect(outputEvents.at(-1)?.output).toBe("x".repeat(1_000));
+		const persisted = readFileSync(join(setupValue.directory, "host", "operations.jsonl"), "utf8");
+		expect(persisted.split("\n").filter((line) => line.includes('"type":"bash"'))).toHaveLength(3);
 	});
 
 	it("truncates Shell progress to the latest 16 KiB", async () => {

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import {
 	type SessionProgress,
 } from "@lystar/code-web-protocol";
@@ -146,6 +146,7 @@ export function useWorkbenchStreamActions({
 	sessionSubscriptionWaitersRef,
 	handledNotifyIdsRef,
 }: WorkbenchStreamActionsContext) {
+	const gapRecoveryRef = useRef(new Map<string, Promise<unknown>>());
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
 			if (!sessionId) return;
@@ -235,12 +236,23 @@ export function useWorkbenchStreamActions({
 				return false;
 			}
 			if (result === "gap") {
-				console.info("Web 会话订阅断档", { sessionId, time: new Date().toISOString() });
-				await Promise.all([
-					loadSessionSnapshot(sessionId),
-					loadSessionOperations(sessionId),
-					loadTranscript(sessionId),
-				]);
+				const key = `${sessionId}:${sessionDetailSeqRef.current.get(sessionId) ?? ""}`;
+				let recovery = gapRecoveryRef.current.get(key);
+				if (!recovery) {
+					console.info("Web 会话订阅断档", { sessionId, time: new Date().toISOString() });
+					recovery = Promise.all([
+						loadSessionSnapshot(sessionId),
+						loadSessionOperations(sessionId),
+						loadTranscript(sessionId),
+						loadSubagents(sessionId),
+					]);
+					gapRecoveryRef.current.set(key, recovery);
+				}
+				try {
+					await recovery;
+				} finally {
+					if (gapRecoveryRef.current.get(key) === recovery) gapRecoveryRef.current.delete(key);
+				}
 			}
 			if (stateRef.current.sessionId === sessionId) {
 				const next = updateState((current) => ({
@@ -251,7 +263,7 @@ export function useWorkbenchStreamActions({
 			}
 			return true;
 		},
-		[loadSessionOperations, loadSessionSnapshot, loadTranscript, updateState],
+		[loadSessionOperations, loadSessionSnapshot, loadSubagents, loadTranscript, updateState],
 	);
 
 	const restoreSelectedSessionSubscription = useCallback(
@@ -261,6 +273,20 @@ export function useWorkbenchStreamActions({
 				.then(async (result) => {
 					const ready = await completeSessionSubscription(sessionId, result);
 					if (ready && result !== "gap" && stateRef.current.sessionId === sessionId) {
+						const current = stateRef.current;
+						if (
+							selectionInFlightRef.current !== sessionId &&
+							current.session &&
+							current.transcriptPageLoaded &&
+							!current.transcriptLoading &&
+							!current.sessionError &&
+							!current.transcriptError &&
+							!current.subagentsLoading &&
+							!current.subagentsError
+						) {
+							void loadSessionOperations(sessionId).catch((error) => showToast(errorMessage(error)));
+							return;
+						}
 						void Promise.all([
 							loadSessionSnapshot(sessionId),
 							loadSessionOperations(sessionId),
@@ -306,7 +332,7 @@ export function useWorkbenchStreamActions({
 					);
 					if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
 				}
-				if (event.gap && selected && selectionInFlightRef.current !== event.sessionId)
+				if (event.gap && selected && !waiters && selectionInFlightRef.current !== event.sessionId)
 					void completeSessionSubscription(event.sessionId, "gap").catch((error) => {
 						showToast(errorMessage(error));
 						socketRef.current?.close(4002, "会话断档恢复失败");

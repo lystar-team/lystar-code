@@ -113,6 +113,10 @@ export function useRoomWorkspace({
 	const [agentProfilesLoading, setAgentProfilesLoading] = useState(false);
 	const roomMessagesRef = useRef<WebRoomMessage[]>([]);
 	roomMessagesRef.current = selectedRoomMessages;
+	const readyRoomKeyRef = useRef<string>();
+	const skipImmediateRoomPollRef = useRef<string>();
+	const refreshRoomTasksRef = useRef<() => Promise<void>>(async () => {});
+	const roomTaskRequestRef = useRef(0);
 	const roomsRequestIdRef = useRef(0);
 	const roomsInitializedRef = useRef(false);
 	const selectionRequestIdRef = useRef(0);
@@ -148,6 +152,7 @@ export function useRoomWorkspace({
 					current.filter((pending) => roomKey(pending.projectId, pending.roomId) !== selectedRoomKey),
 				);
 				selectedRoomKeyRef.current = undefined;
+				readyRoomKeyRef.current = undefined;
 				roomMessagesRef.current = [];
 				setSelectedRoomKey(undefined);
 				setSelectedRoom(undefined);
@@ -205,6 +210,7 @@ export function useRoomWorkspace({
 			}
 			const key = roomKey(projectId, summary.room.id);
 			selectedRoomKeyRef.current = key;
+			readyRoomKeyRef.current = undefined;
 			roomMessagesRef.current = [];
 			setSelectedRoomKey(key);
 			setSelectedRoom(summary);
@@ -219,6 +225,8 @@ export function useRoomWorkspace({
 				await webApi.joinRoom(projectId, summary.room.id, senderSessionId);
 				const response = await webApi.roomMessages(projectId, summary.room.id, senderSessionId, { limit: 100 });
 				if (requestId !== selectionRequestIdRef.current) return;
+				readyRoomKeyRef.current = key;
+				skipImmediateRoomPollRef.current = key;
 				setSelectedRoom(response.summary);
 				roomMessagesRef.current = response.messages;
 				setSelectedRoomMessages(response.messages);
@@ -239,18 +247,25 @@ export function useRoomWorkspace({
 		const projectId = selectedRoomProjectId;
 		const roomId = selectedRoom?.room.id;
 		const memberSessionId = selectedRoomSessionId;
-		if (!projectId || !roomId || !memberSessionId) return;
+		if (!active || roomMessagesLoading || !projectId || !roomId || !memberSessionId) return;
 		const key = roomKey(projectId, roomId);
+		if (readyRoomKeyRef.current !== key) return;
 		let polling = false;
+		let pollAgain = false;
+		let disposed = false;
 		const poll = async () => {
-			if (polling || selectedRoomKeyRef.current !== key) return;
+			if (disposed || selectedRoomKeyRef.current !== key) return;
+			if (polling) {
+				pollAgain = true;
+				return;
+			}
 			polling = true;
 			try {
 				const response = await webApi.roomMessages(projectId, roomId, memberSessionId, {
 					afterSeq: roomMessagesRef.current.at(-1)?.seq ?? 0,
 					limit: 100,
 				});
-				if (selectedRoomKeyRef.current !== key) return;
+				if (disposed || selectedRoomKeyRef.current !== key) return;
 				setRoomMessagesError(undefined);
 				setSelectedRoom(response.summary);
 				setRoomsByProject((current) => {
@@ -281,11 +296,36 @@ export function useRoomWorkspace({
 				// 轮询失败不打断当前 Room，下一轮继续尝试。
 			} finally {
 				polling = false;
+				if (pollAgain && !disposed) {
+					pollAgain = false;
+					void poll();
+				}
 			}
 		};
-		const timer = window.setInterval(() => void poll(), 2_000);
-		return () => window.clearInterval(timer);
-	}, [selectedRoom?.room.id, selectedRoomProjectId, selectedRoomSessionId]);
+		const unsubscribe = webApi.subscribeRoomUpdates((event) => {
+			if (event.type === "connection_state") {
+				void poll();
+				void refreshRoomTasksRef.current();
+				void refreshRooms();
+				return;
+			}
+			if (roomKey(event.projectId, event.roomId) !== key) return;
+			if (event.messagesChanged && event.latestSeq > (roomMessagesRef.current.at(-1)?.seq ?? 0)) void poll();
+			if (event.tasksChanged) void refreshRoomTasksRef.current();
+			if (event.membersChanged) {
+				void poll();
+				void refreshRooms();
+			}
+		});
+		if (skipImmediateRoomPollRef.current === key) skipImmediateRoomPollRef.current = undefined;
+		else void poll();
+		const timer = window.setInterval(() => void poll(), 60_000);
+		return () => {
+			disposed = true;
+			unsubscribe();
+			window.clearInterval(timer);
+		};
+	}, [active, refreshRooms, roomMessagesLoading, selectedRoom?.room.id, selectedRoomProjectId, selectedRoomSessionId]);
 
 	const refreshRoomTasks = useCallback(async () => {
 		const projectId = selectedRoomProjectId;
@@ -293,25 +333,29 @@ export function useRoomWorkspace({
 		const memberSessionId = selectedRoomSessionId;
 		if (!projectId || !roomId || !memberSessionId) return;
 		const key = roomKey(projectId, roomId);
+		const requestId = ++roomTaskRequestRef.current;
 		try {
 			const tasks = await webApi.roomTasks(projectId, roomId, memberSessionId);
-			if (selectedRoomKeyRef.current !== key) return;
+			if (selectedRoomKeyRef.current !== key || roomTaskRequestRef.current !== requestId) return;
 			setRoomTasks(tasks);
 			setRoomTasksError(undefined);
 		} catch (error) {
-			if (selectedRoomKeyRef.current === key) setRoomTasksError(error instanceof Error ? error.message : String(error));
+			if (selectedRoomKeyRef.current === key && roomTaskRequestRef.current === requestId)
+				setRoomTasksError(error instanceof Error ? error.message : String(error));
 		} finally {
-			if (selectedRoomKeyRef.current === key) setRoomTasksLoading(false);
+			if (selectedRoomKeyRef.current === key && roomTaskRequestRef.current === requestId)
+				setRoomTasksLoading(false);
 		}
 	}, [selectedRoom?.room.id, selectedRoomProjectId, selectedRoomSessionId]);
+	refreshRoomTasksRef.current = refreshRoomTasks;
 
 	useEffect(() => {
-		if (!active || !selectedRoom) return;
+		if (!active || !selectedRoom || roomMessagesLoading || readyRoomKeyRef.current !== selectedRoomKey) return;
 		setRoomTasksLoading(true);
 		void refreshRoomTasks();
-		const timer = window.setInterval(() => void refreshRoomTasks(), 3_000);
+		const timer = window.setInterval(() => void refreshRoomTasks(), 60_000);
 		return () => window.clearInterval(timer);
-	}, [active, refreshRoomTasks, selectedRoom?.room.id]);
+	}, [active, refreshRoomTasks, roomMessagesLoading, selectedRoom?.room.id, selectedRoomKey]);
 
 	const createRoomTask = useCallback(async (title: string, description: string) => {
 		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");

@@ -92,6 +92,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export class WebApi {
+	private readonly roomUpdateListeners = new Set<(event: Extract<GatewayEvent, { type: "room_updated" | "connection_state" }>) => void>();
 	private readonly pendingSessionSubscriptions = new WeakMap<WebSocket, Map<string, number | undefined>>();
 	private readonly pendingProjectSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private readonly pendingSubscriptionListeners = new WeakMap<
@@ -1145,6 +1146,11 @@ export class WebApi {
 		socket.send(JSON.stringify({ type: "unsubscribe_project", projectId }));
 	}
 
+	subscribeRoomUpdates(listener: (event: Extract<GatewayEvent, { type: "room_updated" | "connection_state" }>) => void): () => void {
+		this.roomUpdateListeners.add(listener);
+		return () => this.roomUpdateListeners.delete(listener);
+	}
+
 	connect(onEvent: (event: GatewayEvent) => void, onClose: (event: CloseEvent) => void): WebSocket {
 		const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 		const token = encodeURIComponent(localStorage.getItem(TOKEN_KEY)?.trim() ?? "");
@@ -1162,7 +1168,11 @@ export class WebApi {
 		};
 		socket.addEventListener("message", (message) => {
 			try {
-				onEvent(JSON.parse(String(message.data)) as GatewayEvent);
+				const event = JSON.parse(String(message.data)) as GatewayEvent;
+				onEvent(event);
+				if (event.type === "room_updated" || (event.type === "connection_state" && event.connected)) {
+					for (const listener of this.roomUpdateListeners) listener(event);
+				}
 			} catch (error) {
 				console.error("Web 实时消息处理失败，需要重新同步", { clientId: browserClientId, error });
 				socket.close(4001, "实时消息处理失败");

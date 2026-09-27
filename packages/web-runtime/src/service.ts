@@ -428,7 +428,9 @@ export class WebRuntimeService {
 		this.agentDir = options.agentDir;
 		this.collaborationWorkspaces = new CollaborationWorkspaceManager(this.agentDir);
 		this.roomCoordinator = new SessionRoomCoordinator({
-			store: new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl")),
+			store: new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl"), (change) => {
+				void this.broadcast({ type: "room_updated", ...change });
+			}),
 			getAvailability: (cwd, sessionId) => this.getSessionRoomAvailability(cwd, sessionId),
 			deliver: (input) => this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message),
 		});
@@ -1192,11 +1194,17 @@ export class WebRuntimeService {
 			case "list_sessions": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessions = await this.listSessionSummaries(cwd, connection, request.metadataOnly === true);
-				this.rememberSessionFacts(cwd, sessions);
-				this.watchSessionDirectory(cwd);
 				if (!request.query) return sessions;
 				const query = request.query.toLowerCase();
 				return sessions.filter((session) => JSON.stringify(session).toLowerCase().includes(query));
+			}
+			case "list_project_sessions": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const [sessions, rooms] = await Promise.all([
+					this.listSessionSummaries(cwd, connection, true),
+					this.roomCoordinator.api().listAll({ cwd }),
+				]);
+				return jsonValue({ sessions, rooms });
 			}
 			case "room_create":
 				return jsonValue(
@@ -1562,7 +1570,13 @@ export class WebRuntimeService {
 					async (runtime, operation) => {
 						let output = "";
 						let truncated = false;
-						const update = () => {
+						let dirty = false;
+						let flushTimer: ReturnType<typeof setTimeout> | undefined;
+						const flush = () => {
+							if (flushTimer) clearTimeout(flushTimer);
+							flushTimer = undefined;
+							if (!dirty || this.journal.get(operation.operationId)?.status !== "running") return;
+							dirty = false;
 							this.updateOperation(operation.operationId, "running", {
 								progress: {
 									type: "bash",
@@ -1572,15 +1586,22 @@ export class WebRuntimeService {
 								},
 							});
 						};
-						update();
-						return runtime.runBash(request.commandText, request.excludeFromContext, (chunk) => {
-							output += chunk;
-							if (output.length > 16 * 1024) {
-								output = output.slice(-16 * 1024);
-								truncated = true;
-							}
-							update();
+						this.updateOperation(operation.operationId, "running", {
+							progress: { type: "bash", command: request.commandText.slice(0, 16 * 1024), output },
 						});
+						try {
+							return await runtime.runBash(request.commandText, request.excludeFromContext, (chunk) => {
+								output += chunk;
+								if (output.length > 16 * 1024) {
+									output = output.slice(-16 * 1024);
+									truncated = true;
+								}
+								dirty = true;
+								flushTimer ??= setTimeout(flush, 100);
+							});
+						} finally {
+							flush();
+						}
 					},
 					afterResponse,
 				);
@@ -2763,6 +2784,8 @@ export class WebRuntimeService {
 			});
 		}
 		summaries.sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id));
+		this.rememberSessionFacts(cwd, summaries);
+		this.watchSessionDirectory(cwd);
 		return summaries;
 	}
 
