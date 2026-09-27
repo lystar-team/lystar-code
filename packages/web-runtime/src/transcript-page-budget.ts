@@ -1,14 +1,16 @@
 import { type JsonValue, RUNTIME_MAX_FRAME_LENGTH } from "@lystar/code-web-protocol";
 
 const TRANSCRIPT_PAGE_BYTE_BUDGET = RUNTIME_MAX_FRAME_LENGTH / 2;
+// A projected entry can include both its raw payload and its rendered view.
+const TRANSCRIPT_RAW_BYTE_BUDGET = RUNTIME_MAX_FRAME_LENGTH / 4;
 
 export async function readTranscriptPageWithinFrameBudget(
 	limit: number,
-	readPage: (limit: number) => Promise<unknown>,
+	readPage: (limit: number, byteBudget: number) => Promise<unknown>,
 ): Promise<JsonValue> {
 	let pageLimit = limit;
 	while (true) {
-		const serialized = JSON.stringify(await readPage(pageLimit));
+		const serialized = JSON.stringify(await readPage(pageLimit, TRANSCRIPT_RAW_BYTE_BUDGET));
 		const bytes = Buffer.byteLength(serialized);
 		if (bytes <= TRANSCRIPT_PAGE_BYTE_BUDGET || pageLimit === 1) {
 			if (bytes >= RUNTIME_MAX_FRAME_LENGTH) throw new Error("单条历史记录超过 Runtime 响应大小上限");

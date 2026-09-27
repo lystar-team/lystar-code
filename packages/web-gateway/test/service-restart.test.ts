@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import * as webRuntime from "@lystar/code-web-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebConfigStore } from "../src/config.ts";
@@ -141,6 +142,46 @@ describe("Web service restart", () => {
 		);
 		expect(webRuntime.ensureRuntimeService).not.toHaveBeenCalled();
 		expect(webRuntime.ensureWebService).not.toHaveBeenCalled();
+	});
+
+	it("persists development service stop events from control commands", async () => {
+		state.gatewayRunning = true;
+		state.runtimeRunning = true;
+		state.busy = false;
+		const options = await serviceOptions("web-dev-config.json");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ ok: true, host: "connected" })),
+		);
+		vi.mocked(webRuntime.stopWebService).mockImplementationOnce((spec) => {
+			state.gatewayRunning = false;
+			webRuntime.logWebServiceEvent("service", "service_stop_requested", {
+				kind: spec.kind,
+				profile: "development",
+				pid: 4321,
+				parentPid: process.ppid,
+			});
+			return webRuntime.getWebServiceStatus(spec);
+		});
+
+		await runWebServiceAction({ ...options, action: "restart" });
+
+		const database = new DatabaseSync(webRuntime.serviceEventLogPath(options.agentDir, "development"), {
+			readOnly: true,
+		});
+		try {
+			const event = database
+				.prepare("SELECT profile, fields_json FROM events WHERE event='service_stop_requested' LIMIT 1")
+				.get() as { profile: string; fields_json: string } | undefined;
+			expect(event?.profile).toBe("development");
+			expect(JSON.parse(event!.fields_json)).toMatchObject({
+				kind: "gateway",
+				targetPid: 4321,
+				parentPid: process.ppid,
+			});
+		} finally {
+			database.close();
+		}
 	});
 
 	it.each([undefined, "web-dev-config.json"])(

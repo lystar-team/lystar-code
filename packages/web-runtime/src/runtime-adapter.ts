@@ -81,7 +81,8 @@ import {
 	RELEASE_REPOSITORY,
 	readClipboardImage,
 	readClipboardText,
-	readSessionSnapshot,
+	readSessionHeader,
+	readSessionInspection,
 	removeModelsJsonModels,
 	removeModelsJsonProvider,
 	renderSubagentMarkdown,
@@ -108,6 +109,7 @@ import {
 	saveModelsJsonProvider,
 	saveModelsJsonSyncedModels,
 	setModelsJsonModelDisabled,
+	streamSessionEntries,
 	subscribeSubagentRuns,
 	VERSION,
 	WebCompanionServer,
@@ -152,7 +154,7 @@ import type {
 	ThinkingLevel,
 	TranscriptItem,
 } from "@lystar/code-web-protocol";
-import { RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
+import { RUNTIME_MAX_FRAME_LENGTH, RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
 import {
 	AGENT_STEP_CUSTOM_TYPE,
 	AGENT_STEP_TOOL_NAMES,
@@ -881,14 +883,42 @@ function settingSummary(id: string, settings: SettingsManager, themeNames: reado
 	};
 }
 
-function sessionTree(entries: readonly SessionEntry[], leafId: string | null): SessionTreeNode[] {
+function sessionCwdFromHeader(sessionPath: string): string {
+	const header = readSessionHeader(sessionPath);
+	if (!header) throw new Error(`Session file is not a valid pi session: ${sessionPath}`);
+	return header.cwd;
+}
+
+type SessionTreeEntry = {
+	id: string;
+	parentId: string | null;
+	timestamp: string;
+	type: string;
+	message?: unknown;
+	preview?: string;
+	targetId?: string;
+	label?: string;
+};
+
+const MAX_SESSION_TREE_BYTES = RUNTIME_MAX_FRAME_LENGTH - 64 * 1024;
+
+function assertSessionTreeBudget(bytes: number): void {
+	if (bytes > MAX_SESSION_TREE_BYTES) {
+		throw Object.assign(new Error("会话树超出单次传输上限"), {
+			code: "session_tree_too_large",
+			retryable: false,
+		});
+	}
+}
+
+function sessionTree(entries: readonly SessionTreeEntry[], leafId: string | null): SessionTreeNode[] {
 	const labels = new Map<string, string | undefined>();
 	for (const entry of entries) {
-		if (entry.type === "label") labels.set(entry.targetId, entry.label);
+		if (entry.type === "label" && entry.targetId !== undefined) labels.set(entry.targetId, entry.label);
 	}
 	const byId = new Map(entries.map((entry) => [entry.id, entry]));
-	const children = new Map<string, SessionEntry[]>();
-	const roots: SessionEntry[] = [];
+	const children = new Map<string, SessionTreeEntry[]>();
+	const roots: SessionTreeEntry[] = [];
 	for (const entry of entries) {
 		if (entry.parentId && entry.parentId !== entry.id && byId.has(entry.parentId)) {
 			const siblings = children.get(entry.parentId) ?? [];
@@ -899,25 +929,33 @@ function sessionTree(entries: readonly SessionEntry[], leafId: string | null): S
 		}
 	}
 	const output: SessionTreeNode[] = [];
-	const visit = (entry: SessionEntry, depth: number): void => {
+	let bytes = 0;
+	const pending = roots
+		.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+		.reverse()
+		.map((entry) => ({ entry, depth: 0 }));
+	while (pending.length > 0) {
+		const { entry, depth } = pending.pop()!;
 		const raw = entry.type === "message" ? entry.message : entry;
-		output.push({
+		const node: SessionTreeNode = {
 			id: entry.id,
 			parentId: entry.parentId,
 			kind: entry.type,
 			...(labels.get(entry.id) ? { label: labels.get(entry.id) } : {}),
 			timestamp: entry.timestamp,
-			preview: JSON.stringify(raw).slice(0, 4096),
+			preview: entry.preview ?? JSON.stringify(raw).slice(0, 4096),
 			isLeaf: leafId === entry.id,
 			depth,
-		});
+		};
+		bytes += Buffer.byteLength(JSON.stringify(node));
+		assertSessionTreeBudget(bytes);
+		output.push(node);
 		const descendants = (children.get(entry.id) ?? []).sort(
 			(left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp),
 		);
-		for (const child of descendants) visit(child, depth + 1);
-	};
-	for (const root of roots.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))) {
-		visit(root, 0);
+		for (let index = descendants.length - 1; index >= 0; index--) {
+			pending.push({ entry: descendants[index]!, depth: depth + 1 });
+		}
 	}
 	return output;
 }
@@ -2909,37 +2947,29 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		}
 	}
 
-	inspectSession(sessionPath: string): SessionStateSnapshot {
-		const snapshot = readSessionSnapshot(sessionPath);
-		const storage = sessionGeneration(sessionPath, snapshot.header.id);
-		let name: string | undefined;
-		let model: ModelRef | undefined;
-		let thinkingLevel: ThinkingLevel = "off";
-		for (const entry of snapshot.entries) {
-			if (entry.type === "session_info") name = entry.name;
-			else if (entry.type === "model_change") model = { provider: entry.provider, id: entry.modelId };
-			else if (
-				entry.type === "thinking_level_change" &&
-				["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(entry.thinkingLevel)
-			) {
-				thinkingLevel = entry.thinkingLevel as ThinkingLevel;
-			}
-		}
+	async inspectSession(sessionPath: string): Promise<SessionStateSnapshot> {
+		const inspection = await readSessionInspection(sessionPath);
+		const storage = sessionGeneration(sessionPath, inspection.header.id);
+		const thinkingLevel =
+			inspection.thinkingLevel &&
+			["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(inspection.thinkingLevel)
+				? (inspection.thinkingLevel as ThinkingLevel)
+				: "off";
 		return {
-			id: snapshot.header.id,
+			id: inspection.header.id,
 			path: sessionPath,
-			...(name ? { name } : {}),
-			cwd: snapshot.header.cwd,
-			createdAt: new Date(snapshot.header.timestamp).getTime(),
+			...(inspection.name ? { name: inspection.name } : {}),
+			cwd: inspection.header.cwd,
+			createdAt: new Date(inspection.header.timestamp).getTime(),
 			updatedAt: storage.updatedAt,
 			phase: "idle",
 			activity: "idle",
-			...(model ? { model } : {}),
+			...(inspection.model ? { model: inspection.model } : {}),
 			thinkingLevel,
 			attached: false,
 			writeAccess: this.isSessionWriterLocked(sessionPath) ? "locked_externally" : "available",
 			revision: 0,
-			leafId: snapshot.leafId,
+			leafId: inspection.leafId,
 			queuedSteerCount: 0,
 			queuedFollowUpCount: 0,
 			transcriptGeneration: storage.generation,
@@ -3855,7 +3885,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	getChangelog(sessionPath: string, width: number, cwd?: string) {
-		const settings = this.settingsForCwd(cwd ?? readSessionSnapshot(sessionPath).header.cwd);
+		const settings = this.settingsForCwd(cwd ?? sessionCwdFromHeader(sessionPath));
 		return renderTerminalRichText({
 			text: getFullChangelogMarkdown(),
 			width,
@@ -4334,18 +4364,39 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	listSettings(sessionPath: string): SettingSummary[] {
-		const snapshot = readSessionSnapshot(sessionPath);
-		const settings = this.settingsForCwd(snapshot.header.cwd);
+		const settings = this.settingsForCwd(sessionCwdFromHeader(sessionPath));
 		return getLystarSettingsForUi().map((setting) => settingSummary(setting.id, settings, getBuiltinThemeNames()));
 	}
 
-	getSessionTree(sessionPath: string): SessionTreeNode[] {
-		const snapshot = readSessionSnapshot(sessionPath);
-		return sessionTree(snapshot.entries, snapshot.leafId);
+	async getSessionTree(sessionPath: string): Promise<SessionTreeNode[]> {
+		const entries: SessionTreeEntry[] = [];
+		let leafId: string | null = null;
+		let bytes = 0;
+		for await (const entry of streamSessionEntries(sessionPath)) {
+			leafId = entry.id;
+			const record: SessionTreeEntry = {
+				id: entry.id,
+				parentId: entry.parentId,
+				timestamp: entry.timestamp,
+				type: entry.type,
+				preview: JSON.stringify(entry.type === "message" ? entry.message : entry).slice(0, 4096),
+				...(entry.type === "label" ? { targetId: entry.targetId, label: entry.label } : {}),
+			};
+			bytes += Buffer.byteLength(JSON.stringify(record)) + (record.label ? Buffer.byteLength(record.label) : 0);
+			assertSessionTreeBudget(bytes);
+			entries.push(record);
+		}
+		return sessionTree(entries, leafId);
 	}
 
-	listSubagents(sessionPath: string): SubagentSnapshot[] {
-		return transcriptSubagents(readSessionSnapshot(sessionPath).entries).sort(
+	async listSubagents(sessionPath: string): Promise<SubagentSnapshot[]> {
+		const snapshots: SubagentSnapshot[] = [];
+		for await (const entry of streamSessionEntries(sessionPath, "subagent")) {
+			if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent") {
+				snapshots.push(...transcriptSubagents([entry]));
+			}
+		}
+		return snapshots.sort(
 			(left, right) =>
 				right.updatedAt - left.updatedAt ||
 				left.runId.localeCompare(right.runId) ||
@@ -4353,8 +4404,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		);
 	}
 
-	readSubagent(sessionPath: string, agentId: string): { transcript?: SubagentSnapshot } {
-		const transcript = this.listSubagents(sessionPath).find((snapshot) => snapshot.agentId === agentId);
+	async readSubagent(sessionPath: string, agentId: string): Promise<{ transcript?: SubagentSnapshot }> {
+		const transcript = (await this.listSubagents(sessionPath)).find((snapshot) => snapshot.agentId === agentId);
 		return transcript ? { transcript } : {};
 	}
 
@@ -4483,8 +4534,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	renderRichText(sessionPath: string, request: RichTextRenderRequest) {
-		const snapshot = readSessionSnapshot(sessionPath);
-		const settings = this.settingsForCwd(snapshot.header.cwd);
+		const settings = this.settingsForCwd(sessionCwdFromHeader(sessionPath));
 		return renderTerminalRichText({
 			...request,
 			themeName: settings.getTheme(),

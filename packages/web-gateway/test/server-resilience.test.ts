@@ -3,8 +3,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { RuntimeProtocolClient, ServerEvent } from "@lystar/code-web-protocol";
+import { serviceEventLogPath } from "@lystar/code-web-runtime";
 import { WebSocket } from "ws";
 import type { WebGatewayConfig } from "../src/config.ts";
 import { scopedRuntimeClientId, WebGatewayServer } from "../src/server.ts";
@@ -154,6 +156,34 @@ test("Gateway 对缺失资源返回 404，只对页面导航回退首页", async
 
 	const serviceWorker = await fetch(`${baseUrl}/sw.js`);
 	assert.equal(serviceWorker.headers.get("cache-control"), "no-cache");
+});
+
+test("Gateway 持久化 HTTP 状态和耗时供查询", async (t) => {
+	const config = createConfig();
+	const server = new WebGatewayServer(config);
+	await server.listen();
+	t.after(() => void server.close());
+	const address = internals(server).server.address();
+	assert.ok(address && typeof address === "object");
+	const startedAt = Date.now();
+	const response = await fetch(`http://127.0.0.1:${address.port}/assets/service-log-verification.js`);
+	assert.equal(response.status, 404);
+	await server.close();
+	const db = new DatabaseSync(serviceEventLogPath(config.agentDir), { readOnly: true });
+	try {
+		const event = db
+			.prepare(
+				"SELECT status_code, duration_ms, request_id, time_ms FROM events WHERE event = 'http_request' AND path = ? ORDER BY id DESC LIMIT 1",
+			)
+			.get("/assets/service-log-verification.js");
+		assert.ok(event);
+		assert.equal(event.status_code, 404);
+		assert.equal(typeof event.request_id, "string");
+		assert.equal(typeof event.duration_ms, "number");
+		assert.ok(Number(event.time_ms) >= startedAt);
+	} finally {
+		db.close();
+	}
 });
 
 test("Gateway 复用当前 bootstrap 时只发送轻量连接确认", async (t) => {
@@ -585,6 +615,57 @@ test("Gateway 优先恢复已订阅会话的租约", async (t) => {
 			},
 		},
 	]);
+});
+
+test("Gateway 在短暂接管失败后重试待恢复租约，不重复接管成功的会话", async (t) => {
+	const server = new WebGatewayServer(createConfig());
+	t.after(() => void server.close());
+	const internal = internals(server);
+	const context = internal.createContext("lease-retry-client");
+	const socket = createSocket();
+	context.sockets.add(socket.webSocket);
+	for (const sessionId of ["busy-session", "idle-session"]) {
+		internal.subscriptionsFor(socket.webSocket).add(sessionId);
+		context.leases.set(sessionId, {
+			leaseId: `old:${sessionId}`,
+			leaseGeneration: 1,
+			sessionPath: `/tmp/${sessionId}.jsonl`,
+			createdAt: 1,
+			updatedAt: 1,
+		});
+	}
+	const requests: string[] = [];
+	const client = {
+		request<T>(request: { sessionPath: string }): Promise<T> {
+			requests.push(request.sessionPath);
+			if (
+				request.sessionPath.includes("busy-session") &&
+				requests.filter((path) => path === request.sessionPath).length === 1
+			)
+				return Promise.reject(new Error("session_coordination_unavailable"));
+			return Promise.resolve({
+				lease: {
+					leaseId: `restored:${request.sessionPath}`,
+					leaseGeneration: 2,
+					sessionPath: request.sessionPath,
+					createdAt: 2,
+					updatedAt: 2,
+				},
+			} as unknown as T);
+		},
+	} as unknown as RuntimeProtocolClient;
+	context.client = client;
+	await internal.restoreContextLeases(context, client);
+	assert.equal(context.leasesToRestore.has("busy-session"), true);
+	assert.equal(context.leases.has("idle-session"), true);
+
+	const deadline = Date.now() + 2_000;
+	while (!context.leases.has("busy-session") && Date.now() < deadline) await wait(25);
+	assert.equal(context.leases.has("busy-session"), true);
+	assert.equal(context.leasesToRestore.size, 0);
+	assert.equal(requests.filter((path) => path.includes("busy-session")).length, 2);
+	assert.equal(requests.filter((path) => path.includes("idle-session")).length, 1);
+	assert.equal(socket.sent.filter((event) => (event as { type?: string }).type === "session_lease").length, 2);
 });
 
 test("Gateway 租约恢复并行执行，旧连接的迟到结果不会覆盖新连接", async (t) => {

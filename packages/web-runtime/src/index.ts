@@ -7,6 +7,7 @@ export * from "./product-branding.ts";
 export * from "./runtime-adapter.ts";
 export * from "./runtime-service.ts";
 export * from "./service.ts";
+export * from "./service-event-log.ts";
 export * from "./service-manager.ts";
 export * from "./session-attachments.ts";
 export * from "./session-name-settings.ts";

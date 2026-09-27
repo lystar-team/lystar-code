@@ -3,14 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	assertRuntimeIdle,
 	createRuntimeServiceSpec,
+	ensureRuntimeService,
 	installRuntimeService,
 	restartRuntimeService,
+	stopRuntimeService,
 	stopRuntimeSession,
 } from "../src/runtime-service.ts";
 import { installWebService, stopWebService } from "../src/service-manager.ts";
 
 const state = vi.hoisted(() => ({
 	reachable: true,
+	managerRunning: true,
 	installed: true,
 	pid: 4321,
 	manager: "systemd-user",
@@ -70,13 +73,14 @@ vi.mock("../src/service-manager.ts", () => ({
 	getWebServiceStatus: () => ({
 		kind: "runtime",
 		installed: state.installed,
-		running: state.reachable,
+		running: state.managerRunning,
 		manager: state.manager,
 		pid: state.pid,
 	}),
 	installWebService: vi.fn(() => {
 		expect(state.readSnapshot).toBe(true);
 		state.installed = true;
+		state.managerRunning = true;
 		state.reachable = true;
 		state.connected = true;
 	}),
@@ -84,10 +88,12 @@ vi.mock("../src/service-manager.ts", () => ({
 		if (force) expect(state.readSnapshot).toBe(false);
 		else expect(state.readSnapshot).toBe(true);
 		state.reachable = false;
+		state.managerRunning = false;
 		state.connected = false;
 	}),
 	ensureWebService: vi.fn(() => {
 		state.reachable = true;
+		state.managerRunning = true;
 		state.connected = true;
 	}),
 	removeWebService: vi.fn(),
@@ -96,6 +102,7 @@ vi.mock("../src/service-manager.ts", () => ({
 
 beforeEach(() => {
 	state.reachable = true;
+	state.managerRunning = true;
 	state.installed = true;
 	state.pid = 4321;
 	state.manager = "systemd-user";
@@ -197,6 +204,32 @@ describe("Runtime update and restart safety", () => {
 		expect(result.pid).toBe(4322);
 		expect(stopWebService).not.toHaveBeenCalled();
 	});
+	it("does not automatically kill a busy Runtime when its handshake times out", async () => {
+		state.connected = false;
+		state.operations = [{ status: "running", operationId: "active" }];
+
+		await expect(ensureRuntimeService("/test/runtime.sock")).rejects.toMatchObject({
+			code: "runtime_response_timeout",
+			retryable: true,
+		});
+		await expect(stopRuntimeService("/test/runtime.sock", false)).rejects.toThrow("Runtime unresponsive");
+		expect(stopWebService).not.toHaveBeenCalled();
+
+		state.connected = true;
+		await expect(ensureRuntimeService("/test/runtime.sock")).resolves.toMatchObject({ responsive: true });
+		expect(stopWebService).not.toHaveBeenCalled();
+	});
+
+	it("does not stop an active Runtime whose endpoint cannot be reached", async () => {
+		state.reachable = false;
+		state.connected = false;
+		await expect(stopRuntimeService("/test/runtime.sock", false)).rejects.toMatchObject({
+			code: "runtime_status_unknown",
+			retryable: true,
+		});
+		expect(stopWebService).not.toHaveBeenCalled();
+	});
+
 	it("force-recovers a Runtime whose port accepts connections but protocol handshake is broken", async () => {
 		state.connected = false;
 

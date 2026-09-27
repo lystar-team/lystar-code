@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENT_STEP_CUSTOM_TYPE } from "../src/agent-steps.ts";
+import { readTranscriptPageWithinFrameBudget } from "../src/transcript-page-budget.ts";
 import { TranscriptCursorInvalidError, TranscriptReader } from "../src/transcript-reader.ts";
 
 type Entry = Record<string, unknown>;
@@ -284,6 +285,32 @@ describe("TranscriptReader", () => {
 		}
 	});
 
+	it("bounds a large page by source bytes without losing entries or cursor continuity", async () => {
+		const entries: Entry[] = [];
+		let parentId: string | null = null;
+		const content = "x".repeat(128 * 1024);
+		for (let index = 0; index < 60; index++) {
+			const id = `large-${index}`;
+			entries.push({ ...message(id, parentId), message: { role: "user", content, timestamp: 1 } });
+			parentId = id;
+		}
+		write(entries);
+		const reader = new TranscriptReader();
+		const seen: string[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await readTranscriptPageWithinFrameBudget(60, (limit, byteBudget) =>
+				reader.read(sessionPath, { limit, byteBudget, ...(cursor ? { cursor } : {}) }),
+			);
+			if (!page || typeof page !== "object" || Array.isArray(page)) throw new Error("Invalid transcript page");
+			const items = page.items as Array<{ entryId: string }>;
+			expect(items.length).toBeGreaterThan(0);
+			seen.unshift(...items.map((item) => item.entryId));
+			cursor = page.previousCursor as string | undefined;
+		} while (cursor);
+		expect(seen).toEqual(entries.map((entry) => entry.id));
+	});
+
 	it("reads legacy JSONL lines above the former 4 MiB limit", async () => {
 		const largeText = "x".repeat(5 * 1024 * 1024);
 		writeFileSync(
@@ -296,6 +323,19 @@ describe("TranscriptReader", () => {
 		const page = await new TranscriptReader().read(sessionPath, { limit: 1 });
 
 		expect(page.items.map((item) => item.entryId)).toEqual(["large"]);
+	});
+
+	it("rejects a Web page line larger than the transport frame before cloning its payload", async () => {
+		const largeText = "x".repeat(16 * 1024 * 1024);
+		writeFileSync(
+			sessionPath,
+			`${JSON.stringify(header())}\n${JSON.stringify({ ...message("large", null), message: { role: "user", content: largeText, timestamp: 1 } })}\n`,
+		);
+		await expect(
+			new TranscriptReader().read(sessionPath, { limit: 20, byteBudget: 4 * 1024 * 1024 }),
+		).rejects.toMatchObject({
+			code: "transcript_line_too_large",
+		});
 	});
 
 	it("rejects a JSONL line before accumulating beyond the configured bound", async () => {

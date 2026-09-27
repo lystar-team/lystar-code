@@ -283,7 +283,7 @@ export interface RuntimeAdapter {
 		onUiRequest: UiRequestHandler,
 		options?: { deferExtensionLifecycle?: boolean },
 	): Promise<RuntimeSession>;
-	inspectSession(sessionPath: string): SessionStateSnapshot;
+	inspectSession(sessionPath: string): SessionStateSnapshot | Promise<SessionStateSnapshot>;
 	inspectSessionActivity?(sessionPath: string): Promise<SessionActivity | undefined>;
 	isSessionWriterLocked(sessionPath: string): boolean;
 	deleteSession(sessionPath: string): Promise<void>;
@@ -376,9 +376,12 @@ export interface RuntimeAdapter {
 	): Promise<GitMutationResult>;
 	checkForUpdates(): Promise<JsonValue>;
 	listSettings(sessionPath: string): SettingSummary[];
-	getSessionTree(sessionPath: string): SessionTreeNode[];
-	listSubagents(sessionPath: string): SubagentSnapshot[];
-	readSubagent(sessionPath: string, agentId: string): { transcript?: SubagentSnapshot };
+	getSessionTree(sessionPath: string): SessionTreeNode[] | Promise<SessionTreeNode[]>;
+	listSubagents(sessionPath: string): SubagentSnapshot[] | Promise<SubagentSnapshot[]>;
+	readSubagent(
+		sessionPath: string,
+		agentId: string,
+	): { transcript?: SubagentSnapshot } | Promise<{ transcript?: SubagentSnapshot }>;
 	getProjectTrust(cwd: string): ProjectTrust;
 	getProjectTrustDecision(cwd: string): boolean | null;
 	setProjectTrust(cwd: string, trusted: boolean | null): Promise<ProjectTrust>;

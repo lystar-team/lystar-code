@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { StringDecoder } from "node:string_decoder";
-import { getRuntimeServiceStatus } from "@lystar/code-web-runtime";
+import { closeServiceEventLog, configureServiceEventLog, getRuntimeServiceStatus } from "@lystar/code-web-runtime";
 import {
 	DEFAULT_ALLOWED_HOSTS,
 	DEFAULT_RUNTIME_PORT,
@@ -309,6 +309,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 	const defaultRuntimePort = options.defaultRuntimePort ?? DEFAULT_RUNTIME_PORT;
 	if (!options.skipWebAssetVerification) await verifyWebAssets(staticDir, options.expectedProductVersion);
 	const agentDir = getWebAgentDir();
+	configureServiceEventLog(agentDir, options.configFileName ? "development" : undefined, options.serviceVersion);
 	await ensureWebConfig(agentDir, defaultPort, defaultRuntimePort, options.configFileName, options.commandName);
 	if (options.backgroundInvocation) {
 		const config = await loadWebGatewayConfig({
@@ -340,6 +341,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 			interactiveAdmin: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 		});
 		printBackgroundStartup(config, status, options.frontendPort);
+		closeServiceEventLog();
 		return;
 	}
 	const instanceLock = await (async () => {
@@ -415,5 +417,6 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 		process.off("SIGTERM", onSignal);
 		if (activeGateway) await activeGateway.close().catch(() => {});
 		await instanceLock.release();
+		closeServiceEventLog();
 	}
 }

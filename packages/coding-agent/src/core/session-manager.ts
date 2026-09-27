@@ -880,7 +880,8 @@ function freezeJsonValue<T>(value: T): Readonly<T> {
 
 export function readSessionSnapshot(filePath: string): ReadOnlySessionSnapshot {
 	const resolvedFilePath = normalizePath(filePath);
-	const entries = structuredClone(loadEntriesFromFile(resolvedFilePath));
+	// The parser creates fresh entries; migration and freezing do not need a second full-history copy.
+	const entries = loadEntriesFromFile(resolvedFilePath);
 	const header = entries[0];
 	if (!header || header.type !== "session") {
 		throw new Error(`Session file is not a valid pi session: ${resolvedFilePath}`);
@@ -953,7 +954,7 @@ function parseSessionHeaderCandidate(line: string): SessionHeader | null | undef
 	return entry;
 }
 
-function readSessionHeader(filePath: string): SessionHeader | null {
+export function readSessionHeader(filePath: string): SessionHeader | null {
 	const fd = openSync(filePath, "r");
 	try {
 		const decoder = new StringDecoder("utf8");
@@ -1155,21 +1156,36 @@ function parseSessionCollaborationResult(value: unknown): SessionCollaborationRe
 async function* readSessionInfoLines(
 	filePath: string,
 	signal?: AbortSignal,
-): AsyncGenerator<{ line: string } | { toolResult: true }> {
+	toolResultMode: "skip" | "id" | "full" | "subagent" = "skip",
+): AsyncGenerator<{ line: string } | { toolResult: true; id?: string }> {
 	const input = createReadStream(filePath, { signal, highWaterMark: SESSION_READ_BUFFER_SIZE });
 	let parts: Buffer[] = [];
 	let length = 0;
 	let prefix = "";
 	let lastByte = -1;
-	const finishLine = (): { line: string } | { toolResult: true } => {
-		// 标准工具结果只参与计数和结束状态，跳过正文解码及详情对象分配。
-		// 其他字段顺序、格式和消息类型仍使用完整 JSON 解析。
+	const finishLine = (): { line: string } | { toolResult: true; id?: string } => {
+		// 标准工具结果只参与计数和结束状态；会话检查还需记录其条目 ID。
+		// 字段顺序不同或 ID 不在前缀中时，保留完整 JSON 解析。
 		if (
 			prefix.startsWith('{"type":"message",') &&
 			prefix.includes('"message":{"role":"toolResult",') &&
 			lastByte === 125
 		) {
-			return { toolResult: true };
+			if (toolResultMode === "skip") return { toolResult: true };
+			if (toolResultMode === "id") {
+				const id = /^\{"type":"message","id":"([A-Za-z0-9._-]+)"/u.exec(prefix)?.[1];
+				if (id) return { toolResult: true, id };
+			}
+			if (toolResultMode === "subagent") {
+				const messageStart = prefix.indexOf('"message":{"role":"toolResult",');
+				const toolName =
+					messageStart < 0
+						? undefined
+						: /^"message":\{"role":"toolResult","toolCallId":"[^"]*","toolName":"([A-Za-z0-9._-]+)"/u.exec(
+								prefix.slice(messageStart),
+							)?.[1];
+				if (toolName && toolName !== "subagent") return { toolResult: true };
+			}
 		}
 		return { line: parts.length === 1 ? parts[0]!.toString("utf8") : Buffer.concat(parts, length).toString("utf8") };
 	};
@@ -1199,6 +1215,90 @@ async function* readSessionInfoLines(
 	} finally {
 		input.destroy();
 	}
+}
+
+export async function readSessionInspection(filePath: string): Promise<{
+	header: SessionHeader;
+	leafId: string | null;
+	name?: string;
+	model?: { provider: string; id: string };
+	thinkingLevel?: string;
+}> {
+	const resolved = normalizePath(filePath);
+	let header: SessionHeader | undefined;
+	let leafId: string | null = null;
+	let name: string | undefined;
+	let model: { provider: string; id: string } | undefined;
+	let thinkingLevel: string | undefined;
+	const inspectEntry = (entry: SessionEntry): void => {
+		leafId = entry.id;
+		if (entry.type === "session_info") name = entry.name;
+		else if (entry.type === "model_change") model = { provider: entry.provider, id: entry.modelId };
+		else if (entry.type === "thinking_level_change") thinkingLevel = entry.thinkingLevel;
+	};
+	for await (const record of readSessionInfoLines(resolved, undefined, "id")) {
+		if ("toolResult" in record) {
+			if (!header) throw new Error(`Session file is not a valid pi session: ${resolved}`);
+			leafId = record.id ?? leafId;
+			continue;
+		}
+		const entry = parseSessionEntryLine(record.line);
+		if (!entry) continue;
+		if (!header) {
+			if (entry.type !== "session") throw new Error(`Session file is not a valid pi session: ${resolved}`);
+			header = entry;
+			if ((header.version ?? 1) < 2) {
+				const snapshot = readSessionSnapshot(resolved);
+				header = snapshot.header;
+				for (const item of snapshot.entries) inspectEntry(item);
+				return {
+					header,
+					leafId,
+					...(name ? { name } : {}),
+					...(model ? { model } : {}),
+					...(thinkingLevel ? { thinkingLevel } : {}),
+				};
+			}
+			continue;
+		}
+		if (entry.type !== "session") inspectEntry(entry);
+	}
+	if (!header) throw new Error(`Session file is not a valid pi session: ${resolved}`);
+	return {
+		header,
+		leafId,
+		...(name ? { name } : {}),
+		...(model ? { model } : {}),
+		...(thinkingLevel ? { thinkingLevel } : {}),
+	};
+}
+
+export async function* streamSessionEntries(
+	filePath: string,
+	toolResultMode: "full" | "subagent" = "full",
+): AsyncGenerator<SessionEntry> {
+	const resolved = normalizePath(filePath);
+	let version: number | undefined;
+	for await (const record of readSessionInfoLines(resolved, undefined, toolResultMode)) {
+		if (!("line" in record)) continue;
+		const entry = parseSessionEntryLine(record.line);
+		if (!entry) continue;
+		if (version === undefined) {
+			if (entry.type !== "session") throw new Error(`Session file is not a valid pi session: ${resolved}`);
+			version = entry.version ?? 1;
+			if (version < 2) {
+				for (const migrated of readSessionSnapshot(resolved).entries) yield migrated;
+				return;
+			}
+			continue;
+		}
+		if (entry.type === "session") continue;
+		if (version < 3 && entry.type === "message" && (entry.message as { role?: string }).role === "hookMessage") {
+			(entry.message as { role: string }).role = "custom";
+		}
+		yield entry;
+	}
+	if (version === undefined) throw new Error(`Session file is not a valid pi session: ${resolved}`);
 }
 
 async function buildSessionInfo(

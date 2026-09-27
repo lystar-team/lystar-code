@@ -19,6 +19,7 @@ import {
 	type OperationSnapshot,
 	type OperationStatus,
 } from "@lystar/code-web-protocol";
+import { logRuntimeConnection } from "./connection-log.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
@@ -108,6 +109,13 @@ export class OperationJournal {
 			payloadHash: input.payloadHash,
 		};
 		this.append(operation);
+		logRuntimeConnection("operation_accepted", {
+			operationId: operation.operationId,
+			clientInstanceId: operation.clientInstanceId,
+			clientRequestId: operation.clientRequestId,
+			sessionPath: operation.sessionPath,
+			command: operation.type,
+		});
 		return { operation, duplicate: false };
 	}
 
@@ -129,6 +137,16 @@ export class OperationJournal {
 			...(options?.error !== undefined ? { error: options.error } : {}),
 		};
 		this.append(operation);
+		logRuntimeConnection("operation_updated", {
+			operationId: operation.operationId,
+			clientInstanceId: operation.clientInstanceId,
+			clientRequestId: operation.clientRequestId,
+			sessionPath: operation.sessionPath,
+			command: operation.type,
+			status: operation.status,
+			elapsedMs: operation.updatedAt - operation.acceptedAt,
+			...(operation.error ? { error: operation.error } : {}),
+		});
 		return operation;
 	}
 

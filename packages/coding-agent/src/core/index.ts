@@ -240,6 +240,8 @@ export {
 	type NewSessionOptions,
 	type ReadOnlySessionSnapshot,
 	type ReadonlySessionManager,
+	readSessionHeader,
+	readSessionInspection,
 	readSessionSnapshot,
 	type SessionCollaborationResult,
 	type SessionCollaborationTask,
@@ -259,6 +261,7 @@ export {
 	type SessionWorkspaceMode,
 	type SessionWorkspaceSnapshot,
 	type SessionWorkspaceStatus,
+	streamSessionEntries,
 } from "./session-manager.ts";
 export {
 	discoverSessionProfiles,

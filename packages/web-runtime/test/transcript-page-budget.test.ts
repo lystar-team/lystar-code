@@ -8,7 +8,7 @@ describe("historical transcript response budget", () => {
 		const readPage = vi.fn(async () => page);
 
 		expect(await readTranscriptPageWithinFrameBudget(400, readPage)).toEqual(page);
-		expect(readPage).toHaveBeenCalledExactlyOnceWith(400);
+		expect(readPage).toHaveBeenCalledExactlyOnceWith(400, RUNTIME_MAX_FRAME_LENGTH / 4);
 	});
 
 	it("reads a smaller cursor page if the projected response exceeds the budget", async () => {
@@ -25,6 +25,6 @@ describe("historical transcript response budget", () => {
 		const readPage = vi.fn(async () => ({ items: [{ text: "x".repeat(RUNTIME_MAX_FRAME_LENGTH) }] }));
 
 		await expect(readTranscriptPageWithinFrameBudget(1, readPage)).rejects.toThrow("超过 Runtime 响应大小上限");
-		expect(readPage).toHaveBeenCalledExactlyOnceWith(1);
+		expect(readPage).toHaveBeenCalledExactlyOnceWith(1, RUNTIME_MAX_FRAME_LENGTH / 4);
 	});
 });

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import {
 	assertRuntimeIdle,
 	captureUserCommandEnvironment,
+	closeServiceEventLog,
+	configureServiceEventLog,
 	createRuntimeServiceSpec,
 	defaultRuntimeEndpoint,
 	ensureRuntimeService,
@@ -558,6 +560,17 @@ async function reconcileWebServices(options: WebServiceLaunchOptions): Promise<W
 export async function runWebComponentAction(
 	options: WebComponentActionOptions,
 ): Promise<WebServiceStatus | RuntimeServiceStatus> {
+	configureServiceEventLog(options.agentDir, profileFor(options.configFileName), options.serviceVersion);
+	try {
+		return await runWebComponentActionInternal(options);
+	} finally {
+		closeServiceEventLog();
+	}
+}
+
+async function runWebComponentActionInternal(
+	options: WebComponentActionOptions,
+): Promise<WebServiceStatus | RuntimeServiceStatus> {
 	const configured = await loadConfiguredGateway(options);
 	const state = readState(options.agentDir, options.configFileName);
 	if (
@@ -669,6 +682,15 @@ export async function runWebComponentAction(
 }
 
 export async function runWebServiceAction(options: WebServiceActionOptions): Promise<WebServicesStatus> {
+	configureServiceEventLog(options.agentDir, profileFor(options.configFileName), options.serviceVersion);
+	try {
+		return await runWebServiceActionInternal(options);
+	} finally {
+		closeServiceEventLog();
+	}
+}
+
+async function runWebServiceActionInternal(options: WebServiceActionOptions): Promise<WebServicesStatus> {
 	if (options.action === "uninstall") {
 		const status = await getWebServicesStatus(options);
 		const config = await loadConfiguredGateway(options);
@@ -746,7 +768,7 @@ export async function runWebServiceAction(options: WebServiceActionOptions): Pro
 			await waitForServiceStopped(frontend);
 		}
 		// 先关闭入口，再强制终止 Runtime 中的任务和会话，避免 Gateway 重新拉起旧 Runtime。
-		await runWebComponentAction({ ...options, component: "gateway", action: "stop", force: true });
+		await runWebComponentActionInternal({ ...options, component: "gateway", action: "stop", force: true });
 		if (config.manageRuntime) {
 			await stopRuntimeService(
 				config.runtimeEndpoint,

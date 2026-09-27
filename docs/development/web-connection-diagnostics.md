@@ -16,12 +16,28 @@ journalctl --user -u lystar-web-gateway-development.service -u lystar-web-runtim
 
 按实际故障时间替换时间范围。`-o cat` 只输出进程日志正文，其他非 JSON 行会被 `fromjson?` 略过。macOS 开发后台服务的日志分别在 `~/.pi/agent/web/gateway-development.log.error`、`runtime-development.log.error`；Linux 上 Gateway 直接拉起未安装服务的 Runtime 时，Runtime 输出保存在 `~/.pi/agent/web/runtime.service.log.error`。若设置了其他 agentDir 或自定义 logPath，以服务配置为准。前台运行时，JSON 行输出在 Gateway / Runtime 的标准错误流。
 
+## SQLite 日志
+
+Gateway 与 Runtime 使用同一份 SQLite 日志。默认路径为 `~/.pi/agent/web/diagnostics.sqlite`；开发环境为 `diagnostics-development.sqlite`。设置 `PI_CODING_AGENT_DIR` 时，以该目录下的 `web/` 为准。进程启停、连接、HTTP、IPC、会话租约与任务状态均有事件记录。`time_ms` 是 UTC 毫秒时间戳；`pid` 是产生日志的进程，`targetPid` 可在 `fields_json` 中查看。`request_id` 关联 Gateway 与 Runtime 的 IPC 请求，`parent_request_id` 关联 HTTP 请求，`client_request_id` 和 `operation_id` 关联任务。
+
+```bash
+db="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/web/diagnostics.sqlite"
+sqlite3 -readonly "$db" "SELECT datetime(time_ms/1000,'unixepoch','localtime'), component, event, pid, request_id, operation_id, error_code, error FROM events ORDER BY id DESC LIMIT 100;"
+sqlite3 -readonly "$db" "SELECT command, count(*) AS requests, round(avg(queue_wait_ms),1) AS queue_ms, round(avg(process_ms),1) AS process_ms, max(duration_ms) AS slowest_ms FROM events WHERE event='request_finished' AND time_ms >= (strftime('%s','now','-7 days')*1000) GROUP BY command ORDER BY slowest_ms DESC LIMIT 20;"
+sqlite3 -readonly "$db" "SELECT time, component, json_extract(fields_json,'$.maxMs') AS max_ms, json_extract(fields_json,'$.rssBytes') AS rss_bytes FROM events WHERE event='event_loop_delay' ORDER BY max_ms DESC LIMIT 20;"
+sqlite3 -readonly "$db" "SELECT time, component, event, status, outcome, duration_ms, error FROM events WHERE operation_id='要排查的 operationId' ORDER BY id;"
+```
+
+SQLite 数据位于用户的 agent 目录，不随程序版本目录更替；Gateway 和 Runtime 并发写入采用 WAL。`PRAGMA user_version` 标识结构版本。旧版程序遇到更高的结构版本时不修改数据库，记录仍输出到标准错误流。日志不做自动清理。复制数据库时使用 SQLite 的 `.backup`，不要只复制 WAL 模式下的主文件。若出现 `sqlite_write_failed` 或 `sqlite_backlog`，从服务标准错误流找失败原因和未写入 SQLite 的事件。
+
 ## 判读
 
 - `websocket_close`、`websocket_heartbeat_timeout`、`websocket_backpressure`：先排查浏览器与 Gateway 的连接；`websocket_upgrade_failed` 表示升级失败。
 - `runtime_request` 的 `phase=start/end`、`outcome=timeout/disconnected`：用 `requestId` 查 Runtime 的 `request_queued`、`request_started`、`request_finished`、`request_skipped`、`request_error`。只有 queued 而没有 started，说明请求仍在队列；已有 started 而没有 finished，说明处理还未结束；`queueWaitMs` 高是排队慢，`processMs` 高是处理慢。Gateway 有 start 而 Runtime 无 queued，排查 IPC 传输和事件循环。
 - `runtime_disconnected`、`runtime_connect_failed`、`runtime_reconnect_scheduled`：检查断线原因、连接耗时和重试间隔。同一 PID 持续运行只能排除进程退出，不能排除命令超时。
+- `runtime_unresponsive` 且 `reachable=true`：套接字可连接，但协议响应超时，不能据此判断会话空闲。旧版自动恢复会强制停止 Runtime；本版保留进程并记录 `runtime_recovery_deferred`。
 - `bootstrap_failed`、`bootstrap_retry_scheduled`：工作区同步失败；连接仍在且页面仍在线时会独立重试。`session_subscription_sent` 与浏览器的订阅确认/超时可以区分服务器未发送和客户端未接收。
 - `event_loop_delay`：10 秒窗口的事件循环延迟 p99、最大值和 RSS；最大值达到 250 毫秒时记录，其他情况每分钟记录一次。未出现此事件不能证明窗口内没有低于阈值的卡顿。
+- `service_stop_requested`：通过 Web 服务管理命令发起停止时记录目标 PID、命令进程 PID 和父进程 PID。直接执行 `systemctl stop` 等外部操作不会经过该入口；须结合 systemd 日志排查，历史记录无法反推未记录的发起者。
 
-记录只含连接 ID、请求命令、状态、耗时、错误摘要，不记录请求或响应正文。服务需要载入本次代码后才会产生这些记录；旧日志无法回溯当时未记录的连接事件。`/healthz` 只检查当前连接状态，不测请求排队或会话订阅延迟。
+记录包括 HTTP 路径、状态码、耗时、连接 ID、请求命令、排队和处理时长、任务状态与错误摘要；不记录请求或响应正文。服务需要载入本次代码后才会产生 SQLite 记录；旧日志无法回溯当时未记录的连接事件。`/healthz` 只检查当前连接状态，不测请求排队或会话订阅延迟。

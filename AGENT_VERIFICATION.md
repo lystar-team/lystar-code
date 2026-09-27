@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-09-09
+> 更新日期：2026-09-27
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -9,7 +9,15 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
-- 上游 Pi 基线已同步到 `v0.84.4`，commit `b79e4cc834970cca69daebffab7df1da7d1e52c4`；LYStar 产品版本为 `0.84.4-lystar.1`。
+- 上游 Pi 基线为 `v0.87.1`；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前为 `0.87.1-lystar.2`。
+
+## 0.87.1-lystar.2 发行前验证（2026-09-27）
+
+- `npm run check`、`npm run build:offline`、`bash scripts/test-install-sh.sh` 通过。SessionManager、Web Runtime、Gateway 定向测试分别通过 38、42、6 项。
+- Linux x64：使用 Bun 1.4.2 构建 `lystar-agent-v0.87.1-lystar.2-linux-x64.tar.gz`，`sha256sum -c SHA256SUMS`、发行包 `lc --version`、`--help`、离线模型列表通过。
+- 从 `/tmp` 启动发行包：`lc --no-session --print 'Say exactly: ok'` 返回 `ok`；独立 tmux PTY 中同一请求收到模型回复“Yean，ok”。
+- 开发 Web 服务使用 `lcd web service restart` 完成真实连接、四个大文件并发会话检查、历史分页及超大会话树响应验证；默认环境的服务未重启。
+- 其他四个平台的构建与安装由 GitHub Release workflow 验证，本机记录不能替代对应平台结果。
 
 ## LYStar / Codex 架构整理定向验证（2026-09-05）
 

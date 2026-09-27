@@ -1,12 +1,8 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { logWebServiceEvent, type ServiceEventFields } from "./service-event-log.ts";
 
-export function logRuntimeConnection(
-	event: string,
-	fields: Record<string, string | number | boolean | undefined> = {},
-): void {
-	process.stderr.write(
-		`${JSON.stringify({ time: new Date().toISOString(), component: "runtime", pid: process.pid, event, ...fields })}\n`,
-	);
+export function logRuntimeConnection(event: string, fields: ServiceEventFields = {}): void {
+	logWebServiceEvent("runtime", event, fields);
 }
 
 export function watchRuntimeEventLoop(): () => void {

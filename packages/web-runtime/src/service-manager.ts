@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { makeMacosGitCredentialWrapper } from "./git-environment.ts";
+import { flushServiceEventLog, logWebServiceEvent } from "./service-event-log.ts";
 
 export type WebServiceKind = "frontend" | "gateway" | "runtime";
 export type WebServiceManager =
@@ -922,19 +923,36 @@ export function installWebService(
 	spec: WebServiceSpec,
 	options: { interactiveAdmin?: boolean } = {},
 ): WebServiceStatus {
-	mkdirSync(spec.invocation.cwd, { recursive: true, mode: 0o700 });
-	mkdirSync(dirname(defaultLogPath(spec)), { recursive: true, mode: 0o700 });
-	if (process.platform === "linux") installLinux(spec);
-	else if (process.platform === "darwin") installMac(spec, options.interactiveAdmin ?? false);
-	else if (process.platform === "win32") installWindows(spec);
-	else throw new Error(`不支持的后台托管平台：${process.platform}`);
-	return getWebServiceStatus(spec);
+	logWebServiceEvent("service", "service_install_requested", { kind: spec.kind, profile: spec.profile ?? "default" });
+	try {
+		mkdirSync(spec.invocation.cwd, { recursive: true, mode: 0o700 });
+		mkdirSync(dirname(defaultLogPath(spec)), { recursive: true, mode: 0o700 });
+		if (process.platform === "linux") installLinux(spec);
+		else if (process.platform === "darwin") installMac(spec, options.interactiveAdmin ?? false);
+		else if (process.platform === "win32") installWindows(spec);
+		else throw new Error(`不支持的后台托管平台：${process.platform}`);
+		const status = getWebServiceStatus(spec);
+		logWebServiceEvent("service", "service_installed", {
+			kind: spec.kind,
+			profile: spec.profile ?? "default",
+			running: status.running,
+			pid: status.pid,
+		});
+		return status;
+	} catch (error) {
+		logWebServiceEvent("service", "service_install_failed", {
+			kind: spec.kind,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
 }
 
 export function ensureWebService(spec: WebServiceSpec, options: { interactiveAdmin?: boolean } = {}): WebServiceStatus {
 	const status = getWebServiceStatus(spec);
 	if (!status.installed || status.manager === "scheduled-task") return installWebService(spec, options);
 	if (status.running) return status;
+	logWebServiceEvent("service", "service_start_requested", { kind: spec.kind, profile: spec.profile ?? "default" });
 	if (process.platform === "linux") {
 		const result = run("systemctl", ["--user", "start", webServiceUnitName(spec.kind, spec.profile)]);
 		if (!result.ok) throw new Error(`无法启动 Web Service：${result.stderr || result.stdout}`);
@@ -961,7 +979,13 @@ export function ensureWebService(spec: WebServiceSpec, options: { interactiveAdm
 		if (!result.ok && !/already been started|已启动/iu.test(`${result.stdout}\n${result.stderr}`))
 			throw new Error(`无法启动 Windows Service：${result.stderr || result.stdout}`);
 	}
-	return getWebServiceStatus(spec);
+	const started = getWebServiceStatus(spec);
+	logWebServiceEvent("service", "service_start_completed", {
+		kind: spec.kind,
+		running: started.running,
+		pid: started.pid,
+	});
+	return started;
 }
 
 export function stopWebService(
@@ -970,6 +994,25 @@ export function stopWebService(
 	options: { interactiveAdmin?: boolean; detachedPid?: number } = {},
 ): WebServiceStatus {
 	const status = getWebServiceStatus(spec);
+	logWebServiceEvent("service", "service_stop_requested", {
+		kind: spec.kind,
+		profile: spec.profile ?? "default",
+		force,
+		running: status.running,
+		pid: status.pid,
+		parentPid: process.ppid,
+	});
+	flushServiceEventLog();
+	const finished = (): WebServiceStatus => {
+		const stopped = getWebServiceStatus(spec);
+		logWebServiceEvent("service", "service_stop_dispatched", {
+			kind: spec.kind,
+			force,
+			running: stopped.running,
+			pid: stopped.pid,
+		});
+		return stopped;
+	};
 	if (!status.installed || status.manager === "detached") {
 		if (options.detachedPid) {
 			try {
@@ -978,7 +1021,7 @@ export function stopWebService(
 				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 			}
 		}
-		return getWebServiceStatus(spec);
+		return finished();
 	}
 	if (status.manager === "scheduled-task") {
 		const taskName = legacyWindowsTaskName(spec);
@@ -986,7 +1029,7 @@ export function stopWebService(
 			runWindowsTaskCommand(["/End", "/TN", taskName]);
 			if (force) runWindowsTaskCommand(["/Delete", "/TN", taskName, "/F"]);
 		}
-		return getWebServiceStatus(spec);
+		return finished();
 	}
 	if (process.platform === "linux") {
 		const unit = webServiceUnitName(spec.kind, spec.profile);
@@ -1030,14 +1073,18 @@ export function stopWebService(
 		}
 		waitForWindowsServiceStopped(webServiceWindowsName(spec.kind, spec.profile));
 	}
-	return getWebServiceStatus(spec);
+	return finished();
 }
 
 export function removeWebService(spec: WebServiceSpec, options: { interactiveAdmin?: boolean } = {}): void {
+	logWebServiceEvent("service", "service_remove_requested", { kind: spec.kind, profile: spec.profile ?? "default" });
+	const removed = () =>
+		logWebServiceEvent("service", "service_removed", { kind: spec.kind, profile: spec.profile ?? "default" });
 	if (process.platform === "linux") {
 		run("systemctl", ["--user", "disable", "--now", webServiceUnitName(spec.kind, spec.profile)]);
 		rmSync(systemdUnitPath(spec), { force: true });
 		run("systemctl", ["--user", "daemon-reload"]);
+		removed();
 		return;
 	}
 	if (process.platform === "darwin") {
@@ -1050,6 +1097,7 @@ export function removeWebService(spec: WebServiceSpec, options: { interactiveAdm
 		const legacyLoaded = legacyTarget ? run("launchctl", ["print", legacyTarget]).ok : false;
 		if (!existsSync(targetPath) && !currentLoaded && !legacyLoaded && (!legacyPath || !existsSync(legacyPath))) {
 			rmSync(launchDaemonStagingPath(spec), { force: true });
+			removed();
 			return;
 		}
 		if (existsSync(targetPath) || currentLoaded) {
@@ -1087,6 +1135,7 @@ export function removeWebService(spec: WebServiceSpec, options: { interactiveAdm
 			}
 		}
 		rmSync(launchDaemonStagingPath(spec), { force: true });
+		removed();
 		return;
 	}
 	const name = webServiceWindowsName(spec.kind, spec.profile);
@@ -1101,6 +1150,7 @@ export function removeWebService(spec: WebServiceSpec, options: { interactiveAdm
 	const taskName = legacyWindowsTaskName(spec);
 	if (taskName) runWindowsTaskCommand(["/Delete", "/TN", taskName, "/F"]);
 	rmSync(windowsServiceConfigPath(spec), { force: true });
+	removed();
 }
 
 export function webServiceDiagnostic(spec: WebServiceSpec): string {

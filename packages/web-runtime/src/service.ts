@@ -3,7 +3,7 @@ import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
 	discoverSessionProfiles,
-	readSessionSnapshot,
+	readSessionHeader,
 	type SessionCollaborationResult,
 	type SessionCoordinator,
 	type SessionCoordinatorProfile,
@@ -1164,7 +1164,7 @@ export class WebRuntimeService {
 				let startupSession: { path: string; cwd: string } | undefined;
 				if (this.startupSessionPath) {
 					try {
-						const snapshot = this.adapter.inspectSession(this.startupSessionPath);
+						const snapshot = await this.adapter.inspectSession(this.startupSessionPath);
 						startupSession = { path: snapshot.path, cwd: snapshot.cwd };
 					} catch {
 						// 交接文件可能已被删除，普通 Web Runtime 启动仍应继续。
@@ -1337,10 +1337,11 @@ export class WebRuntimeService {
 				);
 			case "read_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				return readTranscriptPageWithinFrameBudget(request.limit, async (limit) => {
+				return readTranscriptPageWithinFrameBudget(request.limit, async (limit, byteBudget) => {
 					const page = await this.transcriptReader.read(sessionPath, {
 						...request,
 						limit,
+						byteBudget,
 						emptyGeneration: this.runtimes
 							.get(sessionPath)
 							?.getSnapshot(this.writeAccess(sessionPath, connection)).transcriptGeneration,
@@ -1451,7 +1452,7 @@ export class WebRuntimeService {
 			}
 			case "inspect_session": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const snapshot = this.adapter.inspectSession(sessionPath);
+				const snapshot = await this.adapter.inspectSession(sessionPath);
 				return jsonValue({
 					...snapshot,
 					path: sessionPath,
@@ -2817,7 +2818,7 @@ export class WebRuntimeService {
 			if (!existsSync(sessionPath)) throw Object.assign(new Error("未找到会话"), { code: "not_found" });
 			let workspace: SessionWorkspaceSnapshot | undefined;
 			try {
-				workspace = readSessionSnapshot(sessionPath).header.collaborationWorkspace;
+				workspace = readSessionHeader(sessionPath)?.collaborationWorkspace;
 			} catch {
 				workspace = undefined;
 			}

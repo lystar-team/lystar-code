@@ -13,6 +13,7 @@ import {
 	writeRuntimePid,
 } from "./runtime-service.ts";
 import { WebRuntimeService } from "./service.ts";
+import { closeServiceEventLog, configureServiceEventLog } from "./service-event-log.ts";
 import { runStdioRuntime } from "./stdio.ts";
 import { restoreUserCommandEnvironment } from "./user-execution-environment.ts";
 
@@ -45,6 +46,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 		process.env.PI_WEB_SERVICE_PROFILE?.trim() ||
 		(process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined);
 	const command = args[0] ?? "stdio";
+	configureServiceEventLog(agentDir, serviceProfile);
 	if (command === "stdio" || command === "serve") restoreUserCommandEnvironment();
 	const endpoint = endpointFromArgs(args) ?? process.env.PI_WEB_RUNTIME_ENDPOINT ?? defaultRuntimeEndpoint(agentDir);
 	const startupSessionPath = process.env.PI_WEB_STARTUP_SESSION_PATH?.trim();
@@ -52,6 +54,8 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 	let server: Server | undefined;
 	let shuttingDown = false;
 	const stopEventLoopWatch = command === "serve" ? watchRuntimeEventLoop() : undefined;
+	if (command === "serve")
+		logRuntimeConnection("service_starting", { profile: serviceProfile ?? "default", endpoint });
 
 	async function closeServer(): Promise<void> {
 		const activeServer = server;
@@ -158,6 +162,10 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 		throw new Error(
 			"用法：lystar-web-runtime [stdio|serve [--endpoint <地址>]|probe|status|install [--interactive-admin]|ensure|connect --stdio|stop [--force]|uninstall [--force]]",
 		);
+	} catch (error) {
+		if (command === "serve")
+			logRuntimeConnection("service_failed", { error: error instanceof Error ? error.message : String(error) });
+		throw error;
 	} finally {
 		stopEventLoopWatch?.();
 		process.off("SIGTERM", onSignal);
@@ -166,5 +174,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 		clearRuntimePid(endpoint);
 		await closeServer();
 		await disposeService();
+		if (command === "serve") logRuntimeConnection("service_stopped");
+		closeServiceEventLog();
 	}
 }

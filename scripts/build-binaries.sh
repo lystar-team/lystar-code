@@ -16,7 +16,7 @@ run_bun() {
     if command -v bun >/dev/null 2>&1; then
         bun "$@"
     else
-        npx --yes -p bun@1.3.9 bun "$@"
+        npx --yes -p bun@1.4.2 bun "$@"
     fi
 }
 

@@ -95,6 +95,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				clientInstanceId,
 				requestId: message.id,
 				errorCode: message.error.code,
+				error: message.error.message,
+				retryable: message.error.retryable,
 			});
 		return write(encodeTrustedServerMessage(message));
 	});
@@ -121,6 +123,20 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 					logRuntimeConnection("connection_open", { clientInstanceId });
 				}
 				const receivedAt = performance.now();
+				const requestFields =
+					message.type === "request"
+						? {
+								...("sessionPath" in message.request && typeof message.request.sessionPath === "string"
+									? { sessionPath: message.request.sessionPath }
+									: {}),
+								...("sessionId" in message.request && typeof message.request.sessionId === "string"
+									? { sessionId: message.request.sessionId }
+									: {}),
+								...("clientRequestId" in message.request && typeof message.request.clientRequestId === "string"
+									? { clientRequestId: message.request.clientRequestId }
+									: {}),
+							}
+						: {};
 				const byteLength = Buffer.byteLength(JSON.stringify(message));
 				queuedBytes += byteLength;
 				if (++queuedRequests > 128 || queuedBytes > MAX_RUNTIME_WRITE_BYTES)
@@ -130,6 +146,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						clientInstanceId,
 						requestId: message.id,
 						command: message.request.command,
+						...requestFields,
 						queueDepth: queuedRequests,
 					});
 				const handle = async () => {
@@ -141,6 +158,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								clientInstanceId,
 								requestId: message.id,
 								command: message.request.command,
+								...requestFields,
 								queueWaitMs: Math.round(startedAt - receivedAt),
 							});
 						if (handled) await connection.handle(message);
@@ -150,8 +168,14 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								clientInstanceId,
 								requestId: message.id,
 								command: message.request.command,
+								...requestFields,
 								queueWaitMs: Math.round(startedAt - receivedAt),
-								...(handled ? { processMs: Math.round(performance.now() - startedAt) } : {}),
+								...(handled
+									? {
+											processMs: Math.round(performance.now() - startedAt),
+											elapsedMs: Math.round(performance.now() - receivedAt),
+										}
+									: {}),
 							});
 						queuedRequests--;
 						queuedBytes -= byteLength;

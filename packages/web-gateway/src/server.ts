@@ -62,6 +62,8 @@ import {
 	type TranscriptPage,
 } from "@lystar/code-web-protocol";
 import {
+	configureServiceEventLog,
+	flushServiceEventLog,
 	getRuntimeServiceStatus,
 	loadProductBranding,
 	loadSessionNameSettings,
@@ -87,7 +89,7 @@ import {
 	WebConfigStore,
 	type WebGatewayConfig,
 } from "./config.ts";
-import { logGatewayConnection, watchGatewayEventLoop } from "./connection-log.ts";
+import { logGatewayConnection, watchGatewayEventLoop, withGatewayRequest } from "./connection-log.ts";
 import {
 	type CpuSnapshot,
 	calculateCpuUsage,
@@ -272,6 +274,9 @@ interface BrowserContext {
 	initial?: RuntimeInitialSnapshot;
 	leases: Map<string, ContextLease>;
 	leasesToRestore: Map<string, ContextLease>;
+	leaseRestoreClient?: RuntimeProtocolClient;
+	leaseRestoreTimer?: ReturnType<typeof setTimeout>;
+	leaseRestoreAttempt: number;
 	sockets: Set<WebSocket>;
 	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
@@ -979,6 +984,7 @@ export class WebGatewayServer {
 	private closed = false;
 
 	constructor(config: WebGatewayConfig) {
+		configureServiceEventLog(config.agentDir, config.serviceProfile);
 		this.config = config;
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
@@ -1010,6 +1016,10 @@ export class WebGatewayServer {
 				resolvePromise();
 			});
 		});
+		logGatewayConnection("service_listening", {
+			profile: this.config.serviceProfile ?? "default",
+			port: this.config.port,
+		});
 		this.ensurePushConnection();
 	}
 
@@ -1019,6 +1029,7 @@ export class WebGatewayServer {
 	}
 
 	private async shutdown(): Promise<void> {
+		logGatewayConnection("service_stopping");
 		this.closed = true;
 		this.stopEventLoopWatch();
 		clearInterval(this.heartbeatTimer);
@@ -1038,6 +1049,7 @@ export class WebGatewayServer {
 			for (const context of this.contexts.values()) {
 				if (context.idleTimer) clearTimeout(context.idleTimer);
 				if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
+				if (context.leaseRestoreTimer) clearTimeout(context.leaseRestoreTimer);
 				if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
 				this.clearPendingProgress(context);
 				for (const socket of context.sockets) socket.close(1001, "Web Gateway stopped");
@@ -1057,6 +1069,8 @@ export class WebGatewayServer {
 			this.listening = false;
 		} finally {
 			clearTimeout(forceClose);
+			logGatewayConnection("service_stopped");
+			flushServiceEventLog();
 		}
 	}
 
@@ -1079,6 +1093,7 @@ export class WebGatewayServer {
 			id,
 			leases: new Map(),
 			leasesToRestore: new Map(),
+			leaseRestoreAttempt: 0,
 			sockets: new Set(),
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
@@ -1156,6 +1171,7 @@ export class WebGatewayServer {
 			context.activeRequests > 0 ||
 			context.connectPromise ||
 			context.reconnectTimer ||
+			context.leaseRestoreTimer ||
 			context.bootstrapRetryTimer ||
 			context.idleTimer
 		)
@@ -1168,6 +1184,7 @@ export class WebGatewayServer {
 				context.activeRequests > 0 ||
 				context.connectPromise ||
 				context.reconnectTimer ||
+				context.leaseRestoreTimer ||
 				context.bootstrapRetryTimer ||
 				this.contexts.get(context.id) !== context
 			)
@@ -1420,6 +1437,8 @@ export class WebGatewayServer {
 		});
 		context.client = undefined;
 		context.initial = undefined;
+		if (context.leaseRestoreTimer) clearTimeout(context.leaseRestoreTimer);
+		context.leaseRestoreTimer = undefined;
 		this.clearPendingProgress(context);
 		this.invalidateBootstrap(context);
 		const shouldNotify = context.connectionState !== "disconnected" && context.sockets.size > 0;
@@ -1458,13 +1477,49 @@ export class WebGatewayServer {
 		context.reconnectTimer = timer;
 	}
 
+	private scheduleLeaseRestore(context: BrowserContext, client: RuntimeProtocolClient): void {
+		if (this.closed || context.client !== client || context.leaseRestoreTimer || context.sockets.size === 0) return;
+		const subscribed = [...context.leasesToRestore.keys()].some((sessionId) =>
+			[...context.sockets].some((socket) => this.subscriptionsFor(socket).has(sessionId)),
+		);
+		if (!subscribed) return;
+		const delayMs = Math.min(30_000, 500 * 2 ** Math.min(context.leaseRestoreAttempt, 6));
+		context.leaseRestoreAttempt += 1;
+		logGatewayConnection("lease_restore_scheduled", {
+			clientInstanceId: context.id,
+			delayMs,
+			attempt: context.leaseRestoreAttempt,
+		});
+		const timer = setTimeout(() => {
+			context.leaseRestoreTimer = undefined;
+			if (this.closed || context.client !== client || context.sockets.size === 0) {
+				this.scheduleContextCleanup(context);
+				return;
+			}
+			void this.restoreContextLeases(context, client).catch((error: unknown) => {
+				logGatewayConnection("lease_restore_failed", {
+					clientInstanceId: context.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				this.scheduleLeaseRestore(context, client);
+			});
+		}, delayMs);
+		timer.unref?.();
+		context.leaseRestoreTimer = timer;
+	}
+
 	private async restoreContextLeases(context: BrowserContext, client: RuntimeProtocolClient): Promise<void> {
+		if (context.leaseRestoreTimer) clearTimeout(context.leaseRestoreTimer);
+		context.leaseRestoreTimer = undefined;
 		const subscribedSessionIds = new Set<string>();
 		for (const socket of context.sockets) {
 			for (const sessionId of this.subscriptionsFor(socket)) subscribedSessionIds.add(sessionId);
 		}
-		for (const [sessionId, lease] of context.leases) context.leasesToRestore.set(sessionId, lease);
-		context.leases.clear();
+		if (context.leaseRestoreClient !== client) {
+			for (const [sessionId, lease] of context.leases) context.leasesToRestore.set(sessionId, lease);
+			context.leases.clear();
+			context.leaseRestoreClient = client;
+		}
 		const previousLeases = [...context.leasesToRestore.entries()];
 		const restoreLease = async ([sessionId, previous]: [string, ContextLease]): Promise<void> => {
 			try {
@@ -1476,15 +1531,26 @@ export class WebGatewayServer {
 				if (context.client !== client || context.leasesToRestore.get(sessionId) !== previous) return;
 				context.leasesToRestore.delete(sessionId);
 				context.leases.set(sessionId, result.lease);
+				context.leaseRestoreAttempt = 0;
+				logGatewayConnection("lease_restored", {
+					clientInstanceId: context.id,
+					sessionId,
+					sessionPath: previous.sessionPath,
+				});
 				context.bootstrapGeneration += 1;
 				context.bootstrapCache = undefined;
 				const payload = JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(result.lease) });
 				for (const socket of context.sockets) {
 					if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
 				}
-			} catch {
+			} catch (error) {
 				if (context.client === client && context.leasesToRestore.get(sessionId) === previous)
-					context.leasesToRestore.delete(sessionId);
+					logGatewayConnection("lease_restore_failed", {
+						clientInstanceId: context.id,
+						sessionId,
+						sessionPath: previous.sessionPath,
+						error: error instanceof Error ? error.message : String(error),
+					});
 			}
 		};
 		const ordered = [
@@ -1492,6 +1558,7 @@ export class WebGatewayServer {
 			...previousLeases.filter(([sessionId]) => !subscribedSessionIds.has(sessionId)),
 		];
 		await Promise.all(ordered.map(restoreLease));
+		this.scheduleLeaseRestore(context, client);
 	}
 
 	private async buildBootstrap(context: BrowserContext): Promise<BootstrapResponse> {
@@ -1856,44 +1923,72 @@ export class WebGatewayServer {
 	}
 
 	private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-		setSecurityHeaders(response);
-		response.setHeader("Vary", "Origin");
-		try {
-			this.assertRequestBoundary(request, false);
-			const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-			if (request.method === "OPTIONS") {
-				response.writeHead(204, {
-					"Access-Control-Allow-Headers": "Authorization, Content-Type, X-LYStar-Client-Id, X-LYStar-File-Name",
-					"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-				});
-				response.end();
-				return;
-			}
-			if (url.pathname === "/healthz") {
-				await this.handleHealth(response);
-				return;
-			}
-			if (url.pathname === "/api/branding" && request.method === "GET") {
-				await this.handleBranding(request, response);
-				return;
-			}
-			if (url.pathname.startsWith("/api/")) {
-				this.assertToken(request);
-				const context = this.contextFor(request, response);
-				context.activeRequests += 1;
-				try {
-					await this.handleApi(request, response, url, context);
-				} finally {
-					context.activeRequests -= 1;
-					this.scheduleContextCleanup(context);
+		const requestId = randomUUID();
+		const startedAt = performance.now();
+		const path = request.url?.split("?")[0] ?? "/";
+		const sessionId = /^\/api\/sessions\/([^/]+)/u.exec(path)?.[1];
+		let recorded = false;
+		const record = (outcome: "finished" | "connection_closed") => {
+			if (recorded) return;
+			recorded = true;
+			logGatewayConnection("http_request", {
+				requestId,
+				method: request.method,
+				path,
+				...(sessionId ? { sessionId } : {}),
+				statusCode: outcome === "finished" ? response.statusCode : 499,
+				outcome,
+				elapsedMs: Math.round(performance.now() - startedAt),
+			});
+		};
+		response.once("finish", () => record("finished"));
+		response.once("close", () => record("connection_closed"));
+		await withGatewayRequest(requestId, async () => {
+			setSecurityHeaders(response);
+			response.setHeader("Vary", "Origin");
+			try {
+				this.assertRequestBoundary(request, false);
+				const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+				if (request.method === "OPTIONS") {
+					response.writeHead(204, {
+						"Access-Control-Allow-Headers": "Authorization, Content-Type, X-LYStar-Client-Id, X-LYStar-File-Name",
+						"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+					});
+					response.end();
+					return;
 				}
-				return;
+				if (url.pathname === "/healthz") {
+					await this.handleHealth(response);
+					return;
+				}
+				if (url.pathname === "/api/branding" && request.method === "GET") {
+					await this.handleBranding(request, response);
+					return;
+				}
+				if (url.pathname.startsWith("/api/")) {
+					this.assertToken(request);
+					const context = this.contextFor(request, response);
+					context.activeRequests += 1;
+					try {
+						await this.handleApi(request, response, url, context);
+					} finally {
+						context.activeRequests -= 1;
+						this.scheduleContextCleanup(context);
+					}
+					return;
+				}
+				await this.handleStatic(request, response, url.pathname);
+			} catch (error) {
+				logGatewayConnection("http_request_error", {
+					requestId,
+					path,
+					...(error instanceof HttpError ? { errorCode: error.code } : {}),
+					error: error instanceof Error ? error.message : String(error),
+				});
+				if (!response.headersSent) sendError(response, error);
+				else response.destroy();
 			}
-			await this.handleStatic(request, response, url.pathname);
-		} catch (error) {
-			if (!response.headersSent) sendError(response, error);
-			else response.destroy();
-		}
+		});
 	}
 
 	private async collectDiagnostics(context: BrowserContext, projectId?: string): Promise<Record<string, unknown>> {
@@ -4790,6 +4885,7 @@ export class WebGatewayServer {
 
 	private subscribeSession(context: BrowserContext, socket: WebSocket, sessionId: string, lastSeq?: number): void {
 		this.subscriptionsFor(socket).add(sessionId);
+		if (context.client && context.leasesToRestore.has(sessionId)) this.scheduleLeaseRestore(context, context.client);
 		const lease = context.leases.get(sessionId);
 		if (lease) {
 			this.sendWebSocket(socket, JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(lease) }));

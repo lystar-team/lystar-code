@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
-import type {
-	AgentStep,
-	JsonValue,
-	TranscriptItem,
-	TranscriptPage,
-	TranscriptSearchHit,
-	TranscriptSearchResult,
+import {
+	type AgentStep,
+	type JsonValue,
+	RUNTIME_MAX_FRAME_LENGTH,
+	type TranscriptItem,
+	type TranscriptPage,
+	type TranscriptSearchHit,
+	type TranscriptSearchResult,
 } from "@lystar/code-web-protocol";
 
 import { projectedAgentStepFromItem, projectTranscriptItems, relevantAgentSteps } from "./transcript-projection.ts";
@@ -382,7 +383,7 @@ export class TranscriptReader {
 
 	async read(
 		sessionPath: string,
-		options: { cursor?: string; limit: number; emptyGeneration?: string },
+		options: { cursor?: string; limit: number; emptyGeneration?: string; byteBudget?: number },
 	): Promise<TranscriptPage & { contextCalls?: TranscriptItem[] }> {
 		const resolvedPath = resolve(sessionPath);
 		const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
@@ -500,7 +501,14 @@ export class TranscriptReader {
 				(sameAgentStepIndex ? cachedAgentSteps.steps : []).map((step) => [step.id, step]),
 			);
 			const rememberAgentStep = (entry: RawEntry): AgentStep | undefined => {
-				const step = projectedAgentStepFromItem(toTranscriptItem(entry));
+				if (entry.type !== "custom") return undefined;
+				const step = projectedAgentStepFromItem({
+					entryId: entry.id ?? "",
+					parentId: typeof entry.parentId === "string" ? entry.parentId : null,
+					timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
+					kind: entry.type,
+					payload: entry as JsonValue,
+				});
 				if (step && !latestAgentSteps.has(step.id)) latestAgentSteps.set(step.id, step);
 				return step;
 			};
@@ -517,6 +525,7 @@ export class TranscriptReader {
 				});
 			}
 			const items: RawEntry[] = [];
+			let pageBytes = 0;
 			let wantedId: string | null = cursor?.wantedId ?? leafId;
 			let matched = wantedId === null;
 			const nextOffset = await scanReverse(
@@ -524,16 +533,26 @@ export class TranscriptReader {
 				cursor?.offset ?? completeSize,
 				this.maxJsonlLineBytes,
 				(line) => {
+					if (options.byteBudget !== undefined && line.byteLength >= RUNTIME_MAX_FRAME_LENGTH)
+						throw new TranscriptLineTooLargeError(RUNTIME_MAX_FRAME_LENGTH);
 					const entry = parseLine(line);
 					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== wantedId)
 						return false;
 					matched = true;
 					wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
 					const step = rememberAgentStep(entry);
-					if (isVisible(entry)) items.push(entry);
+					if (isVisible(entry)) {
+						items.push(entry);
+						pageBytes += line.byteLength;
+					}
 					const splitsToolExchange =
 						entry.type === "message" && (entry.message as { role?: string } | undefined)?.role === "toolResult";
-					return items.length >= options.limit && !splitsToolExchange && !step;
+					return (
+						(items.length >= options.limit ||
+							(options.byteBudget !== undefined && pageBytes >= options.byteBudget)) &&
+						!splitsToolExchange &&
+						!step
+					);
 				},
 			);
 			if (!matched || (nextOffset === 0 && wantedId !== null)) throw new TranscriptCursorInvalidError();

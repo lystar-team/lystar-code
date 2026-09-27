@@ -13,6 +13,7 @@ import {
 } from "@lystar/code-web-protocol";
 import { connectRuntimeEndpoint, defaultRuntimeEndpoint, probeIpcRuntime } from "./ipc.ts";
 import { getRuntimeAgentDir } from "./runtime-adapter.ts";
+import { logWebServiceEvent } from "./service-event-log.ts";
 import {
 	currentProcessInvocation,
 	ensureWebService,
@@ -220,7 +221,15 @@ export async function ensureRuntimeService(
 		});
 	}
 	if (status.reachable) {
-		await stopRuntimeService(endpoint, true, profile, invocation, interactiveAdmin, agentDir);
+		logWebServiceEvent("service", "runtime_recovery_deferred", {
+			endpoint,
+			pid: status.pid,
+			reason: "protocol_timeout",
+		});
+		throw Object.assign(new Error("Web Runtime 可连接，但协议响应超时；保留运行中的任务并等待恢复"), {
+			code: "runtime_response_timeout",
+			retryable: true,
+		});
 	}
 	const spec = createRuntimeServiceSpec(endpoint, {
 		...(profile ? { profile } : {}),
@@ -435,14 +444,24 @@ export async function stopRuntimeService(
 	agentDir?: string,
 ): Promise<RuntimeServiceStatus> {
 	const status = await getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
-	const effectiveForce = force || (status.reachable && !status.responsive);
-	if (!effectiveForce) await assertRuntimeIdle(endpoint);
+	if (!force && status.running && !status.reachable) {
+		logWebServiceEvent("service", "runtime_stop_deferred", {
+			endpoint,
+			pid: status.pid,
+			reason: "running_without_endpoint",
+		});
+		throw Object.assign(new Error("Web Runtime 进程仍在运行，无法确认任务已结束"), {
+			code: "runtime_status_unknown",
+			retryable: true,
+		});
+	}
+	if (!force) await assertRuntimeIdle(endpoint);
 	const spec = createRuntimeServiceSpec(endpoint, {
 		...(profile ? { profile } : {}),
 		...(invocation ? { invocation } : {}),
 		...(agentDir ? { agentDir } : {}),
 	});
-	stopWebService(spec, effectiveForce, { detachedPid: status.pid, interactiveAdmin });
+	stopWebService(spec, force, { detachedPid: status.pid, interactiveAdmin });
 	await waitUntilUnreachable(endpoint);
 	return getRuntimeServiceStatus(endpoint, profile, invocation, agentDir);
 }
