@@ -20,6 +20,7 @@ export interface AgentConfig {
 	description: string;
 	tags?: string[];
 	tools?: string[];
+	excludeTools?: string[];
 	model?: string;
 	systemPrompt: string;
 	source: "builtin" | "user" | "project";
@@ -35,6 +36,7 @@ export interface AgentDefinition {
 	thinkingLevel?: SubagentThinkingLevel;
 	tags?: string[];
 	tools?: string[];
+	excludeTools?: string[];
 	skillNames?: string[];
 	content: string;
 	scope: AgentDefinitionScope;
@@ -109,6 +111,7 @@ function loadAgentDefinitionsFromDir(dir: string, scope: "user" | "project"): Ag
 			...(parsed.model ? { model: parsed.model } : {}),
 			...(parsed.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
 			...(parsed.tools ? { tools: parsed.tools } : {}),
+			...(parsed.excludeTools ? { excludeTools: parsed.excludeTools } : {}),
 			...(parsed.skills ? { skillNames: parsed.skills } : {}),
 			content: parsed.content,
 			scope,
@@ -146,6 +149,7 @@ function builtinDefinitions(): AgentDefinition[] {
 		...(agent.tags ? { tags: agent.tags } : {}),
 		...parseBuiltinModel(agent.model),
 		...(agent.tools ? { tools: agent.tools } : {}),
+		...(agent.excludeTools ? { excludeTools: agent.excludeTools } : {}),
 		content: agent.systemPrompt,
 		scope: "builtin",
 		editable: false,
@@ -192,6 +196,7 @@ function toAgentConfig(definition: AgentDefinition): AgentConfig {
 		description: definition.description,
 		...(definition.tags ? { tags: definition.tags } : {}),
 		...(definition.tools ? { tools: definition.tools } : {}),
+		...(definition.excludeTools ? { excludeTools: definition.excludeTools } : {}),
 		...(definition.model
 			? {
 					model: formatSubagentModelReference({

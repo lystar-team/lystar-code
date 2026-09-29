@@ -216,6 +216,18 @@ export function toolActivityLabel(activity: ToolActivity): string {
 	}
 }
 
+function stableFileToolSummary(name: string, summary: string | undefined, previous: string | undefined): string {
+	const next = summary?.trim();
+	if (
+		(name === "edit" || name === "write" || name === "apply_patch") &&
+		(!next || next === name) &&
+		previous?.trim() &&
+		previous.trim() !== name
+	)
+		return previous.trim();
+	return next || previous?.trim() || name;
+}
+
 export function liveToolFromActivity(activity: ToolActivity, previous: LiveTool | undefined, batchId: string): LiveTool {
 	const terminal =
 		activity.state === "success" ||
@@ -227,12 +239,11 @@ export function liveToolFromActivity(activity: ToolActivity, previous: LiveTool 
 		id: activity.toolCallId,
 		name: activity.name,
 		batchId,
-		summary:
-			activity.name === "web_search"
-				? mergeWebSearchToolSummary(previous?.summary, activity.summary, webSearch)
-				: activity.name === "image_gen"
-					? mergeImageGenerationSummary(previous?.summary, activity.summary)
-					: activity.summary || previous?.summary || activity.name,
+		summary: activity.name === "web_search"
+			? mergeWebSearchToolSummary(previous?.summary, activity.summary, webSearch)
+			: activity.name === "image_gen"
+				? mergeImageGenerationSummary(previous?.summary, activity.summary)
+				: stableFileToolSummary(activity.name, activity.summary, previous?.summary),
 		state: activity.state,
 		status: toolActivityStatus(activity.state),
 		stepId: activity.stepId ?? previous?.stepId,
@@ -254,7 +265,10 @@ export function liveToolFromUpdate(
 		id: progress.toolCallId,
 		name: progress.name,
 		batchId,
-		summary: progress.name === "image_gen" ? mergeImageGenerationSummary(previous?.summary, summary) : summary,
+		summary:
+			progress.name === "image_gen"
+				? mergeImageGenerationSummary(previous?.summary, summary)
+				: stableFileToolSummary(progress.name, summary, previous?.summary),
 		state: previous?.state ?? (progress.name === "web_search" ? "running" : "preparing"),
 		status: "running",
 		result: progress.summary,

@@ -202,6 +202,7 @@ export interface WorkbenchState {
 	harnessImporting: boolean;
 	harnessImportResult?: HarnessImportResultResponse;
 	subagentConfigs: SubagentConfig[];
+	subagentTools: Array<{ name: string; description: string }>;
 	subagentConfigsLoading: boolean;
 	subagentConfigsSaving: boolean;
 	subagentConfigsError?: string;
@@ -210,6 +211,7 @@ export interface WorkbenchState {
 		id: string;
 		name: string;
 		reasoning: boolean;
+		fastModeSupported?: boolean;
 		contextWindow: number;
 		supportedThinkingLevels: string[];
 	}>;
@@ -225,6 +227,7 @@ export interface WorkbenchState {
 		name: string;
 		api: string;
 		reasoning: boolean;
+		fastModeSupported?: boolean;
 		input: ("text" | "image")[];
 		contextWindow: number;
 		maxTokens: number;
@@ -253,6 +256,7 @@ export interface WorkbenchState {
 		disabledModels: string[];
 		catalogProvider?: string;
 	}>;
+	imageModelProviders?: Record<string, string>;
 	hiddenModelProviders: string[];
 	modelSettingsLoading: boolean;
 	modelSettingsError?: string;
@@ -260,6 +264,10 @@ export interface WorkbenchState {
 	sessionNameSettingsLoading: boolean;
 	sessionNameSettingsSaving: boolean;
 	sessionNameSettingsError?: string;
+	toolRecoverySettings?: { model?: string; thinkingLevel: WebThinkingLevel };
+	toolRecoverySettingsLoading: boolean;
+	toolRecoverySettingsSaving: boolean;
+	toolRecoverySettingsError?: string;
 	about?: Record<string, unknown>;
 	diagnostics?: Record<string, unknown>;
 	projectTrust?: { cwd: string; trusted: boolean | null; reason: string; resourceRisk: boolean };

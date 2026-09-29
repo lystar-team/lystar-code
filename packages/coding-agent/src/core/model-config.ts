@@ -210,6 +210,7 @@ const ModelDefinitionSchema = Type.Object({
 	api: Type.Optional(Type.String({ minLength: 1 })),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
+	fastModeSupported: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	inputLimits: Type.Optional(ModelInputLimitsSchema),
@@ -225,6 +226,7 @@ const ModelDefinitionSchema = Type.Object({
 const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
+	fastModeSupported: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	inputLimits: Type.Optional(ModelInputLimitsSchema),
@@ -261,14 +263,18 @@ const ProviderConfigSchema = Type.Object({
 	syncedModels: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 });
 
+const ImageModelProvidersSchema = Type.Record(Type.String({ minLength: 1 }), Type.String({ minLength: 1 }));
+
 const ModelsConfigSchema = Type.Object({
 	providers: Type.Record(Type.String(), ProviderConfigSchema),
+	imageModelProviders: Type.Optional(ImageModelProvidersSchema),
 });
 const validateModelsConfig = Compile(ModelsConfigSchema);
 
 export type ModelsJsonModel = Static<typeof ModelDefinitionSchema>;
 export type ModelsJsonModelOverride = Static<typeof ModelOverrideSchema>;
 export type ModelsJsonProvider = Static<typeof ProviderConfigSchema>;
+export type ModelsJsonImageModelProviders = Static<typeof ImageModelProvidersSchema>;
 type ModelsJson = Static<typeof ModelsConfigSchema>;
 
 function parseModelsJson(content: string, path: string): ModelsJson {
@@ -343,6 +349,21 @@ export async function saveModelsJsonProvider(
 	});
 }
 
+export async function saveModelsJsonImageModelProvidersConfig(
+	modelsJsonPath: string,
+	imageModelProviders: ModelsJsonImageModelProviders,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		if (Object.keys(imageModelProviders).length === 0) delete config.imageModelProviders;
+		else config.imageModelProviders = structuredClone(imageModelProviders);
+	});
+}
+
+export async function clearModelsJsonImageModelProvidersConfig(modelsJsonPath: string): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		delete config.imageModelProviders;
+	});
+}
 export async function saveModelsJsonModel(
 	modelsJsonPath: string,
 	providerId: string,
@@ -512,10 +533,16 @@ function deepFreeze<T>(value: T): T {
 /** One immutable load of models.json. */
 export class ModelConfig {
 	private readonly providers: ReadonlyMap<string, ModelsJsonProvider>;
+	private readonly imageModelProviders: ModelsJsonImageModelProviders | undefined;
 	private readonly error: string | undefined;
 
-	private constructor(providers: ReadonlyMap<string, ModelsJsonProvider>, error?: string) {
+	private constructor(
+		providers: ReadonlyMap<string, ModelsJsonProvider>,
+		imageModelProviders?: ModelsJsonImageModelProviders,
+		error?: string,
+	) {
 		this.providers = providers;
+		this.imageModelProviders = imageModelProviders;
 		this.error = error;
 	}
 
@@ -529,6 +556,7 @@ export class ModelConfig {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return new ModelConfig(new Map());
 			return new ModelConfig(
 				new Map(),
+				undefined,
 				`Failed to load models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
 			);
 		}
@@ -537,17 +565,24 @@ export class ModelConfig {
 		try {
 			config = parseModelsJson(stripBom(content), path);
 		} catch (error) {
-			return new ModelConfig(new Map(), error instanceof Error ? error.message : String(error));
+			return new ModelConfig(new Map(), undefined, error instanceof Error ? error.message : String(error));
 		}
 		const providers = new Map<string, ModelsJsonProvider>();
 		for (const [providerId, provider] of Object.entries(config.providers)) {
 			providers.set(providerId, deepFreeze(structuredClone(provider)));
 		}
-		return new ModelConfig(providers);
+		const imageModelProviders = config.imageModelProviders
+			? deepFreeze(structuredClone(config.imageModelProviders))
+			: undefined;
+		return new ModelConfig(providers, imageModelProviders);
 	}
 
 	getProvider(providerId: string): ModelsJsonProvider | undefined {
 		return this.providers.get(providerId);
+	}
+
+	getImageModelProviders(): ModelsJsonImageModelProviders | undefined {
+		return this.imageModelProviders;
 	}
 
 	getProviderIds(): readonly string[] {

@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	clearModelsJsonImageModelProvidersConfig,
 	clearModelsJsonModelOverride,
 	clearModelsJsonProviderCatalogProvider,
+	saveModelsJsonImageModelProvidersConfig,
 	saveModelsJsonModelOverride,
 	saveModelsJsonModels,
 	saveModelsJsonProvider,
@@ -29,6 +31,12 @@ describe("models.json web provider mutations", () => {
 			apiKey: "test-key",
 			catalogProvider: "openai",
 		});
+		await saveModelsJsonImageModelProvidersConfig(path, {
+			"gpt-image-1": "proxy",
+			"gpt-image-2": "proxy",
+			"gpt-image-2.5-flare": "proxy",
+			"gpt-image-2.5-sunburst": "proxy",
+		});
 		await saveModelsJsonModels(path, "proxy", [
 			{
 				id: "remote-model",
@@ -49,16 +57,25 @@ describe("models.json web provider mutations", () => {
 				string,
 				{ apiKey?: string; catalogProvider?: string; models?: unknown[]; modelOverrides?: Record<string, unknown> }
 			>;
+			imageModelProviders?: Record<string, string>;
 		};
 		expect(value.providers.proxy.apiKey).toBe("test-key");
 		expect(value.providers.proxy.catalogProvider).toBe("openai");
+		expect(value.imageModelProviders).toEqual({
+			"gpt-image-1": "proxy",
+			"gpt-image-2": "proxy",
+			"gpt-image-2.5-flare": "proxy",
+			"gpt-image-2.5-sunburst": "proxy",
+		});
 		expect(value.providers.proxy.models).toHaveLength(1);
 		expect(value.providers.proxy.modelOverrides?.["remote-model"]).toMatchObject({ contextWindow: 200_000 });
 
 		await clearModelsJsonModelOverride(path, "proxy", "remote-model");
 		await clearModelsJsonProviderCatalogProvider(path, "proxy");
+		await clearModelsJsonImageModelProvidersConfig(path);
 		value = JSON.parse(readFileSync(path, "utf8"));
 		expect(value.providers.proxy.catalogProvider).toBeUndefined();
+		expect(value.imageModelProviders).toBeUndefined();
 		expect(value.providers.proxy.modelOverrides).toBeUndefined();
 	});
 });

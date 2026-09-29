@@ -218,4 +218,38 @@ describe("Web service restart", () => {
 			expect(status).toMatchObject({ gateway: { running: true }, runtime: { running: true } });
 		},
 	);
+
+	it("forces a busy Runtime to switch versions during an application upgrade", async () => {
+		state.gatewayRunning = true;
+		state.runtimeRunning = true;
+		state.busy = true;
+		const options = await serviceOptions();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ ok: true, host: "connected" })),
+		);
+
+		const status = await runWebServiceAction({
+			...options,
+			action: "reconcile",
+			serviceVersion: "0.85.2-lystar.1",
+			previousServiceVersion: "0.85.1-lystar.12",
+			forceRuntimeRestart: true,
+		});
+
+		expect(webRuntime.assertRuntimeIdle).not.toHaveBeenCalled();
+		expect(webRuntime.stopRuntimeService).toHaveBeenCalledWith(
+			"tcp://127.0.0.1:1422",
+			true,
+			undefined,
+			expect.anything(),
+			false,
+			options.agentDir,
+		);
+		expect(status).toMatchObject({
+			serviceVersion: "0.85.2-lystar.1",
+			gateway: { running: true },
+			runtime: { running: true },
+		});
+	});
 });

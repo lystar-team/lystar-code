@@ -47,7 +47,7 @@ import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
-import { ModelConfig } from "./model-config.ts";
+import { ModelConfig, type ModelsJsonImageModelProviders } from "./model-config.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import { getProviderAttributionHeaders } from "./provider-attribution.ts";
 import {
@@ -417,6 +417,10 @@ export class ModelRuntime implements Models {
 
 	getImageAuth(providerId: string): Promise<AuthResult | undefined> {
 		return this.imageModels.getAuth(providerId);
+	}
+
+	getImageModelProviders(): ModelsJsonImageModelProviders | undefined {
+		return this.config.getImageModelProviders();
 	}
 
 	generateImages(model: ImagesModel<ImagesApi>, context: ImagesContext, options?: ImagesOptions) {

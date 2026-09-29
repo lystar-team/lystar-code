@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	selectTranscriptContentAnchors,
-	shouldCancelPrependAnchorForKey,
-	shouldCancelPrependAnchorForWheel,
-	transcriptAnchorScrollDelta,
-} from "../src/components/workbench/prepend-anchored-transcript.tsx";
-import {
 	buildTranscriptHeightEstimates,
 	resolveTranscriptFirstItemIndex,
 	safeTranscriptItemKey,
@@ -51,11 +45,13 @@ describe("transcript virtualization", () => {
 		expect(result).toEqual([1, 1]);
 	});
 
-	it("decreases the first item index only when stable keys are prepended", () => {
-		const previous = { firstItemIndex: 1_000, firstKey: "current-0" };
+	it("keeps the absolute item index through prepends and leading-row regrouping", () => {
+		const previous = { firstItemIndex: 1_000, itemKeys: ["current-0", "current-1", "current-2"] };
 
 		expect(resolveTranscriptFirstItemIndex(previous, ["older-0", "older-1", "current-0", "current-1"])).toBe(998);
 		expect(resolveTranscriptFirstItemIndex(previous, ["current-0", "current-1", "newer-0"])).toBe(1_000);
+		expect(resolveTranscriptFirstItemIndex(previous, ["older-0", "current-1", "current-2"])).toBe(1_000);
+		expect(resolveTranscriptFirstItemIndex(previous, ["current-1", "current-2"])).toBe(1_001);
 	});
 
 	it("uses a stable placeholder key while Virtuoso replaces session data", () => {
@@ -85,35 +81,6 @@ describe("transcript virtualization", () => {
 	it("converts Virtuoso absolute indexes back to transcript array indexes", () => {
 		expect(transcriptDataIndex(998, 998)).toBe(0);
 		expect(transcriptDataIndex(1_005, 998)).toBe(7);
-	});
-
-	it("anchors the first visible content item instead of its containing virtual row", () => {
-		expect(
-			selectTranscriptContentAnchors(
-				[
-					{ key: "hidden-child", top: 10, bottom: 90 },
-					{ key: "visible-message", top: 80, bottom: 160 },
-					{ key: "below-viewport", top: 220, bottom: 300 },
-				],
-				100,
-				200,
-			),
-		).toEqual([{ anchorKey: "visible-message", anchorOffset: -20 }]);
-	});
-
-	it("restores the captured content pixel after nested history changes its containing row", () => {
-		expect(transcriptAnchorScrollDelta(71, 49)).toBe(22);
-		expect(transcriptAnchorScrollDelta(48.7, 49)).toBe(0);
-		expect(transcriptAnchorScrollDelta(Number.NaN, 49)).toBe(0);
-	});
-
-	it("keeps the anchor during the loading gesture and releases it when the user leaves", () => {
-		expect(shouldCancelPrependAnchorForWheel(-120, true)).toBe(false);
-		expect(shouldCancelPrependAnchorForWheel(120, true)).toBe(true);
-		expect(shouldCancelPrependAnchorForWheel(-120, false)).toBe(true);
-		expect(shouldCancelPrependAnchorForKey("PageUp", true)).toBe(false);
-		expect(shouldCancelPrependAnchorForKey("ArrowDown", true)).toBe(true);
-		expect(shouldCancelPrependAnchorForKey("PageUp", false)).toBe(true);
 	});
 
 	it("does not let programmatic off-bottom corrections overwrite user scroll state", () => {

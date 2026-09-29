@@ -41,6 +41,6 @@ it("gives Room agents the contents of text and image attachments without changin
 	expect(message.body).toBe("请查看附件");
 	expect(result.text).toContain("待办：检查数据");
 	expect(result.text).toContain('filename="image.png"');
-	expect(result.text).toContain("report.pdf（application/pdf）已上传，但当前 Room 消息无法读取其内容");
+	expect(result.text).toContain("report.pdf（application/pdf）已上传，但当前智能体协作消息无法读取其内容");
 	expect(result.images).toEqual([{ data: Buffer.from([137, 80, 78, 71]).toString("base64"), mimeType: "image/png" }]);
 });

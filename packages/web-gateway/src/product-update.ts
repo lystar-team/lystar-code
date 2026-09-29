@@ -54,6 +54,7 @@ export type ProductUpdateSpawner = (
 export interface ProductUpdateControllerOptions {
 	installRoot?: string;
 	development?: boolean;
+	serviceVersion?: string;
 	now?: () => number;
 	isProcessAlive?: (pid: number) => boolean;
 	spawnUpdate?: ProductUpdateSpawner;
@@ -196,6 +197,7 @@ export class ProductUpdateController {
 	private readonly agentDir: string;
 	private readonly installRoot: string;
 	private readonly development: boolean;
+	private readonly serviceVersion?: string;
 	private readonly now: () => number;
 	private readonly isProcessAlive: (pid: number) => boolean;
 	private readonly spawnUpdate: ProductUpdateSpawner;
@@ -205,6 +207,7 @@ export class ProductUpdateController {
 		this.agentDir = agentDir;
 		this.installRoot = options.installRoot ?? defaultInstallRoot();
 		this.development = options.development ?? process.env.LYSTAR_CLI_MODE === "development";
+		this.serviceVersion = options.serviceVersion ?? (process.env.LYSTAR_WEB_SERVICE_VERSION?.trim() || undefined);
 		this.now = options.now ?? Date.now;
 		this.isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
 		this.spawnUpdate = options.spawnUpdate ?? defaultSpawnUpdate;
@@ -283,13 +286,13 @@ export class ProductUpdateController {
 
 	async status(currentVersion: string): Promise<ProductUpdateJob | undefined> {
 		const job = await this.readJob();
-		if (!job || job.status !== "running") return job;
+		if (!job || job.status === "completed") return job;
 		const installedVersion =
 			currentVersion === job.targetVersion ||
 			(PRODUCT_VERSION_PATTERN.test(currentVersion) && currentVersion !== job.currentVersion)
 				? currentVersion
 				: undefined;
-		if (installedVersion) {
+		if (installedVersion && (!this.serviceVersion || this.serviceVersion === installedVersion)) {
 			const completed: ProductUpdateJob = {
 				...job,
 				status: "completed",
@@ -302,6 +305,7 @@ export class ProductUpdateController {
 			await this.writeJob(completed);
 			return completed;
 		}
+		if (job.status !== "running") return job;
 
 		const log = await this.readLog();
 		if (job.pid && !this.isProcessAlive(job.pid)) {

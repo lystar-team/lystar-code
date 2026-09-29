@@ -38,6 +38,7 @@ export const WEB_COMPANION_CAPABILITIES = [
 	"abort",
 	"model",
 	"thinking",
+	"fast_mode",
 	"completion",
 	"session_info",
 	"session_tree",
@@ -81,6 +82,7 @@ export interface WebCompanionSnapshot {
 	activity: "idle" | "running";
 	model?: { provider: string; id: string };
 	thinkingLevel: string;
+	fastMode?: boolean;
 	leafId: string | null;
 	queuedSteerCount: number;
 	queuedFollowUpCount: number;
@@ -123,6 +125,7 @@ export type WebCompanionCommand =
 				| "snapshot"
 				| "set_model"
 				| "set_thinking_level"
+				| "set_fast_mode"
 				| "cycle_model"
 				| "cycle_thinking_level"
 				| "get_completions"
@@ -152,6 +155,7 @@ export type WebCompanionCommand =
 			action?: "remove" | "steer";
 			model?: { provider: string; id: string };
 			level?: ThinkingLevel;
+			enabled?: boolean;
 			direction?: "forward" | "backward";
 			customInstructions?: string;
 			outputPath?: string;

@@ -28,7 +28,7 @@ import type {
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-web-protocol";
-import { OutputSpeedTracker } from "./output-speed.ts";
+import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 import { webSearchProgressFromCall, webSearchProgressSummary } from "./web-search-progress.ts";
 
@@ -356,6 +356,7 @@ function snapshot(
 		activity: value.activity,
 		...(value.model ? { model: value.model } : {}),
 		thinkingLevel: value.thinkingLevel as SessionStateSnapshot["thinkingLevel"],
+		fastMode: value.fastMode ?? false,
 		attached: true,
 		writeAccess,
 		revision,
@@ -659,6 +660,11 @@ export class WebCompanionRuntime implements RuntimeSession {
 		if (isWebCompanionSnapshot(result)) this.applySnapshot(result);
 	}
 
+	async setFastMode(enabled: boolean): Promise<void> {
+		const result = await this.request("set_fast_mode", { enabled });
+		if (isWebCompanionSnapshot(result)) this.applySnapshot(result);
+	}
+
 	async cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }> {
 		const result = record(await this.request("cycle_model", { direction }));
 		if (!result) throw new Error("TUI 共享会话返回了无效的模型切换结果");
@@ -820,8 +826,12 @@ export class WebCompanionRuntime implements RuntimeSession {
 				this.emit({ type: "progress", payload: progress });
 			}
 			if (event?.type === "message_end" && assistant?.role === "assistant") {
+				const assistantUsage = record(assistant.usage);
 				const outputSpeed = this.outputSpeed.finish(
-					usage(assistant.usage)?.outputTokens,
+					visibleOutputTokens(
+						typeof assistantUsage?.output === "number" ? assistantUsage.output : undefined,
+						typeof assistantUsage?.reasoning === "number" ? assistantUsage.reasoning : undefined,
+					),
 					typeof assistant.stopReason === "string" ? assistant.stopReason : undefined,
 				);
 				if (outputSpeed) this.emit({ type: "progress", payload: { type: "usage", usage: outputSpeed } });

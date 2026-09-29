@@ -26,6 +26,11 @@ std::wstring trim(const std::wstring& value) {
     return value.substr(first, last - first + 1);
 }
 
+bool parse_bool(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), towlower);
+    return value == L"1" || value == L"true" || value == L"yes";
+}
+
 std::wstring last_error_text(DWORD error = GetLastError()) {
     wchar_t* buffer = nullptr;
     const DWORD length = FormatMessageW(
@@ -83,6 +88,7 @@ struct ServiceConfig {
     std::wstring working_directory;
     std::wstring arguments;
     std::wstring log_path;
+    bool allow_child_breakaway = false;
     std::map<std::wstring, std::wstring> environment;
 };
 
@@ -110,6 +116,7 @@ bool read_config(const std::wstring& path, ServiceConfig& config) {
             else if (key == L"workingDirectory") config.working_directory = value;
             else if (key == L"arguments") config.arguments = value;
             else if (key == L"logPath") config.log_path = value;
+            else if (key == L"allowChildBreakaway") config.allow_child_breakaway = parse_bool(value);
         } else if (section == L"environment") {
             config.environment[key] = value;
         }
@@ -232,13 +239,15 @@ bool start_child(const ServiceConfig& config) {
     std::vector<wchar_t> environment = make_environment_block(config);
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
+    DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
+    if (config.allow_child_breakaway) creation_flags |= CREATE_BREAKAWAY_FROM_JOB;
     const BOOL created = CreateProcessW(
         application.c_str(),
         mutable_command.data(),
         nullptr,
         nullptr,
         TRUE,
-        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+        creation_flags,
         environment.data(),
         config.working_directory.c_str(),
         &startup,
@@ -249,6 +258,9 @@ bool start_child(const ServiceConfig& config) {
         if (job != nullptr) {
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (config.allow_child_breakaway) {
+                limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+            }
             if (SetInformationJobObject(
                     job,
                     JobObjectExtendedLimitInformation,

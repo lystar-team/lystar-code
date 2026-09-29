@@ -154,6 +154,7 @@ const ISOLATED_READ_COMMANDS = new Set<Command["command"]>([
 	"list_operations",
 	"list_models",
 	"list_model_providers",
+	"get_image_model_settings",
 	"list_model_options",
 	"list_skills",
 	"list_harness_imports",

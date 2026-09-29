@@ -14,7 +14,7 @@ export async function roomAttachmentInput(message: SessionRoomMessage): Promise<
 	for (const attachment of message.attachments ?? []) {
 		const size = (await stat(attachment.path)).size;
 		if (/^image\/(png|jpeg|gif|webp)$/u.test(attachment.mimeType)) {
-			if (size > MAX_IMAGE_BYTES) throw new Error(`Room 图片附件超过 20 MiB：${attachment.filename}`);
+			if (size > MAX_IMAGE_BYTES) throw new Error(`智能体协作图片附件超过 20 MiB：${attachment.filename}`);
 			images.push({ data: (await readFile(attachment.path)).toString("base64"), mimeType: attachment.mimeType });
 		} else if (
 			/^text\//u.test(attachment.mimeType) ||
@@ -30,7 +30,7 @@ export async function roomAttachmentInput(message: SessionRoomMessage): Promise<
 			}
 			text += `\n\n附件 ${attachment.filename} 内容${size > MAX_INLINE_TEXT_BYTES ? "（前 128 KiB）" : ""}：\n${buffer.subarray(0, Math.min(bytesRead, MAX_INLINE_TEXT_BYTES)).toString("utf8")}`;
 		} else {
-			text += `\n\n附件 ${attachment.filename}（${attachment.mimeType}）已上传，但当前 Room 消息无法读取其内容。`;
+			text += `\n\n附件 ${attachment.filename}（${attachment.mimeType}）已上传，但当前智能体协作消息无法读取其内容。`;
 		}
 	}
 	return { text, images };

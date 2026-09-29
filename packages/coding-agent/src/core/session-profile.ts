@@ -19,6 +19,7 @@ export interface SessionProfile {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	tools?: string[];
+	excludeTools?: string[];
 	skillNames?: string[];
 	systemPrompt: string;
 	agentsInstructions?: string;
@@ -66,6 +67,7 @@ function profileFromDefinition(definition: AgentDefinition): SessionProfile {
 			: {}),
 		...(definition.thinkingLevel ? { thinkingLevel: definition.thinkingLevel } : {}),
 		...(definition.tools ? { tools: [...definition.tools] } : {}),
+		...(definition.excludeTools ? { excludeTools: [...definition.excludeTools] } : {}),
 		...(definition.skillNames ? { skillNames: [...definition.skillNames] } : {}),
 		systemPrompt: definition.content,
 		scope: definition.scope,

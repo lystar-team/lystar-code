@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { assertWorkspaceCommandResult } from "@lystar/code-web-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../../coding-agent/src/core/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -763,6 +763,29 @@ describe("CodingAgentRuntimeAdapter", () => {
 				.getEntries()
 				.filter((entry) => entry.type === "custom" && entry.customType === "lystar.collaboration.result"),
 		).toHaveLength(1);
+	});
+
+	it("keeps summary and metadata Session list caches independent", async () => {
+		const adapter = new CodingAgentRuntimeAdapter("/tmp/web-runtime-cache-test");
+		const list = vi.spyOn(SessionManager, "list").mockResolvedValue([]);
+		try {
+			await adapter.listSessions("/tmp/project");
+			await adapter.listSessions("/tmp/project", { metadataOnly: true });
+			await adapter.listSessions("/tmp/project");
+
+			const cacheArg = (index: number) => {
+				const arg = list.mock.calls[index]?.[3];
+				return arg && !(arg instanceof AbortSignal) ? arg.cache : undefined;
+			};
+			const summaryCache = cacheArg(0);
+			const metadataCache = cacheArg(1);
+			expect(summaryCache).toBeDefined();
+			expect(metadataCache).toBeDefined();
+			expect(metadataCache).not.toBe(summaryCache);
+			expect(cacheArg(2)).toBe(summaryCache);
+		} finally {
+			list.mockRestore();
+		}
 	});
 
 	it("persists, exports, and restores bash when it is the first transcript entry", async () => {

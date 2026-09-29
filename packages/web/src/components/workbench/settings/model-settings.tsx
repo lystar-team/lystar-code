@@ -1,4 +1,4 @@
-import { Check, Eye, LoaderCircle, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
+import { Check, Eye, ListChecks, LoaderCircle, Plus, RefreshCw, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
@@ -23,6 +23,7 @@ import {
 import { formatModelDisplayName, providerIconId } from "../model-utils";
 import type { WorkbenchActions } from "../types";
 import { ModelBrandIcon } from "./model-brand-icon";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "../workbench-tab-bar";
 import { SettingSection } from "./shared";
 
 type ProviderDraft = {
@@ -43,6 +44,7 @@ type ModelDraft = {
 	api: string;
 	baseUrl: string;
 	reasoning: boolean;
+	fastModeSupported: boolean;
 	manualThinking: boolean;
 	thinkingLevelMap: Record<string, string | null>;
 	input: ("text" | "image")[];
@@ -63,19 +65,41 @@ const MODEL_PROVIDER_API_OPTIONS = [
 	{ value: "pi-messages", label: "Pi Messages" },
 ] as const;
 
+const IMAGE_MODEL_OPTIONS = [
+	{ value: "gpt-image-1", label: "GPT Image 1" },
+	{ value: "gpt-image-2", label: "GPT Image 2" },
+	{ value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare" },
+	{ value: "gpt-image-2.5-sunburst", label: "GPT Image 2.5 Sunburst" },
+] as const;
+
+const IMAGE_PROVIDER_MODE_TABS: readonly WorkbenchTabOption<"shared" | "per-model">[] = [
+	{ icon: SlidersHorizontal, label: "统一配置", value: "shared" },
+	{ icon: ListChecks, label: "单独配置", value: "per-model" },
+];
+
 const FOLLOW_CURRENT_SESSION_MODEL = "__follow_current_session_model__";
+const FOLLOW_CURRENT_IMAGE_PROVIDER = "__follow_current_image_provider__";
+const MIXED_IMAGE_PROVIDER = "__mixed_image_provider__";
 
 function titleModelReference(model: { provider: string; id: string }): string {
 	return `${model.provider}/${model.id}`;
 }
 
-function supportedTitleThinkingLevels(model: WorkbenchState["models"][number] | undefined): string[] {
+function supportedModelThinkingLevels(model: WorkbenchState["models"][number] | undefined): string[] {
 	return visibleThinkingLevels(model?.supportedThinkingLevels ?? []);
 }
 
-function visibleTitleThinkingLevel(level: string, supportedLevels: readonly string[]): string {
+function visibleConfiguredThinkingLevel(level: string, supportedLevels: readonly string[]): string {
 	if (level === "low" && !supportedLevels.includes("low") && supportedLevels.includes("minimal")) return "minimal";
 	return selectedVisibleThinkingLevel(level, supportedLevels);
+}
+
+function thinkingLevelForModel(model: WorkbenchState["models"][number] | undefined, level: WebThinkingLevel): WebThinkingLevel {
+	const supported = supportedModelThinkingLevels(model);
+	if (supported.length === 0 || supported.includes(level)) return level;
+	if (supported.includes("low")) return "low";
+	if (supported.includes("minimal")) return "minimal";
+	return (supported[0] ?? "off") as WebThinkingLevel;
 }
 
 function editableThinkingLevelMap(
@@ -110,6 +134,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const [selectedProvider, setSelectedProvider] = useState("");
 	const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
 	const [modelDraft, setModelDraft] = useState<ModelDraft | null>(null);
+	const modelSupportsFastApi = modelDraft?.api === "openai-responses" || modelDraft?.api === "openai-codex-responses";
 	const [submitting, setSubmitting] = useState(false);
 	const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
 	const [removingProvider, setRemovingProvider] = useState<string | null>(null);
@@ -117,6 +142,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const [togglingModel, setTogglingModel] = useState<string | null>(null);
 	const [providerTab, setProviderTab] = useState<"custom" | "builtin">("custom");
 	const [modelListProviderId, setModelListProviderId] = useState<string | null>(null);
+	const [imageProviderMode, setImageProviderMode] = useState<"shared" | "per-model">("shared");
 	const orderedProviders = useMemo(
 		() =>
 			[...state.providers].sort((left, right) => {
@@ -135,6 +161,24 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const activeProvider = visibleProviders.some((provider) => provider.id === selectedProvider)
 		? selectedProvider
 		: visibleProviders[0]?.id || "";
+	const imageModelProviders = state.imageModelProviders ?? {};
+	const activeImageProviders = orderedProviders.filter((provider) => provider.authenticated);
+	const imageProviderOptions = [
+		{ value: FOLLOW_CURRENT_IMAGE_PROVIDER, label: "跟随当前会话供应商" },
+		...activeImageProviders.map((provider) => ({ value: provider.id, label: provider.name })),
+	];
+	const imageProviderById = new Map(imageProviderOptions.map((option) => [option.value, option.label]));
+	const configuredImageProviders = IMAGE_MODEL_OPTIONS.map((option) => imageModelProviders[option.value]).filter(
+		(provider): provider is string => Boolean(provider),
+	);
+	const sharedImageProvider =
+		configuredImageProviders.length === IMAGE_MODEL_OPTIONS.length &&
+		configuredImageProviders.every((provider) => provider === configuredImageProviders[0])
+			? configuredImageProviders[0]
+			: configuredImageProviders.length === 0
+				? FOLLOW_CURRENT_IMAGE_PROVIDER
+				: MIXED_IMAGE_PROVIDER;
+
 	const modelListProvider = modelListProviderId
 		? state.providers.find((provider) => provider.id === modelListProviderId)
 		: undefined;
@@ -155,15 +199,35 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		.filter((model) => model.authenticated)
 		.sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name));
 	const savedTitleThinkingLevel = state.sessionNameSettings?.thinkingLevel ?? "low";
-	const titleThinkingLevels = supportedTitleThinkingLevels(effectiveTitleModel);
-	const selectedTitleThinkingLevel = visibleTitleThinkingLevel(savedTitleThinkingLevel, titleThinkingLevels);
+	const titleThinkingLevels = supportedModelThinkingLevels(effectiveTitleModel);
+	const selectedTitleThinkingLevel = visibleConfiguredThinkingLevel(savedTitleThinkingLevel, titleThinkingLevels);
 	const titleSettingsDisabled =
 		state.sessionNameSettingsLoading || state.sessionNameSettingsSaving || !state.sessionNameSettings;
+	const recoveryModel = state.toolRecoverySettings?.model;
+	const configuredRecoveryModel = recoveryModel
+		? state.models.find((model) => titleModelReference(model) === recoveryModel)
+		: undefined;
+	const effectiveRecoveryModel = recoveryModel ? configuredRecoveryModel : currentSessionModel;
+	const savedRecoveryThinkingLevel = state.toolRecoverySettings?.thinkingLevel ?? "low";
+	const recoveryThinkingLevels = supportedModelThinkingLevels(effectiveRecoveryModel);
+	const selectedRecoveryThinkingLevel = visibleConfiguredThinkingLevel(savedRecoveryThinkingLevel, recoveryThinkingLevels);
+	const recoverySettingsDisabled =
+		state.toolRecoverySettingsLoading || state.toolRecoverySettingsSaving || !state.toolRecoverySettings;
 
 	useEffect(() => {
 		if (providerTab === "custom" && customProviders.length === 0 && builtinProviders.length > 0)
 			setProviderTab("builtin");
 	}, [builtinProviders.length, customProviders.length, providerTab]);
+
+	useEffect(() => {
+		const configuredProviders = Object.values(state.imageModelProviders ?? {});
+		if (
+			configuredProviders.length > 0 &&
+			(configuredProviders.length < IMAGE_MODEL_OPTIONS.length || new Set(configuredProviders).size > 1)
+		) {
+			setImageProviderMode("per-model");
+		}
+	}, [state.imageModelProviders]);
 
 	useEffect(() => {
 		if (selectedProvider && visibleProviders.some((provider) => provider.id === selectedProvider)) return;
@@ -202,6 +266,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			api: model?.api ?? provider?.api ?? "openai-completions",
 			baseUrl: provider?.baseUrl ?? "",
 			reasoning: model?.reasoning ?? false,
+			fastModeSupported: model?.fastModeSupported ?? false,
 			manualThinking: false,
 			thinkingLevelMap: editableThinkingLevelMap(model),
 			input: (model?.input ?? ["text"]) as ("text" | "image")[],
@@ -256,6 +321,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 				id: modelDraft.id.trim(),
 				name: modelDraft.name.trim() || undefined,
 				reasoning: modelDraft.reasoning,
+				fastModeSupported: modelSupportsFastApi && modelDraft.fastModeSupported,
 				...(modelDraft.isNew
 					? { api: modelDraft.api.trim() || undefined, baseUrl: modelDraft.baseUrl.trim() || undefined }
 					: {}),
@@ -327,7 +393,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	};
 
 	return (
-		<div className="grid min-w-0 gap-6">
+		<div className="grid min-w-0 gap-6 md:grid-cols-2">
 			<SettingSection title="会话标题模型">
 				<p className="text-sm text-muted-foreground">用于新会话的自动命名，不会更改已有会话名称。</p>
 				{state.sessionNameSettingsError ? (
@@ -342,8 +408,8 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 						正在读取会话标题设置
 					</div>
 				) : null}
-				<Card className="rounded-xl py-0 shadow-none">
-					<CardContent className="grid items-start gap-4 p-3 sm:grid-cols-2">
+				<Card className="min-w-0 rounded-xl py-0 shadow-none">
+					<CardContent className="grid min-w-0 items-start gap-4 p-3 sm:grid-cols-[minmax(0,1.7fr)_minmax(8rem,0.8fr)]">
 						<div className="grid min-w-0 gap-2">
 							<label htmlFor="session-name-model" className="text-sm font-medium">标题模型</label>
 							<Select
@@ -354,23 +420,14 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									const selectedModel = nextModel
 										? state.models.find((model) => titleModelReference(model) === nextModel)
 										: currentSessionModel;
-									const availableLevels = supportedTitleThinkingLevels(selectedModel);
-									const thinkingLevel =
-										availableLevels.length === 0 || availableLevels.includes(savedTitleThinkingLevel)
-											? savedTitleThinkingLevel
-											: availableLevels.includes("low")
-												? "low"
-												: availableLevels.includes("minimal")
-													? "minimal"
-													: (availableLevels[0] ?? "off");
 									void actions.saveSessionNameSettings({
 										...(nextModel ? { model: nextModel } : {}),
-										thinkingLevel: thinkingLevel as WebThinkingLevel,
+										thinkingLevel: thinkingLevelForModel(selectedModel, savedTitleThinkingLevel),
 									});
 								}}
 							>
-								<SelectTrigger id="session-name-model" className="h-9 w-full">
-									<SelectValue />
+								<SelectTrigger id="session-name-model" className="h-9 w-full min-w-0 overflow-hidden">
+									<SelectValue className="min-w-0 flex-1 truncate" />
 								</SelectTrigger>
 								<SelectContent>
 									<SelectItem value={FOLLOW_CURRENT_SESSION_MODEL}>跟随当前会话模型</SelectItem>
@@ -402,8 +459,8 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									});
 								}}
 							>
-								<SelectTrigger id="session-name-thinking-level" className="h-9 w-full">
-									<SelectValue />
+								<SelectTrigger id="session-name-thinking-level" className="h-9 w-full min-w-0 overflow-hidden">
+									<SelectValue className="min-w-0 flex-1 truncate" />
 								</SelectTrigger>
 								<SelectContent>
 									{!titleThinkingLevels.includes(selectedTitleThinkingLevel) ? (
@@ -418,14 +475,182 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									))}
 								</SelectContent>
 							</Select>
-							<p className="text-xs text-muted-foreground">
-								{titleThinkingLevels.length > 0 ? "选项按所选模型支持的强度显示。" : "请先选择可用模型。"}
-							</p>
 						</div>
 					</CardContent>
 				</Card>
 			</SettingSection>
-			<SettingSection title="模型供应商">
+			<SettingSection title="错题本模型">
+				<p className="text-sm text-muted-foreground">用于提炼工具恢复经验；未指定时跟随当前会话模型。</p>
+				{state.toolRecoverySettingsError ? (
+					<Alert variant="destructive">
+						<AlertTitle>错题本模型配置失败</AlertTitle>
+						<AlertDescription>{state.toolRecoverySettingsError}</AlertDescription>
+					</Alert>
+				) : null}
+				{state.toolRecoverySettingsLoading ? (
+					<div className="flex items-center gap-2 text-sm text-muted-foreground">
+						<LoaderCircle className="size-4 animate-spin" />
+						正在读取错题本模型设置
+					</div>
+				) : null}
+				<Card className="min-w-0 rounded-xl py-0 shadow-none">
+					<CardContent className="grid min-w-0 items-start gap-4 p-3 sm:grid-cols-[minmax(0,1.7fr)_minmax(8rem,0.8fr)]">
+						<div className="grid min-w-0 gap-2">
+							<label htmlFor="tool-recovery-model" className="text-sm font-medium">提炼模型</label>
+							<Select
+								value={recoveryModel ?? FOLLOW_CURRENT_SESSION_MODEL}
+								disabled={recoverySettingsDisabled}
+								onValueChange={(value) => {
+									const nextModel = value === FOLLOW_CURRENT_SESSION_MODEL ? undefined : value;
+									const selectedModel = nextModel
+										? state.models.find((model) => titleModelReference(model) === nextModel)
+										: currentSessionModel;
+									void actions.saveToolRecoverySettings({
+										...(nextModel ? { model: nextModel } : {}),
+										thinkingLevel: thinkingLevelForModel(selectedModel, savedRecoveryThinkingLevel),
+									});
+								}}
+							>
+								<SelectTrigger id="tool-recovery-model" className="h-9 w-full min-w-0 overflow-hidden">
+									<SelectValue className="min-w-0 flex-1 truncate" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value={FOLLOW_CURRENT_SESSION_MODEL}>跟随当前会话模型</SelectItem>
+									{recoveryModel && !titleModelOptions.some((model) => titleModelReference(model) === recoveryModel) ? (
+										<SelectItem value={recoveryModel} disabled>
+											{configuredRecoveryModel
+												? `${formatModelDisplayName(configuredRecoveryModel)} · ${recoveryModel}（未连接）`
+												: `${recoveryModel}（当前配置不可用）`}
+										</SelectItem>
+									) : null}
+									{titleModelOptions.map((model) => (
+										<SelectItem key={titleModelReference(model)} value={titleModelReference(model)}>
+											{formatModelDisplayName(model)} · {titleModelReference(model)}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="grid min-w-0 gap-2">
+							<label htmlFor="tool-recovery-thinking-level" className="text-sm font-medium">思考强度</label>
+							<Select
+								value={selectedRecoveryThinkingLevel}
+								disabled={recoverySettingsDisabled || recoveryThinkingLevels.length === 0}
+								onValueChange={(value) => {
+									void actions.saveToolRecoverySettings({
+										...(recoveryModel ? { model: recoveryModel } : {}),
+										thinkingLevel: value as WebThinkingLevel,
+									});
+								}}
+							>
+								<SelectTrigger id="tool-recovery-thinking-level" className="h-9 w-full min-w-0 overflow-hidden">
+									<SelectValue className="min-w-0 flex-1 truncate" />
+								</SelectTrigger>
+								<SelectContent>
+									{!recoveryThinkingLevels.includes(selectedRecoveryThinkingLevel) ? (
+										<SelectItem value={selectedRecoveryThinkingLevel} disabled>
+											{THINKING_LEVEL_LABELS[savedRecoveryThinkingLevel] ?? savedRecoveryThinkingLevel}（当前配置）
+										</SelectItem>
+									) : null}
+									{recoveryThinkingLevels.map((level) => (
+										<SelectItem key={level} value={level}>
+											{THINKING_LEVEL_LABELS[level] ?? level}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+					</CardContent>
+				</Card>
+			</SettingSection>
+			<SettingSection title="生图模型" className="md:col-span-2">
+				<Card className="min-w-0 rounded-xl py-0 shadow-none">
+					<CardContent className="grid min-w-0 gap-4 p-3">
+						<Tabs
+							value={imageProviderMode}
+							onValueChange={(value) => setImageProviderMode(value as "shared" | "per-model")}
+							className="gap-3"
+						>
+							<WorkbenchTabBar
+								activeId={imageProviderMode}
+								tabs={IMAGE_PROVIDER_MODE_TABS}
+								label="生图供应商配置方式"
+								className="self-start"
+							/>
+							<TabsContent value="shared" className="grid min-w-0 gap-2 sm:max-w-md">
+								<label className="text-sm font-medium" htmlFor="image-provider-shared">供应商</label>
+								<Select
+									value={sharedImageProvider}
+									onValueChange={(value) => {
+										const providers =
+											value === FOLLOW_CURRENT_IMAGE_PROVIDER
+												? {}
+												: Object.fromEntries(IMAGE_MODEL_OPTIONS.map((option) => [option.value, value]));
+										void actions.saveImageModelProviders(providers);
+									}}
+								>
+									<SelectTrigger id="image-provider-shared" className="h-9 w-full min-w-0 overflow-hidden">
+										<SelectValue placeholder="选择已生效供应商" />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value={FOLLOW_CURRENT_IMAGE_PROVIDER}>跟随当前会话供应商</SelectItem>
+										{sharedImageProvider === MIXED_IMAGE_PROVIDER ? (
+											<SelectItem value={MIXED_IMAGE_PROVIDER} disabled>当前为单独配置</SelectItem>
+										) : null}
+										{sharedImageProvider !== FOLLOW_CURRENT_IMAGE_PROVIDER &&
+										sharedImageProvider !== MIXED_IMAGE_PROVIDER &&
+										!imageProviderById.has(sharedImageProvider) ? (
+											<SelectItem value={sharedImageProvider} disabled>{sharedImageProvider}（当前配置）</SelectItem>
+										) : null}
+										{activeImageProviders.map((provider) => (
+											<SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</TabsContent>
+							<TabsContent value="per-model" className="grid min-w-0 gap-2">
+								<div className="grid gap-2 sm:grid-cols-2">
+									{IMAGE_MODEL_OPTIONS.map((option) => {
+										const providerId = imageModelProviders[option.value];
+										const provider = providerId ? state.providers.find((item) => item.id === providerId) : undefined;
+										return (
+											<div key={option.value} className="grid min-w-0 gap-1.5">
+												<div className="flex items-center justify-between gap-2">
+													<label className="truncate text-sm" htmlFor={`image-provider-${option.value}`}>{option.label}</label>
+													{provider?.authenticated ? <Badge className="h-5 px-1.5 text-[10px]" variant="secondary">已连接</Badge> : null}
+												</div>
+												<Select
+													value={providerId ?? FOLLOW_CURRENT_IMAGE_PROVIDER}
+													onValueChange={(value) => {
+														const providers = { ...imageModelProviders };
+														if (value === FOLLOW_CURRENT_IMAGE_PROVIDER) delete providers[option.value];
+														else providers[option.value] = value;
+														void actions.saveImageModelProviders(providers);
+													}}
+												>
+													<SelectTrigger id={`image-provider-${option.value}`} className="h-9 w-full min-w-0 overflow-hidden">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value={FOLLOW_CURRENT_IMAGE_PROVIDER}>跟随当前会话供应商</SelectItem>
+														{providerId && !imageProviderById.has(providerId) ? (
+															<SelectItem value={providerId} disabled>{providerId}（当前配置）</SelectItem>
+														) : null}
+														{activeImageProviders.map((item) => (
+															<SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+											</div>
+										);
+									})}
+								</div>
+							</TabsContent>
+						</Tabs>
+					</CardContent>
+				</Card>
+			</SettingSection>
+			<SettingSection title="模型供应商" className="md:col-span-2">
 				<div className="flex min-w-0 flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
 					<p className="text-sm text-muted-foreground">管理供应商、目录来源和在模型选择器中的显示状态。</p>
 					<Button size="sm" onClick={() => openProvider()}>
@@ -491,10 +716,10 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 												<p className="truncate font-mono text-[11px] text-muted-foreground">
 													{provider.id}
 												</p>
-												<p className="truncate text-[11px] text-muted-foreground">
-													{provider.baseUrl ?? "未配置 Base URL"}
-													{provider.catalogProvider ? ` · 目录来源 ${provider.catalogProvider}` : ""}
-												</p>
+				<p className="truncate text-[11px] text-muted-foreground">
+					{provider.baseUrl ?? "未配置 Base URL"}
+					{provider.catalogProvider ? ` · 目录来源 ${provider.catalogProvider}` : ""}
+				</p>
 											</div>
 											<div className="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:shrink-0">
 												<Badge className="h-5 px-1.5 text-[10px]" variant="outline">
@@ -820,12 +1045,12 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 													{provider.name} · {provider.id}
 												</SelectItem>
 											))}
-									</SelectContent>
-								</Select>
-							</div>
-							<DialogFooter>
-								<Button type="button" variant="outline" onClick={() => setProviderDraft(null)}>
-									取消
+															</SelectContent>
+														</Select>
+												</div>
+												<DialogFooter>
+				<Button type="button" variant="outline" onClick={() => setProviderDraft(null)}>
+					取消
 								</Button>
 								<Button
 									type="submit"
@@ -904,7 +1129,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									</div>
 								</>
 							) : null}
-							<div className="grid gap-3 sm:grid-cols-2">
+							<div className="grid gap-3 sm:grid-cols-3">
 								<label className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
 									<input
 										type="checkbox"
@@ -927,6 +1152,15 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 										}
 									/>
 									支持图片输入
+								</label>
+								<label className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm" title={!modelSupportsFastApi ? "仅 OpenAI Responses 或 Codex Responses 接口可用" : undefined}>
+									<input
+										type="checkbox"
+										checked={modelSupportsFastApi && modelDraft.fastModeSupported}
+										disabled={!modelSupportsFastApi}
+										onChange={(event) => setModelDraft({ ...modelDraft, fastModeSupported: event.target.checked })}
+									/>
+									支持快速模式
 								</label>
 							</div>
 							<div className="grid gap-2">

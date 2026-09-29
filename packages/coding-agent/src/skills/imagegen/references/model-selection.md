@@ -11,6 +11,7 @@ The Agent decides semantic intent. The Tool performs deterministic mapping and P
 | Precise local edit, identity/product consistency, exact typography/layout, multi-reference composition, highest fidelity | `model: "auto", profile: "precision"` | `gpt-image-2.5-sunburst` |
 | User explicitly requests Flare | `model: "gpt-image-2.5-flare"` | Flare |
 | User explicitly requests Sunburst | `model: "gpt-image-2.5-sunburst"` | Sunburst |
+| User explicitly requests GPT Image 1 | `model: "gpt-image-1"` | GPT Image 1 |
 | User explicitly requests GPT Image 2 | `model: "gpt-image-2"` | GPT Image 2 |
 
 If the user says only “GPT Image 2.5”, treat it as a family alias:

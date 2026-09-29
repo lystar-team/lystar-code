@@ -98,3 +98,32 @@ test("更新进程退出但版本未切换时记录失败", async (t) => {
 	assert.equal(failed?.status, "failed");
 	assert.equal(failed?.message, "下载失败：HTTP 503");
 });
+
+test("Gateway 与 Runtime 都切到目标版本后把先前失败任务恢复为完成", async (t) => {
+	const root = join(tmpdir(), `lystar-product-update-service-version-${process.pid}-${Date.now()}`);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const installRoot = join(root, "install");
+	const agentDir = join(root, "agent");
+	await createInstalledLayout(installRoot);
+	const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(() => {});
+	const oldGateway = new ProductUpdateController(agentDir, {
+		installRoot,
+		development: false,
+		serviceVersion: "0.85.1-lystar.6",
+		isProcessAlive: () => false,
+		spawnUpdate: async () => ({ pid: 777, completion }),
+	});
+
+	await oldGateway.start("0.85.1-lystar.6", "0.85.2-lystar.1");
+	const failed = await oldGateway.status("0.85.2-lystar.1");
+	assert.equal(failed?.status, "failed");
+
+	const newGateway = new ProductUpdateController(agentDir, {
+		installRoot,
+		development: false,
+		serviceVersion: "0.85.2-lystar.1",
+	});
+	const completed = await newGateway.status("0.85.2-lystar.1");
+	assert.equal(completed?.status, "completed");
+	assert.equal(completed?.targetVersion, "0.85.2-lystar.1");
+});

@@ -323,6 +323,8 @@ export interface AnthropicAllowedFallbackModel {
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
+	/** OpenAI Responses processing tier for models that support fast mode. */
+	serviceTier?: "default" | "priority";
 	/** Provider-neutral tool selection for simple requests. When omitted, adapters use provider-specific behavior. */
 	toolChoice?: ToolChoice;
 	reasoning?: ThinkingLevel;
@@ -1027,6 +1029,8 @@ export interface Model<TApi extends Api> {
 	provider: ProviderId;
 	baseUrl: string;
 	reasoning: boolean;
+	/** 手工指定快速模式支持状态；未设置时由模型目录判断。 */
+	fastModeSupported?: boolean;
 	/**
 	 * Maps pi thinking levels to provider/model-specific values.
 	 * Missing keys use provider defaults. null marks a level as unsupported.

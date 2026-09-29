@@ -23,8 +23,10 @@ describe("composer session stats", () => {
 		expect(html).toContain("缓存命中 —，查看详情");
 		expect(html).toContain("输入 —，查看详情");
 		expect(html).toContain("输出 —，查看详情");
-		expect(html).toContain("md:hidden");
-		expect(html).toContain("md:flex");
+		expect(html).toContain("@container/stats");
+		expect(html).toContain("@min-[22rem]/stats:hidden");
+		expect(html).toContain("@min-[22rem]/stats:flex");
+		expect(html).not.toContain("overflow-x-auto");
 		expect(html).toContain("h-8");
 		expect(html).toContain("h-7");
 		expect(html).toContain("gap-0.5");
@@ -32,7 +34,7 @@ describe("composer session stats", () => {
 		expect(html).not.toContain("data-[state=open]:bg-accent");
 	});
 
-	it("does not show a stale speed while the model is responding", () => {
+	it("does not present the previous completed speed as live TPS", () => {
 		const html = renderToStaticMarkup(
 			<ComposerSessionStats
 				sessionId="session-1"
@@ -44,4 +46,5 @@ describe("composer session stats", () => {
 		);
 		expect(html).toContain("TPS 计算中，查看详情");
 	});
+
 });

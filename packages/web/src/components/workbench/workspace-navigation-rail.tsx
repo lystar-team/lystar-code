@@ -35,7 +35,7 @@ export function WorkspaceNavigationRail({
 			) : null}
 			{([
 				["sessions", "会话", MessageSquare],
-				["rooms", "Room", Users],
+				["rooms", "智能体协作", Users],
 			] as const).map(([value, label, Icon]) => (
 				<Button
 					key={value}

@@ -120,6 +120,30 @@ describe("WebApi session creation", () => {
 	});
 });
 
+describe("WebApi fast mode", () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("updates the session with an explicit mode and request ID", async () => {
+		vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined });
+		const fetchMock = vi.fn(
+			async (_input: string | URL | Request, _init?: RequestInit) =>
+				new Response(JSON.stringify({ session: { fastMode: true } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const result = await new WebApi().fastMode("session/1", true);
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions/session%2F1/fast-mode");
+		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+			enabled: true,
+			clientRequestId: expect.any(String),
+		});
+		expect(result.session.fastMode).toBe(true);
+	});
+});
+
 describe("WebApi WebSocket subscriptions", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();

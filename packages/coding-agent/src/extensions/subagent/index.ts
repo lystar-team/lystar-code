@@ -700,7 +700,7 @@ async function prepareAgentLaunch(
 	agent: AgentConfig,
 	resumeSessionFile?: string,
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
-	const args = ["--no-extensions", "--exclude-tools", "subagent"];
+	const args = ["--no-extensions", "--exclude-tools", ["subagent", ...(agent.excludeTools ?? [])].join(",")];
 	if (resumeSessionFile) args.push("--session", resumeSessionFile);
 	if (agent.model) args.push("--model", agent.model);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));

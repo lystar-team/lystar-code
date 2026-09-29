@@ -2,6 +2,7 @@ import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, BrainCircuit, CircleHelp, Ke
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { webApi } from "../../../adapters/host-protocol/api";
+import { cn } from "../../../lib/utils";
 import { useAppInstall } from "../../../state/use-app-install";
 import type { SettingsTab, WorkbenchState } from "../../../state/use-workbench";
 import { Button } from "../../ui/button";
@@ -139,7 +140,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					</aside>
 					<section data-settings-content className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
 						<GsapReveal animationKey={state.settingsTab} className="min-h-0 w-full" distance={16} duration={0.32}>
-							<div className="mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-8 lg:p-12 xl:p-16">
+							<div className={cn("mx-auto w-full min-w-0 p-5 sm:p-8 lg:p-12 xl:p-16", state.settingsTab === "subagents" ? "max-w-[1680px]" : "max-w-[1120px]")}>
 							<div className={state.settingsTab === "instructions" || state.settingsTab === "skills" ? "mb-5 sm:mb-6" : "mb-8 sm:mb-12"}>
 								<div className="flex items-center justify-between gap-4">
 									<div className="min-w-0">

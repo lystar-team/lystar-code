@@ -46,7 +46,7 @@ function MetricBreakdown({
 		<div className="space-y-2">
 			{metric === "tps" ? (
 				<>
-					<DetailRow label="最近一次输出" value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
+					<DetailRow label="最近一次可见输出" value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
 					<DetailRow label="输出耗时" value={lastOutputSpeed && speed !== undefined ? `${(lastOutputSpeed.elapsedMs / 1_000).toFixed(1)} 秒` : "—"} />
 				</>
 			) : metric === "cache" ? (
@@ -88,7 +88,12 @@ export function ComposerSessionStats({
 	const [mobileMetric, setMobileMetric] = useState<Metric>("tps");
 
 	useEffect(() => {
-		if (!ready || !connected || (phase !== "idle" && phase !== "waiting_for_input" && phase !== "interrupted")) return;
+		if (
+			!ready ||
+			!connected ||
+			(phase !== "idle" && phase !== "waiting_for_input" && phase !== "interrupted")
+		)
+			return;
 		let cancelled = false;
 		void webApi.sessionUsage(sessionId).then(
 			(result) => {
@@ -114,12 +119,12 @@ export function ComposerSessionStats({
 	};
 
 	return (
-		<div aria-label="会话统计" className="min-w-0 shrink-0 md:flex-1 md:overflow-x-auto" role="group">
+		<div aria-label="会话统计" className="@container/stats w-14 min-w-0 shrink-0 md:w-auto md:flex-1" role="group">
 			<Popover>
 				<PopoverTrigger asChild>
 					<button
 						type="button"
-						className="inline-flex h-8 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground md:hidden"
+						className="inline-flex h-8 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground @min-[22rem]/stats:hidden"
 						aria-label="查看会话统计"
 					>
 						统计
@@ -134,7 +139,7 @@ export function ComposerSessionStats({
 					collisionPadding={8}
 					side="top"
 					sideOffset={16}
-					className="max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border-border bg-popover p-3 shadow-md md:hidden"
+					className="max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border-border bg-popover p-3 shadow-md"
 				>
 					<div className="mb-2 text-sm font-medium">会话统计</div>
 					<div className="grid grid-cols-2 gap-1.5" role="group" aria-label="选择统计项">
@@ -156,17 +161,17 @@ export function ComposerSessionStats({
 					</div>
 				</PopoverContent>
 			</Popover>
-			<div className="hidden items-center gap-0.5 whitespace-nowrap text-xs md:flex">
+			<div className="hidden w-full items-center gap-0.5 whitespace-nowrap text-xs @min-[22rem]/stats:flex">
 				{metrics.map((metric) => (
 					<Popover key={metric} open={openMetric === metric} onOpenChange={(open) => setOpenMetric(open ? metric : undefined)}>
 						<PopoverTrigger asChild>
 							<button
 								type="button"
-								className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
+								className="inline-flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
 								aria-label={`${labels[metric]} ${values[metric]}，查看详情`}
 							>
-								<span>{labels[metric]}</span>
-								<span className="tabular-nums text-foreground">{values[metric]}</span>
+								<span className="shrink-0">{labels[metric]}</span>
+								<span className="min-w-0 truncate tabular-nums text-foreground">{values[metric]}</span>
 							</button>
 						</PopoverTrigger>
 						<PopoverContent align="start" collisionPadding={8} side="top" sideOffset={8} className="w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-popover p-3 shadow-md">

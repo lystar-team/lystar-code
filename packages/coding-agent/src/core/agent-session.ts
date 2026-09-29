@@ -35,6 +35,7 @@ import {
 	retryDelayMs,
 } from "@earendil-works/pi-ai";
 import type {
+	Api,
 	AssistantMessage,
 	AuthResult,
 	ImageContent,
@@ -114,6 +115,7 @@ import {
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
+import { supportsFastMode } from "./fast-mode.ts";
 import {
 	type AgentCapabilityLease,
 	type AgentInputOrigin,
@@ -146,6 +148,7 @@ import {
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
 import { type ToolActivitySnapshot, ToolActivityTracker } from "./tool-activity.ts";
+import { loadToolRecoveryConfig } from "./tool-recovery/config.ts";
 import {
 	findMatchingToolRecoveryLessons,
 	findRelevantToolRecoveryLessons,
@@ -445,6 +448,8 @@ export class AgentSession {
 	readonly settingsManager: SettingsManager;
 
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	private readonly _baseStreamFunction: Agent["streamFunction"];
+	private _fastMode = false;
 
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
@@ -548,12 +553,21 @@ export class AgentSession {
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
+		this._restoreFastMode();
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._baseStreamFunction = this.agent.streamFunction;
+		this.agent.streamFunction = (model, context, options) =>
+			this._baseStreamFunction(model, context, {
+				...options,
+				...(supportsFastMode(this._fastModeModel(model))
+					? { serviceTier: this.fastMode ? "priority" : "default" }
+					: {}),
+			});
 		this._toolRecoveryAgentDir = config.agentDir ?? getAgentDir();
 		this._toolRecoveryScopeHash = hashToolRecoveryLessonScope(this._cwd);
 		this._toolRecoveryMode = getToolRecoveryMode();
@@ -570,7 +584,20 @@ export class AgentSession {
 					(this._toolRecoveryMode === "observe"
 						? undefined
 						: createModelBackedToolRecoveryRefiner({
-								getModel: () => this.model,
+								getRequestModel: () => {
+									const settings = loadToolRecoveryConfig(this._toolRecoveryAgentDir);
+									const reference = settings.model;
+									const separator = reference?.indexOf("/") ?? -1;
+									const model = reference
+										? separator > 0
+											? this._modelRuntime.getModel(
+													reference.slice(0, separator),
+													reference.slice(separator + 1),
+												)
+											: undefined
+										: this.model;
+									return model ? { model, thinkingLevel: settings.thinkingLevel } : undefined;
+								},
 								complete: (model, context, options) =>
 									this._modelRuntime.completeSimple(model, context, options),
 							})),
@@ -675,7 +702,7 @@ export class AgentSession {
 		headers?: Record<string, string>;
 		env?: Record<string, string>;
 	}> {
-		if (this.agent.streamFunction === streamSimple) {
+		if (this._baseStreamFunction === streamSimple) {
 			return this._getRequiredRequestAuth(model, signal);
 		}
 
@@ -1710,6 +1737,31 @@ export class AgentSession {
 		return this.agent.state.thinkingLevel;
 	}
 
+	private _restoreFastMode(): void {
+		const entry = this.sessionManager
+			.getBranch()
+			.reverse()
+			.find((item) => item.type === "custom" && item.customType === "fast_mode");
+		this._fastMode = entry?.type === "custom" && (entry.data as { enabled?: unknown } | undefined)?.enabled === true;
+	}
+
+	private _fastModeModel(model: Model<Api>): Model<Api> {
+		return this._modelRuntime.getModel(model.provider, model.id) ?? model;
+	}
+
+	get fastMode(): boolean {
+		const model = this.model;
+		return this._fastMode && !!model && supportsFastMode(this._fastModeModel(model));
+	}
+
+	setFastMode(enabled: boolean): void {
+		const model = this.model;
+		if (!model || !supportsFastMode(this._fastModeModel(model))) throw new Error("当前模型不支持快速模式");
+		if (this._fastMode === enabled) return;
+		this.sessionManager.appendCustomEntry("fast_mode", { enabled });
+		this._fastMode = enabled;
+	}
+
 	/** Whether the session is currently processing an agent run or post-run continuation. */
 	get isStreaming(): boolean {
 		return this._isAgentRunActive;
@@ -2133,7 +2185,7 @@ export class AgentSession {
 				throw new Error("当前会话仍在处理上一条消息，请稍后重试");
 			}
 			if (!roomInput && this._activeTurnContext?.rootOrigin === "room") {
-				throw new Error("当前会话正在处理 Room 消息，请稍后重试");
+				throw new Error("当前会话正在处理智能体协作消息，请稍后重试");
 			}
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
@@ -2412,7 +2464,7 @@ export class AgentSession {
 		requestedQueueId?: string,
 	): Promise<void> {
 		if (this._activeTurnContext?.rootOrigin === "room") {
-			throw new Error("当前会话正在处理 Room 消息，请稍后重试");
+			throw new Error("当前会话正在处理智能体协作消息，请稍后重试");
 		}
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2815,6 +2867,10 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
+		if (this._fastMode && !supportsFastMode(model)) {
+			this.sessionManager.appendCustomEntry("fast_mode", { enabled: false });
+			this._fastMode = false;
+		}
 		if (options.persist) {
 			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 			this._addPersistedDefaultToNonEmptyScope(model);
@@ -2882,6 +2938,10 @@ export class AgentSession {
 		// Apply model
 		this.agent.state.model = next.model;
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
+		if (this._fastMode && !supportsFastMode(next.model)) {
+			this.sessionManager.appendCustomEntry("fast_mode", { enabled: false });
+			this._fastMode = false;
+		}
 		if (options.persist) {
 			this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 			this._addPersistedDefaultToNonEmptyScope(next.model);
@@ -2917,6 +2977,10 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		if (this._fastMode && !supportsFastMode(nextModel)) {
+			this.sessionManager.appendCustomEntry("fast_mode", { enabled: false });
+			this._fastMode = false;
+		}
 		if (options.persist) {
 			this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 			this._addPersistedDefaultToNonEmptyScope(nextModel);
@@ -4348,20 +4412,22 @@ export class AgentSession {
 		}
 
 		const oldLeafId = this.sessionManager.getLeafId();
+		const targetEntry = this.sessionManager.getEntry(targetId);
+		if (!targetEntry) {
+			throw new Error(`Entry ${targetId} not found`);
+		}
+		const opensInEditor =
+			targetEntry.type === "custom_message" ||
+			(targetEntry.type === "message" && targetEntry.message.role === "user");
 
-		// No-op if already at target
-		if (targetId === oldLeafId) {
+		// Re-editing a user message must move the leaf to its parent, even when that message is the current leaf.
+		if (targetId === oldLeafId && !opensInEditor) {
 			return { cancelled: false };
 		}
 
 		// Model required for summarization
 		if (options.summarize && !this.model) {
 			throw new Error("No model available for summarization");
-		}
-
-		const targetEntry = this.sessionManager.getEntry(targetId);
-		if (!targetEntry) {
-			throw new Error(`Entry ${targetId} not found`);
 		}
 
 		// Collect entries to summarize (from old leaf to common ancestor)
@@ -4511,6 +4577,7 @@ export class AgentSession {
 			}
 
 			// Update finalized context from the canonical session projection.
+			this._restoreFastMode();
 			this._refreshFinalizedContext();
 			this._restoreToolsFromTranscript();
 

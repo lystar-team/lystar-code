@@ -482,6 +482,7 @@ export function initialState(): WorkbenchState {
 		harnessImportsLoading: false,
 		harnessImporting: false,
 		subagentConfigs: [],
+		subagentTools: [],
 		subagentConfigsLoading: false,
 		subagentConfigsSaving: false,
 		subagents: [],
@@ -498,6 +499,10 @@ export function initialState(): WorkbenchState {
 		sessionNameSettingsLoading: false,
 		sessionNameSettingsSaving: false,
 		sessionNameSettingsError: undefined,
+		toolRecoverySettings: undefined,
+		toolRecoverySettingsLoading: false,
+		toolRecoverySettingsSaving: false,
+		toolRecoverySettingsError: undefined,
 		theme: savedTheme(),
 		composerMode: "prompt",
 	};

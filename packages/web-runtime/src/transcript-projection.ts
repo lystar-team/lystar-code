@@ -826,6 +826,12 @@ function projectTranscriptViews(
 		}
 		const customType = typeof payload?.customType === "string" ? payload.customType : "";
 		if (!customType) return [];
+		if (customType === "fast_mode") {
+			const enabled = record(payload?.data)?.enabled;
+			return typeof enabled === "boolean"
+				? [{ type: "system", text: enabled ? "已切换至快速模式" : "已切换至普通模式" }]
+				: [];
+		}
 		if (customType === "bash") return [{ type: "bash", text: text(payload) }];
 		if (customType === EXTENSION_ACTIVITY_CUSTOM_TYPE) {
 			const activity = parseExtensionActivityRecord(payload?.data);

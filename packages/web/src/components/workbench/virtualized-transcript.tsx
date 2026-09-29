@@ -15,6 +15,7 @@ const TRANSCRIPT_MIN_OVERSCAN_ITEMS = 4;
 const INITIAL_RENDER_ITEM_COUNT = 24;
 export const CONVERSATION_EDGE_PADDING = 48;
 const TRANSCRIPT_FIRST_ITEM_INDEX = 1_000_000_000;
+const TRANSCRIPT_KEY_OVERLAP_LIMIT = 64;
 
 export type ConversationTranscriptAnchor = { atBottom: false; anchorKey: string; anchorOffset: number };
 
@@ -221,6 +222,7 @@ type ConversationTranscriptContext = {
 	onScrollerRef: (element: HTMLElement | null) => void;
 	onUserScrollAway: () => void;
 	onUserScrollIntent: () => void;
+	onUserScrollDown: () => void;
 	onUserScrollUp: () => void;
 	onExpansionIntent?: () => void;
 };
@@ -262,24 +264,26 @@ const ConversationTranscriptScroller = forwardRef<
 				if (SCROLL_AWAY_KEYS.has(event.key) || (event.key === " " && event.shiftKey)) {
 					contextRef.current.onUserScrollAway();
 					contextRef.current.onUserScrollUp();
-				}
+				} else if (SCROLL_INTENT_KEYS.has(event.key)) contextRef.current.onUserScrollDown();
 			}}
 			onWheelCapture={(event) => {
 				contextRef.current.onUserScrollIntent();
 				if (event.deltaY < 0) {
 					contextRef.current.onUserScrollAway();
 					contextRef.current.onUserScrollUp();
-				}
+				} else if (event.deltaY > 0) contextRef.current.onUserScrollDown();
 			}}
 			onTouchStart={(event) => {
 				lastTouchYRef.current = event.touches[0]?.clientY;
 			}}
 			onTouchMove={(event) => {
 				const y = event.touches[0]?.clientY;
-				if (y !== undefined && lastTouchYRef.current !== undefined && y > lastTouchYRef.current) {
-					contextRef.current.onUserScrollIntent();
-					contextRef.current.onUserScrollAway();
-					contextRef.current.onUserScrollUp();
+				if (y !== undefined && lastTouchYRef.current !== undefined) {
+					if (y > lastTouchYRef.current) {
+						contextRef.current.onUserScrollIntent();
+						contextRef.current.onUserScrollAway();
+						contextRef.current.onUserScrollUp();
+					} else if (y < lastTouchYRef.current) contextRef.current.onUserScrollDown();
 				}
 				lastTouchYRef.current = y;
 			}}
@@ -299,12 +303,14 @@ const ConversationTranscriptScroller = forwardRef<
 			onScroll={(event) => {
 				const element = event.currentTarget;
 				const scrollingUp = lastScrollTopRef.current !== undefined && element.scrollTop < lastScrollTopRef.current;
+				const scrollingDown = lastScrollTopRef.current !== undefined && element.scrollTop > lastScrollTopRef.current;
 				lastScrollTopRef.current = element.scrollTop;
 				if (!pointerActiveRef.current) return;
 				contextRef.current.onUserScrollIntent();
 				if (element.scrollHeight - element.scrollTop - element.clientHeight > 2)
 					contextRef.current.onUserScrollAway();
 				if (scrollingUp) contextRef.current.onUserScrollUp();
+				else if (scrollingDown) contextRef.current.onUserScrollDown();
 			}}
 		>
 			{context.header ? (
@@ -352,15 +358,20 @@ const CONVERSATION_TRANSCRIPT_COMPONENTS = {
 	Scroller: ConversationTranscriptScroller,
 };
 
-type TranscriptWindowAnchor = { sessionKey: string; firstItemIndex: number; firstKey: string };
+type TranscriptWindowPosition = { firstItemIndex: number; itemKeys: readonly string[] };
+type TranscriptWindowAnchor = TranscriptWindowPosition & { sessionKey: string };
 
 export function resolveTranscriptFirstItemIndex(
-	previous: TranscriptWindowAnchor | undefined,
+	previous: TranscriptWindowPosition | undefined,
 	itemKeys: readonly string[],
 ): number {
 	if (!previous) return TRANSCRIPT_FIRST_ITEM_INDEX;
-	const prependedItemCount = itemKeys.indexOf(previous.firstKey);
-	return prependedItemCount > 0 ? previous.firstItemIndex - prependedItemCount : previous.firstItemIndex;
+	const nextIndexByKey = new Map(itemKeys.map((key, index) => [key, index]));
+	for (let previousIndex = 0; previousIndex < previous.itemKeys.length; previousIndex++) {
+		const nextIndex = nextIndexByKey.get(previous.itemKeys[previousIndex]!);
+		if (nextIndex !== undefined) return previous.firstItemIndex + previousIndex - nextIndex;
+	}
+	return previous.firstItemIndex;
 }
 
 export function transcriptDataIndex(index: number, firstItemIndex: number): number {
@@ -375,16 +386,16 @@ function useTranscriptFirstItemIndex<T>(
 	const committedWindowRef = useRef<TranscriptWindowAnchor>();
 	const committed = committedWindowRef.current;
 	const previous = committed?.sessionKey === sessionKey ? committed : undefined;
-	const firstKey = items.length ? getKey(items[0], 0) : "";
-	let firstItemIndex = previous?.firstItemIndex ?? TRANSCRIPT_FIRST_ITEM_INDEX;
-	if (previous && firstKey !== previous.firstKey) {
-		const prependedItemCount = items.findIndex((item, index) => getKey(item, index) === previous.firstKey);
-		if (prependedItemCount > 0) firstItemIndex -= prependedItemCount;
-	}
+	const itemKeys = useMemo(() => items.map((item, index) => getKey(item, index)), [getKey, items]);
+	const firstItemIndex = resolveTranscriptFirstItemIndex(previous, itemKeys);
 
 	useLayoutEffect(() => {
-		committedWindowRef.current = { sessionKey, firstItemIndex, firstKey };
-	}, [firstItemIndex, firstKey, sessionKey]);
+		committedWindowRef.current = {
+			sessionKey,
+			firstItemIndex,
+			itemKeys: itemKeys.slice(0, TRANSCRIPT_KEY_OVERLAP_LIMIT),
+		};
+	}, [firstItemIndex, itemKeys, sessionKey]);
 	return firstItemIndex;
 }
 
@@ -398,8 +409,10 @@ export interface VirtualizedConversationTranscriptProps<T>
 	header?: ReactNode;
 	onScrollStateCapture: (sessionKey: string, state: ConversationTranscriptScrollState) => void;
 	scrollState?: ConversationTranscriptScrollState;
+	totalListHeightChanged?: (height: number) => void;
 	onScrollerRef?: (element: HTMLElement | null) => void;
 	onUserScrollAway: () => void;
+	onUserScrollDown: () => void;
 	onUserScrollUp: () => void;
 	onExpansionIntent?: () => void;
 	sessionKey: string;
@@ -419,8 +432,10 @@ export function VirtualizedConversationTranscript<T>({
 	header = null,
 	onScrollStateCapture,
 	scrollState,
+	totalListHeightChanged,
 	onScrollerRef,
 	onUserScrollAway,
+	onUserScrollDown,
 	onUserScrollUp,
 	onExpansionIntent,
 	sessionKey,
@@ -497,10 +512,11 @@ export function VirtualizedConversationTranscript<T>({
 			onScrollerRef: handleScrollerRef,
 			onUserScrollAway,
 			onUserScrollIntent: handleUserScrollIntent,
+			onUserScrollDown,
 			onUserScrollUp,
 			onExpansionIntent,
 		}),
-		[footer, header, handleScrollerRef, handleUserScrollIntent, onUserScrollAway, onUserScrollUp, onExpansionIntent],
+		[footer, header, handleScrollerRef, handleUserScrollIntent, onUserScrollAway, onUserScrollDown, onUserScrollUp, onExpansionIntent],
 	);
 	const firstItemIndex = useTranscriptFirstItemIndex(items, getKey, sessionKey);
 	const computeConversationItemKey = useCallback(
@@ -541,6 +557,7 @@ export function VirtualizedConversationTranscript<T>({
 			minOverscanItemCount={{ bottom: TRANSCRIPT_MIN_OVERSCAN_ITEMS, top: TRANSCRIPT_MIN_OVERSCAN_ITEMS }}
 			overscan={{ main: TRANSCRIPT_OVERSCAN, reverse: TRANSCRIPT_OVERSCAN }}
 			style={{ height: "100%", minWidth: 0, width: "100%" }}
+			totalListHeightChanged={totalListHeightChanged}
 		/>
 	);
 }

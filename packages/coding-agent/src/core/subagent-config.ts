@@ -12,6 +12,7 @@ export interface SubagentConfigInput {
 	model?: string;
 	thinkingLevel?: SubagentThinkingLevel;
 	tools?: string[];
+	excludeTools?: string[];
 	skills?: string[];
 	tags?: string[];
 	content: string;
@@ -111,6 +112,7 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 	if (!name || !description) return undefined;
 	const modelReference = stringValue(frontmatter.model);
 	const tools = normalizeSubagentTools(frontmatter.tools);
+	const excludeTools = normalizeSubagentTools(frontmatter.excludeTools);
 	const skills = normalizeSubagentSkills(frontmatter.skills);
 	const tags = normalizeSubagentTags(frontmatter.tags);
 	return {
@@ -120,6 +122,7 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 		...parseSubagentModelReference(modelReference),
 		...(modelReference ? { modelReference } : {}),
 		...(tools ? { tools } : {}),
+		...(excludeTools ? { excludeTools } : {}),
 		...(skills ? { skills } : {}),
 		...(tags ? { tags } : {}),
 		content: body.trim(),
@@ -135,6 +138,8 @@ export function renderSubagentMarkdown(input: SubagentConfigInput): string {
 	if (input.icon?.trim()) frontmatter.icon = input.icon.trim();
 	if (modelReference) frontmatter.model = modelReference;
 	if (input.tools && input.tools.length > 0) frontmatter.tools = [...new Set(input.tools)].join(", ");
+	if (input.excludeTools && input.excludeTools.length > 0)
+		frontmatter.excludeTools = [...new Set(input.excludeTools)].join(", ");
 	if (input.skills && input.skills.length > 0) frontmatter.skills = [...new Set(input.skills)];
 	if (input.tags && input.tags.length > 0) frontmatter.tags = [...new Set(input.tags)];
 	const yaml = stringifyYaml(frontmatter, { lineWidth: 0 }).trimEnd();

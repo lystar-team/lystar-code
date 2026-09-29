@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionRoomCoordinator, type SessionRoomDeliveryInput } from "../src/session-room-coordinator.ts";
 import { SessionRoomStore } from "../src/session-room-store.ts";
 
@@ -61,6 +61,42 @@ describe("SessionRoomCoordinator", () => {
 		});
 		await expect.poll(() => delivered).toEqual([message.id]);
 		await expect.poll(() => new SessionRoomStore(path).pending()).toEqual([]);
+	});
+
+	it("项目 Room 列表先返回快照，后台回收仍与后续 Room 操作串行", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-list-reclaim-"));
+		tempDirs.push(root);
+		const coordinator = new SessionRoomCoordinator({
+			store: new SessionRoomStore(join(root, "rooms.jsonl")),
+			deliver: async () => {},
+		});
+		const api = coordinator.api();
+		await api.create({ cwd: root, ownerSessionId: "owner" });
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const reclaim = vi
+			.spyOn(
+				coordinator as unknown as { reclaimStaleTasksForCwd(cwd: string): Promise<void> },
+				"reclaimStaleTasksForCwd",
+			)
+			.mockImplementation(async () => gate);
+
+		const rooms = await api.listAll({ cwd: root });
+		expect(rooms).toHaveLength(1);
+		await expect.poll(() => reclaim.mock.calls.length).toBeGreaterThan(0);
+		expect(reclaim).toHaveBeenCalledWith(root);
+
+		let createSettled = false;
+		const nextCreate = api.create({ cwd: root, ownerSessionId: "owner-2" }).then((result) => {
+			createSettled = true;
+			return result;
+		});
+		await Promise.resolve();
+		expect(createSettled).toBe(false);
+		release();
+		await nextCreate;
 	});
 
 	it("rejects a reply based on an older user message and duplicate Agent answers", async () => {

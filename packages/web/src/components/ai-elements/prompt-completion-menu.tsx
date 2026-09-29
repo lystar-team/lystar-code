@@ -57,7 +57,7 @@ function completionGroupLabel(kind: CompletionItem["kind"]): string {
 		case "skill":
 			return "Skill";
 		case "agent":
-			return "Room Agent";
+			return "智能体协作成员";
 		default:
 			return "其它";
 	}

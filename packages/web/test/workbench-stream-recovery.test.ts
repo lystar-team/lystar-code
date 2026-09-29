@@ -27,6 +27,7 @@ function createRecovery(overrides: Partial<WorkbenchState> = {}) {
 	const loadSessionOperations = vi.fn(async () => {});
 	const loadTranscript = vi.fn(async () => {});
 	const loadSubagents = vi.fn(async () => {});
+	const refreshProjectFiles = vi.fn(async () => {});
 	const actions = useWorkbenchStreamActions({
 		stateRef,
 		updateState,
@@ -38,7 +39,7 @@ function createRecovery(overrides: Partial<WorkbenchState> = {}) {
 		loadSessionOperations,
 		loadSessionSnapshot,
 		loadSubagents,
-		refreshProjectFilesRef: { current: vi.fn(async () => {}) },
+		refreshProjectFilesRef: { current: refreshProjectFiles },
 		refreshModelOptionsRef: { current: vi.fn(async () => {}) },
 		refreshModelSettingsRef: { current: vi.fn(async () => {}) },
 		selectionRef: { current: 0 },
@@ -60,13 +61,33 @@ function createRecovery(overrides: Partial<WorkbenchState> = {}) {
 		sessionSubscriptionWaitersRef: { current: new Map() },
 		handledNotifyIdsRef: { current: new Set() },
 	} satisfies WorkbenchStreamActionsContext);
-	return { actions, stateRef, loadSessionSnapshot, loadSessionOperations, loadTranscript, loadSubagents };
+	return {
+		actions,
+		stateRef,
+		loadSessionSnapshot,
+		loadSessionOperations,
+		loadTranscript,
+		loadSubagents,
+		refreshProjectFiles,
+	};
 }
 
 describe("会话断线恢复", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
+	});
+
+	it("Runtime 重连时校准已加载的项目文件树", async () => {
+		const { actions, refreshProjectFiles } = createRecovery({
+			currentProjectId: "project-1",
+			inspectorOpen: true,
+			inspectorMode: "files",
+			fileTree: { path: "", home: "", entries: [] },
+		});
+		actions.handleEvent({ type: "connection_state", connected: true });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(refreshProjectFiles).toHaveBeenCalledWith([""]);
 	});
 
 	it("已有完整会话且详情未断档时只核对操作", async () => {

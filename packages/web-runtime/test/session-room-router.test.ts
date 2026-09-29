@@ -67,7 +67,7 @@ describe("session room routing", () => {
 				targetSessionIds: ["owner"],
 				members,
 			}),
-		).toThrowError(/只能发送给 Room 中的智能体/);
+		).toThrowError(/只能发送给智能体协作中的智能体/);
 		expect(() =>
 			resolveSessionRoomTargets({
 				route: "broadcast",
@@ -76,7 +76,7 @@ describe("session room routing", () => {
 				targetSessionIds: ["owner"],
 				members,
 			}),
-		).toThrowError(/只能发送给 Room 中的智能体/);
+		).toThrowError(/只能发送给智能体协作中的智能体/);
 		expect(
 			resolveSessionRoomTargets({
 				route: "broadcast",

@@ -119,6 +119,10 @@ export class ModelRegistry {
 		return this.runtime.getImageAuth(provider);
 	}
 
+	getImageModelProviders(): ReturnType<ModelRuntime["getImageModelProviders"]> {
+		return this.runtime.getImageModelProviders();
+	}
+
 	generateImages(
 		model: ImagesModel<ImagesApi>,
 		context: ImagesContext,

@@ -97,6 +97,27 @@ describe("assistant transcript projection", () => {
 		expect(items[0]?.view).toEqual({ type: "thinking", text: "private plan" });
 	});
 
+	it("把快速模式状态记录投影为用户可读文案", () => {
+		const fastModeEntry = (enabled: boolean): TranscriptItem => ({
+			entryId: `fast-mode-${enabled}`,
+			parentId: "assistant-entry",
+			timestamp: "2026-09-08T00:00:00Z",
+			kind: "custom",
+			payload: {
+				type: "custom",
+				customType: "fast_mode",
+				data: { enabled },
+			},
+		});
+
+		expect(projectTranscriptItems(fastModeEntry(true)).map((item) => item.view)).toEqual([
+			{ type: "system", text: "已切换至快速模式" },
+		]);
+		expect(projectTranscriptItems(fastModeEntry(false)).map((item) => item.view)).toEqual([
+			{ type: "system", text: "已切换至普通模式" },
+		]);
+	});
+
 	it("把失败的空 assistant 响应投影为可见错误", () => {
 		const projected = projectTranscriptItems(
 			assistant([{ type: "text", text: "" }], { stopReason: "error", errorMessage: "503 service unavailable" }),

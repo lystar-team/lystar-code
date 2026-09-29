@@ -34,6 +34,7 @@ import {
 	type GitStats,
 	type GitStatus,
 	type HostDirectoryListing,
+	type ImageModelSettings,
 	isGitMutation,
 	type JsonValue,
 	MAX_TRANSCRIPT_PAGE_SIZE,
@@ -67,9 +68,11 @@ import {
 	getRuntimeServiceStatus,
 	loadProductBranding,
 	loadSessionNameSettings,
+	loadToolRecoverySettings,
 	restartRuntimeService,
 	saveProductBranding,
 	saveSessionNameSettings,
+	saveToolRecoverySettings,
 	stopRuntimeService,
 } from "@lystar/code-web-runtime";
 import { WebSocket, WebSocketServer } from "ws";
@@ -248,6 +251,7 @@ interface ProjectWatcher {
 type ModelSettingsResult = {
 	models: ModelSummary[];
 	providers: (ModelProviderSummary & { catalogProvider?: string })[];
+	imageModelProviders?: ImageModelSettings;
 };
 
 type ContextLease = {
@@ -579,7 +583,7 @@ function setSecurityHeaders(response: ServerResponse): void {
 	response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 	response.setHeader(
 		"Content-Security-Policy",
-		"default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+		"default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
 	);
 }
 
@@ -629,6 +633,7 @@ function sameSessionSnapshot(left: WebSessionSnapshot, right: WebSessionSnapshot
 		leftModel?.provider === rightModel?.provider &&
 		leftModel?.id === rightModel?.id &&
 		left.thinkingLevel === right.thinkingLevel &&
+		left.fastMode === right.fastMode &&
 		left.attached === right.attached &&
 		left.writeAccess === right.writeAccess &&
 		left.leafId === right.leafId &&
@@ -1279,11 +1284,12 @@ export class WebGatewayServer {
 		if (this.modelSettingsPromise) return this.modelSettingsPromise;
 		const revision = this.modelCatalogRevision;
 		const promise = this.getClient(context).then(async (client) => {
-			const [models, providers] = await Promise.all([
+			const [models, providers, imageModelProviders] = await Promise.all([
 				client.request<ModelSummary[]>({ command: "list_models" }),
 				client.request<ModelProviderSummary[]>({ command: "list_model_providers" }),
+				client.request<{ imageModelProviders?: ImageModelSettings }>({ command: "get_image_model_settings" }),
 			]);
-			return { models, providers };
+			return { models, providers, imageModelProviders: imageModelProviders.imageModelProviders };
 		});
 		this.modelSettingsPromise = promise;
 		try {
@@ -2177,6 +2183,7 @@ export class WebGatewayServer {
 		const types: Record<string, string> = {
 			html: "text/html; charset=utf-8",
 			js: "text/javascript; charset=utf-8",
+			wasm: "application/wasm",
 			css: "text/css; charset=utf-8",
 			json: "application/json; charset=utf-8",
 			svg: "image/svg+xml",
@@ -2244,6 +2251,10 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 2 && parts[1] === "session-name-settings") {
 			await this.handleSessionNameSettings(request, response);
+			return;
+		}
+		if (parts.length === 2 && parts[1] === "tool-recovery-settings") {
+			await this.handleToolRecoverySettings(request, response);
 			return;
 		}
 		if (parts.length === 2 && parts[1] === "security-settings") {
@@ -2364,6 +2375,28 @@ export class WebGatewayServer {
 			sendJson(response, 200, { revision: this.modelCatalogRevision, ...options });
 			return;
 		}
+		if (parts[1] === "image-model" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			const providers = body.providers;
+			if (!providers || typeof providers !== "object" || Array.isArray(providers))
+				throw new HttpError(400, "image_model_providers_required", "生图模型 Provider 映射不能为空");
+			const normalizedProviders: Record<string, string> = {};
+			for (const [model, provider] of Object.entries(providers)) {
+				if (!model || typeof provider !== "string" || !provider) {
+					throw new HttpError(400, "image_model_provider_invalid", "生图模型 Provider 映射无效");
+				}
+				normalizedProviders[model] = provider;
+			}
+			const result = await (await this.getClient(context)).request<{ imageModelProviders: ImageModelSettings }>({
+				command: "set_image_model_settings",
+				providers: normalizedProviders,
+				clientInstanceId: context.id,
+				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+			});
+			this.invalidateModelCatalog();
+			sendJson(response, 200, result);
+			return;
+		}
 		if (parts[1] === "model-providers") {
 			const client = await this.getClient(context);
 			if (parts.length === 3 && request.method === "DELETE") {
@@ -2418,6 +2451,7 @@ export class WebGatewayServer {
 					api: stringValue(body.api),
 					baseUrl: stringValue(body.baseUrl),
 					reasoning: body.reasoning === true,
+					...(typeof body.fastModeSupported === "boolean" ? { fastModeSupported: body.fastModeSupported } : {}),
 					input,
 					...(thinkingLevelMap
 						? { thinkingLevelMap: jsonValue(thinkingLevelMap) as Record<string, string | null> }
@@ -2712,7 +2746,7 @@ export class WebGatewayServer {
 			if (request.method === "POST") {
 				const body = await parseJsonBody(request);
 				const sessionId = stringValue(body.sessionId);
-				if (!sessionId) throw new HttpError(400, "room_session_required", "创建 Room 需要指定会话");
+				if (!sessionId) throw new HttpError(400, "room_session_required", "创建智能体协作需要指定会话");
 				const session = await this.resolveSession(context, sessionId);
 				if (session.projectId !== project.id)
 					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
@@ -2733,7 +2767,7 @@ export class WebGatewayServer {
 		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "join" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const sessionId = stringValue(body.sessionId);
-			if (!sessionId) throw new HttpError(400, "room_session_required", "加入 Room 需要指定会话");
+			if (!sessionId) throw new HttpError(400, "room_session_required", "加入智能体协作需要指定会话");
 			const session = await this.resolveSession(context, sessionId);
 			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
 			const roomId = parts[4];
@@ -2754,7 +2788,7 @@ export class WebGatewayServer {
 		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "leave" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			const sessionId = stringValue(body.sessionId);
-			if (!sessionId) throw new HttpError(400, "room_session_required", "退出 Room 需要指定会话");
+			if (!sessionId) throw new HttpError(400, "room_session_required", "退出智能体协作需要指定会话");
 			const session = await this.resolveSession(context, sessionId);
 			if (session.projectId !== project.id) throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
 			const left = await (await this.getClient(context)).request<JsonValue>({
@@ -2791,7 +2825,7 @@ export class WebGatewayServer {
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
 				const sessionId = stringValue(url.searchParams.get("sessionId"));
-				if (!sessionId) throw new HttpError(400, "room_session_required", "读取 Room 消息需要指定会话");
+				if (!sessionId) throw new HttpError(400, "room_session_required", "读取智能体协作消息需要指定会话");
 				const session = await this.resolveSession(context, sessionId);
 				if (session.projectId !== project.id)
 					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
@@ -2800,9 +2834,9 @@ export class WebGatewayServer {
 				const afterSeq = afterSeqValue === null ? undefined : Number(afterSeqValue);
 				const limit = limitValue === null ? undefined : Number(limitValue);
 				if (afterSeq !== undefined && (!Number.isSafeInteger(afterSeq) || afterSeq < 0))
-					throw new HttpError(400, "room_after_seq_invalid", "Room 消息游标无效");
+					throw new HttpError(400, "room_after_seq_invalid", "智能体协作消息游标无效");
 				if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100))
-					throw new HttpError(400, "room_limit_invalid", "Room 消息数量无效");
+					throw new HttpError(400, "room_limit_invalid", "智能体协作消息数量无效");
 				sendJson(
 					response,
 					200,
@@ -2820,17 +2854,17 @@ export class WebGatewayServer {
 			if (request.method === "POST") {
 				const body = await parseJsonBody(request);
 				const senderSessionId = stringValue(body.senderSessionId);
-				if (!senderSessionId) throw new HttpError(400, "room_sender_required", "发送 Room 消息需要指定会话");
+				if (!senderSessionId) throw new HttpError(400, "room_sender_required", "发送智能体协作消息需要指定会话");
 				const session = await this.resolveSession(context, senderSessionId);
 				if (session.projectId !== project.id)
 					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
 				const route = body.route;
 				if (route !== "direct" && route !== "broadcast" && route !== "one_of_us")
-					throw new HttpError(400, "room_route_invalid", "Room 消息路由无效");
+					throw new HttpError(400, "room_route_invalid", "智能体协作消息路由无效");
 				const senderType = body.senderType === "user" || body.senderType === "agent" ? body.senderType : "agent";
 				const attachments = await this.persistUploadedFiles(session.path, body.attachments);
 				const bodyText = stringValue(body.body) ?? (attachments.length ? "发送了附件" : undefined);
-				if (!bodyText) throw new HttpError(400, "room_message_required", "Room 消息不能为空");
+				if (!bodyText) throw new HttpError(400, "room_message_required", "智能体协作消息不能为空");
 				const kind = (["task", "message", "question", "answer", "status", "result", "system"] as const).find(
 					(candidate) => candidate === body.kind,
 				);
@@ -3947,6 +3981,24 @@ export class WebGatewayServer {
 			});
 			return;
 		}
+		if (parts.length === 4 && parts[3] === "fast-mode" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			if (typeof body.enabled !== "boolean") throw new HttpError(400, "invalid_fast_mode", "快速模式参数无效");
+			const lease = await this.requireLease(context, sessionId);
+			sendJson(response, 200, {
+				session: publicSessionSnapshot(
+					await client.request<SessionStateSnapshot>({
+						command: "set_session_fast_mode",
+						sessionPath: session.path,
+						leaseId: lease.leaseId,
+						enabled: body.enabled,
+						clientInstanceId: context.id,
+						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+					}),
+				),
+			});
+			return;
+		}
 		throw new HttpError(404, "not_found", "未找到会话接口");
 	}
 
@@ -4301,6 +4353,31 @@ export class WebGatewayServer {
 		}
 	}
 
+	private async handleToolRecoverySettings(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		if (request.method === "GET") {
+			sendJson(response, 200, await loadToolRecoverySettings(this.config.agentDir));
+			return;
+		}
+		if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "该接口只支持 GET 或 POST");
+		const body = await parseJsonBody(request);
+		try {
+			sendJson(
+				response,
+				200,
+				await saveToolRecoverySettings(this.config.agentDir, {
+					model: body.model,
+					thinkingLevel: body.thinkingLevel,
+				}),
+			);
+		} catch (error) {
+			throw new HttpError(
+				400,
+				"tool_recovery_settings_invalid",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+
 	private gatewaySecuritySettingsEditable(): GatewaySecuritySettingsResponse["editable"] {
 		return {
 			host: !process.env.PI_WEB_HOST?.trim(),
@@ -4468,12 +4545,17 @@ export class WebGatewayServer {
 			const project = this.project(projectId);
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
-				sendJson(response, 200, {
-					subagents: await client.request<SubagentConfig[]>({
+				sendJson(
+					response,
+					200,
+					await client.request<{
+						subagents: SubagentConfig[];
+						tools: Array<{ name: string; description: string }>;
+					}>({
 						command: "list_subagent_configs",
 						cwd: project.cwd,
 					}),
-				});
+				);
 				return;
 			}
 			if (request.method === "POST") {
@@ -4488,6 +4570,9 @@ export class WebGatewayServer {
 					throw new HttpError(400, "subagent_content_invalid", "智能体内容必须是文本");
 				const tools = Array.isArray(body.tools)
 					? body.tools.filter((value): value is string => typeof value === "string" && value.length > 0)
+					: undefined;
+				const excludeTools = Array.isArray(body.excludeTools)
+					? body.excludeTools.filter((value): value is string => typeof value === "string" && value.length > 0)
 					: undefined;
 				const skills = Array.isArray(body.skills)
 					? body.skills.filter((value): value is string => typeof value === "string" && value.length > 0)
@@ -4525,6 +4610,7 @@ export class WebGatewayServer {
 					...(typeof body.model === "string" ? { model: body.model } : {}),
 					...(thinkingLevel ? { thinkingLevel } : {}),
 					...(tools ? { tools } : {}),
+					...(excludeTools ? { excludeTools } : {}),
 					...(skills ? { skills } : {}),
 					...(tags ? { tags } : {}),
 					content: body.content,

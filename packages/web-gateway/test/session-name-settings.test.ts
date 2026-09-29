@@ -100,6 +100,29 @@ test("session name settings require authentication and preserve unrelated LYStar
 			branding: { name: "LYStar Code" },
 			sessionName: { thinkingLevel: "off" },
 		});
+
+		const recoveryUrl = `${baseUrl}/api/tool-recovery-settings`;
+		const recoverySaved = await fetch(recoveryUrl, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${TEST_TOKEN}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ model: "custom/gpt-6-sol", thinkingLevel: "high" }),
+		});
+		assert.equal(recoverySaved.status, 200);
+		assert.deepEqual(await readJson<{ model?: string; thinkingLevel: string }>(recoverySaved), {
+			model: "custom/gpt-6-sol",
+			thinkingLevel: "high",
+		});
+		const recoveryRead = await fetch(recoveryUrl, { headers: { Authorization: `Bearer ${TEST_TOKEN}` } });
+		assert.deepEqual(await readJson<{ model?: string; thinkingLevel: string }>(recoveryRead), {
+			model: "custom/gpt-6-sol",
+			thinkingLevel: "high",
+		});
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+			altScreen: false,
+			branding: { name: "LYStar Code" },
+			sessionName: { thinkingLevel: "off" },
+			toolRecovery: { model: "custom/gpt-6-sol", thinkingLevel: "high" },
+		});
 	} finally {
 		await server.close();
 		await rm(agentDir, { recursive: true, force: true });

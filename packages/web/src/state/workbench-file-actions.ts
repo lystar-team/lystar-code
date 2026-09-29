@@ -106,8 +106,7 @@ export function useWorkbenchFileActions({
 							fileTreeCache: { ...current.fileTreeCache, [result.path]: result },
 						};
 					});
-				})
-				.catch(() => {});
+				});
 			const tracked = run.finally(() => {
 				if (projectTreeRefreshPromisesRef.current.get(key) === tracked) {
 					projectTreeRefreshPromisesRef.current.delete(key);
@@ -203,10 +202,12 @@ export function useWorkbenchFileActions({
 				const value = normalizedProjectFilePath(project.path, path);
 				return value ? [value] : [];
 			});
-			const directories = new Set(
-				refreshAll ? Object.keys(current.fileTreeCache) : normalized.map(parentProjectPath),
-			);
 			const loadedDirectories = new Set(Object.keys(current.fileTreeCache));
+			const directories = new Set(
+				refreshAll
+					? Object.keys(current.fileTreeCache)
+					: normalized.flatMap((path) => [parentProjectPath(path), ...(loadedDirectories.has(path) ? [path] : [])]),
+			);
 			await Promise.all(
 				[...directories]
 					.filter((path) => path === current.fileTreeRootPath || loadedDirectories.has(path))

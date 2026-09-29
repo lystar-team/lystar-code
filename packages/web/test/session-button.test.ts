@@ -70,6 +70,43 @@ describe("会话标题展示", () => {
 		expect(markup).toContain("lucide-braces");
 	});
 
+	it("有智能体子会话的父会话输出折叠状态", () => {
+		const session: WebSessionSummary = {
+			id: "session-parent",
+			name: "父会话",
+			createdAt: 1,
+			updatedAt: 1,
+			messageCount: 1,
+			firstMessage: "父会话",
+			activity: "idle",
+			writeAccess: "available",
+		};
+		const markup = renderToStaticMarkup(
+			createElement(SessionButton, {
+				projectName: "测试项目",
+				session,
+				active: false,
+				running: false,
+				unread: false,
+				hasChildren: true,
+				childrenExpanded: false,
+				onClick: () => {},
+				onRename: async () => {},
+				onContextRename: () => {},
+				onTogglePinned: () => {},
+				onDelete: () => {},
+				dragging: false,
+				dropTarget: false,
+				onDragStart: () => {},
+				onDragOver: () => {},
+				onDrop: () => {},
+				onDragEnd: () => {},
+			}),
+		);
+
+		expect(markup).toContain('aria-expanded="false"');
+		expect(markup).toContain("lucide-chevron-right");
+	});
 	it("会话行提供独立的删除按钮", () => {
 		const session: WebSessionSummary = {
 			id: "session-1",
@@ -104,6 +141,47 @@ describe("会话标题展示", () => {
 
 		expect(markup).toContain("!pl-8");
 		expect(markup).toContain('aria-label="删除会话：测试会话"');
+		expect(markup).toContain("lucide-trash2");
 		expect(markup).toContain("group-hover/session:opacity-100");
+	});
+
+	it("置顶会话的悬浮按钮显示取消置顶，不显示删除", () => {
+		const session: WebSessionSummary = {
+			id: "session-1",
+			name: "测试会话",
+			pinned: true,
+			createdAt: 1,
+			updatedAt: 1,
+			messageCount: 1,
+			firstMessage: "测试会话",
+			activity: "idle",
+			writeAccess: "available",
+		};
+		const markup = renderToStaticMarkup(
+			createElement(SessionButton, {
+				projectName: "测试项目",
+				session,
+				active: false,
+				running: false,
+				unread: false,
+				onClick: () => {},
+				onRename: async () => {},
+				onContextRename: () => {},
+				onTogglePinned: () => {},
+				onDelete: () => {},
+				dragging: false,
+				dropTarget: false,
+				onDragStart: () => {},
+				onDragOver: () => {},
+				onDrop: () => {},
+				onDragEnd: () => {},
+			}),
+		);
+
+		expect(markup).toContain('aria-label="取消置顶会话"');
+		expect(markup).toContain("lucide-pin-off");
+		expect(markup).toContain("hover:text-foreground");
+		expect(markup).not.toContain('aria-label="删除会话：测试会话"');
+		expect(markup).not.toContain("lucide-trash2");
 	});
 });

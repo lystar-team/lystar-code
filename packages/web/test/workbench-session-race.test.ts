@@ -119,6 +119,49 @@ beforeEach(() => {
 });
 
 describe("会话切换时的记录状态", () => {
+	it("切换会话时清空目标会话没有的 TPS，并在返回时恢复原会话 TPS", async () => {
+		const sessionB = { ...snapshot, id: "session-b", name: "会话 B", leafId: "entry-b" };
+		hooks.committed = {
+			...hooks.committed!,
+			session: snapshot,
+			sessionReady: true,
+			lastOutputSpeed: { outputTokens: 120, elapsedMs: 1_000 },
+			projects: hooks.committed!.projects.map((project) => ({
+				...project,
+				sessions: [
+					...project.sessions,
+					{
+						id: sessionB.id,
+						name: sessionB.name,
+						createdAt: 2,
+						updatedAt: 2,
+						messageCount: 0,
+						firstMessage: "",
+						activity: "idle",
+						writeAccess: "owned",
+					},
+				],
+			})),
+		};
+		vi.spyOn(webApi, "transcript").mockResolvedValue(page);
+		vi.spyOn(webApi, "control").mockImplementation(async (sessionId) => ({
+			owned: true,
+			lease,
+			snapshot: sessionId === sessionB.id ? sessionB : snapshot,
+		}));
+		vi.spyOn(webApi, "release").mockResolvedValue(undefined);
+
+		const openB = renderWorkbench().actions.selectSession(sessionB.id);
+		expect(hooks.committed?.sessionId).toBe(sessionB.id);
+		expect(hooks.committed?.lastOutputSpeed).toBeUndefined();
+		await openB;
+
+		const openA = renderWorkbench().actions.selectSession(snapshot.id);
+		expect(hooks.committed?.sessionId).toBe(snapshot.id);
+		expect(hooks.committed?.lastOutputSpeed).toEqual({ outputTokens: 120, elapsedMs: 1_000 });
+		await openA;
+	});
+
 	it("记录请求先于会话控制完成时，旧渲染不能覆盖已提交的历史", async () => {
 		let resolvePage!: (value: TranscriptResponse) => void;
 		let resolveControl!: (value: { owned: boolean; lease: WebLease; snapshot: WebSessionSnapshot }) => void;
@@ -151,7 +194,7 @@ describe("会话切换时的记录状态", () => {
 		expect(hooks.committed?.transcriptLoading).toBe(false);
 	});
 
-	it("向上阅读时把同一回合的旧页合并后提交", async () => {
+	it("向上阅读跨页回合时保持加载状态，并阻止重复请求", async () => {
 		const earlierTool = {
 			...item,
 			entryId: "tool-a",
@@ -184,10 +227,13 @@ describe("会话切换时的记录状态", () => {
 			hasMorePrevious: true,
 		};
 
-		const loading = renderWorkbench().actions.loadEarlier();
+		const actions = renderWorkbench().actions;
+		const loading = actions.loadEarlier();
 		await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
-		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([item.entryId]);
 		expect(hooks.committed?.loadingEarlier).toBe(true);
+		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([item.entryId]);
+		await actions.loadEarlier();
+		expect(request).toHaveBeenCalledTimes(2);
 		resolveOlder({ ...page, items: [earlierUser], hasMorePrevious: false });
 		await loading;
 
@@ -197,7 +243,76 @@ describe("会话切换时的记录状态", () => {
 		expect(hooks.committed?.loadingEarlier).toBe(false);
 	});
 
-	it("后台补全超过十六页的历史，最后一次提交到会话窗口", async () => {
+	it("历史分页被并发状态更新打断时保留可重试错误", async () => {
+		const earlierTool = {
+			...item,
+			entryId: "older-tool",
+			view: { type: "assistant" as const, text: "更早的工作记录" },
+		} satisfies WebTranscriptItem;
+		let resolveOlder!: (value: TranscriptResponse) => void;
+		const request = vi
+			.spyOn(webApi, "transcript")
+			.mockResolvedValueOnce({ ...page, items: [earlierTool], previousCursor: "cursor-2", hasMorePrevious: true })
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveOlder = resolve;
+					}),
+			);
+		hooks.committed = {
+			...hooks.committed!,
+			transcript: [{ ...item, renderId: "entry-a:message:0" }],
+			transcriptPageLoaded: true,
+			transcriptGeneration: page.transcriptGeneration,
+			transcriptLeafId: page.leafId,
+			transcriptRevision: page.transcriptRevision,
+			previousCursor: "cursor-1",
+			hasMorePrevious: true,
+		};
+
+		const loading = renderWorkbench().actions.loadEarlier();
+		await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+		hooks.refs[0]!.current = {
+			...(hooks.refs[0]!.current as WorkbenchState),
+			transcriptGeneration: "generation-changed",
+		};
+		resolveOlder({ ...page, items: [{ ...item, entryId: "older-user" }], hasMorePrevious: false });
+
+		await expect(loading).rejects.toThrow("历史记录已更新，请重新打开会话");
+		expect(hooks.committed?.transcriptError).toBe("历史记录已更新，请重新打开会话");
+		expect(hooks.committed?.loadingEarlier).toBe(false);
+	});
+
+	it("当前窗口从回复中间开始时，加载到上一轮提问", async () => {
+		hooks.committed = {
+			...hooks.committed!,
+			transcript: [{ ...item, view: { type: "assistant", text: "当前回复" }, renderId: "entry-a:assistant:0" }],
+			transcriptPageLoaded: true,
+			transcriptGeneration: page.transcriptGeneration,
+			transcriptLeafId: page.leafId,
+			previousCursor: "cursor-1",
+			hasMorePrevious: true,
+		};
+		const requests = vi
+			.spyOn(webApi, "transcript")
+			.mockResolvedValueOnce({
+				...page,
+				items: [{ ...item, entryId: "current-user", parentId: "previous-user" }],
+				previousCursor: "cursor-2",
+				hasMorePrevious: true,
+			})
+			.mockResolvedValueOnce({ ...page, items: [{ ...item, entryId: "previous-user" }] });
+
+		await renderWorkbench().actions.loadEarlier();
+		expect(requests.mock.calls.map(([, options]) => options?.cursor)).toEqual(["cursor-1", "cursor-2"]);
+		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([
+			"previous-user",
+			"current-user",
+			item.entryId,
+		]);
+	});
+
+	it("一轮历史跨越二十页时只需一次向上操作", async () => {
 		hooks.committed = {
 			...hooks.committed!,
 			transcript: [{ ...item, renderId: "entry-a:message:0" }],
@@ -211,19 +326,88 @@ describe("会话切换时的记录状态", () => {
 			const index = Number(options?.cursor?.replace("cursor-", ""));
 			return {
 				...page,
-				items: [{ ...item, entryId: `older-${index}`, parentId: index === 19 ? null : `older-${index + 1}` }],
+				items: [
+					{
+						...item,
+						entryId: `older-${index}`,
+						parentId: index === 19 ? null : `older-${index + 1}`,
+						...(index < 19 ? { view: { type: "assistant" as const, text: `步骤 ${index}` } } : {}),
+					},
+				],
 				previousCursor: index === 19 ? undefined : `cursor-${index + 1}`,
 				hasMorePrevious: index < 19,
 			};
 		});
 
 		await renderWorkbench().actions.loadEarlier();
-
 		expect(requests).toHaveBeenCalledTimes(20);
+		expect(requests.mock.calls.map(([, options]) => options?.cursor)).toEqual(
+			Array.from({ length: 20 }, (_, index) => `cursor-${index}`),
+		);
 		expect(hooks.committed?.transcript).toHaveLength(21);
 		expect(hooks.committed?.transcript.at(0)?.entryId).toBe("older-19");
 		expect(hooks.committed?.transcript.at(-1)?.entryId).toBe(item.entryId);
 		expect(hooks.committed?.hasMorePrevious).toBe(false);
+	});
+
+	it("尾页已追加新消息后，重试旧游标能加载历史并清除错误", async () => {
+		const newTool = {
+			...item,
+			entryId: "new-tool",
+			parentId: item.entryId,
+			view: { type: "assistant" as const, text: "新增回复" },
+		};
+		hooks.committed = {
+			...hooks.committed!,
+			transcript: [
+				{ ...item, renderId: "entry-a:user:0" },
+				{ ...newTool, renderId: "new-tool:assistant:0" },
+			],
+			transcriptPageLoaded: true,
+			transcriptGeneration: page.transcriptGeneration,
+			transcriptLeafId: newTool.entryId,
+			transcriptRevision: 2,
+			transcriptError: "历史记录已更新，请重新打开会话",
+			previousCursor: "older-1",
+			hasMorePrevious: true,
+		};
+		vi.spyOn(webApi, "transcript").mockResolvedValue({
+			...page,
+			items: [{ ...item, entryId: "older-user" }],
+			leafId: item.entryId,
+		});
+
+		await renderWorkbench().actions.loadEarlier();
+
+		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([
+			"older-user",
+			item.entryId,
+			newTool.entryId,
+		]);
+		expect(hooks.committed?.transcriptError).toBeUndefined();
+		expect(hooks.committed?.hasMorePrevious).toBe(false);
+	});
+
+	it("旧游标不属于当前窗口时仍拒绝合并", async () => {
+		hooks.committed = {
+			...hooks.committed!,
+			transcript: [{ ...item, renderId: "entry-a:user:0" }],
+			transcriptPageLoaded: true,
+			transcriptGeneration: page.transcriptGeneration,
+			transcriptLeafId: item.entryId,
+			previousCursor: "older-1",
+			hasMorePrevious: true,
+		};
+		vi.spyOn(webApi, "transcript").mockResolvedValue({
+			...page,
+			items: [{ ...item, entryId: "other-branch-user" }],
+			leafId: "other-branch-leaf",
+		});
+
+		await renderWorkbench().actions.loadEarlier();
+
+		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([item.entryId]);
+		expect(hooks.committed?.transcriptError).toBe("历史记录已更新，请重新打开会话");
 	});
 
 	it("新工具刷新尾页时保留旧页请求和已加载消息", async () => {

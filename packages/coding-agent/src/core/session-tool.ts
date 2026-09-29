@@ -139,9 +139,9 @@ export function createRoomTasksTool(
 ): ToolDefinition<typeof RoomTasksParams> {
 	return {
 		name: "room_tasks",
-		label: "Room Tasks",
+		label: "智能体协作任务",
 		description:
-			"查看、创建和认领 Room 看板任务；认领成功后才会派发工作。负责人可更新进展、阻塞或完成，释放任务设为 todo。",
+			"查看、创建和认领智能体协作看板任务；认领成功后才会派发工作。负责人可更新进展、阻塞或完成，释放任务设为 todo。",
 		parameters: RoomTasksParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -189,7 +189,7 @@ export function createSessionsTool(
 		name: "sessions",
 		label: "Sessions",
 		description:
-			"以当前会话为父会话创建下级会话，可派发任务、发送消息、等待结果，也可在下级会话中继续创建。带任务的会话默认使用独立 Git Worktree；只读分析可使用 shared，非 Git 项目可使用 patch。Room 支持定向、广播、one-of-us 路由和增量读取。",
+			"以当前会话为父会话创建下级会话，可派发任务、发送消息、等待结果，也可在下级会话中继续创建。带任务的会话默认使用独立 Git Worktree；只读分析可使用 shared，非 Git 项目可使用 patch。智能体协作支持定向、广播、one-of-us 路由和增量读取。",
 		promptSnippet: "创建下级会话并派发任务、等待结果",
 		parameters: SessionsParams,
 		executionMode: "sequential",

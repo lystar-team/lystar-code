@@ -573,7 +573,7 @@ function makeSystemdUnit(spec: WebServiceSpec): string {
 		environment,
 		"Restart=on-failure",
 		"RestartSec=2",
-		"KillMode=mixed",
+		spec.kind === "gateway" ? "KillMode=process" : "KillMode=mixed",
 		"",
 		"[Install]",
 		"WantedBy=default.target",
@@ -590,6 +590,7 @@ function makeLaunchDaemon(spec: WebServiceSpec): string {
 	const user = process.env.USER ?? process.env.LOGNAME ?? "";
 	if (spec.macosSession !== "gui" && !user) throw new Error("无法确定 macOS 后台运行用户");
 	const identity = spec.macosSession === "gui" ? "" : `<key>UserName</key><string>${xml(user)}</string>`;
+	const processGroupPolicy = spec.kind === "gateway" ? "<key>AbandonProcessGroup</key><true/>" : "";
 	const logPath = defaultLogPath(spec);
 	return [
 		'<?xml version="1.0" encoding="UTF-8"?>',
@@ -597,6 +598,7 @@ function makeLaunchDaemon(spec: WebServiceSpec): string {
 		'<plist version="1.0"><dict>',
 		`<key>Label</key><string>${xml(launchDaemonLabel(spec.kind, spec.profile))}</string>`,
 		identity,
+		processGroupPolicy,
 		`<key>ProgramArguments</key><array>${plistArguments(spec)}</array>`,
 		`<key>WorkingDirectory</key><string>${xml(spec.invocation.cwd)}</string>`,
 		`<key>EnvironmentVariables</key><dict>${environment}</dict>`,
@@ -621,6 +623,7 @@ function makeWindowsServiceConfig(spec: WebServiceSpec): string {
 		`workingDirectory=${spec.invocation.cwd}`,
 		`arguments=${spec.invocation.args.map(commandLineArgument).join(" ")}`,
 		`logPath=${defaultLogPath(spec)}`,
+		`allowChildBreakaway=${spec.kind === "gateway" ? "true" : "false"}`,
 		"",
 		"[environment]",
 		environment,
@@ -629,32 +632,46 @@ function makeWindowsServiceConfig(spec: WebServiceSpec): string {
 }
 
 function windowsServiceHostPath(spec: WebServiceSpec): string {
-	const version = spec.environment?.LYSTAR_WEB_SERVICE_VERSION;
-	const stableHost = join(
+	const configuredVersion = spec.environment?.LYSTAR_WEB_SERVICE_VERSION;
+	const launcherDirectory = dirname(spec.invocation.program);
+	let currentVersion: string | undefined;
+	try {
+		currentVersion = readFileSync(join(launcherDirectory, "..", "current"), "utf8").trim() || undefined;
+	} catch {}
+	const versionedCandidates = [
+		...new Set([currentVersion, configuredVersion].filter((value): value is string => Boolean(value))),
+	].map((version) => ({
+		version,
+		path: join(launcherDirectory, "..", "versions", version, "lystar-web-service.exe"),
+	}));
+	const preferredVersion = versionedCandidates[0]?.version;
+	const preferredStableHost = join(
 		spec.agentDir,
 		"web",
 		"services",
-		version ? `lystar-web-service-${version}.exe` : "lystar-web-service.exe",
+		preferredVersion ? `lystar-web-service-${preferredVersion}.exe` : "lystar-web-service.exe",
 	);
-	if (existsSync(stableHost)) return stableHost;
-	const launcherDirectory = dirname(spec.invocation.program);
-	let currentVersionHost: string | undefined;
-	try {
-		const currentVersion = version ?? readFileSync(join(launcherDirectory, "..", "current"), "utf8").trim();
-		if (currentVersion)
-			currentVersionHost = join(launcherDirectory, "..", "versions", currentVersion, "lystar-web-service.exe");
-	} catch {}
-	const candidates = [
-		...(currentVersionHost ? [currentVersionHost] : []),
+	if (existsSync(preferredStableHost)) return preferredStableHost;
+	const versionedSource = versionedCandidates.find(({ path }) => existsSync(path));
+	const fallbackCandidates = [
 		join(launcherDirectory, "lystar-web-service.exe"),
 		join(dirname(process.execPath), "lystar-web-service.exe"),
 	];
-	const source = candidates.find((candidate) => existsSync(candidate));
+	const source = versionedSource?.path ?? fallbackCandidates.find((candidate) => existsSync(candidate));
+	const candidates = [...versionedCandidates.map(({ path }) => path), ...fallbackCandidates];
 	if (!source) {
 		throw new Error(
 			`Windows Service Host 不存在。请使用包含 lystar-web-service.exe 的 LYStar Code 发行包，或重新运行安装器。查找路径：${candidates.join("、")}`,
 		);
 	}
+	const hostVersion = versionedSource?.version ?? preferredVersion;
+	const stableHost = join(
+		spec.agentDir,
+		"web",
+		"services",
+		hostVersion ? `lystar-web-service-${hostVersion}.exe` : "lystar-web-service.exe",
+	);
+	if (existsSync(stableHost)) return stableHost;
 	mkdirSync(dirname(stableHost), { recursive: true, mode: 0o700 });
 	copyFileSync(source, stableHost);
 	return stableHost;

@@ -25,6 +25,7 @@ export type MessageRenderItem = {
 	sources: string[];
 	copyVisible: boolean;
 	editable: boolean;
+	editing?: boolean;
 };
 export type TranscriptItemRenderItem = { kind: "item"; key: string; item: WorkbenchState["transcript"][number] };
 type TranscriptBatchRenderItem = {
@@ -715,6 +716,7 @@ export function buildConversationRenderItems(
 	canEditPrompts = false,
 	liveSteps: WorkbenchState["liveSteps"] = {},
 	observedElapsed?: (sentAt: number) => number | undefined,
+	editingEntryId?: string,
 ): ConversationRenderItem[] {
 	const withLive = appendLiveRenderItems(
 		persistedItems,
@@ -729,7 +731,8 @@ export function buildConversationRenderItems(
 		const entry = withLive[index];
 		if (entry?.kind !== "message" || entry.role !== "user") continue;
 		const editable = canEditPrompts && Boolean(entry.entryId);
-		if (entry.editable !== editable) withLive[index] = { ...entry, editable };
+		const editing = editable && entry.entryId === editingEntryId;
+		if (entry.editable !== editable || entry.editing !== editing) withLive[index] = { ...entry, editable, editing };
 	}
 	if (!responseActive) {
 		for (let index = withLive.length - 1; index >= 0; index--) {

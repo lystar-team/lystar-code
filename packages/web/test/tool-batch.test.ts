@@ -53,12 +53,40 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("技能内容");
 	});
 
-	it("summarizes mixed tool actions in execution order", () => {
-		expect(toolBatchSummaryLabel([{ name: "edit" }, { name: "bash" }, { name: "bash" }, { name: "read" }])).toBe(
-			"编辑了文件并运行了命令并读取了文件",
-		);
-		expect(toolBatchSummaryLabel([])).toBe("执行了工具");
+	it("shows the dispatched agent nickname without exposing the profile ID", () => {
+		const tool: ToolBatchTool = {
+			id: "sessions-create",
+			name: "sessions",
+			summary: JSON.stringify({ action: "create", profileId: "reader", task: "核对工具展示" }),
+			state: "output-available",
+			detail: JSON.stringify({
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							session: { id: "agent-1", profileName: "research-specialist", nickname: "只读审阅" },
+						}),
+					},
+				],
+			}),
+		};
+
+		expect(toolRowTitle(tool)).toBe("已派发智能体 · 只读审阅 · 核对工具展示");
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+		expect(markup).toContain("lucide-bot");
+		expect(markup).toContain("只读审阅");
+		expect(markup).not.toContain("research-specialist");
+		expect(markup).not.toContain("ID agent-1");
+
+		const configOnlyTool = {
+			...tool,
+			detail: JSON.stringify({
+				session: { id: "agent-2", name: "research-specialist", profileName: "research-specialist" },
+			}),
+		};
+		expect(toolRowTitle(configOnlyTool)).toBe("已派发智能体 · 核对工具展示");
 	});
+
 	it("does not repeat aggregate diff stats inside details", () => {
 		const tool: ToolBatchTool = {
 			id: "edit-1",
@@ -171,7 +199,7 @@ describe("Skill read tool display", () => {
 				open: false,
 			}),
 		);
-		expect(failedMarkup).toContain("命令执行失败");
+		expect(failedMarkup).toContain("检查项目代码失败");
 		expect(failedMarkup).not.toContain("max-w-3xl");
 
 		const imageMarkup = renderToStaticMarkup(
@@ -258,7 +286,7 @@ describe("Skill read tool display", () => {
 		expect(markup.indexOf("service-manager.ts")).toBeLessThan(markup.indexOf("第1-200行"));
 	});
 
-	it("moves the loading icon into the tool icon slot while a tool row is running", () => {
+	it("keeps the command icon visible alongside progress while a row is running", () => {
 		const running: ToolBatchTool = {
 			id: "bash-running",
 			name: "bash",
@@ -267,17 +295,18 @@ describe("Skill read tool display", () => {
 		};
 		const runningMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [running] }));
 
-		expect(runningMarkup).toContain("正在执行");
+		expect(runningMarkup).toContain("正在运行 sleep 命令");
 		expect(runningMarkup).toContain("运行中");
-		expect(runningMarkup).not.toContain("lucide-terminal");
-		expect(runningMarkup.match(/lucide-loader-circle/gu)).toHaveLength(1);
-		expect(runningMarkup.indexOf("lucide-loader-circle")).toBeLessThan(runningMarkup.indexOf(">正在执行 sleep 210<"));
+		expect(runningMarkup).toContain("lucide-terminal");
+		expect(runningMarkup).toContain("lucide-loader-circle");
+		expect(runningMarkup).not.toContain("sleep 210");
+		expect(runningMarkup).toContain("展开详情");
 
 		const completed: ToolBatchTool = { ...running, id: "bash-completed", state: "output-available" };
-		const completedMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [completed] }));
+		const completedMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [completed], initialOpen: true }));
 
 		expect(completedMarkup).toContain("lucide-terminal");
-		expect(completedMarkup).not.toContain("lucide-loader-circle");
+		expect(completedMarkup).toContain("$ sleep 210");
 	});
 
 	it("keeps the filename visible for standalone completed and active edits", () => {
@@ -327,6 +356,101 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain(">new line</span>");
 	});
 
+	it("explains file searches with semantic icons and keeps the original command in the detail", () => {
+		const command = "find /home/yean/projectWorkspace/liteasy-pi-agent -maxdepth 3 -name 'tsconfig*'";
+		const tool: ToolBatchTool = {
+			id: "find-config",
+			name: "bash",
+			summary: JSON.stringify({ command }),
+			state: "input-available",
+		};
+		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+		expect(toolRowTitle(tool)).toBe("正在查找 tsconfig* 文件（/home/yean/projectWorkspace/liteasy-pi-agent）");
+		expect(collapsed).toContain("lucide-search");
+		expect(collapsed).toContain("lucide-loader-circle");
+		expect(collapsed).not.toContain("-maxdepth");
+		expect(collapsed).toContain("展开详情");
+		const expanded = renderToStaticMarkup(
+			createElement(ToolBatch, { tools: [{ ...tool, state: "output-available" }], initialOpen: true }),
+		);
+		expect(expanded).toContain("$ find /home/yean/projectWorkspace/liteasy-pi-agent -maxdepth 3 -name");
+		expect(expanded).toContain("tsconfig*");
+	});
+
+	it("describes searches, directories and file reads without showing shell syntax", () => {
+		const cases = [
+			["rg -n 'lease status' src", "已搜索 lease status（src）", "lucide-search"],
+			["rg --files -g '*.tsx' packages/web", "已查找 *.tsx 文件（packages/web）", "lucide-search"],
+			["grep -R renewal src", "已搜索 renewal（src）", "lucide-search"],
+			["ls -la packages/web", "已查看 packages/web 目录", "lucide-folder"],
+			["cat src/app.ts", "已读取 src/app.ts 文件", "lucide-file-text"],
+			["git status --short", "已查看代码变更", "lucide-git-branch"],
+			["npm run check", "已检查项目代码", "lucide-package"],
+			["node node_modules/vitest/dist/cli.js --run test/command.test.ts", "已运行 Vitest 测试", "lucide-package"],
+		] as const;
+		for (const [command, label, icon] of cases) {
+			const tool: ToolBatchTool = {
+				id: command,
+				name: "bash",
+				summary: JSON.stringify({ command }),
+				state: "output-available",
+			};
+			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+			expect(toolRowTitle(tool)).toBe(label);
+			expect(markup).toContain(icon);
+			expect(markup).not.toContain(command);
+			expect(markup).toContain("展开详情");
+		}
+	});
+
+	it("names the command when its full purpose is unclear", () => {
+		const cases = [
+			["rg secret src | head -20", "已运行 rg 命令"],
+			["find . -name '*.ts' && echo done", "已运行 find 命令"],
+			["custom-task --verbose", "已运行 custom-task 命令"],
+		] as const;
+		for (const [command, label] of cases) {
+			const tool: ToolBatchTool = { id: command, name: "bash", summary: command, state: "output-available" };
+			expect(toolRowTitle(tool)).toBe(label);
+			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+			expect(markup).toContain(label);
+			expect(markup).not.toContain(command);
+			expect(markup).toContain("lucide-terminal");
+		}
+	});
+
+	it("shows semantic labels for every command in an expanded batch, including empty outputs", () => {
+		const tools: ToolBatchTool[] = [
+			{
+				id: "find-1",
+				name: "bash",
+				summary: "find src -name 'app.ts'",
+				state: "output-available",
+				detail: "src/app.ts",
+			},
+			{ id: "rg-1", name: "bash", summary: "rg -n renewal src", state: "output-available", detail: "" },
+		];
+		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools, initialOpen: true }));
+		expect(collapsed).toContain("已查找 app.ts 文件（src）");
+		expect(collapsed).toContain("已搜索 renewal（src）");
+		expect(collapsed).not.toContain("find src -name");
+		const expanded = renderToStaticMarkup(
+			createElement(ToolBatch, { tools, initialOpen: true, initialToolOpen: new Map([["rg-1", true]]) }),
+		);
+		expect(expanded).toContain("$ rg -n renewal src");
+	});
+
+	it("keeps the search icon on a running group of file searches", () => {
+		const tools: ToolBatchTool[] = [
+			{ id: "find-1", name: "bash", summary: "find . -name app.ts", state: "input-available" },
+			{ id: "find-2", name: "bash", summary: "find . -name index.ts", state: "input-available" },
+		];
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools }));
+		expect(markup).toContain("lucide-search");
+		expect(markup).toContain("lucide-loader-circle");
+		expect(markup).not.toContain("find . -name");
+	});
+
 	it("renders command batches with the same compact activity structure", () => {
 		const tools: ToolBatchTool[] = [
 			{
@@ -347,12 +471,14 @@ describe("Skill read tool display", () => {
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools, initialOpen: true }));
 
 		expect(markup).toContain("运行了 2 条命令");
-		expect(markup).toContain("npm run check");
-		expect(markup).toContain("git diff --check");
+		expect(markup).toContain("已检查项目代码");
+		expect(markup).toContain("已检查代码差异");
+		expect(markup).not.toContain("npm run check");
+		expect(markup).not.toContain("git diff --check");
 		expect(markup).not.toContain("2 条命令执行完成");
 	});
 
-	it("keeps collapsed command text in the full flexible column", () => {
+	it("keeps the command intent in the full flexible column", () => {
 		const command = "npm run check --workspace=@lystar/code-web -- --reporter=verbose";
 		const tools: ToolBatchTool[] = [
 			{
@@ -373,7 +499,8 @@ describe("Skill read tool display", () => {
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools, initialOpen: true }));
 
 		expect(markup).toContain('data-command-title="true"');
-		expect(markup).toContain(`title="${command}"`);
+		expect(markup).toContain('title="已检查项目代码"');
+		expect(markup).not.toContain(`title="${command}"`);
 	});
 
 	it("renders command syntax and ANSI output at the compact tool size", () => {
@@ -430,7 +557,7 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("-1");
 	});
 
-	it("renders command failures with a visible raw error excerpt and collapsible output", () => {
+	it("renders command failures in a standard tool row with expandable output", () => {
 		const tool: ToolBatchTool = {
 			id: "bash-error",
 			name: "bash",
@@ -441,14 +568,15 @@ describe("Skill read tool display", () => {
 		};
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], open: false }));
 
-		expect(markup).toContain("命令执行失败");
-		expect(markup).toContain("$ npm run check");
-		expect(markup).toContain("error TS2304: Cannot find name &#x27;previewModel&#x27;.");
-		expect(markup).toContain("查看输出");
-		expect(markup.indexOf("查看输出")).toBeLessThan(markup.indexOf("$ npm run check"));
-		expect(markup).toContain("font-mono text-[13px]");
-		expect(markup).toContain("size-3.5 transition-transform");
-		expect(markup).not.toContain("缺少验收环境配置");
+		expect(markup).toContain("检查项目代码失败");
+		expect(markup).toContain("出错");
+		expect(markup).toContain('data-slot="collapsible" class="min-w-0"');
+		expect(markup).not.toContain("error TS2304");
+		expect(markup).not.toContain("$ npm run check");
+		const expanded = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], open: true }));
+		expect(expanded).toContain("$ npm run check");
+		expect(expanded).toContain("error TS2304: Cannot find name &#x27;previewModel&#x27;.");
+		expect(expanded).toContain("tool-command-output");
 	});
 
 	it("highlights source syntax inside completed file diffs and keeps active previews plain", async () => {
@@ -717,7 +845,8 @@ describe("Skill read tool display", () => {
 		);
 
 		expect(markup).not.toContain("运行了命令并编辑了文件");
-		expect(markup).toContain("npm test");
+		expect(markup).toContain("正在运行项目测试");
+		expect(markup).not.toContain("npm test");
 		expect(markup).toContain("/tmp/example.ts");
 	});
 	it("uses tool-specific labels while arguments are changing", () => {

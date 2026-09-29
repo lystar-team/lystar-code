@@ -72,6 +72,7 @@ type _AiModelFieldsAccountedFor = Assert<
 		| "provider"
 		| "baseUrl"
 		| "reasoning"
+		| "fastModeSupported"
 		| "thinkingLevelMap"
 		| "input"
 		| "inputLimits"

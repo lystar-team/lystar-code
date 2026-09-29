@@ -10,9 +10,11 @@ import {
 	type SessionCoordinatorResult,
 	type SessionCoordinatorSummary,
 	type SessionRoomMessage,
+	type SessionRoomSummary,
 	type SessionSendMode,
 	type SessionWorkspaceMode,
 	type SessionWorkspaceSnapshot,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent/core";
 import {
 	type AgentStep,
@@ -40,6 +42,7 @@ import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
+import { type RuntimeReadConcurrency, resolveRuntimeReadConcurrency } from "./runtime-read-concurrency.ts";
 import { WebSessionHandoffServer } from "./session-handoff-server.ts";
 import {
 	mergeSessionProgress,
@@ -80,6 +83,7 @@ const BASE_CAPABILITIES: Capability[] = [
 ];
 
 const SESSION_FILE_WATCH_DEBOUNCE_MS = 150;
+const PROJECT_SESSION_CACHE_TTL_MS = 2_000;
 const SESSION_FILE_FALLBACK_MIN_MS = 5_000;
 const SESSION_FILE_FALLBACK_MAX_MS = 60_000;
 const CONTENT_CLEANUP_INTERVAL_MS = 60_000;
@@ -180,10 +184,13 @@ const WORKSPACE_COMMANDS = {
 	list_models: true,
 	list_model_providers: true,
 	list_model_options: true,
+	get_image_model_settings: true,
+	set_image_model_settings: true,
 	remove_model_provider: true,
 	set_provider_model_enabled: true,
 	set_session_model: true,
 	set_session_thinking: true,
+	set_session_fast_mode: true,
 	cycle_session_model: true,
 	cycle_session_thinking: true,
 	login_model_provider: true,
@@ -365,6 +372,14 @@ function attachCompletionValue(value: string): string {
 	return candidate.startsWith('"') && candidate.endsWith('"') ? candidate.slice(1, -1) : candidate;
 }
 
+type ObservedSessionSummary = Omit<SessionSummary, "writeAccess">;
+
+type ProjectSessionSnapshot = {
+	sessions: readonly ObservedSessionSummary[];
+	rooms: readonly SessionRoomSummary[];
+	expiresAt: number;
+};
+
 export class WebRuntimeService {
 	readonly serverInstanceId = randomUUID();
 	readonly hostInstanceId = randomUUID();
@@ -391,11 +406,16 @@ export class WebRuntimeService {
 	private readonly roomCoordinator: SessionRoomCoordinator;
 	private readonly journal: OperationJournal;
 	private readonly adapter: RuntimeAdapter;
+	private readonly runtimeSettings: SettingsManager;
 	private readonly capabilities: Capability[];
 	private readonly persistent: boolean;
 	private readonly startupInput?: StartupInput;
 	private readonly startupSessionPath?: string;
 	private readonly watchedSessionFacts = new Map<string, Map<string, SessionFileFact>>();
+	private readonly sessionObservationQueues = new Map<string, Promise<void>>();
+	private readonly sessionSummaryRequests = new Map<string, Promise<ObservedSessionSummary[]>>();
+	private readonly projectSessionSnapshots = new Map<string, ProjectSessionSnapshot>();
+	private readonly projectSessionRequests = new Map<string, Promise<ProjectSessionSnapshot>>();
 	private readonly runtimeTranscriptFacts = new Map<string, RuntimeTranscriptFact>();
 	private readonly sessionHandoffHosts = new Map<string, SessionHandoffHost>();
 	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
@@ -426,6 +446,7 @@ export class WebRuntimeService {
 	) {
 		this.adapter = adapter;
 		this.agentDir = options.agentDir;
+		this.runtimeSettings = SettingsManager.create(this.agentDir, this.agentDir);
 		this.collaborationWorkspaces = new CollaborationWorkspaceManager(this.agentDir);
 		this.roomCoordinator = new SessionRoomCoordinator({
 			store: new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl"), (change) => {
@@ -449,6 +470,13 @@ export class WebRuntimeService {
 		}
 		this.contentCleanupTimer = setInterval(() => this.contentStore.evictExpired(), CONTENT_CLEANUP_INTERVAL_MS);
 		this.contentCleanupTimer.unref?.();
+	}
+
+	getRuntimeReadConcurrency(): RuntimeReadConcurrency {
+		const globalSettings = this.runtimeSettings.getGlobalSettings() as { runtimeReadConcurrency?: unknown };
+		const configured =
+			typeof globalSettings.runtimeReadConcurrency === "number" ? globalSettings.runtimeReadConcurrency : 0;
+		return resolveRuntimeReadConcurrency(configured);
 	}
 
 	private createSessionCoordinator(): SessionCoordinator {
@@ -741,7 +769,7 @@ export class WebRuntimeService {
 				{ deferExtensionLifecycle: true },
 			);
 			if (!runtime.promptWithOrigin) {
-				throw Object.assign(new Error("当前 Room 成员运行时不支持结构化输入"), {
+				throw Object.assign(new Error("当前智能体协作成员的运行时不支持结构化输入"), {
 					code: "room_structured_input_unsupported",
 				});
 			}
@@ -772,13 +800,13 @@ export class WebRuntimeService {
 				message.kind === "task" &&
 				[...capabilities.allowedTools].some((tool) => !ROOM_ALLOWED_TOOL_NAMES.has(tool))
 			) {
-				throw Object.assign(new Error("Room task 只能使用受控文件工具"), {
+				throw Object.assign(new Error("智能体协作任务只能使用受控文件工具"), {
 					code: "room_tool_not_allowed",
 				});
 			}
 			const readRoots = capabilities.readRoots ?? [];
 			if (readRoots.some((root) => !isPathWithin(runtimeCwd, resolve(runtimeCwd, root)))) {
-				throw Object.assign(new Error("Room task 的读取根目录超出成员会话工作区"), {
+				throw Object.assign(new Error("智能体协作任务的读取根目录超出成员会话工作区"), {
 					code: "room_read_capability_requires_workspace",
 				});
 			}
@@ -792,7 +820,7 @@ export class WebRuntimeService {
 					!capabilities.writeRoots?.length ||
 					!capabilities.writeRoots.every((root) => isPathWithin(workspaceCwd, resolve(workspaceCwd, root)))
 				) {
-					throw Object.assign(new Error("Room task 的写能力必须绑定隔离工作区和写入根目录"), {
+					throw Object.assign(new Error("智能体协作任务的写能力必须绑定隔离工作区和写入根目录"), {
 						code: "room_write_capability_requires_workspace",
 					});
 				}
@@ -814,7 +842,7 @@ export class WebRuntimeService {
 				await this.sendSessionSnapshots(runtime);
 				const result = runtime.getTurnResultAsync ? await runtime.getTurnResultAsync(turn.turnId) : undefined;
 				if (!result || result.inputId !== message.id || result.turnId !== turn.turnId) {
-					throw Object.assign(new Error("Room 回复没有绑定到当前输入 Turn"), {
+					throw Object.assign(new Error("智能体协作回复没有绑定到当前输入 Turn"), {
 						code: "room_turn_result_mismatch",
 					});
 				}
@@ -1200,11 +1228,14 @@ export class WebRuntimeService {
 			}
 			case "list_project_sessions": {
 				const cwd = canonicalProjectCwd(request.cwd);
-				const [sessions, rooms] = await Promise.all([
-					this.listSessionSummaries(cwd, connection, true),
-					this.roomCoordinator.api().listAll({ cwd }),
-				]);
-				return jsonValue({ sessions, rooms });
+				const snapshot = await this.listProjectSessionSnapshot(cwd);
+				return jsonValue({
+					sessions: snapshot.sessions.map((session) => ({
+						...session,
+						writeAccess: this.sessionWriteAccess(session.path, connection),
+					})),
+					rooms: snapshot.rooms,
+				});
 			}
 			case "room_create":
 				return jsonValue(
@@ -1675,6 +1706,24 @@ export class WebRuntimeService {
 				return jsonValue(await this.adapter.listModels());
 			case "list_model_providers":
 				return jsonValue(await this.adapter.listModelProviders());
+			case "get_image_model_settings": {
+				const imageModelProviders = await this.adapter.getImageModelSettings();
+				return jsonValue(imageModelProviders ? { imageModelProviders } : {});
+			}
+			case "set_image_model_settings":
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: "image-model",
+					payload: request,
+					run: async () =>
+						jsonValue({
+							imageModelProviders: await this.adapter.setImageModelSettings({
+								providers: request.providers,
+							}),
+						}),
+				});
 			case "list_model_options":
 				return jsonValue(await this.adapter.listModelOptions({ includeProviders: request.includeProviders }));
 			case "add_model_provider":
@@ -1775,6 +1824,22 @@ export class WebRuntimeService {
 					run: async () => {
 						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
 						await runtime.setThinkingLevel(request.level);
+						await this.sendSessionSnapshots(runtime);
+						return this.runtimeSnapshot(runtime, "owned");
+					},
+				});
+			}
+			case "set_session_fast_mode": {
+				const sessionPath = canonicalSessionPath(request.sessionPath);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `session:${sessionPath}`,
+					payload: { sessionPath, enabled: request.enabled },
+					run: async () => {
+						const { runtime } = this.assertSessionControl(sessionPath, request.leaseId, connection);
+						await runtime.setFastMode(request.enabled);
 						await this.sendSessionSnapshots(runtime);
 						return this.runtimeSnapshot(runtime, "owned");
 					},
@@ -2042,8 +2107,14 @@ export class WebRuntimeService {
 				);
 			case "list_harness_imports":
 				return jsonValue(this.adapter.listHarnessImports(canonicalProjectCwd(request.cwd)));
-			case "list_subagent_configs":
-				return jsonValue(this.adapter.listSubagentConfigs(canonicalProjectCwd(request.cwd)));
+			case "list_subagent_configs": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				const [subagents, tools] = await Promise.all([
+					this.adapter.listSubagentConfigs(cwd),
+					this.adapter.listSubagentTools(cwd),
+				]);
+				return jsonValue({ subagents, tools });
+			}
 			case "save_subagent_config": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessionPath = this.mutationSessionPath(request);
@@ -2064,6 +2135,7 @@ export class WebRuntimeService {
 						...(request.model ? { model: request.model } : {}),
 						...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 						...(request.tools ? { tools: request.tools } : {}),
+						...(request.excludeTools ? { excludeTools: request.excludeTools } : {}),
 						...(request.skills ? { skills: request.skills } : {}),
 						...(request.tags ? { tags: request.tags } : {}),
 						...(request.icon ? { icon: request.icon } : {}),
@@ -2083,6 +2155,7 @@ export class WebRuntimeService {
 								...(request.model ? { model: request.model } : {}),
 								...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
 								...(request.tools ? { tools: request.tools } : {}),
+								...(request.excludeTools ? { excludeTools: request.excludeTools } : {}),
 								...(request.skills ? { skills: request.skills } : {}),
 								...(request.tags ? { tags: request.tags } : {}),
 								...(request.icon ? { icon: request.icon } : {}),
@@ -2303,7 +2376,12 @@ export class WebRuntimeService {
 					(candidate) => !cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd,
 				);
 				const diagnostics = await this.adapter.getDiagnostics(cwd, runtime?.getToolRecoveryDiagnostics());
-				return diagnostics;
+				const diagnosticsObject =
+					diagnostics && typeof diagnostics === "object" && !Array.isArray(diagnostics) ? diagnostics : {};
+				return jsonValue({
+					...(diagnosticsObject as Record<string, unknown>),
+					runtimeReadConcurrency: this.getRuntimeReadConcurrency(),
+				});
 			}
 			case "get_connection_status":
 				return {
@@ -2446,7 +2524,11 @@ export class WebRuntimeService {
 					clientRequestId: request.clientRequestId,
 					scope,
 					payload: { sessionPath, id: request.id, value: request.value },
-					run: () => runtime.setSetting(request.id, request.value),
+					run: async () => {
+						const result = await runtime.setSetting(request.id, request.value);
+						if (request.id === "runtime-read-concurrency") await this.runtimeSettings.reload();
+						return result;
+					},
 				});
 			}
 			case "get_project_trust":
@@ -2552,7 +2634,9 @@ export class WebRuntimeService {
 					: this.adapter.getSessionTree(sessionPath);
 			}
 			case "get_session_info": {
-				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection);
+				const { runtime } = this.assertSessionControl(request.sessionPath, request.leaseId, connection, {
+					allowActiveOperation: true,
+				});
 				return runtime.getSessionInfoAsync ? await runtime.getSessionInfoAsync() : runtime.getSessionInfo();
 			}
 			case "list_fork_messages": {
@@ -2731,11 +2815,97 @@ export class WebRuntimeService {
 		return operationActivity ?? observedActivity ?? fallback;
 	}
 
+	private enqueueSessionObservation<T>(cwd: string, run: () => Promise<T>): Promise<T> {
+		const previous = this.sessionObservationQueues.get(cwd) ?? Promise.resolve();
+		const execution = previous.catch(() => {}).then(run);
+		const tail = execution.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.sessionObservationQueues.set(cwd, tail);
+		void tail.then(() => {
+			if (this.sessionObservationQueues.get(cwd) === tail) this.sessionObservationQueues.delete(cwd);
+		});
+		return execution;
+	}
+
 	private async listSessionSummaries(
 		cwd: string,
 		connection: ClientConnection,
 		metadataOnly = false,
 	): Promise<SessionSummary[]> {
+		const summaries = await this.listObservedSessionSummaries(cwd, metadataOnly);
+		return summaries.map((session) => ({
+			...session,
+			writeAccess: this.sessionWriteAccess(session.path, connection),
+		}));
+	}
+
+	private async listObservedSessionSummaries(cwd: string, metadataOnly: boolean): Promise<ObservedSessionSummary[]> {
+		const key = `${metadataOnly ? "metadata" : "summary"}:${cwd}`;
+		let request = this.sessionSummaryRequests.get(key);
+		if (!request) {
+			request = this.enqueueSessionObservation(cwd, () => this.listSessionSummariesUnqueued(cwd, metadataOnly));
+			this.sessionSummaryRequests.set(key, request);
+			void request.then(
+				() => {
+					if (this.sessionSummaryRequests.get(key) === request) this.sessionSummaryRequests.delete(key);
+				},
+				() => {
+					if (this.sessionSummaryRequests.get(key) === request) this.sessionSummaryRequests.delete(key);
+				},
+			);
+		}
+		return request;
+	}
+
+	private async listProjectSessionSnapshot(cwd: string): Promise<ProjectSessionSnapshot> {
+		const cached = this.projectSessionSnapshots.get(cwd);
+		if (cached && cached.expiresAt > Date.now()) return cached;
+		if (cached) this.projectSessionSnapshots.delete(cwd);
+
+		let request = this.projectSessionRequests.get(cwd);
+		if (!request) {
+			const startedAt = performance.now();
+			const sessionsRequest = this.listObservedSessionSummaries(cwd, true);
+			const roomsRequest = this.roomCoordinator.api().listAll({ cwd });
+			request = Promise.all([
+				sessionsRequest.then((sessions) => ({
+					value: sessions,
+					elapsedMs: Math.round(performance.now() - startedAt),
+				})),
+				roomsRequest.then((rooms) => ({
+					value: rooms,
+					elapsedMs: Math.round(performance.now() - startedAt),
+				})),
+			]).then(([sessionResult, roomResult]) => {
+				const snapshot = {
+					sessions: sessionResult.value,
+					rooms: roomResult.value,
+					expiresAt: Date.now() + PROJECT_SESSION_CACHE_TTL_MS,
+				};
+				logRuntimeConnection("project_session_snapshot", {
+					cwd,
+					sessionMs: sessionResult.elapsedMs,
+					roomMs: roomResult.elapsedMs,
+					totalMs: Math.round(performance.now() - startedAt),
+					sessionCount: snapshot.sessions.length,
+					roomCount: snapshot.rooms.length,
+				});
+				this.projectSessionSnapshots.set(cwd, snapshot);
+				return snapshot;
+			});
+			this.projectSessionRequests.set(cwd, request);
+			void request
+				.finally(() => {
+					if (this.projectSessionRequests.get(cwd) === request) this.projectSessionRequests.delete(cwd);
+				})
+				.catch(() => {});
+		}
+		return request;
+	}
+
+	private async listSessionSummariesUnqueued(cwd: string, metadataOnly: boolean): Promise<ObservedSessionSummary[]> {
 		const sessions = await this.adapter.listSessions(cwd, { metadataOnly });
 		const summaries = await Promise.all(
 			sessions.map(async (session) => {
@@ -2756,8 +2926,7 @@ export class WebRuntimeService {
 					updatedAt: session.updatedAt,
 					messageCount: session.messageCount,
 					firstMessage: session.firstMessage,
-					activity: await this.resolveSessionActivity(sessionPath, session.activity, latestOperation, connection),
-					writeAccess: this.sessionWriteAccess(sessionPath, connection),
+					activity: await this.resolveSessionActivity(sessionPath, session.activity, latestOperation),
 					...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
 				};
 			}),
@@ -2766,7 +2935,7 @@ export class WebRuntimeService {
 		for (const runtime of this.runtimes.values()) {
 			const sessionPath = canonicalSessionPath(runtime.sessionPath);
 			if (listedPaths.has(sessionPath)) continue;
-			const snapshot = this.runtimeSnapshot(runtime, this.writeAccess(sessionPath, connection));
+			const snapshot = this.runtimeSnapshot(runtime, "available");
 			if (canonicalProjectCwd(snapshot.cwd) !== cwd) continue;
 			const latestOperation = this.latestOperation(sessionPath);
 			summaries.push({
@@ -2778,8 +2947,7 @@ export class WebRuntimeService {
 				updatedAt: snapshot.updatedAt,
 				messageCount: 0,
 				firstMessage: "未命名会话",
-				activity: await this.resolveSessionActivity(sessionPath, snapshot.activity, latestOperation, connection),
-				writeAccess: snapshot.writeAccess,
+				activity: await this.resolveSessionActivity(sessionPath, snapshot.activity, latestOperation),
 				...(latestOperation ? { operationUpdatedAt: latestOperation.updatedAt } : {}),
 			});
 		}
@@ -2895,7 +3063,10 @@ export class WebRuntimeService {
 		this.sessionFallbackTimer.unref?.();
 	}
 
-	private rememberSessionFacts(cwd: string, sessions: readonly SessionSummary[]): void {
+	private rememberSessionFacts(
+		cwd: string,
+		sessions: readonly Pick<SessionSummary, "id" | "path" | "updatedAt" | "messageCount" | "name">[],
+	): void {
 		this.watchedSessionFacts.set(
 			cwd,
 			new Map(
@@ -2920,118 +3091,124 @@ export class WebRuntimeService {
 		if (this.pollingSessions || this.clients.size === 0 || this.watchedSessionFacts.size === 0) return;
 		this.pollingSessions = true;
 		try {
-			for (const [cwd, previous] of this.watchedSessionFacts) {
-				let sessions: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>;
-				try {
-					sessions = await this.adapter.listSessions(cwd, { metadataOnly: true });
-				} catch {
-					continue;
-				}
-				const next = new Map<string, SessionFileFact>();
-				const transcriptChanges: string[] = [];
-				let sessionListChanged = false;
-				for (const session of sessions) {
-					const sessionPath = canonicalSessionPath(session.path);
-					const fact: SessionFileFact = {
-						updatedAt: session.updatedAt,
-						messageCount: session.messageCount,
-						...(session.name ? { name: session.name } : {}),
-						writerLocked: this.adapter.isSessionWriterLocked(sessionPath),
-					};
-					const runtime = this.runtimes.get(sessionPath);
-					const observedTranscript = runtime ? undefined : this.sessionTranscriptFact(sessionPath, session.id);
-					if (observedTranscript) Object.assign(fact, observedTranscript);
-					next.set(sessionPath, fact);
-					const old = previous.get(sessionPath);
-					if (!old) {
-						sessionListChanged = true;
-						continue;
-					}
-					const fileChanged =
-						old.updatedAt !== fact.updatedAt || old.messageCount !== fact.messageCount || old.name !== fact.name;
-					const transcriptChanged =
-						observedTranscript !== undefined &&
-						(old.transcriptGeneration !== observedTranscript.transcriptGeneration ||
-							old.transcriptRevision !== observedTranscript.transcriptRevision);
-					const runtimeSnapshot = runtime?.getSnapshot?.("available");
-					const known = runtime ? this.runtimeTranscriptFacts.get(sessionPath) : undefined;
-					const runtimeTranscriptChanged =
-						runtimeSnapshot !== undefined &&
-						(!known ||
-							known.generation !== runtimeSnapshot.transcriptGeneration ||
-							known.revision !== runtimeSnapshot.transcriptRevision);
-					const runtimeDisconnected = runtime?.isConnected?.() === false;
-					if (
-						runtime &&
-						(runtimeDisconnected ||
-							(fact.writerLocked && (old.writerLocked !== fact.writerLocked || fileChanged)))
-					) {
-						// 每个会话独立恢复，握手等待不占住整个目录轮询。
-						void this.ensureRuntime(
-							sessionPath,
-							this.createUiRequestHandler(
-								() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
-								sessionPath,
-							),
-							{ deferExtensionLifecycle: this.isRoomOnlyRuntimeDemand(sessionPath, runtime) },
-						).catch(() => {
-							if (runtime && this.runtimes.get(sessionPath) === runtime) void this.sendSessionSnapshots(runtime);
-						});
-					}
-					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
-					if (fileChanged || transcriptChanged || runtimeTranscriptChanged) {
-						if (
-							old.name !== fact.name ||
-							(old.messageCount === 0) !== (fact.messageCount === 0) ||
-							(fact.writerLocked && old.updatedAt !== fact.updatedAt && !runtime)
-						)
-							sessionListChanged = true;
-						if (!runtime) transcriptChanges.push(sessionPath);
-						else if (runtimeSnapshot && runtimeTranscriptChanged) {
-							transcriptChanges.push(sessionPath);
-							this.runtimeTranscriptFacts.set(sessionPath, {
-								generation: runtimeSnapshot.transcriptGeneration,
-								revision: runtimeSnapshot.transcriptRevision,
-							});
-						}
-					}
-				}
-				for (const runtime of this.runtimes.values()) {
-					const snapshot = runtime.getSnapshot("available");
-					const sessionPath = canonicalSessionPath(runtime.sessionPath);
-					if (canonicalProjectCwd(snapshot.cwd) !== cwd || next.has(sessionPath)) continue;
-					const fact: SessionFileFact = {
-						updatedAt: snapshot.updatedAt,
-						messageCount: 0,
-						...(snapshot.name ? { name: snapshot.name } : {}),
-						writerLocked: this.adapter.isSessionWriterLocked(sessionPath),
-					};
-					next.set(sessionPath, fact);
-					const old = previous.get(sessionPath);
-					if (!old) {
-						sessionListChanged = true;
-						continue;
-					}
-					if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) {
-						if (old.name !== fact.name) sessionListChanged = true;
-					}
-					if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
-				}
-				if (next.size !== previous.size) sessionListChanged = true;
-				for (const sessionPath of previous.keys()) {
-					if (next.has(sessionPath)) continue;
-					sessionListChanged = true;
-					await this.broadcast({ type: "session_removed", sessionPath });
-				}
-				this.watchedSessionFacts.set(cwd, next);
-				for (const sessionPath of transcriptChanges) {
-					await this.broadcast({ type: "transcript_changed", sessionPath });
-				}
-				if (sessionListChanged) await this.broadcast({ type: "sessions_changed", cwd });
+			for (const cwd of [...this.watchedSessionFacts.keys()]) {
+				await this.enqueueSessionObservation(cwd, () => this.pollSessionFilesForCwd(cwd));
 			}
 		} finally {
 			this.pollingSessions = false;
 		}
+	}
+
+	private async pollSessionFilesForCwd(cwd: string): Promise<void> {
+		const previous = this.watchedSessionFacts.get(cwd);
+		if (!previous) return;
+		this.projectSessionSnapshots.delete(cwd);
+		let sessions: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>;
+		try {
+			sessions = await this.adapter.listSessions(cwd, { metadataOnly: true });
+		} catch {
+			return;
+		}
+		const next = new Map<string, SessionFileFact>();
+		const transcriptChanges: string[] = [];
+		let sessionListChanged = false;
+		for (const session of sessions) {
+			const sessionPath = canonicalSessionPath(session.path);
+			const fact: SessionFileFact = {
+				updatedAt: session.updatedAt,
+				messageCount: session.messageCount,
+				...(session.name ? { name: session.name } : {}),
+				writerLocked: this.adapter.isSessionWriterLocked(sessionPath),
+			};
+			const runtime = this.runtimes.get(sessionPath);
+			const observedTranscript = runtime ? undefined : this.sessionTranscriptFact(sessionPath, session.id);
+			if (observedTranscript) Object.assign(fact, observedTranscript);
+			next.set(sessionPath, fact);
+			const old = previous.get(sessionPath);
+			if (!old) {
+				sessionListChanged = true;
+				continue;
+			}
+			const fileChanged =
+				old.updatedAt !== fact.updatedAt || old.messageCount !== fact.messageCount || old.name !== fact.name;
+			const transcriptChanged =
+				observedTranscript !== undefined &&
+				(old.transcriptGeneration !== observedTranscript.transcriptGeneration ||
+					old.transcriptRevision !== observedTranscript.transcriptRevision);
+			const runtimeSnapshot = runtime?.getSnapshot?.("available");
+			const known = runtime ? this.runtimeTranscriptFacts.get(sessionPath) : undefined;
+			const runtimeTranscriptChanged =
+				runtimeSnapshot !== undefined &&
+				(!known ||
+					known.generation !== runtimeSnapshot.transcriptGeneration ||
+					known.revision !== runtimeSnapshot.transcriptRevision);
+			const runtimeDisconnected = runtime?.isConnected?.() === false;
+			if (
+				runtime &&
+				(runtimeDisconnected || (fact.writerLocked && (old.writerLocked !== fact.writerLocked || fileChanged)))
+			) {
+				// 每个会话独立恢复，握手等待不占住整个目录轮询。
+				void this.ensureRuntime(
+					sessionPath,
+					this.createUiRequestHandler(
+						() => this.activeOperationBySession.get(sessionPath) ?? `control:${sessionPath}`,
+						sessionPath,
+					),
+					{ deferExtensionLifecycle: this.isRoomOnlyRuntimeDemand(sessionPath, runtime) },
+				).catch(() => {
+					if (runtime && this.runtimes.get(sessionPath) === runtime) void this.sendSessionSnapshots(runtime);
+				});
+			}
+			if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
+			if (fileChanged || transcriptChanged || runtimeTranscriptChanged) {
+				if (
+					old.name !== fact.name ||
+					(old.messageCount === 0) !== (fact.messageCount === 0) ||
+					(fact.writerLocked && old.updatedAt !== fact.updatedAt && !runtime)
+				)
+					sessionListChanged = true;
+				if (!runtime) transcriptChanges.push(sessionPath);
+				else if (runtimeSnapshot && runtimeTranscriptChanged) {
+					transcriptChanges.push(sessionPath);
+					this.runtimeTranscriptFacts.set(sessionPath, {
+						generation: runtimeSnapshot.transcriptGeneration,
+						revision: runtimeSnapshot.transcriptRevision,
+					});
+				}
+			}
+		}
+		for (const runtime of this.runtimes.values()) {
+			const snapshot = runtime.getSnapshot("available");
+			const sessionPath = canonicalSessionPath(runtime.sessionPath);
+			if (canonicalProjectCwd(snapshot.cwd) !== cwd || next.has(sessionPath)) continue;
+			const fact: SessionFileFact = {
+				updatedAt: snapshot.updatedAt,
+				messageCount: 0,
+				...(snapshot.name ? { name: snapshot.name } : {}),
+				writerLocked: this.adapter.isSessionWriterLocked(sessionPath),
+			};
+			next.set(sessionPath, fact);
+			const old = previous.get(sessionPath);
+			if (!old) {
+				sessionListChanged = true;
+				continue;
+			}
+			if (old.updatedAt !== fact.updatedAt || old.name !== fact.name) {
+				if (old.name !== fact.name) sessionListChanged = true;
+			}
+			if (old.writerLocked !== fact.writerLocked) sessionListChanged = true;
+		}
+		if (next.size !== previous.size) sessionListChanged = true;
+		for (const sessionPath of previous.keys()) {
+			if (next.has(sessionPath)) continue;
+			sessionListChanged = true;
+			await this.broadcast({ type: "session_removed", sessionPath });
+		}
+		this.watchedSessionFacts.set(cwd, next);
+		for (const sessionPath of transcriptChanges) {
+			await this.broadcast({ type: "transcript_changed", sessionPath });
+		}
+		if (sessionListChanged) await this.broadcast({ type: "sessions_changed", cwd });
 	}
 
 	private async executeJournaledWrite(
@@ -3535,7 +3712,7 @@ export class WebRuntimeService {
 	private async activateRuntimeExtensions(runtime: RuntimeSession): Promise<void> {
 		if (!runtime.activateExtensionLifecycle) return;
 		if (this.isRuntimeActive(runtime)) {
-			// Room 任务仍在运行时，扩展生命周期会等待 idle；获取会话不应等待这个 Turn。
+			// 智能体协作任务仍在运行时，扩展生命周期会等待 idle；获取会话不应等待这个 Turn。
 			void runtime.activateExtensionLifecycle().catch((error: unknown) => {
 				logRuntimeConnection("extension_lifecycle_failed", {
 					error: error instanceof Error ? error.message : String(error),
@@ -3597,7 +3774,7 @@ export class WebRuntimeService {
 			await this.ensureSessionHandoffServer(replacement);
 			if (current) await current.dispose();
 			await this.sendSessionSnapshots(replacement);
-			await this.broadcast({ type: "transcript_changed", sessionPath });
+			if (current) await this.broadcast({ type: "transcript_changed", sessionPath });
 			return replacement;
 		});
 		this.runtimeOpenings.set(sessionPath, opening);
@@ -3879,6 +4056,7 @@ export class WebRuntimeService {
 		sessionPathInput: string,
 		leaseId: string,
 		connection: ClientConnection,
+		options: { allowActiveOperation?: boolean } = {},
 	): { runtime: RuntimeSession; sessionPath: string } {
 		this.journal.assertWritable();
 		const sessionPath = canonicalSessionPath(sessionPathInput);
@@ -3889,7 +4067,7 @@ export class WebRuntimeService {
 				retryable: true,
 			});
 		}
-		if (this.activeOperationBySession.has(sessionPath)) {
+		if (this.activeOperationBySession.has(sessionPath) && options.allowActiveOperation !== true) {
 			throw Object.assign(new Error("会话存在正在执行的任务"), {
 				code: "session_operation_active",
 				retryable: true,

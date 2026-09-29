@@ -60,6 +60,7 @@ import {
 	resolveGrammarConstrainedSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
+import { adaptDeepSeekToolParameters } from "./deepseek-tool-schema.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { buildBaseOptions, clampThinkingBudgetToAnswerRoom, thinkingBudgetForLevel } from "./simple-options.ts";
@@ -846,7 +847,7 @@ function buildParams(
 	}
 
 	if (transcriptTools.requestTools.length > 0) {
-		params.tools = convertTools(transcriptTools.requestTools, compat);
+		params.tools = convertTools(transcriptTools.requestTools, compat, model);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
@@ -1242,7 +1243,7 @@ export function convertMessages(
 			if (addedTools.length > 0) {
 				const kimiToolMessage: KimiToolSystemMessageParam = {
 					role: "system",
-					tools: convertTools(addedTools, compat),
+					tools: convertTools(addedTools, compat, model),
 				};
 				params.push(kimiToolMessage as unknown as ChatCompletionMessageParam);
 			}
@@ -1474,6 +1475,7 @@ export function convertMessages(
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
+	model: Model<"openai-completions">,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
 	return tools.map((tool) => {
 		const grammar = resolveGrammarConstrainedSampling(tool, compat.supportsOpenAIGrammarTools);
@@ -1494,13 +1496,16 @@ function convertTools(
 			};
 		}
 
-		const strict = resolveJsonSchemaStrictSampling(tool, compat.supportsStrictMode !== false);
+		const schemaTool = isDeepSeekToolSchemaModel(model)
+			? { ...tool, parameters: adaptDeepSeekToolParameters(tool.parameters) }
+			: tool;
+		const strict = resolveJsonSchemaStrictSampling(schemaTool, compat.supportsStrictMode !== false);
 		return {
 			type: "function",
 			function: {
 				name: tool.name,
 				description: tool.description,
-				parameters: getJsonSchemaToolParameters(tool, strict) as Record<string, unknown>,
+				parameters: getJsonSchemaToolParameters(schemaTool, strict) as Record<string, unknown>,
 				// Only include strict if provider supports it. Some reject unknown fields.
 				...(compat.supportsStrictMode !== false && { strict: strict ?? false }),
 			},
@@ -1577,6 +1582,15 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 	}
 }
 
+function isDeepSeekToolSchemaModel(model: Model<"openai-completions">): boolean {
+	const modelMarker = `${model.id} ${model.name}`.toLowerCase();
+	return isDeepSeekModel(model) || modelMarker.includes("deepseek");
+}
+
+function isDeepSeekModel(model: Model<"openai-completions">): boolean {
+	return model.provider === "deepseek" || model.baseUrl.toLowerCase().includes("deepseek.com");
+}
+
 /**
  * Auto-detect compatibility settings from provider name and baseUrl.
  * Used as the base when model.compat is not set; explicit model.compat
@@ -1600,7 +1614,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	const isNvidia = provider === "nvidia" || baseUrl.includes("integrate.api.nvidia.com");
 	const isAntLing = provider === "ant-ling" || baseUrl.includes("api.ant-ling.com");
 	const isCerebras = provider === "cerebras" || baseUrl.includes("cerebras.ai");
-	const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
+	const isDeepSeek = isDeepSeekModel(model);
 
 	const isNonStandard =
 		isNvidia ||

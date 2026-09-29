@@ -131,6 +131,7 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 		...model,
 		name: override.name ?? model.name,
 		reasoning: override.reasoning ?? model.reasoning,
+		fastModeSupported: override.fastModeSupported ?? model.fastModeSupported,
 		thinkingLevelMap: override.thinkingLevelMap
 			? { ...model.thinkingLevelMap, ...override.thinkingLevelMap }
 			: model.thinkingLevelMap,
@@ -182,6 +183,7 @@ function modelFromJson(
 		provider: providerId,
 		baseUrl,
 		reasoning: definition.reasoning ?? false,
+		fastModeSupported: definition.fastModeSupported,
 		thinkingLevelMap: definition.thinkingLevelMap,
 		input: (definition.input ?? ["text"]) as ("text" | "image")[],
 		inputLimits: definition.inputLimits,

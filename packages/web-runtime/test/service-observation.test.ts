@@ -22,6 +22,14 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
 	}
 }
 
+function deferred(): { promise: Promise<void>; resolve(): void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	return { promise, resolve };
+}
+
 describe("WebRuntimeService Session observation", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -192,6 +200,178 @@ describe("WebRuntimeService Session observation", () => {
 		expect(inspectActivity).toHaveBeenCalledWith(external.sessionPath);
 	});
 
+	it("短时间内复用项目会话与 Room 快照", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-project-cache-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const listSessions = vi.spyOn(adapter, "listSessions");
+		const service = new WebRuntimeService(adapter, { agentDir });
+		const firstConnection = service.createConnection(async () => {});
+		const secondConnection = service.createConnection(async () => {});
+		cleanups.push(async () => {
+			await firstConnection.close();
+			await secondConnection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const hello = (clientInstanceId: string): ClientMessage => ({
+			type: "hello",
+			version: RUNTIME_PROTOCOL_VERSION,
+			clientInstanceId,
+		});
+		await firstConnection.handle(hello("project-cache-client-1"));
+		await secondConnection.handle(hello("project-cache-client-2"));
+
+		await firstConnection.handle({
+			type: "request",
+			id: "project-1",
+			request: { command: "list_project_sessions", cwd },
+		});
+		await secondConnection.handle({
+			type: "request",
+			id: "project-2",
+			request: { command: "list_project_sessions", cwd },
+		});
+
+		expect(listSessions).toHaveBeenCalledOnce();
+		expect(listSessions).toHaveBeenCalledWith(cwd, { metadataOnly: true });
+	});
+
+	it("串行保护同项目的跨连接列表与文件轮询", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-observation-queue-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const service = new WebRuntimeService(adapter, { agentDir });
+		const firstConnection = service.createConnection(async () => {});
+		const secondConnection = service.createConnection(async () => {});
+		cleanups.push(async () => {
+			await firstConnection.close();
+			await secondConnection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		const hello = (clientInstanceId: string): ClientMessage => ({
+			type: "hello",
+			version: RUNTIME_PROTOCOL_VERSION,
+			clientInstanceId,
+		});
+		await firstConnection.handle(hello("observation-client-1"));
+		await secondConnection.handle(hello("observation-client-2"));
+		await firstConnection.handle({ type: "request", id: "seed", request: { command: "list_sessions", cwd } });
+
+		const gates: Array<ReturnType<typeof deferred>> = [];
+		vi.spyOn(adapter, "listSessions").mockImplementation(async () => {
+			const gate = deferred();
+			gates.push(gate);
+			await gate.promise;
+			return [];
+		});
+
+		const firstList = firstConnection.handle({
+			type: "request",
+			id: "list-1",
+			request: { command: "list_sessions", cwd },
+		});
+		await waitFor(() => gates.length === 1);
+		const secondList = secondConnection.handle({
+			type: "request",
+			id: "list-2",
+			request: { command: "list_sessions", cwd },
+		});
+		await Promise.resolve();
+		expect(gates).toHaveLength(1);
+		gates[0]!.resolve();
+		await Promise.all([firstList, secondList]);
+
+		gates.length = 0;
+		const pollSessionFiles = Reflect.get(service, "pollSessionFiles").bind(service) as () => Promise<void>;
+		const poll = pollSessionFiles();
+		await waitFor(() => gates.length === 1);
+		const listAfterPoll = firstConnection.handle({
+			type: "request",
+			id: "list-after-poll",
+			request: { command: "list_sessions", cwd },
+		});
+		await Promise.resolve();
+		expect(gates).toHaveLength(1);
+		gates[0]!.resolve();
+		await waitFor(() => gates.length === 2);
+		expect(gates).toHaveLength(2);
+		gates[1]!.resolve();
+		await Promise.all([poll, listAfterPoll]);
+	});
+
+	it("首次挂载运行时只发送会话快照，不重复通知历史变化", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-initial-attach-"));
+		const agentDir = join(tempDir, "agent");
+		const cwd = join(tempDir, "project");
+		const sessionPath = join(cwd, "session.jsonl");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(sessionPath, "{}\n");
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const runtime = {
+			sessionPath,
+			getSnapshot: (writeAccess: SessionStateSnapshot["writeAccess"]) => ({
+				id: "session-id",
+				path: sessionPath,
+				cwd,
+				createdAt: 1,
+				updatedAt: 1,
+				phase: "idle",
+				activity: "idle",
+				attached: true,
+				writeAccess,
+				revision: 0,
+				leafId: "leaf",
+				queuedSteerCount: 0,
+				queuedFollowUpCount: 0,
+				thinkingLevel: "off",
+				transcriptGeneration: "generation",
+				transcriptRevision: 1,
+			}),
+			onEvent: () => () => {},
+			dispose: async () => {},
+		} as unknown as RuntimeSession;
+		vi.spyOn(adapter, "openSession").mockResolvedValue(runtime);
+		const service = new WebRuntimeService(adapter, { agentDir });
+		const messages: ServerMessage[] = [];
+		const connection = service.createConnection(async (message) => {
+			messages.push(message);
+		});
+		cleanups.push(async () => {
+			await connection.close();
+			await service.dispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+		await connection.handle({ type: "hello", version: RUNTIME_PROTOCOL_VERSION, clientInstanceId: "initial-client" });
+		await connection.handle({
+			type: "request",
+			id: "acquire",
+			request: { command: "acquire_session", sessionPath, clientInstanceId: "initial-client" },
+		});
+		expect(messages).toContainEqual(expect.objectContaining({ type: "response", id: "acquire", ok: true }));
+		expect(messages).toContainEqual({
+			type: "event",
+			event: expect.objectContaining({
+				type: "session_snapshot",
+				snapshot: expect.objectContaining({ path: sessionPath }),
+			}),
+		});
+		expect(messages).not.toContainEqual({
+			type: "event",
+			event: expect.objectContaining({ type: "transcript_changed", sessionPath }),
+		});
+	});
+
 	it("rebinds a stale local runtime to an external Companion before reusing it", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-rebind-"));
 		const agentDir = join(tempDir, "agent");
@@ -271,6 +451,10 @@ describe("WebRuntimeService Session observation", () => {
 		expect(local.disposeMock).toHaveBeenCalledOnce();
 		expect(adapter.openSession).toHaveBeenCalledWith(sessionPath, expect.any(Function), {
 			deferExtensionLifecycle: false,
+		});
+		expect(messages).toContainEqual({
+			type: "event",
+			event: expect.objectContaining({ type: "transcript_changed", sessionPath }),
 		});
 		messages.length = 0;
 		companion.runtime.emit({ type: "progress", payload: { type: "assistant_delta", text: "已切换" } });

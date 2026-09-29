@@ -39,6 +39,8 @@ export interface WorkbenchActions {
 	saveBranding: (input: { name: string; logo?: string | null }) => Promise<void>;
 	refreshSessionNameSettings: () => Promise<void>;
 	saveSessionNameSettings: (input: { model?: string; thinkingLevel: WebThinkingLevel }) => Promise<void>;
+	refreshToolRecoverySettings: () => Promise<void>;
+	saveToolRecoverySettings: (input: { model?: string; thinkingLevel: WebThinkingLevel }) => Promise<void>;
 	closeSettings: () => void;
 	signOut: () => void;
 	setComposerMode: (mode: ComposerMode) => void;
@@ -49,7 +51,7 @@ export interface WorkbenchActions {
 	abortSubagent: () => Promise<void>;
 	continueSubagent: (text: string) => Promise<void>;
 	loadTranscript: () => Promise<void>;
-	loadGitStatus: () => Promise<void>;
+	loadGitStatus: (silent?: boolean) => Promise<void>;
 	loadGitRepositoryStats: (repositoryPath?: string) => Promise<void>;
 	loadGitBranches: (repositoryPath?: string) => Promise<void>;
 	loadGitHistory: (repositoryPath?: string, offset?: number, append?: boolean) => Promise<void>;
@@ -60,6 +62,7 @@ export interface WorkbenchActions {
 	loadGitDiff: (path?: string, staged?: boolean, repositoryPath?: string) => Promise<void>;
 	closeGitDiff: () => void;
 	loadProjectTree: (path?: string, preserveCurrentTree?: boolean) => Promise<void>;
+	refreshProjectFiles: (paths: readonly string[], refreshOpenedFile?: boolean) => Promise<void>;
 	openFile: (path: string) => Promise<void>;
 	openResource: (path: string) => Promise<void>;
 	saveFile: (path: string, content: string, expectedHash: string) => Promise<FileResponse>;
@@ -91,8 +94,10 @@ export interface WorkbenchActions {
 	exportSession: () => Promise<void>;
 	updateModel: (provider: string, id: string) => Promise<void>;
 	updateThinking: (level: string) => Promise<void>;
+	updateFastMode: (enabled: boolean) => Promise<void>;
 	setModelProviderVisibility: (providerId: string, visible: boolean) => void;
 	saveModelProvider: (input: WebModelProviderInput) => Promise<void>;
+	saveImageModelProviders: (providers: Record<string, string>) => Promise<void>;
 	removeModelProvider: (providerId: string) => Promise<void>;
 	saveProviderModel: (provider: string, input: WebProviderModelInput) => Promise<void>;
 	setProviderModelEnabled: (provider: string, modelId: string, enabled: boolean) => Promise<void>;

@@ -64,7 +64,7 @@ describe("SessionRoomStore", () => {
 		const appended = first.appendMessage(draft);
 		const duplicate = first.appendMessage({ ...draft });
 		expect(() => first.appendMessage({ ...draft, targetSessionIds: ["owner"], body: "改变了内容" })).toThrowError(
-			/幂等键对应的 Room 消息内容不一致/,
+			/幂等键对应的智能体协作消息内容不一致/,
 		);
 		const sameKeyFromAnotherSender = first.appendMessage({
 			...draft,
@@ -137,7 +137,7 @@ describe("SessionRoomStore", () => {
 		});
 		store.leaveMember(room.id, "member", "2026-09-21T00:02:00.000Z");
 		expect(store.member(room.id, "member").leftAt).toBe("2026-09-21T00:02:00.000Z");
-		expect(() => store.readMessages(room.id, "member", 0, 20)).toThrowError(/Room 成员已退出/);
+		expect(() => store.readMessages(room.id, "member", 0, 20)).toThrowError(/智能体协作成员已退出/);
 		expect(() =>
 			store.appendMessage({
 				roomId: room.id,
@@ -149,6 +149,6 @@ describe("SessionRoomStore", () => {
 				idempotencyKey: "request-left",
 				createdAt: "2026-09-21T00:03:00.000Z",
 			}),
-		).toThrowError(/不是 Room 活跃成员/);
+		).toThrowError(/不是智能体协作的活跃成员/);
 	});
 });

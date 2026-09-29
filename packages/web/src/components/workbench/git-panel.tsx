@@ -150,6 +150,22 @@ export function GitPanel({ state, actions }: { state: WorkbenchState; actions: W
 		void actions.loadGitHistory(selectedRepository.path);
 	}, [actions.loadGitHistory, panelTab, selectedRepository?.path, state.gitHistory?.repositoryPath]);
 
+	useEffect(() => {
+		if (!state.currentProjectId || !state.inspectorOpen || state.inspectorMode !== "git") return;
+		const timer = window.setInterval(() => {
+			if (document.visibilityState === "hidden") return;
+			void actions.loadGitStatus(true)
+				.then(() => Promise.allSettled([
+					actions.loadGitBranches(repositoryPath),
+					...(panelTab === "history" && (history?.commits.length ?? 0) <= 50
+						? [actions.loadGitHistory(repositoryPath)]
+						: []),
+				]))
+				.catch(() => {});
+		}, 5000);
+		return () => window.clearInterval(timer);
+	}, [actions.loadGitBranches, actions.loadGitHistory, actions.loadGitStatus, history?.commits.length, panelTab, repositoryPath, state.currentProjectId, state.inspectorMode, state.inspectorOpen]);
+
 	const stagedFiles = selectedRepository?.files.filter((file) => file.staged) ?? [];
 	const unstagedFiles = selectedRepository?.files.filter((file) => file.unstaged) ?? [];
 	const untrackedCount = selectedRepository?.files.filter((file) => file.untracked).length ?? 0;

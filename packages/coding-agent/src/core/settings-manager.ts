@@ -117,6 +117,7 @@ export interface Settings {
 	defaultThinkingLevel?: ThinkingLevel;
 	modelThinkingLevels?: Record<string, ThinkingLevel>; // per-model default thinking level overrides keyed by "provider/modelId"
 	transport?: TransportSetting; // default: "auto"
+	runtimeReadConcurrency?: number; // global runtime read batch size; 0 means automatic
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -839,6 +840,22 @@ export class SettingsManager {
 
 	getTransport(): TransportSetting {
 		return this.settings.transport ?? "auto";
+	}
+
+	getRuntimeReadConcurrency(): number {
+		const value = this.settings.runtimeReadConcurrency;
+		return typeof value === "number" && Number.isInteger(value) && (value === 0 || (value >= 2 && value <= 16))
+			? value
+			: 0;
+	}
+
+	setRuntimeReadConcurrency(value: number): void {
+		if (!Number.isInteger(value) || (value !== 0 && (value < 2 || value > 16))) {
+			throw new Error(`Invalid runtimeReadConcurrency setting: ${String(value)}`);
+		}
+		this.globalSettings.runtimeReadConcurrency = value;
+		this.markModified("runtimeReadConcurrency");
+		this.save();
 	}
 
 	setTransport(transport: TransportSetting): void {

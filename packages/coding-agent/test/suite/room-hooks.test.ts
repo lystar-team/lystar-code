@@ -225,9 +225,9 @@ describe("Room turns skip Extension Hooks", () => {
 		try {
 			await roomStarted;
 			await expect(harness.session.prompt("用户消息", { streamingBehavior: "followUp" })).rejects.toThrow(
-				"当前会话正在处理 Room 消息，请稍后重试",
+				"当前会话正在处理智能体协作消息，请稍后重试",
 			);
-			await expect(harness.session.steer("用户补充")).rejects.toThrow("当前会话正在处理 Room 消息，请稍后重试");
+			await expect(harness.session.steer("用户补充")).rejects.toThrow("当前会话正在处理智能体协作消息，请稍后重试");
 		} finally {
 			releaseRoom();
 		}

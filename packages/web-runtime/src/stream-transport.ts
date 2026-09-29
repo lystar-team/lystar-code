@@ -1,10 +1,100 @@
 import type { Readable, Writable } from "node:stream";
-import { ClientMessageDecoder, encodeTrustedServerMessage, type ServerMessage } from "@lystar/code-web-protocol";
+import {
+	ClientMessageDecoder,
+	type Command,
+	encodeTrustedServerMessage,
+	type ServerMessage,
+} from "@lystar/code-web-protocol";
 import { logRuntimeConnection } from "./connection-log.ts";
 import type { WebRuntimeService } from "./service.ts";
 
 export const MAX_RUNTIME_WRITE_BYTES = 32 * 1024 * 1024;
 const WRITE_TIMEOUT_MS = 10_000;
+// Keep one slot available for control reads while project session lists are scanning.
+const PROJECT_READ_SLOT_RESERVE = 1;
+// Only list_sessions updates watched facts. Project session lists share the observation Promise
+// in WebRuntimeService and keep Room stale-task recovery behind the Room operation queue.
+const CONCURRENT_READ_COMMANDS = new Set<Command["command"]>([
+	"get_about",
+	"get_connection_status",
+	"get_operation",
+	"list_operations",
+	"list_project_sessions",
+	"inspect_session",
+	"list_directories",
+	"list_project_instructions",
+	"resolve_project_resource",
+	"read_project_resource",
+	"read_project_image",
+]);
+
+type ReadBatch = {
+	add(handler: () => Promise<void>, kind: "control" | "projectList" | "sessionList"): void;
+	start(): void;
+	seal(): void;
+	done: Promise<void>;
+};
+
+function createReadBatch(onError: (error: unknown) => void, maxConcurrentReads: number): ReadBatch {
+	const handlers: Array<{ run: () => Promise<void>; kind: "control" | "projectList" | "sessionList" }> = [];
+	const maxProjectSessionReads = Math.max(1, maxConcurrentReads - PROJECT_READ_SLOT_RESERVE);
+	let activeHandlers = 0;
+	let activeProjectLists = 0;
+	let activeSessionList = false;
+	let started = false;
+	let sealed = false;
+	let failed = false;
+	let resolveDone!: () => void;
+	let rejectDone!: (error: unknown) => void;
+	const done = new Promise<void>((resolve, reject) => {
+		resolveDone = resolve;
+		rejectDone = reject;
+	});
+	const pump = () => {
+		if (!started || failed) return;
+		while (activeHandlers < maxConcurrentReads && handlers.length > 0) {
+			const next = handlers.findIndex((handler) => {
+				if (handler.kind === "projectList") return activeProjectLists < maxProjectSessionReads;
+				return handler.kind === "control" || !activeSessionList;
+			});
+			if (next < 0) break;
+			const [handler] = handlers.splice(next, 1);
+			activeHandlers++;
+			if (handler.kind === "projectList") activeProjectLists++;
+			if (handler.kind === "sessionList") activeSessionList = true;
+			void Promise.resolve()
+				.then(handler.run)
+				.catch((error: unknown) => {
+					if (failed) return;
+					failed = true;
+					rejectDone(error);
+					onError(error);
+				})
+				.finally(() => {
+					activeHandlers--;
+					if (handler.kind === "projectList") activeProjectLists--;
+					if (handler.kind === "sessionList") activeSessionList = false;
+					pump();
+				});
+		}
+		if (sealed && activeHandlers === 0 && handlers.length === 0) resolveDone();
+	};
+	return {
+		done,
+		add(run, kind) {
+			handlers.push({ run, kind });
+			pump();
+		},
+		start() {
+			started = true;
+			pump();
+		},
+		seal() {
+			sealed = true;
+			pump();
+		},
+	};
+}
 
 export function writeBounded(stream: Writable, bytes: Uint8Array): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -109,11 +199,17 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	let queuedBytes = 0;
 	let closed = false;
 	const fail = (error: unknown) => {
+		closed = true;
 		logRuntimeConnection("connection_failure", {
 			clientInstanceId,
 			error: error instanceof Error ? error.message : String(error),
 		});
 		input.destroy(error instanceof Error ? error : new Error(String(error)));
+	};
+	let readBatch: ReadBatch | undefined;
+	const sealReadBatch = () => {
+		readBatch?.seal();
+		readBatch = undefined;
 	};
 	const onData = (chunk: Buffer) => {
 		try {
@@ -189,7 +285,30 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 					const acquisition = handshake.then(handle).catch(fail);
 					acquisitions.add(acquisition);
 					void acquisition.finally(() => acquisitions.delete(acquisition));
+				} else if (
+					message.type === "request" &&
+					(message.request.command === "list_sessions" || CONCURRENT_READ_COMMANDS.has(message.request.command))
+				) {
+					if (!readBatch) {
+						const batch = createReadBatch(fail, service.getRuntimeReadConcurrency?.().effective ?? 4);
+						readBatch = batch;
+						processing = processing
+							.then(() => {
+								batch.start();
+								return batch.done;
+							})
+							.catch(fail);
+					}
+					readBatch.add(
+						handle,
+						message.request.command === "list_sessions"
+							? "sessionList"
+							: message.request.command === "list_project_sessions"
+								? "projectList"
+								: "control",
+					);
 				} else {
+					sealReadBatch();
 					processing = processing.then(handle).catch(fail);
 					if (message.type === "hello") handshake = processing;
 				}
@@ -208,6 +327,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 			const onEnd = () => {
 				try {
 					decoder.end();
+					sealReadBatch();
 					void Promise.all([processing, transcriptProcessing, ...acquisitions]).then(() => {
 						cleanup();
 						resolve();
@@ -217,6 +337,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				}
 			};
 			const onClose = () => {
+				closed = true;
+				sealReadBatch();
 				cleanup();
 				resolve();
 			};

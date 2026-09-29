@@ -151,7 +151,7 @@ export function RoomRail({
 				</div>
 				<div className="flex items-center gap-0.5">
 					{onCreateRoom ? (
-						<Button size="icon" variant="ghost" onClick={openCreateDialog} aria-label="新建 Room" title="新建 Room">
+						<Button size="icon" variant="ghost" onClick={openCreateDialog} aria-label="新建智能体协作" title="新建智能体协作">
 							<Plus className="size-4" />
 						</Button>
 					) : null}
@@ -171,8 +171,8 @@ export function RoomRail({
 				<div className="relative">
 					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 					<Input
-						aria-label="搜索 Room"
-						placeholder="搜索 Room"
+						aria-label="搜索智能体协作"
+						placeholder="搜索智能体协作"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
 						className={cn("h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0", onNavigate && "min-h-11")}
@@ -182,11 +182,11 @@ export function RoomRail({
 			<ScrollArea className="min-h-0 flex-1 px-3">
 				<div className="pb-5">
 					<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
-						<span>Room</span>
+						<span>智能体协作</span>
 						<span>{roomProjects.reduce((count, entry) => count + entry.rooms.length, 0)}</span>
 					</div>
 					{roomsLoading ? (
-						<div className="px-2 py-8 text-center text-[13px] text-muted-foreground">正在加载 Room</div>
+						<div className="px-2 py-8 text-center text-[13px] text-muted-foreground">正在加载智能体协作</div>
 					) : roomsError ? (
 						<div className="px-2 py-8 text-center text-[13px] text-destructive">{roomsError}</div>
 					) : filteredProjects.length ? (
@@ -238,7 +238,7 @@ export function RoomRail({
 						</div>
 					) : (
 						<div className="px-2 py-8 text-center text-[13px] text-muted-foreground">
-							{roomProjects.length ? "没有匹配 Room" : "当前还没有 Room"}
+							{roomProjects.length ? "没有匹配的智能体协作" : "当前还没有智能体协作"}
 						</div>
 					)}
 				</div>
@@ -247,8 +247,8 @@ export function RoomRail({
 			<Dialog open={createOpen} onOpenChange={setCreateOpen}>
 				<DialogContent>
 				<DialogHeader>
-					<DialogTitle>新建 Room</DialogTitle>
-					<DialogDescription>Room 会归属于选中的项目。选择一个智能体配置作为首个协作成员。</DialogDescription>
+					<DialogTitle>新建智能体协作</DialogTitle>
+					<DialogDescription>智能体协作归属于选中的项目。选择一个智能体配置作为首个协作成员。</DialogDescription>
 				</DialogHeader>
 					<div className="grid gap-4 py-2">
 						<label className="grid gap-2 text-sm font-medium" htmlFor="room-project">
@@ -300,13 +300,13 @@ export function RoomRail({
 									{agentProfilesError ?? "当前项目没有可用的智能体配置"}
 								</div>
 							)}
-							<span className="text-xs font-normal text-muted-foreground">昵称会在智能体加入 Room 后从昵称库分配。</span>
+							<span className="text-xs font-normal text-muted-foreground">昵称会在智能体加入智能体协作后从昵称库分配。</span>
 						</div>
 					</div>
 					<DialogFooter>
 						<Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
 						<Button disabled={creating || !createProjectId || !createProfileId || !createTitle.trim()} onClick={() => void submitCreate()}>
-							{creating ? "创建中…" : "创建 Room"}
+							{creating ? "创建中…" : "创建智能体协作"}
 						</Button>
 					</DialogFooter>
 				</DialogContent>

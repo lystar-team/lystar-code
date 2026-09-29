@@ -24,7 +24,7 @@ Use structured arguments instead of prompt keyword matching:
 - Normal new images, concepts, drafts, variations, style exploration: `model: "auto", profile: "standard"`.
 - Fast ideation or repeated rough iterations: `model: "auto", profile: "fast"`.
 - Precise edits, locked identity or product details, exact text/layout, complex compositing, highest fidelity: `model: "auto", profile: "precision"`.
-- If the user names Flare, Sunburst, or GPT Image 2, pass that exact model.
+- If the user names Flare, Sunburst, GPT Image 1, or GPT Image 2, pass that exact model.
 - Treat the phrase “GPT Image 2.5” as a family request, not an API model ID. Choose Flare or Sunburst from the task semantics.
 - Never pass bare `gpt-image-2.5`.
 

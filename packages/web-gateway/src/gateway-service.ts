@@ -73,6 +73,7 @@ export interface WebServiceLaunchOptions {
 	runtimeInvocation?: RuntimeInvocation;
 	serviceVersion?: string;
 	previousServiceVersion?: string;
+	forceRuntimeRestart?: boolean;
 	interactiveAdmin?: boolean;
 }
 
@@ -454,7 +455,7 @@ async function applyWebServices(
 	const profile = profileFor(options.configFileName);
 	if (reinstall) {
 		if (frontend && frontendStatus?.running) await stopFrontendService(frontend, options);
-		if (config.manageRuntime) await assertRuntimeIdle(config.runtimeEndpoint);
+		if (config.manageRuntime && !options.forceRuntimeRestart) await assertRuntimeIdle(config.runtimeEndpoint);
 		// 先停止接收新请求，避免旧 Gateway 在版本切换期间拉起旧 Runtime。
 		stopWebService(gateway, false, {
 			detachedPid: readGatewayPid(config.agentDir, profile),
@@ -471,6 +472,16 @@ async function applyWebServices(
 		}
 	}
 	if (config.manageRuntime) {
+		if (reinstall && options.forceRuntimeRestart && (runtimeStatus.running || runtimeStatus.reachable)) {
+			await stopRuntimeService(
+				config.runtimeEndpoint,
+				true,
+				runtimeProfileFor(config),
+				runtimeInvocation,
+				options.interactiveAdmin ?? false,
+				config.agentDir,
+			);
+		}
 		if (!runtimeStatus.installed && (runtimeStatus.manager === "detached" || runtimeStatus.reachable)) {
 			await stopRuntimeService(
 				config.runtimeEndpoint,

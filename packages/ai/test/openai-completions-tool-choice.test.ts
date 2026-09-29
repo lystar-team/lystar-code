@@ -219,6 +219,53 @@ describe("openai-completions tool_choice", () => {
 		expect("strict" in (tool ?? {})).toBe(false);
 	});
 
+	it("adapts root union schemas for DeepSeek tools", async () => {
+		const model = {
+			...localOpenAICompletionsModel,
+			id: "custom-deepseek-v3",
+			name: "DeepSeek V3",
+			provider: "custom-openai",
+			baseUrl: "http://localhost:8000/v1",
+			compat: { supportsStrictMode: true },
+		} satisfies Model<"openai-completions">;
+		const tool: Tool = {
+			name: "sessions",
+			description: "Session tool",
+			parameters: Type.Union([
+				Type.Object({ action: Type.Literal("create"), task: Type.Optional(Type.String()) }),
+				Type.Object({ action: Type.Literal("send"), sessionId: Type.String() }),
+			]),
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Call sessions", timestamp: Date.now() }],
+				tools: [tool],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = payload as {
+			tools?: Array<{ function?: { parameters?: Record<string, unknown>; strict?: boolean } }>;
+		};
+		const functionTool = params.tools?.[0]?.function;
+		const parameters = functionTool?.parameters;
+		expect(parameters?.type).toBe("object");
+		expect(parameters?.anyOf).toBeUndefined();
+		expect((parameters?.properties as Record<string, unknown>).action).toMatchObject({
+			type: "string",
+			enum: ["create", "send"],
+		});
+		expect(functionTool?.strict).toBe(false);
+	});
+
 	it("defaults unknown OpenAI-compatible endpoints to non-strict tools", async () => {
 		// Regression test for #9816.
 		const model = {

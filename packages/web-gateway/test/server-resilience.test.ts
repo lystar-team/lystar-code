@@ -136,6 +136,7 @@ test("Gateway 对缺失资源返回 404，只对页面导航回退首页", async
 	const staticDir = await mkdtemp(join(tmpdir(), "lystar-web-static-"));
 	await writeFile(join(staticDir, "index.html"), "<!doctype html><title>LYStar</title>");
 	await writeFile(join(staticDir, "sw.js"), "self.addEventListener('fetch', () => {});");
+	await writeFile(join(staticDir, "office.wasm"), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 	const server = new WebGatewayServer({ ...createConfig(), staticDir });
 	await server.listen();
 	t.after(async () => {
@@ -154,6 +155,14 @@ test("Gateway 对缺失资源返回 404，只对页面导航回退首页", async
 	assert.equal(navigation.status, 200);
 	assert.match(navigation.headers.get("content-type") ?? "", /text\/html/u);
 	assert.match(await navigation.text(), /<title>LYStar<\/title>/u);
+	const policy = navigation.headers.get("content-security-policy") ?? "";
+	assert.match(policy, /(?:^|; )script-src 'self' 'wasm-unsafe-eval'(?:;|$)/u);
+	assert.match(policy, /(?:^|; )worker-src 'self' blob:(?:;|$)/u);
+	assert.doesNotMatch(policy, /'unsafe-eval'/u);
+
+	const wasm = await fetch(`${baseUrl}/office.wasm`);
+	assert.equal(wasm.status, 200);
+	assert.equal(wasm.headers.get("content-type"), "application/wasm");
 
 	const serviceWorker = await fetch(`${baseUrl}/sw.js`);
 	assert.equal(serviceWorker.headers.get("cache-control"), "no-cache");

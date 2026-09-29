@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { OutputSpeedTracker } from "../src/output-speed.ts";
+import { OutputSpeedTracker, visibleOutputTokens } from "../src/output-speed.ts";
 
 describe("OutputSpeedTracker", () => {
+	it("excludes hidden reasoning tokens from visible output speed", () => {
+		expect(visibleOutputTokens(131, 31)).toBe(100);
+		expect(visibleOutputTokens(12, 20)).toBe(0);
+		expect(visibleOutputTokens(undefined, 20)).toBeUndefined();
+	});
 	it("measures model output from the first thinking or text delta to message completion", () => {
 		const tracker = new OutputSpeedTracker();
 		tracker.start();

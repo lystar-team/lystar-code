@@ -59,6 +59,7 @@ interface WebGatewayModule {
 		runtimeInvocation?: RuntimeInvocation;
 		serviceVersion?: string;
 		previousServiceVersion?: string;
+		forceRuntimeRestart?: boolean;
 		interactiveAdmin?: boolean;
 	}): Promise<unknown>;
 	runMacosPermissionsCommand(options: {
@@ -296,6 +297,7 @@ export async function runWebServiceCommand(
 		runtimeInvocation,
 		...(serviceVersion ? { serviceVersion } : {}),
 		...(previousServiceVersion ? { previousServiceVersion } : {}),
+		...(flags.has("--upgrade") ? { forceRuntimeRestart: true } : {}),
 		interactiveAdmin: interactive,
 	});
 	if (action === "status") {
@@ -313,9 +315,14 @@ export async function runWebServiceCommand(
 			}
 		).recovered;
 		if (recovered) {
-			console.warn(
-				`Web 服务版本 ${recovered.targetVersion} 启动失败，已恢复服务版本 ${recovered.serviceVersion}。LYStar Code 应用版本保持不变。原因：${recovered.reason}`,
-			);
+			const applicationState = flags.has("--upgrade")
+				? "应用版本已保留，Web 服务尚未切换完成。"
+				: "LYStar Code 应用版本保持不变。";
+			const message = `Web 服务版本 ${recovered.targetVersion} 启动失败，已恢复服务版本 ${recovered.serviceVersion}。${applicationState}原因：${recovered.reason}`;
+			console.warn(message);
+			if (flags.has("--upgrade")) {
+				throw Object.assign(new Error(message), { code: "web_service_version_recovered" });
+			}
 		} else {
 			const serviceLabel = frontendInvocation
 				? "开发 Web 前端、Gateway 和 Runtime 服务"

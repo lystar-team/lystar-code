@@ -162,6 +162,61 @@ describe("image_gen extension tool", () => {
 		]);
 	});
 
+	it("uses the configured existing Provider instead of the active LLM Provider", async () => {
+		const openAI = imageModel("openai", "gpt-image-2.5-flare");
+		const activeModel = chatModel("third-party", "openai-responses", "https://llm.example/v1");
+		const configuredModel = chatModel("image-provider", "openai-responses", "https://image.example/v1");
+		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageResult(model));
+		const getApiKeyAndHeaders = vi.fn(async (model: Model<Api>) => ({
+			ok: true as const,
+			apiKey: model.provider === "image-provider" ? "image-key" : "llm-key",
+			baseUrl: "https://resolved-image.example/v1",
+		}));
+		const getImageModelProviders = vi.fn(() => ({ "gpt-image-2.5-flare": "image-provider" }));
+		const getProvider = vi.fn((provider: string) =>
+			provider === "image-provider"
+				? { id: provider, name: "Image Provider", baseUrl: "https://image.example/v1" }
+				: undefined,
+		);
+		const ctx = {
+			cwd: tempRoot,
+			model: activeModel,
+			modelRegistry: {
+				getImageModelProviders,
+				getProvider,
+				getAll: () => [configuredModel],
+				findImage: (provider: string, id: string) =>
+					provider === "openai" && id === "gpt-image-2.5-flare" ? openAI : undefined,
+				getApiKeyAndHeaders,
+				generateImages,
+			},
+			sessionManager: { getSessionId: () => "session-configured-image", getBranch: () => [] },
+		} as unknown as ExtensionContext;
+
+		const result = await createImageGenToolDefinition().execute(
+			"call-configured-image",
+			{ prompt: "a red circle" },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(getImageModelProviders).toHaveBeenCalled();
+		expect(getProvider).toHaveBeenCalledWith("image-provider");
+		expect(getApiKeyAndHeaders).toHaveBeenCalledWith(configuredModel);
+		expect(generateImages).toHaveBeenCalledWith(
+			{ ...openAI, baseUrl: "https://resolved-image.example/v1" },
+			{ input: [{ type: "text", text: "a red circle" }] },
+			{
+				apiKey: "image-key",
+				headers: undefined,
+				env: undefined,
+				signal: undefined,
+			},
+		);
+		expect(result.details).toMatchObject({ provider: "image-provider", model: "gpt-image-2.5-flare" });
+	});
+
 	it("uses Sunburst for automatic precision work", async () => {
 		const sunburst = imageModel("openai", "gpt-image-2.5-sunburst");
 		const generateImages = vi.fn(async (model: ImagesModel<ImagesApi>) => imageResult(model));

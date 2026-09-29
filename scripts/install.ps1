@@ -227,8 +227,15 @@ function Invoke-WebServiceReconcile([string]$TargetVersion, [string]$PreviousVer
         if ($PreviousVersion) { $env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION = $PreviousVersion }
         else { Remove-Item Env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION -ErrorAction SilentlyContinue }
         Write-InstallerInfo "正在把 Web Gateway 和 Web Runtime 服务切换到 $TargetVersion……"
-        & $Launcher web service reconcile --upgrade --non-interactive | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "Web 服务 reconcile 失败，退出码：$LASTEXITCODE。" }
+        for ($Attempt = 1; $Attempt -le 2; $Attempt++) {
+            & $Launcher web service reconcile --upgrade --non-interactive | Out-Host
+            if ($LASTEXITCODE -eq 0) { return }
+            if ($Attempt -eq 1) {
+                Write-InstallerWarning "Web 服务首次切换未完成，正在重试……"
+                Start-Sleep -Seconds 1
+            }
+        }
+        throw "Web 服务 reconcile 失败，退出码：$LASTEXITCODE。"
     }
     finally {
         if ($HadTargetVersion) { $env:LYSTAR_WEB_SERVICE_TARGET_VERSION = $SavedTargetVersion }
@@ -300,6 +307,83 @@ function Ensure-WebView2Runtime([string]$TerminalHost, [string]$TempDir) {
     Write-InstallerSuccess "WebView2 Runtime 已准备好。"
 }
 
+function ConvertTo-PowerShellLiteral([string]$Value) {
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Start-WebUpdateHandoffIfNeeded {
+    if ($Rollback -or $Uninstall -or $Offline -or $env:LYSTAR_WEB_UPDATE_DETACHED -eq "1") { return $false }
+    if (!$env:LYSTAR_WEB_SERVICE_TARGET_VERSION) { return $false }
+    $GatewayService = Get-Service -Name "LYStar Web Gateway" -ErrorAction SilentlyContinue
+    if (!$GatewayService -or $GatewayService.Status -ne "Running") { return $false }
+
+    $HandoffDir = Join-Path $WebAgentDir "web\update-handoff"
+    New-Item -ItemType Directory -Force $HandoffDir | Out-Null
+    $HandoffId = "$PID-$([Guid]::NewGuid().ToString('N'))"
+    $HelperPath = Join-Path $HandoffDir "update-$HandoffId.ps1"
+    $ResultPath = Join-Path $HandoffDir "update-$HandoffId.result"
+    $LogPath = Join-Path $WebAgentDir "web\product-update.log"
+    $PowerShellPath = Join-Path $PSHOME "powershell.exe"
+    $InstallerPath = [IO.Path]::GetFullPath($PSCommandPath)
+    $ForwardedArguments = New-Object System.Collections.Generic.List[string]
+    if ($Version) { $ForwardedArguments.Add("-Version"); $ForwardedArguments.Add($Version) }
+    if ($MinGitArchive) { $ForwardedArguments.Add("-MinGitArchive"); $ForwardedArguments.Add($MinGitArchive) }
+    if ($WebView2Installer) { $ForwardedArguments.Add("-WebView2Installer"); $ForwardedArguments.Add($WebView2Installer) }
+    if ($ReleaseArchive) { $ForwardedArguments.Add("-ReleaseArchive"); $ForwardedArguments.Add($ReleaseArchive) }
+    if ($ReleaseManifest) { $ForwardedArguments.Add("-ReleaseManifest"); $ForwardedArguments.Add($ReleaseManifest) }
+    $ArgumentLiterals = @($ForwardedArguments | ForEach-Object { ConvertTo-PowerShellLiteral $_ }) -join ", "
+    $HelperLines = New-Object System.Collections.Generic.List[string]
+    $HelperLines.Add('$ErrorActionPreference = "Continue"')
+    foreach ($Name in @("LOCALAPPDATA", "APPDATA", "USERPROFILE", "HOME", "TEMP", "TMP", "Path", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")) {
+        $Value = [Environment]::GetEnvironmentVariable($Name, "Process")
+        if ($null -ne $Value) { $HelperLines.Add('$env:' + $Name + ' = ' + (ConvertTo-PowerShellLiteral $Value)) }
+    }
+    $HelperLines.Add('$env:PI_CODING_AGENT_DIR = ' + (ConvertTo-PowerShellLiteral $WebAgentDir))
+    $HelperLines.Add('$env:LYSTAR_WEB_SERVICE_TARGET_VERSION = ' + (ConvertTo-PowerShellLiteral $env:LYSTAR_WEB_SERVICE_TARGET_VERSION))
+    $HelperLines.Add('$env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION = ' + (ConvertTo-PowerShellLiteral ([string]$env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION)))
+    $HelperLines.Add('$env:LYSTAR_WEB_UPDATE_DETACHED = "1"')
+    $HelperLines.Add('Remove-Item Env:LYSTAR_WEB_SERVICE_CHILD, Env:LYSTAR_WEB_SERVICE_VERSION -ErrorAction SilentlyContinue')
+    $HelperLines.Add('$PowerShellPath = ' + (ConvertTo-PowerShellLiteral $PowerShellPath))
+    $HelperLines.Add('$InstallerPath = ' + (ConvertTo-PowerShellLiteral $InstallerPath))
+    $HelperLines.Add('$InstallerArguments = @(' + $ArgumentLiterals + ')')
+    $HelperLines.Add('$LogPath = ' + (ConvertTo-PowerShellLiteral $LogPath))
+    $HelperLines.Add('$ResultPath = ' + (ConvertTo-PowerShellLiteral $ResultPath))
+    $HelperLines.Add('$Status = 1')
+    $HelperLines.Add('try {')
+    $HelperLines.Add('    $ChildArguments = @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $InstallerPath) + $InstallerArguments')
+    $HelperLines.Add('    & $PowerShellPath @ChildArguments *>> $LogPath')
+    $HelperLines.Add('    $Status = $LASTEXITCODE')
+    $HelperLines.Add('}')
+    $HelperLines.Add('catch {')
+    $HelperLines.Add('    ($_ | Out-String) | Add-Content -Path $LogPath -Encoding UTF8')
+    $HelperLines.Add('    $Status = 1')
+    $HelperLines.Add('}')
+    $HelperLines.Add('[IO.File]::WriteAllText("$ResultPath.next", [string]$Status, [Text.UTF8Encoding]::new($false))')
+    $HelperLines.Add('Move-Item -Force "$ResultPath.next" $ResultPath')
+    $HelperLines.Add('Remove-Item -Force $PSCommandPath')
+    $HelperLines.Add('exit $Status')
+    [IO.File]::WriteAllLines($HelperPath, $HelperLines, [Text.UTF8Encoding]::new($false))
+
+    $CommandLine = '"{0}" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{1}"' -f $PowerShellPath, $HelperPath
+    $Created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $CommandLine }
+    if (!$Created -or $Created.ReturnValue -ne 0) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $HelperPath
+        throw "无法创建独立的 Web 更新任务，现有服务未修改。"
+    }
+    Write-InstallerInfo "更新已交给独立后台任务；Web 服务会在版本切换后自动重启。"
+    for ($Attempt = 0; $Attempt -lt 3600; $Attempt++) {
+        if (Test-Path $ResultPath) {
+            $Status = (Get-Content -Raw $ResultPath).Trim()
+            Remove-Item -Force -ErrorAction SilentlyContinue $ResultPath
+            if ($Status -eq "0") { return $true }
+            throw "后台更新失败（退出码 ${Status}），请查看 $LogPath 后重试。"
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "等待 Web 更新任务接管超时，请查看 $LogPath。"
+}
+
+if (Start-WebUpdateHandoffIfNeeded) { exit 0 }
 Write-InstallerBanner
 $Operation = if ($Uninstall) { "卸载" } elseif ($Rollback) { "回退版本" } else { "安装或更新" }
 Write-InstallerInfo "当前操作：$Operation"

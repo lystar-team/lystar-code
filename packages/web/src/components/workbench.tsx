@@ -127,7 +127,7 @@ export function Workbench({
 		? resolvedSessionTitle(state.session, currentSessionSummary)
 		: currentProject?.name || "选择会话";
 	const roomProject = projects.find((project) => project.id === roomWorkspace.selectedRoomProjectId);
-	const viewTitle = workspaceMode === "rooms" ? roomWorkspace.selectedRoom?.room.title || "Room" : sessionTitleText;
+	const viewTitle = workspaceMode === "rooms" ? roomWorkspace.selectedRoom?.room.title || "智能体协作" : sessionTitleText;
 	const viewSubtitle = workspaceMode === "rooms" ? roomProject?.name || "选择项目" : currentProject?.name;
 
 	const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -246,7 +246,7 @@ export function Workbench({
 								<button type="button" tabIndex={-1} aria-hidden="true" className="fixed inset-0 z-30 cursor-default bg-black/30" onClick={closeSidebar} />
 							) : null}
 							<aside
-								aria-label={workspaceMode === "rooms" ? "Room 导航" : "项目与会话"}
+								aria-label={workspaceMode === "rooms" ? "智能体协作导航" : "项目与会话"}
 								className={cn(
 									"workspace-navigation-panel relative flex min-h-0 min-w-0 shrink-0 border-r border-border/60 bg-background",
 									!wideLayout && "absolute inset-y-0 left-16 z-40 w-[min(392px,calc(100vw-4rem))] shadow-lg",
@@ -355,7 +355,7 @@ export function Workbench({
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
 						{workspaceMode === "rooms" && roomWorkspace.selectedRoom ? (
-							<div className="hidden items-center gap-2 sm:flex" aria-label="Room 成员">
+							<div className="hidden items-center gap-2 sm:flex" aria-label="智能体协作成员">
 								<div className="flex -space-x-1">
 									{roomWorkspace.selectedRoom.members
 										.filter((member) => !member.leftAt)
@@ -433,8 +433,12 @@ export function Workbench({
 											state={state}
 											actions={actions}
 											sessionTitleText={sessionTitleText}
-											collaborationSessions={collaborationSessions}
 											onEditPrompt={beginPromptEdit}
+											editRequest={promptEditRequest}
+											editorState={promptEditRequest ? state : undefined}
+											editorActions={actions}
+											onCancelEdit={closePromptEdit}
+											onEditComplete={closePromptEdit}
 										/>
 									)}
 								</GsapReveal>
@@ -471,7 +475,9 @@ export function Workbench({
 									<Composer
 										state={state}
 										actions={actions}
-										editRequest={promptEditRequest}
+										collaborationSessions={collaborationSessions}
+										globalDrop={!promptEditRequest}
+										disabled={Boolean(promptEditRequest)}
 										onCancelEdit={closePromptEdit}
 										onEditComplete={closePromptEdit}
 									/>

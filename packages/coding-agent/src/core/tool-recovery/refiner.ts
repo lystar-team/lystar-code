@@ -1,4 +1,11 @@
-import type { AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type Context,
+	clampThinkingLevel,
+	type Model,
+	type ModelThinkingLevel,
+	type SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
 import {
 	type CreateToolRecoveryLessonInput,
 	createToolRecoveryLesson,
@@ -41,7 +48,7 @@ export interface ToolRecoveryRefinerInput {
 export type ToolRecoveryRefiner = (input: ToolRecoveryRefinerInput) => Promise<unknown> | unknown;
 
 export interface ModelBackedToolRecoveryRefinerOptions {
-	getModel: () => Model<any> | undefined;
+	getRequestModel: () => { model: Model<any>; thinkingLevel: ModelThinkingLevel } | undefined;
 	complete: (model: Model<any>, context: Context, options: SimpleStreamOptions) => Promise<AssistantMessage>;
 }
 
@@ -77,13 +84,15 @@ export function createModelBackedToolRecoveryRefiner(
 	options: ModelBackedToolRecoveryRefinerOptions,
 ): ToolRecoveryRefiner {
 	return async (input) => {
-		const model = options.getModel();
-		if (!model) return undefined;
+		const request = options.getRequestModel();
+		if (!request) return undefined;
+		const { model } = request;
 		const compactInput = JSON.stringify({
 			failures: input.failures.slice(0, 3),
 			relatedLessons: input.relatedLessons.slice(0, 3),
 			userCorrections: input.userCorrections.slice(0, 3),
 		});
+		const thinkingLevel = model.reasoning ? clampThinkingLevel(model, request.thinkingLevel) : "off";
 		const response = await options.complete(
 			model,
 			{
@@ -96,7 +105,11 @@ export function createModelBackedToolRecoveryRefiner(
 					},
 				],
 			},
-			{ maxTokens: 1_000, signal: input.signal },
+			{
+				maxTokens: 1_000,
+				signal: input.signal,
+				reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
+			},
 		);
 		const text = response.content
 			.filter((content): content is { type: "text"; text: string } => content.type === "text")

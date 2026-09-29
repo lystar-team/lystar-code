@@ -29,15 +29,15 @@ function roomError(message: string, code: string): Error & { code: string; retry
 
 function checkedBody(body: string): string {
 	const trimmed = body.trim();
-	if (!trimmed) throw roomError("Room 消息不能为空", "room_message_empty");
-	if (trimmed.length > 64 * 1024) throw roomError("Room 消息超过 64 KiB 限制", "room_message_too_large");
+	if (!trimmed) throw roomError("智能体协作消息不能为空", "room_message_empty");
+	if (trimmed.length > 64 * 1024) throw roomError("智能体协作消息超过 64 KiB 限制", "room_message_too_large");
 	return trimmed;
 }
 
 function checkedLimit(limit: number | undefined): number {
 	if (limit === undefined) return 50;
 	if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-		throw roomError("Room 消息读取数量必须在 1 到 100 之间", "room_read_limit_invalid");
+		throw roomError("智能体协作消息读取数量必须在 1 到 100 之间", "room_read_limit_invalid");
 	}
 	return limit;
 }
@@ -59,6 +59,8 @@ export class SessionRoomCoordinator {
 	private readonly getAvailability: (cwd: string, sessionId: string) => SessionRoomAvailability | undefined;
 	private readonly deliver: (input: SessionRoomDeliveryInput) => Promise<void>;
 	private readonly deliveriesInFlight = new Set<string>();
+	private operationQueue: Promise<void> = Promise.resolve();
+	private readonly scheduledStaleTaskReclaims = new Set<string>();
 
 	constructor(options: SessionRoomCoordinatorOptions) {
 		this.store = options.store;
@@ -66,31 +68,31 @@ export class SessionRoomCoordinator {
 		this.deliver = options.deliver;
 		setImmediate(() => {
 			void this.resumeDeliveries();
-			void this.reclaimStaleTasks().catch((error: unknown) => console.error("Room 任务回收失败", error));
+			this.scheduleStaleTaskReclaim();
 		});
 		const timer = setInterval(() => {
 			void this.resumeDeliveries();
-			void this.reclaimStaleTasks().catch((error: unknown) => console.error("Room 任务回收失败", error));
+			this.scheduleStaleTaskReclaim();
 		}, 60_000);
 		timer.unref?.();
 	}
 
 	api(): SessionRoomApi {
 		return {
-			create: (input) => this.create(input),
-			join: (input) => this.join(input),
-			leave: (input) => this.leave(input),
-			rename: (input) => this.rename(input),
-			list: (input) => this.list(input),
-			listAll: (input) => this.listAll(input),
-			send: (input) => this.send(input),
-			read: (input) => this.read(input),
-			taskCreate: (input) => this.taskCreate(input),
-			taskList: (input) => this.taskList(input),
-			taskClaim: (input) => this.taskClaim(input),
-			taskUpdate: (input) => this.taskUpdate(input),
-			taskEdit: (input) => this.taskEdit(input),
-			taskComment: (input) => this.taskComment(input),
+			create: (input) => this.enqueueOperation(() => this.create(input)),
+			join: (input) => this.enqueueOperation(() => this.join(input)),
+			leave: (input) => this.enqueueOperation(() => this.leave(input)),
+			rename: (input) => this.enqueueOperation(() => this.rename(input)),
+			list: (input) => this.enqueueOperation(() => this.list(input)),
+			listAll: (input) => this.enqueueOperation(() => this.listAll(input)),
+			send: (input) => this.enqueueOperation(() => this.send(input)),
+			read: (input) => this.enqueueOperation(() => this.read(input)),
+			taskCreate: (input) => this.enqueueOperation(() => this.taskCreate(input)),
+			taskList: (input) => this.enqueueOperation(() => this.taskList(input)),
+			taskClaim: (input) => this.enqueueOperation(() => this.taskClaim(input)),
+			taskUpdate: (input) => this.enqueueOperation(() => this.taskUpdate(input)),
+			taskEdit: (input) => this.enqueueOperation(() => this.taskEdit(input)),
+			taskComment: (input) => this.enqueueOperation(() => this.taskComment(input)),
 		};
 	}
 
@@ -100,7 +102,7 @@ export class SessionRoomCoordinator {
 		const room = {
 			id: randomUUID(),
 			cwd,
-			title: input.title?.trim() || "协作 Room",
+			title: input.title?.trim() || "智能体协作",
 			ownerSessionId: input.ownerSessionId,
 			mode: input.mode ?? "group",
 			createdAt: now,
@@ -118,13 +120,13 @@ export class SessionRoomCoordinator {
 
 	private async join(input: Parameters<SessionRoomApi["join"]>[0]): Promise<SessionRoomSummary> {
 		const room = this.store.room(input.roomId);
-		if (resolve(input.cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		if (resolve(input.cwd) !== room.cwd) throw roomError("智能体协作不属于当前项目", "room_cwd_mismatch");
 		const existing = this.store
 			.members(input.roomId)
 			.find((member) => member.sessionId === input.sessionId && !member.leftAt);
 		const isNewAgent = !existing && input.sessionId !== room.ownerSessionId;
 		if (isNewAgent && !input.profileId?.trim())
-			throw roomError("Room 新成员必须来自智能体配置", "room_profile_required");
+			throw roomError("智能体协作的新成员必须来自智能体配置", "room_profile_required");
 		const now = new Date().toISOString();
 		const joined = this.store.joinMember({
 			roomId: input.roomId,
@@ -147,7 +149,7 @@ export class SessionRoomCoordinator {
 
 	private async leave(input: Parameters<SessionRoomApi["leave"]>[0]): Promise<SessionRoomSummary> {
 		const room = this.store.room(input.roomId);
-		if (resolve(input.cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		if (resolve(input.cwd) !== room.cwd) throw roomError("智能体协作不属于当前项目", "room_cwd_mismatch");
 		const assigned = this.store
 			.listTasks(input.roomId)
 			.filter((task) => task.assigneeSessionId === input.sessionId && task.status !== "done");
@@ -158,7 +160,7 @@ export class SessionRoomCoordinator {
 
 	private async rename(input: Parameters<SessionRoomApi["rename"]>[0]): Promise<SessionRoomSummary> {
 		const room = this.store.room(input.roomId);
-		if (resolve(input.cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		if (resolve(input.cwd) !== room.cwd) throw roomError("智能体协作不属于当前项目", "room_cwd_mismatch");
 		return this.store.renameMember(input.roomId, input.sessionId, input.nickname);
 	}
 
@@ -169,9 +171,41 @@ export class SessionRoomCoordinator {
 	}
 
 	private async listAll(input: Parameters<SessionRoomApi["listAll"]>[0]): Promise<SessionRoomSummary[]> {
-		const rooms = this.store.listAllRooms(resolve(input.cwd));
-		for (const { room } of rooms) await this.releaseStaleTasks(room.id);
+		const cwd = resolve(input.cwd);
+		const rooms = this.store.listAllRooms(cwd);
+		this.scheduleStaleTaskReclaim(cwd);
 		return rooms;
+	}
+
+	private enqueueOperation<T>(run: () => Promise<T>): Promise<T> {
+		const previous = this.operationQueue;
+		const execution = previous.catch(() => {}).then(run);
+		this.operationQueue = execution.then(
+			() => undefined,
+			() => undefined,
+		);
+		return execution;
+	}
+
+	private scheduleStaleTaskReclaim(cwd?: string): void {
+		const key = cwd ?? "*";
+		if (this.scheduledStaleTaskReclaims.has(key)) return;
+		this.scheduledStaleTaskReclaims.add(key);
+		void this.enqueueOperation(async () => {
+			try {
+				if (cwd === undefined) await this.reclaimStaleTasks();
+				else await this.reclaimStaleTasksForCwd(cwd);
+			} finally {
+				this.scheduledStaleTaskReclaims.delete(key);
+			}
+		}).catch((error: unknown) => {
+			this.scheduledStaleTaskReclaims.delete(key);
+			console.error("智能体协作任务回收失败", error);
+		});
+	}
+
+	private async reclaimStaleTasksForCwd(cwd: string): Promise<void> {
+		for (const { room } of this.store.listAllRooms(cwd)) await this.releaseStaleTasks(room.id);
 	}
 
 	private async reclaimStaleTasks(): Promise<void> {
@@ -200,9 +234,9 @@ export class SessionRoomCoordinator {
 
 	private checkedTaskRoom(cwd: string, roomId: string, sessionId: string): void {
 		const room = this.store.room(roomId);
-		if (resolve(cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		if (resolve(cwd) !== room.cwd) throw roomError("智能体协作不属于当前项目", "room_cwd_mismatch");
 		const member = this.store.member(roomId, sessionId);
-		if (member.leftAt) throw roomError("Room 成员已退出", "room_member_left");
+		if (member.leftAt) throw roomError("智能体协作成员已退出", "room_member_left");
 	}
 
 	private async offerTask(
@@ -232,7 +266,7 @@ export class SessionRoomCoordinator {
 			targetSessionIds: recipients,
 			kind: "task",
 			taskId: task.id,
-			body: `待认领任务：${task.title}\n${task.description}\n任务 ID：${task.id}\nRoom ID：${task.roomId}\n使用 room_claim 认领；未认领不要执行。`,
+			body: `待认领任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n使用 room_claim 认领；未认领不要执行。`,
 			capabilities: { allowedTools: ["room_claim"] },
 			idempotencyKey: `room-task-offer:${task.id}:${task.updatedAt}:${targetSessionId ?? "room"}`,
 		});
@@ -267,7 +301,7 @@ export class SessionRoomCoordinator {
 			targetSessionIds: [task.assigneeSessionId],
 			kind: "task",
 			taskId: task.id,
-			body: `任务：${task.title}\n${task.description}\n任务 ID：${task.id}\nRoom ID：${task.roomId}\n如需修改项目文件，使用 sessions 创建独立 worktree 子会话。完成后使用 room_tasks 更新任务状态。`,
+			body: `任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n如需修改项目文件，使用 sessions 创建独立 worktree 子会话。完成后使用 room_tasks 更新任务状态。`,
 			capabilities: { allowedTools: ["read", "grep", "find", "ls", "sessions", "room_tasks"] },
 			idempotencyKey: `room-task-work:${task.id}:${task.updatedAt}`,
 		});
@@ -347,7 +381,7 @@ export class SessionRoomCoordinator {
 	private async send(input: Parameters<SessionRoomApi["send"]>[0]): Promise<SessionRoomSendResult> {
 		const room = this.store.room(input.roomId);
 		const cwd = resolve(input.cwd);
-		if (cwd !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		if (cwd !== room.cwd) throw roomError("智能体协作不属于当前项目", "room_cwd_mismatch");
 		const members = this.store.members(input.roomId);
 		const availability = new Map<string, SessionRoomAvailability>();
 		for (const member of members) {
@@ -363,9 +397,9 @@ export class SessionRoomCoordinator {
 			members,
 			availability,
 		});
-		if (targets.length === 0) throw roomError("Room 没有其他成员可响应", "room_no_targets");
+		if (targets.length === 0) throw roomError("智能体协作没有其他成员可响应", "room_no_targets");
 		if (input.capabilities && input.kind !== "task") {
-			throw roomError("只有 Room task 可以携带能力租约", "room_capabilities_kind_invalid");
+			throw roomError("只有智能体协作任务可以携带能力租约", "room_capabilities_kind_invalid");
 		}
 		const capabilities = input.capabilities
 			? {
@@ -374,7 +408,7 @@ export class SessionRoomCoordinator {
 				}
 			: undefined;
 		if (capabilities && capabilities.allowedTools.length === 0) {
-			throw roomError("Room task 的能力租约不能为空", "room_capabilities_empty");
+			throw roomError("智能体协作任务的能力租约不能为空", "room_capabilities_empty");
 		}
 		const draft: SessionRoomMessageDraft = {
 			roomId: input.roomId,
@@ -455,7 +489,7 @@ export class SessionRoomCoordinator {
 		const code = error instanceof Error && "code" in error ? error.code : undefined;
 		const detail =
 			code === "room_reply_stale"
-				? "Room 有新消息，旧回复已取消"
+				? "智能体协作有新消息，旧回复已取消"
 				: code === "room_reply_duplicate"
 					? "相同回复已由其他智能体发送"
 					: `智能体未响应：${error instanceof Error ? error.message : String(error)}`;
@@ -478,7 +512,7 @@ export class SessionRoomCoordinator {
 		input: Parameters<SessionRoomApi["read"]>[0],
 	): Promise<Awaited<ReturnType<SessionRoomApi["read"]>>> {
 		const room = this.store.room(input.roomId);
-		if (resolve(input.cwd) !== room.cwd) throw roomError("Room 不属于当前项目", "room_cwd_mismatch");
+		if (resolve(input.cwd) !== room.cwd) throw roomError("智能体协作不属于当前项目", "room_cwd_mismatch");
 		const cursor = this.store.cursor(input.roomId, input.sessionId);
 		const result = this.store.readMessages(
 			input.roomId,

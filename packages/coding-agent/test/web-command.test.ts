@@ -181,6 +181,7 @@ describe("Web control commands", () => {
 	});
 
 	it("reconciles post-update services with the explicit target version instead of the stale updater version", async () => {
+		delete process.env.LYSTAR_CLI_MODE;
 		const agentDir = join(tmpdir(), `lystar-web-update-version-${process.pid}-${Date.now()}`);
 		mkdirSync(join(agentDir, "web"), { recursive: true });
 		writeFileSync(join(agentDir, "web", "service-state.json"), "{}\n");
@@ -208,6 +209,7 @@ describe("Web control commands", () => {
 					action: "reconcile",
 					serviceVersion: "0.85.2-lystar.1",
 					previousServiceVersion: "0.85.1-lystar.12",
+					forceRuntimeRestart: true,
 				}),
 			);
 		} finally {
@@ -216,6 +218,7 @@ describe("Web control commands", () => {
 	});
 
 	it("retries the target version when the first post-update reconcile recovers the old service", async () => {
+		delete process.env.LYSTAR_CLI_MODE;
 		vi.useFakeTimers();
 		const agentDir = join(tmpdir(), `lystar-web-update-retry-${process.pid}-${Date.now()}`);
 		mkdirSync(join(agentDir, "web"), { recursive: true });
@@ -264,7 +267,7 @@ describe("Web control commands", () => {
 		}
 	});
 
-	it("reports a recovered service version without rejecting the application update", async () => {
+	it("rejects an upgrade that recovered the previous Web service version", async () => {
 		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-recovery-test";
 		delete process.env.LYSTAR_CLI_MODE;
 		const stableLauncher =
@@ -287,14 +290,17 @@ describe("Web control commands", () => {
 			runtime: { running: true },
 		}));
 
-		await runWebServiceCommand(["reconcile", "--upgrade", "--non-interactive"], {
-			gatewayModule: { runWebServiceAction },
-			gatewayInvocation,
-			runtimeInvocation,
-			serviceVersion: "0.85.2-lystar.1",
-			previousServiceVersion: "0.85.1-lystar.1",
-		});
+		await expect(
+			runWebServiceCommand(["reconcile", "--upgrade", "--non-interactive"], {
+				gatewayModule: { runWebServiceAction },
+				gatewayInvocation,
+				runtimeInvocation,
+				serviceVersion: "0.85.2-lystar.1",
+				previousServiceVersion: "0.85.1-lystar.1",
+			}),
+		).rejects.toMatchObject({ code: "web_service_version_recovered" });
 
+		expect(runWebServiceAction).toHaveBeenCalledWith(expect.objectContaining({ forceRuntimeRestart: true }));
 		expect(warning).toHaveBeenCalledWith(expect.stringContaining("已恢复服务版本 0.85.1-lystar.1"));
 	});
 

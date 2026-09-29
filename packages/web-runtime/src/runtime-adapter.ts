@@ -103,6 +103,7 @@ import {
 	SettingsManager,
 	type SubagentDetails,
 	type SubagentRunSnapshot,
+	saveModelsJsonImageModelProvidersConfig,
 	saveModelsJsonModel,
 	saveModelsJsonModelOverride,
 	saveModelsJsonModels,
@@ -111,6 +112,7 @@ import {
 	setModelsJsonModelDisabled,
 	streamSessionEntries,
 	subscribeSubagentRuns,
+	supportsFastMode,
 	VERSION,
 	WebCompanionServer,
 } from "@earendil-works/pi-coding-agent/core";
@@ -167,7 +169,7 @@ import {
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
 import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
-import { OutputSpeedTracker } from "./output-speed.ts";
+import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
 import {
 	migrateLegacyWebAttachments,
 	rebindSessionAttachments,
@@ -175,6 +177,7 @@ import {
 } from "./session-attachments.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import type {
+	ImageModelSettings,
 	ModelProviderInput,
 	ModelProviderSummary,
 	ModelSummary,
@@ -346,6 +349,7 @@ function sessionProfileFromHeader(manager: SessionManager, cwd: string, agentDir
 		...(profile.model ? { model: profile.model } : {}),
 		...(profile.thinkingLevel ? { thinkingLevel: profile.thinkingLevel as SessionProfile["thinkingLevel"] } : {}),
 		...(profile.tools ? { tools: [...profile.tools] } : {}),
+		...(profile.excludeTools ? { excludeTools: [...profile.excludeTools] } : {}),
 		...(profile.skillNames ? { skillNames: [...profile.skillNames] } : {}),
 		systemPrompt: profile.systemPrompt ?? "",
 		...(profile.agentsInstructions ? { agentsInstructions: profile.agentsInstructions } : {}),
@@ -364,6 +368,7 @@ function sessionProfileSnapshot(profile: SessionProfile): SessionProfileSnapshot
 		...(profile.model ? { model: profile.model } : {}),
 		...(profile.thinkingLevel ? { thinkingLevel: profile.thinkingLevel } : {}),
 		...(profile.tools ? { tools: [...profile.tools] } : {}),
+		...(profile.excludeTools ? { excludeTools: [...profile.excludeTools] } : {}),
 		...(profile.skillNames ? { skillNames: [...profile.skillNames] } : {}),
 		...(profile.systemPrompt ? { systemPrompt: profile.systemPrompt } : {}),
 		...(profile.agentsInstructions ? { agentsInstructions: profile.agentsInstructions } : {}),
@@ -1935,6 +1940,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			activity: session.isStreaming || hasActiveToolActivity ? "running" : "idle",
 			model: session.model ? { provider: session.model.provider, id: session.model.id } : undefined,
 			thinkingLevel: session.thinkingLevel,
+			fastMode: session.fastMode,
 			attached: true,
 			writeAccess,
 			revision: this.stateRevision,
@@ -2189,6 +2195,10 @@ class CoreRuntimeSession implements RuntimeSession {
 			capabilities?: AgentCapabilityLease;
 		},
 	): Promise<AgentTurnContext | undefined> {
+		if (this.runtime.session.fastMode) {
+			const provider = this.runtime.session.model?.provider;
+			if (provider) await this.refreshModelProvider(provider);
+		}
 		const entryCount = this.runtime.session.sessionManager.getEntries().length;
 		const previousToolNames = this.runtime.session.getActiveToolNames();
 		if (options.activeToolNames) this.runtime.session.setActiveToolsByName([...options.activeToolNames]);
@@ -2390,6 +2400,13 @@ class CoreRuntimeSession implements RuntimeSession {
 		if (provider) await this.refreshModelProvider(provider);
 		this.runtime.session.setThinkingLevel(level, { persist: true });
 		await this.runtime.services.settingsManager.flush();
+		this.emitStateChanged();
+	}
+
+	async setFastMode(enabled: boolean): Promise<void> {
+		const provider = this.runtime.session.model?.provider;
+		if (provider) await this.refreshModelProvider(provider);
+		this.runtime.session.setFastMode(enabled);
 		this.emitStateChanged();
 	}
 
@@ -2662,7 +2679,10 @@ class CoreRuntimeSession implements RuntimeSession {
 				this.emit({ type: "progress", payload: progressWithAgentStep(progress, this.stepController) });
 			}
 			if (event.type === "message_end" && event.message.role === "assistant") {
-				const outputSpeed = this.outputSpeed.finish(event.message.usage.output, event.message.stopReason);
+				const outputSpeed = this.outputSpeed.finish(
+					visibleOutputTokens(event.message.usage.output, event.message.usage.reasoning),
+					event.message.stopReason,
+				);
 				if (outputSpeed) this.emit({ type: "progress", payload: { type: "usage", usage: outputSpeed } });
 			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
@@ -2821,7 +2841,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly agentDir: string;
 	private readonly createRuntimeFactory?: CreateAgentSessionRuntimeFactory;
 	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
-	private readonly sessionInfoCache: SessionInfoCache = { entries: new Map() };
+	private readonly sessionSummaryCache: SessionInfoCache = { entries: new Map() };
+	private readonly sessionMetadataCache: SessionInfoCache = { entries: new Map() };
 	private readonly sessionListPromises = new Map<string, Promise<SessionSummaryBase[]>>();
 	private readonly gitRepositoryRootsCache = new Map<string, { rootRepository?: string; repositoryRoots: string[] }>();
 	private readonly nodeToolchain = probeUserNodeToolchain();
@@ -3018,7 +3039,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			getDefaultSessionDir(cwd, this.agentDir),
 			undefined,
 			{
-				cache: this.sessionInfoCache,
+				cache: metadataOnly ? this.sessionMetadataCache : this.sessionSummaryCache,
 				includeAllMessagesText: false,
 				metadataOnly,
 			},
@@ -3392,6 +3413,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				name: model.name,
 				api: model.api,
 				reasoning: model.reasoning,
+				fastModeSupported: supportsFastMode(model),
 				input: model.input,
 				contextWindow: model.contextWindow,
 				maxTokens: model.maxTokens,
@@ -3438,6 +3460,18 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		});
 	}
 
+	async getImageModelSettings(): Promise<ImageModelSettings | undefined> {
+		const runtime = await this.getModelRuntime();
+		const providers = runtime.getImageModelProviders();
+		return providers ? { providers } : undefined;
+	}
+
+	async setImageModelSettings(input: ImageModelSettings): Promise<ImageModelSettings> {
+		await saveModelsJsonImageModelProvidersConfig(join(this.agentDir, "models.json"), input.providers);
+		const runtime = await this.getModelRuntime();
+		await runtime.refresh({ allowNetwork: false });
+		return input;
+	}
 	async listModelOptions(options: { includeProviders?: readonly string[] } = {}): Promise<ModelOptions> {
 		const runtime = await this.getModelRuntime();
 		const includedProviders = new Set(options.includeProviders ?? []);
@@ -3458,6 +3492,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				id: model.id,
 				name: model.name,
 				reasoning: model.reasoning,
+				fastModeSupported: supportsFastMode(model),
 				contextWindow: model.contextWindow,
 				supportedThinkingLevels: getSupportedThinkingLevels(model),
 			}));
@@ -3494,6 +3529,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const override: ModelsJsonModelOverride = {
 			...(input.name ? { name: input.name } : {}),
 			reasoning: input.reasoning,
+			...(input.fastModeSupported !== undefined ? { fastModeSupported: input.fastModeSupported } : {}),
 			...(input.thinkingLevelMap ? { thinkingLevelMap: input.thinkingLevelMap } : {}),
 			input: input.input,
 			...(input.contextWindow ? { contextWindow: input.contextWindow } : {}),
@@ -3506,6 +3542,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			input.baseUrl === undefined &&
 			input.name === undefined &&
 			input.thinkingLevelMap === undefined &&
+			input.fastModeSupported === undefined &&
 			input.contextWindow === undefined &&
 			input.maxTokens === undefined;
 		if (input.resetOverride) await clearModelsJsonModelOverride(modelsPath, input.provider, input.id);
@@ -3526,6 +3563,9 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				api,
 				baseUrl,
 				reasoning: input.reasoning,
+				...((input.fastModeSupported ?? existing?.fastModeSupported) !== undefined
+					? { fastModeSupported: input.fastModeSupported ?? existing?.fastModeSupported }
+					: {}),
 				...(input.thinkingLevelMap ? { thinkingLevelMap: input.thinkingLevelMap } : {}),
 				input: input.input,
 				...(existing?.cost ? { cost: existing.cost } : {}),
@@ -3698,6 +3738,34 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		};
 	}
 
+	async listSubagentTools(cwd: string): Promise<Array<{ name: string; description: string }>> {
+		const projectRoot = canonicalDirectory(cwd);
+		const services = await createAgentSessionServices({
+			cwd: projectRoot,
+			agentDir: this.agentDir,
+			settingsManager: this.settingsForCwd(projectRoot),
+			modelRuntimeSignal: AbortSignal.timeout(15_000),
+			resourceLoaderOptions: { extensionFactories: builtInExtensions },
+		});
+		const sessionManager = SessionManager.inMemory(projectRoot);
+		const stepController = new AgentStepController(sessionManager);
+		const { session } = await createAgentSessionFromServices({
+			services,
+			sessionManager,
+			customTools: [
+				...createAgentStepTools(stepController),
+				createSessionsTool(() => this.sessionCoordinator),
+				createRoomClaimTool(() => this.sessionCoordinator),
+				createRoomTasksTool(() => this.sessionCoordinator),
+			],
+		});
+		try {
+			return session.getAllTools().map(({ name, description }) => ({ name, description }));
+		} finally {
+			session.dispose();
+		}
+	}
+
 	listSubagentConfigs(cwd: string): SubagentConfig[] {
 		return discoverAgentDefinitions(canonicalDirectory(cwd), this.agentDir).definitions.map((definition) => ({
 			name: definition.name,
@@ -3710,6 +3778,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			...(definition.model ? { model: definition.model } : {}),
 			...(definition.thinkingLevel ? { thinkingLevel: definition.thinkingLevel } : {}),
 			...(definition.tools ? { tools: definition.tools } : {}),
+			...(definition.excludeTools ? { excludeTools: definition.excludeTools } : {}),
 			...(definition.skillNames ? { skills: definition.skillNames } : {}),
 			content: definition.content,
 			editable: definition.editable,
@@ -3729,6 +3798,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			model?: string;
 			thinkingLevel?: ThinkingLevel;
 			tools?: string[];
+			excludeTools?: string[];
 			skills?: string[];
 			tags?: string[];
 			content: string;
@@ -3772,6 +3842,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			...(input.model ? { model: input.model } : {}),
 			...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
 			...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
+			...(input.excludeTools && input.excludeTools.length > 0 ? { excludeTools: input.excludeTools } : {}),
 			...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
 			...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
 			content: input.content,
@@ -4572,8 +4643,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			const effectiveProfile =
 				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
 			const activeTools = readOnly
-				? [...new Set([...(effectiveProfile?.tools ?? ["read"]), ...READ_ONLY_SESSION_TOOLS])].filter((tool) =>
-						READ_ONLY_SESSION_TOOLS.includes(tool as (typeof READ_ONLY_SESSION_TOOLS)[number]),
+				? [...new Set([...(effectiveProfile?.tools ?? ["read"]), ...READ_ONLY_SESSION_TOOLS])].filter(
+						(tool) =>
+							READ_ONLY_SESSION_TOOLS.includes(tool as (typeof READ_ONLY_SESSION_TOOLS)[number]) &&
+							!effectiveProfile?.excludeTools?.includes(tool),
 					)
 				: effectiveProfile?.tools;
 			const hasTrustResources = hasTrustRequiringProjectResources(runtimeCwd);
@@ -4646,6 +4719,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					model: resolveProfileModel(effectiveProfile, services.modelRuntime),
 					thinkingLevel: effectiveProfile?.thinkingLevel,
 					...(activeTools ? { tools: activeTools } : {}),
+					...(effectiveProfile?.excludeTools ? { excludeTools: effectiveProfile.excludeTools } : {}),
 					customTools: [
 						...createAgentStepTools(stepController),
 						createSessionsTool(() => this.sessionCoordinator),

@@ -59,12 +59,12 @@ function assertActiveTarget(
 	allowOwnerForUserBroadcast = false,
 ): void {
 	if (targetSessionId === senderSessionId && senderType !== "user") {
-		throw routingError("Room 消息不能定向发送给发送者自己", "room_target_sender");
+		throw routingError("智能体协作消息不能定向发送给发送者自己", "room_target_sender");
 	}
 	const target = members.find((member) => member.sessionId === targetSessionId && member.leftAt === undefined);
-	if (!target) throw routingError(`Room 成员不存在或已退出：${targetSessionId}`, "room_target_not_member");
+	if (!target) throw routingError(`智能体协作成员不存在或已退出：${targetSessionId}`, "room_target_not_member");
 	if (senderType === "user" && target.role === "owner" && !allowOwnerForUserBroadcast) {
-		throw routingError("用户消息只能发送给 Room 中的智能体", "room_user_target_not_agent");
+		throw routingError("用户消息只能发送给智能体协作中的智能体", "room_user_target_not_agent");
 	}
 }
 

@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Progress } from "../ui/progress";
 
 const UPDATE_POLL_MS = 1_200;
+const FAILED_RECOVERY_POLL_LIMIT = 25;
 
 function versionLabel(version: string | undefined): string {
 	if (!version || version === "unknown") return "版本未知";
@@ -25,6 +26,7 @@ export function ProductUpdateControl() {
 	const currentVersion = snapshot?.currentVersion ?? check?.currentVersion;
 	const targetVersion = job?.targetVersion ?? check?.latestVersion ?? undefined;
 	const updateAvailable = check?.status === "available" && check.installEnabled && Boolean(check.latestVersion);
+	const retryable = updateAvailable || job?.status === "failed";
 	const busy = starting || job?.status === "running";
 
 	const load = useCallback(async () => {
@@ -32,16 +34,15 @@ export function ProductUpdateControl() {
 		try {
 			const status = await webApi.productUpdateStatus();
 			setSnapshot(status);
-			if (status.job?.status === "running") {
-				setDialogOpen(true);
-				return;
-			}
+			if (status.job?.status === "running" || status.job?.status === "failed") setDialogOpen(true);
+			if (status.job?.status === "running") return;
 			const result = await webApi.checkProductUpdate();
 			setCheck(result);
 			setSnapshot({
 				currentVersion: result.currentVersion,
-				...(result.job?.status === "running" ? { job: result.job } : {}),
+				...(result.job?.status === "running" || result.job?.status === "failed" ? { job: result.job } : {}),
 			});
+			setUpdateError(result.job?.status === "failed" ? result.job.message : undefined);
 		} catch {
 			// 后台版本检查失败不打断工作台，保留已读取到的版本信息。
 		} finally {
@@ -54,23 +55,29 @@ export function ProductUpdateControl() {
 	}, [load]);
 
 	useEffect(() => {
-		if (job?.status !== "running") return;
+		if (job?.status !== "running" && job?.status !== "failed") return;
 		let active = true;
+		let remainingFailedPolls = FAILED_RECOVERY_POLL_LIMIT;
+		let timer: number | undefined;
 		const poll = async () => {
 			try {
 				const result = await webApi.productUpdateStatus();
 				if (!active) return;
 				setSnapshot(result);
-				if (result.job?.status === "failed") setUpdateError(result.job.message);
+				setUpdateError(result.job?.status === "failed" ? result.job.message : undefined);
+				if (result.job?.status === "failed") {
+					remainingFailedPolls--;
+					if (remainingFailedPolls <= 0 && timer !== undefined) window.clearInterval(timer);
+				}
 			} catch {
 				// Gateway 更新期间会短暂离线，保留进度并继续等待新服务。
 			}
 		};
-		const timer = window.setInterval(() => void poll(), UPDATE_POLL_MS);
+		timer = window.setInterval(() => void poll(), UPDATE_POLL_MS);
 		void poll();
 		return () => {
 			active = false;
-			window.clearInterval(timer);
+			if (timer !== undefined) window.clearInterval(timer);
 		};
 	}, [job?.id, job?.status]);
 
@@ -90,7 +97,7 @@ export function ProductUpdateControl() {
 			setCheck(result);
 			setSnapshot({
 				currentVersion: result.currentVersion,
-				...(result.job?.status === "running" ? { job: result.job } : {}),
+				...(result.job?.status === "running" || result.job?.status === "failed" ? { job: result.job } : {}),
 			});
 			setDialogOpen(true);
 		} catch (value) {
@@ -102,11 +109,12 @@ export function ProductUpdateControl() {
 	};
 
 	const startUpdate = async () => {
-		if (!check?.latestVersion || !updateAvailable) return;
+		const requestedVersion = check?.latestVersion ?? job?.targetVersion;
+		if (!requestedVersion || !retryable) return;
 		setStarting(true);
 		setUpdateError(undefined);
 		try {
-			const result = await webApi.startProductUpdate(check.latestVersion);
+			const result = await webApi.startProductUpdate(requestedVersion);
 			setSnapshot(result);
 		} catch (value) {
 			setUpdateError(value instanceof Error ? value.message : String(value));
@@ -119,13 +127,17 @@ export function ProductUpdateControl() {
 		setCheckError(undefined);
 		setUpdateError(undefined);
 		setSnapshot((current) =>
-			current?.job?.status === "running" ? current : current ? { currentVersion: current.currentVersion } : current,
+			current?.job?.status === "running" || current?.job?.status === "failed"
+				? current
+				: current
+					? { currentVersion: current.currentVersion }
+					: current,
 		);
 		setDialogOpen(true);
 	};
 
 	let dialogTitle = "更新 LYStar Code";
-	let dialogDescription = `将 ${versionLabel(currentVersion)} 更新到 ${versionLabel(targetVersion)}。更新期间 Web 服务会重启，页面会自动恢复。`;
+	let dialogDescription = `将 ${versionLabel(currentVersion)} 更新到 ${versionLabel(targetVersion)}。更新期间 Web 服务会重启，运行中的 Web 会话会结束，页面会自动恢复。`;
 	if (job?.status === "completed") dialogTitle = "更新完成";
 	else if (job?.status === "failed" || updateError) dialogTitle = "更新没有完成";
 	else if (busy) dialogTitle = "正在更新 LYStar Code";
@@ -140,15 +152,21 @@ export function ProductUpdateControl() {
 
 	return (
 		<>
-			{updateAvailable ? (
+			{retryable ? (
 				<Button
 					className="h-8 min-w-0 max-w-[10rem] shrink px-2 text-[10px]"
 					variant="outline"
 					onClick={openConfirmation}
-					title={`更新到 ${versionLabel(check.latestVersion ?? undefined)}`}
+					title={`${job?.status === "failed" ? "重试更新到" : "更新到"} ${versionLabel(targetVersion)}`}
 				>
-					<Download className="size-3.5 shrink-0" aria-hidden="true" />
-					<span className="truncate text-[10px]">更新 {versionLabel(check.latestVersion ?? undefined)}</span>
+					{job?.status === "failed" ? (
+						<RotateCw className="size-3.5 shrink-0" aria-hidden="true" />
+					) : (
+						<Download className="size-3.5 shrink-0" aria-hidden="true" />
+					)}
+					<span className="truncate text-[10px]">
+						{job?.status === "failed" ? "重试" : "更新"} {versionLabel(targetVersion)}
+					</span>
 				</Button>
 			) : (
 				<Button
@@ -190,7 +208,11 @@ export function ProductUpdateControl() {
 										{updateError ?? job?.message ?? "正在启动更新"}
 									</p>
 									<p className="mt-1 text-xs text-muted-foreground">
-										{job?.status === "completed" ? "页面即将刷新" : "请保持页面打开"}
+										{job?.status === "completed"
+											? "页面即将刷新"
+											: job?.status === "failed" || updateError
+												? "可以直接重试；应用已更新时会修复并重启 Web 服务"
+												: "Web 服务会自动重启，请保持页面打开"}
 									</p>
 								</div>
 							</div>
@@ -208,10 +230,10 @@ export function ProductUpdateControl() {
 					{!busy && job?.status !== "completed" ? (
 						<DialogFooter>
 							<Button variant="outline" onClick={() => setDialogOpen(false)}>
-								{updateAvailable ? "取消" : "关闭"}
+								{retryable ? "取消" : "关闭"}
 							</Button>
-							{updateAvailable ? (
-								<Button onClick={() => void startUpdate()} disabled={!check?.latestVersion}>
+							{retryable ? (
+								<Button onClick={() => void startUpdate()} disabled={!targetVersion}>
 									{job?.status === "failed" || updateError ? (
 										<RotateCw className="size-4" />
 									) : (

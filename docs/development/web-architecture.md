@@ -109,7 +109,7 @@ Web 内部按当前目录职责组织：
 - 操作接受、幂等、进度、完成和恢复行为。
 - Transcript 游标、分页、版本信息、投影结果和实时更新。
 - WebSocket 订阅、事件顺序、断线重连和状态恢复。
-- Room 成员、消息路由、目标选择和能力约束。
+- 智能体协作成员、消息路由、目标选择和能力约束。
 - 文件路径边界、公开响应字段和现有鉴权行为。
 - Web Runtime Protocol 的消息结构和版本。
 
@@ -123,7 +123,7 @@ Web 内部按当前目录职责组织：
 | --- | --- |
 | Web | 组件交互、状态转换、会话切换、流事件和前端 API 映射 |
 | Gateway | HTTP 路由、鉴权、响应结构、WebSocket 事件和 Runtime 断连处理 |
-| Runtime | 协议命令、租约、操作幂等、Session 生命周期、Transcript 和 Room 行为 |
+| Runtime | 协议命令、租约、操作幂等、Session 生命周期、Transcript 和智能体协作行为 |
 | Web Protocol | 消息 Schema、编解码、协议边界及生成文件一致性 |
 
 验证要求：

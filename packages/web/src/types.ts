@@ -15,6 +15,7 @@ import type {
 	HarnessImportResult,
 	HarnessImportSource,
 	HostDirectoryEntry,
+	ImageModelSettings,
 	ModelOption,
 	ModelOptionProvider,
 	ModelProviderSummary,
@@ -366,6 +367,7 @@ export interface ModelsResponse {
 	revision: number;
 	models: ModelSummary[];
 	providers: (ModelProviderSummary & { catalogProvider?: string })[];
+	imageModelProviders?: ImageModelSettings;
 }
 
 export interface ModelOptionsResponse {
@@ -392,6 +394,7 @@ export interface WebProviderModelInput {
 	api?: string;
 	baseUrl?: string;
 	reasoning: boolean;
+	fastModeSupported?: boolean;
 	thinkingLevelMap?: Partial<Record<WebThinkingLevel, string | null>>;
 	input: ("text" | "image")[];
 	resetOverride?: boolean;
@@ -475,6 +478,7 @@ export interface HostInstructionsResponse {
 
 export interface SubagentConfigsResponse {
 	subagents: SubagentConfig[];
+	tools: Array<{ name: string; description: string }>;
 }
 
 export interface SubagentsResponse {

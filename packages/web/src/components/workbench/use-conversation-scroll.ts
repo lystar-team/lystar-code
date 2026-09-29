@@ -61,6 +61,7 @@ export function useConversationScroll({
 	const [isAtBottom, setIsAtBottom] = useState(true);
 	const [isAtTop, setIsAtTop] = useState(false);
 	const readingEarlierRef = useRef(false);
+	const upwardScrollIntentRef = useRef(false);
 	const historyLoadRequestedCursorRef = useRef<string>();
 	const historyLoadInFlightRef = useRef<{ sessionId: string; cursor: string }>();
 	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
@@ -147,17 +148,20 @@ export function useConversationScroll({
 		},
 		[],
 	);
-	const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
-		if (readingEarlierRef.current) {
-			setIsAtBottom(false);
-			return;
-		}
-		setIsAtBottom(atBottom);
-		if (atBottom) {
-			promptFollowRef.current = true;
-			setFollowOutput("auto");
-		}
-	}, []);
+	const handleAtBottomStateChange = useCallback(
+		(atBottom: boolean) => {
+			if (readingEarlierRef.current) {
+				setIsAtBottom(false);
+				return;
+			}
+			setIsAtBottom(atBottom);
+			if (atBottom) {
+				promptFollowRef.current = true;
+				setFollowOutput("auto");
+			}
+		},
+		[],
+	);
 	const pauseFollowOutput = useCallback(() => {
 		promptFollowRef.current = false;
 		setFollowOutput(false);
@@ -196,30 +200,63 @@ export function useConversationScroll({
 					if (historyLoadInFlightRef.current === request) historyLoadInFlightRef.current = undefined;
 				});
 		},
-		[hasMorePrevious, loadEarlier, loadingEarlier, previousCursor, sessionId, showToast, transcriptError],
+		[
+			loadEarlier,
+			loadingEarlier,
+			previousCursor,
+			sessionId,
+			showToast,
+			transcriptError,
+		],
 	);
-	const handleUserScrollUp = useCallback(() => {
+	const tryLoadEarlierAtTop = useCallback(() => {
 		if (
 			shouldLoadEarlierHistory(
-				isAtTop,
 				true,
+				upwardScrollIntentRef.current,
 				{ hasMorePrevious, loadingEarlier, previousCursor, transcriptError },
 				historyLoadRequestedCursorRef.current,
 			)
 		) {
+			upwardScrollIntentRef.current = false;
 			readingEarlierRef.current = true;
 			requestEarlierHistory();
 		}
-	}, [hasMorePrevious, isAtTop, loadingEarlier, previousCursor, requestEarlierHistory, transcriptError]);
+	}, [hasMorePrevious, loadingEarlier, previousCursor, requestEarlierHistory, transcriptError]);
+	const handleUserScrollUp = useCallback(() => {
+		upwardScrollIntentRef.current = true;
+		if (isAtTop) {
+			tryLoadEarlierAtTop();
+			upwardScrollIntentRef.current = false;
+		}
+	}, [isAtTop, tryLoadEarlierAtTop]);
+	const handleAtTopStateChange = useCallback(
+		(atTop: boolean) => {
+			setIsAtTop(atTop);
+			if (atTop) {
+				tryLoadEarlierAtTop();
+				upwardScrollIntentRef.current = false;
+			}
+		},
+		[tryLoadEarlierAtTop],
+	);
+	const handleUserScrollDown = useCallback(() => {
+		upwardScrollIntentRef.current = false;
+	}, []);
 
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === promptScrollRequest) return;
 		promptScrollRequestRef.current = promptScrollRequest;
 		readingEarlierRef.current = false;
+		upwardScrollIntentRef.current = false;
 		promptFollowRef.current = true;
 		setFollowOutput("auto");
 		scrollToBottom();
 	}, [scrollToBottom, promptScrollRequest]);
+
+	useLayoutEffect(() => {
+		if (!loadingEarlier) readingEarlierRef.current = false;
+	}, [loadingEarlier]);
 
 	useEffect(() => {
 		if (!promptFollowRef.current || responseActive) return;
@@ -234,6 +271,7 @@ export function useConversationScroll({
 		historyLoadRequestedCursorRef.current = undefined;
 		historyLoadInFlightRef.current = undefined;
 		readingEarlierRef.current = false;
+		upwardScrollIntentRef.current = false;
 		scrollToBottomTweenRef.current?.kill();
 		scrollToBottomTweenRef.current = null;
 		if (scrollToBottomSettleTimerRef.current !== undefined) {
@@ -263,6 +301,7 @@ export function useConversationScroll({
 
 	const handleReturnToBottom = useCallback(() => {
 		readingEarlierRef.current = false;
+		upwardScrollIntentRef.current = false;
 		promptFollowRef.current = true;
 		animateScrollToBottom();
 	}, [animateScrollToBottom]);
@@ -270,11 +309,12 @@ export function useConversationScroll({
 	return {
 		followOutput,
 		handleAtBottomStateChange,
-		handleAtTopStateChange: setIsAtTop,
+		handleAtTopStateChange,
 		handleReturnToBottom,
 		handleScrollStateCapture,
 		handleTranscriptScrollerRef,
 		handleUserScrollAway,
+		handleUserScrollDown,
 		handleUserScrollUp,
 		handleVirtuosoRef,
 		pauseFollowOutput,

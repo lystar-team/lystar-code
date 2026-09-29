@@ -27,6 +27,7 @@ function readModelsJson(agentDir: string): {
 		  }
 		| undefined
 	>;
+	imageModelProviders?: Record<string, string>;
 } {
 	return JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
 }
@@ -149,6 +150,7 @@ describe("Web Runtime model provider settings", () => {
 			id: "ready-model",
 			name: "Ready Model",
 			reasoning: true,
+			fastModeSupported: false,
 			contextWindow: 64_000,
 			supportedThinkingLevels: ["off", "minimal", "low", "medium", "high"],
 		});
@@ -162,9 +164,98 @@ describe("Web Runtime model provider settings", () => {
 			id: "locked-model",
 			name: "Locked Model",
 			reasoning: false,
+			fastModeSupported: false,
 			contextWindow: 32_000,
 			supportedThinkingLevels: ["off"],
 		});
+	});
+
+	it("persists fast-mode model support and restores automatic matching", async () => {
+		const agentDir = temporaryAgentDir("web-runtime-fast-mode-model-");
+		const cwd = join(agentDir, "project");
+		mkdirSync(cwd);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "upstream",
+				defaultModel: "gpt-6-sol",
+				defaultProjectTrust: "always",
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					upstream: {
+						baseUrl: "https://upstream.test/v1",
+						apiKey: "test-key",
+						api: "openai-responses",
+						models: [
+							{
+								id: "gpt-6-sol",
+								name: "GPT 6 Sol",
+								api: "openai-responses",
+								input: ["text"],
+								contextWindow: 272_000,
+								maxTokens: 128_000,
+							},
+						],
+					},
+				},
+			}),
+		);
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		let session: RuntimeSession | undefined;
+		cleanups.push(async () => session?.dispose());
+		session = await adapter.createSession(cwd, async () => ({ cancelled: true }));
+		const model = async () =>
+			(await adapter.listModels()).find((item) => item.provider === "upstream" && item.id === "gpt-6-sol");
+		expect((await model())?.fastModeSupported).toBe(true);
+		await session.setFastMode(true);
+		expect(session.getSnapshot("owned").fastMode).toBe(true);
+
+		await adapter.addProviderModel({
+			provider: "upstream",
+			id: "gpt-6-sol",
+			reasoning: true,
+			fastModeSupported: false,
+			input: ["text"],
+		});
+		expect((await model())?.fastModeSupported).toBe(false);
+		await expect(session.setFastMode(true)).rejects.toThrow("当前模型不支持快速模式");
+		expect(session.getSnapshot("owned").fastMode).toBe(false);
+		expect(
+			(await adapter.listModelOptions()).models.find(
+				(item) => item.provider === "upstream" && item.id === "gpt-6-sol",
+			)?.fastModeSupported,
+		).toBe(false);
+		const saved = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8")) as {
+			providers: { upstream: { modelOverrides?: Record<string, { fastModeSupported?: boolean }> } };
+		};
+		expect(saved.providers.upstream.modelOverrides?.["gpt-6-sol"]?.fastModeSupported).toBe(false);
+
+		await adapter.addProviderModel({
+			provider: "upstream",
+			id: "gpt-6-sol",
+			reasoning: true,
+			input: ["text"],
+			resetOverride: true,
+		});
+		expect((await model())?.fastModeSupported).toBe(true);
+
+		await adapter.addProviderModel({
+			provider: "upstream",
+			id: "custom-fast",
+			api: "openai-responses",
+			baseUrl: "https://upstream.test/v1",
+			reasoning: true,
+			fastModeSupported: true,
+			input: ["text"],
+		});
+		expect(
+			(await adapter.listModels()).find((item) => item.provider === "upstream" && item.id === "custom-fast")
+				?.fastModeSupported,
+		).toBe(true);
 	});
 
 	it("refreshes the active session before applying a saved thinking level", async () => {

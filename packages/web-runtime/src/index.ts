@@ -13,6 +13,7 @@ export * from "./session-attachments.ts";
 export * from "./session-name-settings.ts";
 export * from "./stdio.ts";
 export * from "./stream-transport.ts";
+export * from "./tool-recovery-settings.ts";
 export * from "./transcript-reader.ts";
 export * from "./types.ts";
 export * from "./user-execution-environment.ts";

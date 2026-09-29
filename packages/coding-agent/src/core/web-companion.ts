@@ -671,6 +671,12 @@ export class WebCompanionServer {
 				this.onSessionChanged?.();
 				return this.snapshot();
 			}
+			case "set_fast_mode": {
+				if (typeof command.enabled !== "boolean") throw new Error("快速模式参数无效");
+				this.session.setFastMode(command.enabled);
+				this.onSessionChanged?.();
+				return this.snapshot();
+			}
 			case "cycle_model": {
 				const direction = command.direction;
 				if (direction !== "forward" && direction !== "backward") throw new Error("模型切换方向无效");
@@ -952,6 +958,7 @@ export class WebCompanionServer {
 			activity: this.session.isStreaming || hasActiveToolActivity ? "running" : "idle",
 			model: this.session.model ? { provider: this.session.model.provider, id: this.session.model.id } : undefined,
 			thinkingLevel: this.session.thinkingLevel,
+			fastMode: this.session.fastMode,
 			leafId: this.session.sessionManager.getLeafId(),
 			queuedSteerCount,
 			queuedFollowUpCount,

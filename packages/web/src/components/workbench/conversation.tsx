@@ -11,8 +11,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
 import type { WorkbenchState } from "../../state/use-workbench";
-import type { WebSessionSummary } from "../../types";
 import { CompactionCard } from "./compaction-card";
+import { Composer } from "./composer";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import {
@@ -39,7 +39,6 @@ import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./tra
 import { PrependAnchoredConversationTranscript } from "./prepend-anchored-transcript";
 import { DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
-import { CollaborationFeed } from "./collaboration-feed";
 import { HISTORY_LOAD_THRESHOLD, useConversationScroll } from "./use-conversation-scroll";
 import { useConversationExpansion } from "./use-conversation-expansion";
 export { shouldLoadEarlierHistory } from "./use-conversation-scroll";
@@ -101,6 +100,7 @@ type ConversationRenderCacheEntry = {
 	liveSteps: WorkbenchState["liveSteps"];
 	responseActive: boolean;
 	canEditPrompts: boolean;
+	editingEntryId?: string;
 	toolIndex: ToolIndex;
 	renderItems: ConversationRenderItem[];
 };
@@ -269,6 +269,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			previous.queueId === next.queueId &&
 			previous.copyVisible === next.copyVisible &&
 			previous.editable === next.editable &&
+			previous.editing === next.editing &&
 			previous.sources.join("\u0000") === next.sources.join("\u0000") &&
 			attachmentListsEqual(previous.attachments, next.attachments)
 		);
@@ -335,14 +336,22 @@ export function ConversationView({
 	actions,
 	sessionTitleText,
 	onEditPrompt,
-	collaborationSessions = [],
+	editRequest,
+	editorState,
+	editorActions,
+	onCancelEdit,
+	onEditComplete,
 	allowPromptEditing = true,
 }: {
 	state: ConversationState;
 	actions: ConversationActions;
 	sessionTitleText: string;
 	onEditPrompt: (request: PromptEditRequest) => void;
-	collaborationSessions?: WebSessionSummary[];
+	editRequest?: PromptEditRequest;
+	editorState?: WorkbenchState;
+	editorActions?: WorkbenchActions;
+	onCancelEdit?: () => void;
+	onEditComplete?: () => void;
 	allowPromptEditing?: boolean;
 }) {
 	const responseActive = isConversationResponseActive(state);
@@ -354,6 +363,7 @@ export function ConversationView({
 		!responseActive &&
 		state.queuedUserPrompts.length === 0;
 	const liveSteps = responseActive ? state.liveSteps : EMPTY_LIVE_STEPS;
+	const editingEntryId = editRequest?.sessionId === state.sessionId ? editRequest?.entryId : undefined;
 	const renderCacheRef = useRef(new Map<string, ConversationRenderCacheEntry>());
 	// 实时「已处理」每次跳动回报的秒数，按发送时刻归档，回合结束时供下方「本次耗时」复用。
 	const observedElapsedRef = useRef(new Map<number, number>());
@@ -385,7 +395,8 @@ export function ConversationView({
 			cached.liveTurnId === state.liveTurnId &&
 			cached.liveSteps === liveSteps &&
 			cached.responseActive === responseActive &&
-			cached.canEditPrompts === canEditPrompts
+			cached.canEditPrompts === canEditPrompts &&
+			cached.editingEntryId === editingEntryId
 		) {
 			renderCacheRef.current.delete(cacheKey);
 			renderCacheRef.current.set(cacheKey, cached);
@@ -445,6 +456,7 @@ export function ConversationView({
 			canEditPrompts,
 			liveSteps,
 			resolveObservedElapsed,
+			editingEntryId,
 		);
 		const entry: ConversationRenderCacheEntry = {
 			transcript: state.transcript,
@@ -458,6 +470,7 @@ export function ConversationView({
 			liveSteps,
 			responseActive,
 			canEditPrompts,
+			editingEntryId,
 			toolIndex,
 			renderItems,
 		};
@@ -471,6 +484,7 @@ export function ConversationView({
 		return entry;
 	}, [
 		canEditPrompts,
+		editingEntryId,
 		liveSteps,
 		resolveObservedElapsed,
 		responseActive,
@@ -496,7 +510,11 @@ export function ConversationView({
 					toolStatuses={toolIndex.statuses}
 					liveElapsedChange={recordLiveElapsed}
 					onEditPrompt={onEditPrompt}
-					collaborationSessions={collaborationSessions}
+					editRequest={editRequest}
+					editorState={editorState}
+					editorActions={editorActions}
+					onCancelEdit={onCancelEdit}
+					onEditComplete={onEditComplete}
 				/>
 			</Conversation>
 		</>
@@ -511,7 +529,11 @@ function ConversationBody({
 	toolStatuses,
 	liveElapsedChange,
 	onEditPrompt,
-	collaborationSessions,
+	editRequest,
+	editorState,
+	editorActions,
+	onCancelEdit,
+	onEditComplete,
 }: {
 	state: ConversationState;
 	actions: ConversationActions;
@@ -520,7 +542,11 @@ function ConversationBody({
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
 	liveElapsedChange: (sentAt: number, seconds: number) => void;
 	onEditPrompt: (request: PromptEditRequest) => void;
-	collaborationSessions: WebSessionSummary[];
+	editRequest?: PromptEditRequest;
+	editorState?: WorkbenchState;
+	editorActions?: WorkbenchActions;
+	onCancelEdit?: () => void;
+	onEditComplete?: () => void;
 }) {
 	const responseActive = isConversationResponseActive(state);
 	const thinkingText = activeThinkingText(state.liveTurnItems);
@@ -545,6 +571,7 @@ function ConversationBody({
 		handleScrollStateCapture,
 		handleTranscriptScrollerRef,
 		handleUserScrollAway,
+		handleUserScrollDown,
 		handleUserScrollUp,
 		handleVirtuosoRef,
 		pauseFollowOutput,
@@ -627,6 +654,19 @@ function ConversationBody({
 							attachments: entry.attachments,
 						}
 					: undefined;
+			if (entry.editing && editRequest && editorState && editorActions && onCancelEdit && onEditComplete) {
+				return (
+					<Composer
+						key={`${editRequest.sessionId}:${editRequest.entryId}`}
+						state={editorState}
+						actions={editorActions}
+						editRequest={editRequest}
+						inline
+						onCancelEdit={onCancelEdit}
+						onEditComplete={onEditComplete}
+					/>
+				);
+			}
 			const message = (
 				<TranscriptMessageView
 					role={entry.role}
@@ -660,7 +700,17 @@ function ConversationBody({
 				message
 			);
 		},
-		[actions.queueAction, actions.showToast, onEditPrompt, openResource],
+		[
+			actions.queueAction,
+			actions.showToast,
+			editRequest,
+			editorActions,
+			editorState,
+			onCancelEdit,
+			onEditComplete,
+			onEditPrompt,
+			openResource,
+		],
 	);
 	const renderCompaction = useCallback(
 		(entry: CompactionRenderItem) => (
@@ -836,16 +886,10 @@ function ConversationBody({
 			<>
 				<PrependAnchoredConversationTranscript
 					items={renderItems}
-					loadingEarlier={state.loadingEarlier}
 					getKey={transcriptItemKey}
 					estimateHeight={estimateTranscriptItemHeight}
 					footer={
 						<div className="grid gap-3">
-							<CollaborationFeed
-								sessions={collaborationSessions}
-								onOpenSession={(sessionId) => void actions.selectSession?.(sessionId)}
-								onOpenPath={openResource}
-							/>
 							<ThinkingBlock text={thinkingText} />
 						</div>
 					}
@@ -861,6 +905,7 @@ function ConversationBody({
 					onScrollStateCapture={handleScrollStateCapture}
 					onScrollerRef={handleTranscriptScrollerRef}
 					onUserScrollAway={handleUserScrollAway}
+					onUserScrollDown={handleUserScrollDown}
 					onUserScrollUp={handleUserScrollUp}
 					onExpansionIntent={pauseFollowOutput}
 					sessionKey={state.sessionId ?? "empty"}

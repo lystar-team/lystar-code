@@ -157,7 +157,7 @@ export function MobileProjectRailDialog({
 				size="icon"
 				variant="ghost"
 				aria-expanded={open}
-				aria-label="打开项目和会话"
+				aria-label={workspaceMode === "rooms" ? "打开智能体协作导航" : "打开项目和会话"}
 				onClick={() => setOpen(true)}
 			>
 				<Menu className="size-4" />
@@ -174,7 +174,7 @@ export function MobileProjectRailDialog({
 			<div
 				ref={contentRef}
 				role="dialog"
-				aria-label="项目与会话"
+				aria-label={workspaceMode === "rooms" ? "智能体协作导航" : "项目与会话"}
 				aria-modal="true"
 				aria-hidden={!open}
 				className="mobile-project-rail fixed inset-y-0 left-0 z-50 flex w-[min(88vw,360px)] flex-col border-r border-border/60 bg-background pt-[env(safe-area-inset-top)] shadow-lg will-change-transform"
@@ -185,7 +185,7 @@ export function MobileProjectRailDialog({
 				className="absolute top-[calc(0.75rem+env(safe-area-inset-top))] right-3 z-20 size-11"
 				size="icon-sm"
 					variant="ghost"
-					aria-label="关闭项目和会话"
+					aria-label={workspaceMode === "rooms" ? "关闭智能体协作导航" : "关闭项目和会话"}
 					onClick={close}
 				>
 					<X className="size-4" />

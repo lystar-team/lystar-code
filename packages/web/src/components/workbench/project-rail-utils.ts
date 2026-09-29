@@ -35,6 +35,88 @@ export function isResumedCompletedSession(
 	);
 }
 
+type SessionTreeFields = {
+	id: string;
+	relation?: WebSessionSummary["relation"];
+	parentId?: WebSessionSummary["parentId"];
+};
+
+export function isNestedCollaborationSession(session: SessionTreeFields, sessionIds: ReadonlySet<string>): boolean {
+	return session.relation === "collaboration" && Boolean(session.parentId) && sessionIds.has(session.parentId!);
+}
+
+export function topLevelSessions<T extends SessionTreeFields>(sessions: readonly T[]): T[] {
+	const sessionIds = new Set(sessions.map((session) => session.id));
+	return sessions.filter((session) => !isNestedCollaborationSession(session, sessionIds));
+}
+
+function includeSessionAncestors(
+	sessions: readonly WebSessionSummary[],
+	matchingIds: ReadonlySet<string>,
+): WebSessionSummary[] {
+	const sessionIds = new Set(sessions.map((session) => session.id));
+	const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+	const includedIds = new Set(matchingIds);
+	for (const session of sessions) {
+		if (!includedIds.has(session.id)) continue;
+		let current = session;
+		const visited = new Set<string>();
+		while (isNestedCollaborationSession(current, sessionIds) && current.parentId && !visited.has(current.parentId)) {
+			visited.add(current.parentId);
+			const parent = sessionsById.get(current.parentId);
+			if (!parent) break;
+			includedIds.add(parent.id);
+			current = parent;
+		}
+	}
+	return sessions.filter((session) => includedIds.has(session.id));
+}
+
+export function filterSessionsByTab(
+	sessions: readonly WebSessionSummary[],
+	tab: SessionListTab,
+	unreadSessionIds: Readonly<Record<string, true>>,
+): WebSessionSummary[] {
+	const matchingIds = new Set(sessions.filter((session) => sessionMatchesTab(session, tab, unreadSessionIds)).map((session) => session.id));
+	return includeSessionAncestors(sessions, matchingIds);
+}
+
+export function hasCollaborationChildren(sessions: readonly WebSessionSummary[], parentId: string): boolean {
+	return sessions.some((session) => session.relation === "collaboration" && session.parentId === parentId);
+}
+
+export interface VisibleSession {
+	session: WebSessionSummary;
+	depth: number;
+}
+
+export function visibleSessionTree(
+	sessions: readonly WebSessionSummary[],
+	visibleRootCount: number,
+	expandedSessionIds: ReadonlySet<string>,
+): VisibleSession[] {
+	const sessionIds = new Set(sessions.map((session) => session.id));
+	const childrenByParent = new Map<string, WebSessionSummary[]>();
+	for (const session of sessions) {
+		if (!isNestedCollaborationSession(session, sessionIds) || !session.parentId) continue;
+		const children = childrenByParent.get(session.parentId) ?? [];
+		children.push(session);
+		childrenByParent.set(session.parentId, children);
+	}
+
+	const visible: VisibleSession[] = [];
+	const included = new Set<string>();
+	const append = (session: WebSessionSummary, depth: number) => {
+		if (included.has(session.id)) return;
+		included.add(session.id);
+		visible.push({ session, depth });
+		if (!expandedSessionIds.has(session.id)) return;
+		for (const child of childrenByParent.get(session.id) ?? []) append(child, depth + 1);
+	};
+	for (const session of topLevelSessions(sessions).slice(0, visibleRootCount)) append(session, 0);
+	return visible;
+}
+
 export function excludeRoomAgentSessions(
 	sessions: readonly WebSessionSummary[],
 	roomAgentSessionIds: ReadonlySet<string>,
@@ -83,11 +165,13 @@ export function searchProjectSessions(
 	roomAgentSessionIds: ReadonlySet<string>,
 	unreadSessionIds: Readonly<Record<string, true>>,
 ): WebSessionSummary[] {
-	const sessions = excludeRoomAgentSessions(orderedSessions(project), roomAgentSessionIds)
-		.filter((session) => sessionMatchesTab(session, tab, unreadSessionIds));
-	return !query || project.name.toLowerCase().includes(query)
-		? sessions
-		: sessions.filter((session) => sessionTitle(session).toLowerCase().includes(query));
+	const sessions = excludeRoomAgentSessions(orderedSessions(project), roomAgentSessionIds);
+	const tabSessions = filterSessionsByTab(sessions, tab, unreadSessionIds);
+	if (!query || project.name.toLowerCase().includes(query)) return tabSessions;
+	const matchingIds = new Set(
+		tabSessions.filter((session) => sessionTitle(session).toLowerCase().includes(query)).map((session) => session.id),
+	);
+	return includeSessionAncestors(tabSessions, matchingIds);
 }
 
 export function countSessionsByTab(
@@ -96,7 +180,7 @@ export function countSessionsByTab(
 ): Record<SessionListTab, number> {
 	const counts = { all: 0, running: 0, completed: 0 };
 	for (const sessions of sessionsByProject.values()) {
-		for (const session of sessions) {
+		for (const session of topLevelSessions(sessions)) {
 			counts.all += 1;
 			if (isSessionRunning(session)) counts.running += 1;
 			else if (isSessionUnread(session, unreadSessionIds)) counts.completed += 1;

@@ -58,10 +58,12 @@ describe("session detail cache", () => {
 			previousCursor: "older-page",
 			hasMorePrevious: true,
 			loadingEarlier: true,
+			lastOutputSpeed: { outputTokens: 120, elapsedMs: 1_000 },
 		});
 
 		expect(detail.previousCursor).toBe("older-page");
 		expect(detail.hasMorePrevious).toBe(true);
+		expect(detail.lastOutputSpeed).toEqual({ outputTokens: 120, elapsedMs: 1_000 });
 		expect(detail).not.toHaveProperty("loadingEarlier");
 	});
 });

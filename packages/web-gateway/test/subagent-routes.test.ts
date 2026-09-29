@@ -97,8 +97,25 @@ test("Settings 智能体路由转发并清理标签", async (t) => {
 	routes.getClient = async () => ({
 		request: async <T>(command: Command): Promise<T> => {
 			commands.push(command);
-			return [] as T;
+			return (
+				command.command === "list_subagent_configs"
+					? { subagents: [], tools: [{ name: "read", description: "Read files" }] }
+					: []
+			) as T;
 		},
+	});
+
+	const catalog = responseCapture();
+	await routes.handleSettings(
+		request("GET"),
+		catalog.response,
+		new URL(`http://localhost/api/settings/subagents?projectId=${project.id}`),
+		context,
+		["api", "settings", "subagents"],
+	);
+	assert.deepEqual(catalog.result(), {
+		status: 200,
+		body: { subagents: [], tools: [{ name: "read", description: "Read files" }] },
 	});
 
 	const response = responseCapture();
@@ -107,6 +124,7 @@ test("Settings 智能体路由转发并清理标签", async (t) => {
 			scope: "user",
 			name: "designer",
 			description: "负责设计和原型",
+			excludeTools: ["bash", "write"],
 			tags: ["开发", " 设计 ", "", "开发"],
 			content: "完成设计任务",
 			clientRequestId: "request-one",
@@ -118,9 +136,10 @@ test("Settings 智能体路由转发并清理标签", async (t) => {
 	);
 
 	assert.equal(response.result().status, 200);
-	const command = commands[0];
+	const command = commands[1];
 	assert.equal(command?.command, "save_subagent_config");
 	if (command?.command === "save_subagent_config") {
+		assert.deepEqual(command.excludeTools, ["bash", "write"]);
 		assert.deepEqual(command.tags, ["开发", "设计"]);
 		assert.equal(command.clientRequestId, "request-one");
 	}

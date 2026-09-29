@@ -158,6 +158,7 @@ export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	rename(name: string): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+	setFastMode(enabled: boolean): Promise<void>;
 	cycleModel(direction: "forward" | "backward"): Promise<{ changed: boolean; isScoped: boolean }>;
 	cycleThinkingLevel(): Promise<{ changed: boolean; supported: boolean }>;
 	fork(entryId: string, position?: "before" | "at"): Promise<{ sessionPath: string; selectedText?: string }>;
@@ -197,6 +198,7 @@ export interface ModelSummary {
 	name: string;
 	api: string;
 	reasoning: boolean;
+	fastModeSupported?: boolean;
 	input: ("text" | "image")[];
 	contextWindow: number;
 	maxTokens: number;
@@ -208,6 +210,10 @@ export interface ModelSummary {
 	authenticated: boolean;
 	authMethods: AuthType[];
 	authSource?: string;
+}
+
+export interface ImageModelSettings {
+	providers: Record<string, string>;
 }
 
 export interface ModelProviderSummary {
@@ -243,6 +249,7 @@ export interface ProviderModelInput {
 	api?: string;
 	baseUrl?: string;
 	reasoning: boolean;
+	fastModeSupported?: boolean;
 	input: ("text" | "image")[];
 	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
 	resetOverride?: boolean;
@@ -291,6 +298,8 @@ export interface RuntimeAdapter {
 	listSessions(cwd: string, options?: { metadataOnly?: boolean }): Promise<SessionSummaryBase[]>;
 	listModels(): Promise<ModelSummary[]>;
 	listModelProviders(): Promise<ModelProviderSummary[]>;
+	getImageModelSettings(): Promise<ImageModelSettings | undefined>;
+	setImageModelSettings(input: ImageModelSettings): Promise<ImageModelSettings>;
 	listModelOptions(options?: { includeProviders?: readonly string[] }): Promise<ModelOptions>;
 	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
 	removeModelProvider(provider: string): Promise<ModelProviderSummary[]>;
@@ -306,6 +315,7 @@ export interface RuntimeAdapter {
 	logoutModelProvider(provider: string): Promise<ModelSummary[]>;
 	listSkills(cwd: string, onUiRequest: UiRequestHandler): Promise<{ skills: SkillSummary[]; diagnostics: JsonValue }>;
 	listHarnessImports(cwd: string): HarnessImportPreview;
+	listSubagentTools(cwd: string): Promise<Array<{ name: string; description: string }>>;
 	listSubagentConfigs(cwd: string): SubagentConfig[];
 	saveSubagentConfig(
 		cwd: string,
@@ -319,6 +329,7 @@ export interface RuntimeAdapter {
 			model?: string;
 			thinkingLevel?: ThinkingLevel;
 			tools?: string[];
+			excludeTools?: string[];
 			skills?: string[];
 			tags?: string[];
 			content: string;

@@ -51,6 +51,45 @@ describe("streamed tool phase", () => {
 		expect(toolRowTitle(toLiveToolViewModel(tool))).toBe("正在写入 src/app.ts");
 	});
 
+	it("retains a file path when a later edit update only reports the tool name", () => {
+		const started: Extract<SessionProgress, { type: "tool_update" }> = {
+			type: "tool_update",
+			toolCallId: "edit-1",
+			name: "edit",
+			summary: "src/app.ts",
+			diff: { files: [{ path: "src/app.ts", additions: 12, deletions: 14 }] },
+		};
+		const degraded: Extract<SessionProgress, { type: "tool_update" }> = {
+			...started,
+			summary: "edit",
+			diff: { files: [{ additions: 12, deletions: 14, diff: "+new\n-old" }] },
+		};
+		const initial = liveToolFromUpdate(started, undefined, "batch-1", started.summary);
+		const updated = liveToolFromUpdate(degraded, initial, "batch-1", degraded.summary);
+		const activityUpdated = liveToolFromActivity(
+			{
+				activityEpoch: "edit-stream",
+				revision: 1,
+				toolCallId: "edit-1",
+				name: "edit",
+				state: "running",
+				summary: "edit",
+				updatedAt: 1,
+				diff: degraded.diff,
+			},
+			initial,
+			"batch-1",
+		);
+		const view = toLiveToolViewModel(updated);
+		const activityView = toLiveToolViewModel(activityUpdated);
+
+		expect(view.summary).toBe("src/app.ts");
+		expect(toolRowTitle(view)).toBe("正在编辑 src/app.ts");
+		expect(view.diff).toEqual({ files: [{ path: "src/app.ts", additions: 12, deletions: 14, diff: "+new\n-old" }] });
+		expect(activityView.summary).toBe("src/app.ts");
+		expect(toolRowTitle(activityView)).toBe("正在编辑 src/app.ts");
+	});
+
 	it("retains the image prompt when progress events report only a status", () => {
 		const input = JSON.stringify({ prompt: "保留导航的三栏结构并调整项目入口", model: "auto" });
 		const activity: ToolActivity = {

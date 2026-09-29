@@ -1,4 +1,4 @@
-import { BrainCircuit, FileText, Layers3, Pencil, Plus, RefreshCw, Trash2, UploadCloud, UserRound, Wrench, X } from "lucide-react";
+import { FileText, Layers3, Pencil, Plus, RefreshCw, Trash2, UploadCloud, UserRound, Wrench, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
 import type { SubagentConfig, WebThinkingLevel } from "../../../types";
@@ -16,10 +16,11 @@ import { AgentTagList } from "../agent-profile-card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../ui/tooltip";
 import type { WorkbenchState } from "../../../state/use-workbench";
 import { MonacoMarkdownEditor } from "./monaco-markdown-editor";
+import { thinkingLevelAfterModelChange } from "./subagent-model-selection";
 import { SettingSection } from "./shared";
 
 type AgentProviderOption = { id: string; name: string };
-type AgentModelOption = Pick<WorkbenchState["modelOptions"][number], "provider" | "id" | "name">;
+type AgentModelOption = Pick<WorkbenchState["modelOptions"][number], "provider" | "id" | "name" | "supportedThinkingLevels">;
 
 function sanitizeSvg(svg: string): string {
 	const document = new DOMParser().parseFromString(svg, "image/svg+xml");
@@ -187,8 +188,100 @@ function AgentTagEditor({
 					}}
 				/>
 			</div>
-			<span className="text-xs font-normal text-muted-foreground">每个智能体可添加多个标签，添加到 Room 时会显示这些标签。</span>
+			<span className="text-xs font-normal text-muted-foreground">每个智能体可添加多个标签，添加到智能体协作时会显示这些标签。</span>
 		</div>
+	);
+}
+
+type AgentToolOption = { name: string; description: string };
+
+const TOOL_PURPOSES: Record<string, string> = {
+	read: "读取文件内容，查看代码与文档",
+	grep: "在文件中搜索文本内容",
+	find: "按名称或条件查找文件",
+	ls: "列出目录中的文件与文件夹",
+	bash: "运行终端命令，执行脚本或检查项目",
+	powershell: "运行 PowerShell 命令",
+	edit: "修改已有文件中的指定内容",
+	write: "创建文件或写入完整内容",
+	mcp: "调用已连接服务提供的工具",
+	image_gen: "生成图片或编辑已有图片",
+	apply_patch: "按补丁内容修改文件",
+	subagent: "委派任务给子智能体",
+	sessions: "管理会话与子会话",
+	room_tasks: "查看和处理协作任务",
+	room_claim: "领取协作任务",
+	step_start: "标记当前任务步骤开始",
+	step_end: "标记当前任务步骤完成",
+};
+
+function toolPurpose(tool: AgentToolOption): string {
+	return TOOL_PURPOSES[tool.name] ?? (/[\u3400-\u9fff]/u.test(tool.description)
+		? tool.description
+		: `调用 ${tool.name} 执行扩展工具提供的操作`);
+}
+
+export function AgentToolPermissions({
+	draft,
+	toolOptions,
+	onChange,
+}: {
+	draft: AgentDraft;
+	toolOptions: readonly AgentToolOption[];
+	onChange: (draft: AgentDraft) => void;
+}) {
+	const selected = draft.toolMode === "allow" ? draft.tools : draft.excludeTools;
+	const available = new Set(toolOptions.map((tool) => tool.name));
+	const selectedCount = selected.filter((name) => available.has(name)).length;
+	return (
+		<SettingSection id="agent-config-tools" title="工具权限">
+			<div className="space-y-4">
+				<div className="flex flex-wrap items-center justify-between gap-3">
+					<div aria-label="工具权限模式" className="inline-flex rounded-md border border-border bg-muted/40 p-0.5" role="group">
+						{(["allow", "deny"] as const).map((mode) => (
+							<button
+								key={mode}
+								aria-pressed={draft.toolMode === mode}
+								className={cn("min-h-9 rounded px-4 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", draft.toolMode === mode && "bg-background text-foreground shadow-sm")}
+								onClick={() => onChange({ ...draft, toolMode: mode })}
+								type="button"
+							>
+								{mode === "allow" ? "允许使用" : "禁止使用"}
+							</button>
+						))}
+					</div>
+					<span className="text-xs text-muted-foreground">已选择 {selectedCount} / {toolOptions.length}</span>
+				</div>
+				<p className="text-xs text-muted-foreground">
+					{draft.toolMode === "allow"
+						? "不选择时沿用默认工具；选择后只允许勾选的工具。"
+						: "不选择时沿用默认工具；勾选的工具将不可使用。"}
+				</p>
+				{toolOptions.length ? (
+					<div className="grid gap-2 sm:grid-cols-2">
+						{toolOptions.map((tool) => (
+							<label key={tool.name} className="flex min-w-0 cursor-pointer items-start gap-3 rounded-md border border-border/70 px-3 py-3 transition-colors hover:bg-muted/30 focus-within:ring-2 focus-within:ring-ring">
+								<input
+									className="mt-1 size-4 shrink-0 accent-foreground"
+									type="checkbox"
+									checked={selected.includes(tool.name)}
+									onChange={(event) => {
+										const next = event.target.checked ? [...selected, tool.name] : selected.filter((name) => name !== tool.name);
+										onChange({ ...draft, [draft.toolMode === "allow" ? "tools" : "excludeTools"]: next });
+									}}
+								/>
+								<span className="min-w-0">
+									<span className="block break-all font-mono text-sm font-medium">{tool.name}</span>
+									<span className="mt-1 block text-xs leading-5 text-muted-foreground" title={tool.description}>{toolPurpose(tool)}</span>
+								</span>
+							</label>
+						))}
+					</div>
+				) : (
+					<p className="rounded-md border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">当前项目没有可选工具</p>
+				)}
+			</div>
+		</SettingSection>
 	);
 }
 
@@ -209,7 +302,7 @@ function AgentConfigurationFields({
 	providers: readonly AgentProviderOption[];
 	availableModels: readonly AgentModelOption[];
 	thinkingLevels: readonly WebThinkingLevel[];
-	toolOptions: readonly string[];
+	toolOptions: readonly AgentToolOption[];
 	skillOptions: Readonly<WorkbenchState["skills"]>;
 	onChange: (draft: AgentDraft) => void;
 }) {
@@ -234,58 +327,35 @@ function AgentConfigurationFields({
 							<Input value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} placeholder="说明该智能体负责的任务" />
 						</label>
 						<AgentTagEditor tags={draft.tags} onChange={(tags) => onChange({ ...draft, tags })} />
+						<label className="grid gap-2 text-sm font-medium">
+							供应商
+							<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.provider} onChange={(event) => onChange({ ...draft, provider: event.target.value, model: "" })}>
+								<option value="">继承当前会话</option>
+								{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+							</select>
+						</label>
+						<label className="grid gap-2 text-sm font-medium">
+							基础模型
+							<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.model} onChange={(event) => {
+								const model = availableModels.find((option) => option.id === event.target.value);
+								onChange({ ...draft, model: event.target.value, thinkingLevel: thinkingLevelAfterModelChange(draft.thinkingLevel, model?.supportedThinkingLevels) });
+							}} disabled={!draft.provider && !draft.model}>
+								<option value="">继承当前会话</option>
+								{availableModels.map((model) => <option key={`${model.provider}:${model.id}`} value={model.id}>{model.name}</option>)}
+							</select>
+						</label>
+						<label className="grid gap-2 text-sm font-medium">
+							思考强度
+							<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.thinkingLevel} onChange={(event) => onChange({ ...draft, thinkingLevel: event.target.value as WebThinkingLevel | "" })}>
+								<option value="">继承模型设置</option>
+								{thinkingLevels.map((level) => <option key={level} value={level}>{level}</option>)}
+							</select>
+						</label>
 					</div>
 				</SettingSection>
 			) : null}
 
-			{section === "runtime" ? (
-				<SettingSection id="agent-config-runtime" title="模型与运行">
-				<div className="grid gap-3">
-					<label className="grid gap-2 text-sm font-medium">
-						供应商
-						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.provider} onChange={(event) => onChange({ ...draft, provider: event.target.value, model: "", thinkingLevel: "" })}>
-							<option value="">继承当前会话</option>
-							{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-						</select>
-					</label>
-					<label className="grid gap-2 text-sm font-medium">
-						模型
-						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value, thinkingLevel: "" })} disabled={!draft.provider && !draft.model}>
-							<option value="">继承当前会话</option>
-							{availableModels.map((model) => <option key={`${model.provider}:${model.id}`} value={model.id}>{model.name}</option>)}
-						</select>
-					</label>
-					<label className="grid gap-2 text-sm font-medium">
-						思考强度
-						<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.thinkingLevel} onChange={(event) => onChange({ ...draft, thinkingLevel: event.target.value as WebThinkingLevel | "" })}>
-							<option value="">继承模型设置</option>
-							{thinkingLevels.map((level) => <option key={level} value={level}>{level}</option>)}
-						</select>
-					</label>
-				</div>
-				</SettingSection>
-			) : null}
-
-			{section === "tools" ? (
-				<SettingSection id="agent-config-tools" title="工具权限">
-				<div className="grid gap-2">
-					<div className="flex items-center justify-between gap-3">
-						<p className="text-xs text-muted-foreground">不选择时允许全部工具。</p>
-						<span className="shrink-0 text-xs text-muted-foreground">
-							{draft.tools.length ? `已选择 ${draft.tools.length}/${toolOptions.length}` : "全部工具"}
-						</span>
-					</div>
-					<div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-border/70 p-3">
-						{toolOptions.map((tool) => (
-							<label key={tool} className="flex items-center gap-2 text-sm">
-								<input type="checkbox" checked={draft.tools.includes(tool)} onChange={(event) => onChange({ ...draft, tools: event.target.checked ? [...draft.tools, tool] : draft.tools.filter((candidate) => candidate !== tool) })} />
-								<span className="font-mono text-xs">{tool}</span>
-							</label>
-						))}
-					</div>
-				</div>
-				</SettingSection>
-			) : null}
+			{section === "tools" ? <AgentToolPermissions draft={draft} toolOptions={toolOptions} onChange={onChange} /> : null}
 
 			{section === "skills" ? (
 				<SettingSection id="agent-config-skills" title="Skill">
@@ -350,9 +420,9 @@ function NicknameLibrarySettings() {
 	};
 
 	return (
-		<SettingSection id="agent-nickname-pool" title="Room 协作昵称">
+		<SettingSection id="agent-nickname-pool" title="智能体协作昵称">
 			<div className="grid gap-3">
-				<p className="text-sm leading-6 text-muted-foreground">为 Room 成员准备可复用的昵称。Agent 加入 Room 后会从未占用的昵称中分配。</p>
+				<p className="text-sm leading-6 text-muted-foreground">为智能体协作成员准备可复用的昵称。智能体加入后会从未占用的昵称中分配。</p>
 				<div className="flex min-h-11 min-w-0 flex-wrap items-center gap-1.5 rounded-lg border border-input bg-background px-2 py-1.5 focus-within:ring-2 focus-within:ring-ring">
 					{draft.map((nickname) => (
 						<span className="inline-flex max-w-full items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-sm" key={nickname}>
@@ -368,7 +438,7 @@ function NicknameLibrarySettings() {
 						</span>
 					))}
 					<input
-						aria-label="添加 Room 协作昵称"
+						aria-label="添加智能体协作昵称"
 						className="h-8 min-w-40 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground"
 						placeholder="输入昵称后按 Enter 添加"
 						value={input}
@@ -393,11 +463,10 @@ function NicknameLibrarySettings() {
 	);
 }
 
-type AgentEditorSection = "basic" | "runtime" | "tools" | "skills" | "content";
+type AgentEditorSection = "basic" | "tools" | "skills" | "content";
 
 const AGENT_EDITOR_SECTIONS: Array<{ id: AgentEditorSection; label: string; icon: typeof UserRound }> = [
 	{ id: "basic", label: "基本信息", icon: UserRound },
-	{ id: "runtime", label: "模型与运行", icon: BrainCircuit },
 	{ id: "tools", label: "工具权限", icon: Wrench },
 	{ id: "skills", label: "Skill", icon: Layers3 },
 	{ id: "content", label: "智能体正文", icon: FileText },
@@ -484,7 +553,6 @@ function AgentMarkdownPanel({
 }
 
 const THINKING_LEVELS: WebThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp", "image_gen"];
 
 interface AgentDraft {
 	source?: SubagentConfig;
@@ -495,6 +563,8 @@ interface AgentDraft {
 	model: string;
 	thinkingLevel: WebThinkingLevel | "";
 	tools: string[];
+	excludeTools: string[];
+	toolMode: "allow" | "deny";
 	skills: string[];
 	tags: string[];
 	icon: string;
@@ -511,6 +581,8 @@ function draftFor(config?: SubagentConfig): AgentDraft {
 		model: config?.model ?? "",
 		thinkingLevel: config?.thinkingLevel ?? "",
 		tools: config?.tools ?? [],
+		excludeTools: config?.excludeTools ?? [],
+		toolMode: config?.excludeTools?.length ? "deny" : "allow",
 		skills: config?.skills ?? [],
 		tags: config?.tags ?? [],
 		icon: config?.icon ?? "general",
@@ -548,7 +620,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 	const thinkingLevels = selectedModel?.supportedThinkingLevels.length
 		? THINKING_LEVELS.filter((level) => selectedModel.supportedThinkingLevels.includes(level))
 		: THINKING_LEVELS;
-	const toolOptions = [...new Set([...DEFAULT_TOOLS, ...(draft?.tools ?? [])])];
+	const toolOptions = state.subagentTools;
 	const skillOptions = state.skills.filter((skill) => skill.eligible && skill.enabled);
 
 	const openDraft = (config?: SubagentConfig) => {
@@ -577,7 +649,8 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 			...(draft.model ? { model: draft.model } : {}),
 			...(draft.thinkingLevel ? { thinkingLevel: draft.thinkingLevel } : {}),
 			...(draft.icon ? { icon: draft.icon } : {}),
-			...(draft.tools.length > 0 ? { tools: draft.tools } : {}),
+			...(draft.toolMode === "allow" && draft.tools.length > 0 ? { tools: draft.tools } : {}),
+			...(draft.toolMode === "deny" && draft.excludeTools.length > 0 ? { excludeTools: draft.excludeTools } : {}),
 			...(draft.skills.length > 0 ? { skills: draft.skills } : {}),
 			...(draft.tags.length > 0 ? { tags: draft.tags } : {}),
 			content: draft.content,
@@ -619,9 +692,9 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 			) : state.subagentConfigs.length === 0 ? (
 				<div className="rounded-xl border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">没有可用的智能体</div>
 			) : (
-				<div className="grid gap-3 md:grid-cols-2">
+				<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
 					{state.subagentConfigs.map((config, index) => (
-						<div key={`${config.scope}:${config.name}:${index}`} className="flex min-h-44 flex-col rounded-xl border border-border/70 bg-card p-5">
+						<div key={`${config.scope}:${config.name}:${index}`} className="flex min-h-44 min-w-0 flex-col rounded-xl border border-border/70 bg-card p-4">
 							<div className="flex items-start justify-between gap-3">
 								<div className="min-w-0">
 									<div className="flex min-w-0 items-center gap-2">
@@ -633,11 +706,12 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 								</div>
 							</div>
 							<div className="mt-auto flex flex-wrap items-center gap-2 pt-4 text-xs text-muted-foreground">
-								{config.model ? <Badge variant="outline">{config.provider ? `${config.provider}/` : ""}{config.model}</Badge> : <span>继承当前模型</span>}
+								{config.model ? <Badge className="max-w-full min-w-0 truncate" title={`${config.provider ? `${config.provider}/` : ""}${config.model}`} variant="outline">{config.provider ? `${config.provider}/` : ""}{config.model}</Badge> : <span>继承当前模型</span>}
 								{config.thinkingLevel ? <Badge variant="outline">思考 {config.thinkingLevel}</Badge> : null}
-								<span>{config.tools?.length ? `${config.tools.length} 个工具` : "全部工具"}</span>
+								<span>{config.excludeTools?.length ? `禁用 ${config.excludeTools.length} 个工具` : config.tools?.length ? `允许 ${config.tools.length} 个工具` : "默认工具"}</span>
 							</div>
-							<div className="mt-4 flex justify-end gap-2 border-t border-border/60 pt-4">
+							<div className="mt-4 flex items-center justify-end gap-2 border-t border-border/60 pt-4">
+								{config.scope === "builtin" ? <span className="mr-auto text-xs text-muted-foreground">内置智能体不可删除</span> : null}
 								{config.editable ? (
 									<Button variant="ghost" size="sm" disabled={state.subagentConfigsSaving} onClick={() => void remove(config)}>
 										<Trash2 className="size-4" />

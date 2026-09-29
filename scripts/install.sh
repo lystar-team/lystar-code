@@ -10,6 +10,9 @@ UPDATE_PATH=true
 DOWNLOADER=""
 tmp=""
 activated_version=""
+original_args=("$@")
+installer_path="${BASH_SOURCE[0]}"
+if [[ "$installer_path" != /* ]]; then installer_path="$PWD/${installer_path#./}"; fi
 # 安装检查必须读取 current，不能继承后台服务固定的旧版本。
 unset LYSTAR_WEB_SERVICE_VERSION
 
@@ -29,6 +32,13 @@ reconcile_web_services() {
         return 1
     }
     print_info "正在把 Web Gateway 和 Web Runtime 服务切换到 ${target_version}……"
+    if LYSTAR_WEB_SERVICE_TARGET_VERSION="$target_version" \
+        LYSTAR_WEB_PREVIOUS_SERVICE_VERSION="$previous_version" \
+        "$launcher" web service reconcile --upgrade --non-interactive; then
+        return 0
+    fi
+    print_warning 'Web 服务首次切换未完成，正在重试……'
+    sleep 1
     LYSTAR_WEB_SERVICE_TARGET_VERSION="$target_version" \
         LYSTAR_WEB_PREVIOUS_SERVICE_VERSION="$previous_version" \
         "$launcher" web service reconcile --upgrade --non-interactive
@@ -102,6 +112,74 @@ cleanup() {
 
 trap handle_error ERR
 trap cleanup EXIT
+
+maybe_handoff_web_update() {
+    [[ "$ACTION" == "install" ]] || return 0
+    [[ "${LYSTAR_WEB_UPDATE_DETACHED:-}" != "1" ]] || return 0
+    [[ -n "${LYSTAR_WEB_SERVICE_TARGET_VERSION:-}" ]] || return 0
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    if ! systemctl --user is-active --quiet lystar-web-gateway.service 2>/dev/null; then
+        return 0
+    fi
+    command -v systemd-run >/dev/null 2>&1 || die 'Web Gateway 正在运行，但当前系统缺少 systemd-run，无法安全接管更新。'
+    local gateway_pid
+    gateway_pid="$(systemctl --user show --property MainPID --value lystar-web-gateway.service 2>/dev/null || true)"
+    [[ "$gateway_pid" =~ ^[1-9][0-9]*$ ]] || die '无法读取 Web Gateway 主进程，未启动后台更新。'
+
+    local handoff_dir="$web_agent_dir/web/update-handoff"
+    local handoff_id="${$}-$(date +%s)"
+    local helper_path="$handoff_dir/update-$handoff_id.sh"
+    local result_path="$handoff_dir/update-$handoff_id.result"
+    local log_path="$web_agent_dir/web/product-update.log"
+    local unit_name="lystar-web-update-$handoff_id"
+    mkdir -p "$handoff_dir"
+    {
+        printf '#!/usr/bin/env bash\nset +e\n'
+        printf 'export HOME=%q\n' "$HOME"
+        printf 'export PATH=%q\n' "${PATH:-}"
+        printf 'export PI_CODING_AGENT_DIR=%q\n' "$web_agent_dir"
+        printf 'export LYSTAR_WEB_SERVICE_TARGET_VERSION=%q\n' "${LYSTAR_WEB_SERVICE_TARGET_VERSION:-}"
+        printf 'export LYSTAR_WEB_PREVIOUS_SERVICE_VERSION=%q\n' "${LYSTAR_WEB_PREVIOUS_SERVICE_VERSION:-}"
+        printf 'export LYSTAR_WEB_UPDATE_DETACHED=1\n'
+        printf 'unset LYSTAR_WEB_SERVICE_CHILD LYSTAR_WEB_SERVICE_VERSION\n'
+        printf 'exec >> %q 2>&1\n' "$log_path"
+        printf '/bin/bash %q' "$installer_path"
+        local argument
+        for argument in "${original_args[@]}"; do
+            printf ' %q' "$argument"
+        done
+        printf '\nstatus=$?\n'
+        printf 'printf '\''%%s\\n'\'' "$status" > %q\n' "${result_path}.next"
+        printf 'mv -f %q %q\n' "${result_path}.next" "$result_path"
+        printf 'rm -f %q\n' "$helper_path"
+        printf 'exit "$status"\n'
+    } > "$helper_path"
+    chmod 0700 "$helper_path"
+    if ! systemd-run --user --quiet --collect --unit "$unit_name" /bin/bash "$helper_path"; then
+        rm -f "$helper_path"
+        die '无法创建独立的 Web 更新任务，现有服务未修改。'
+    fi
+    print_info '更新已交给独立后台任务；Web 服务会在版本切换后自动重启。'
+
+    local attempt=0
+    while [[ "$attempt" -lt 1800 ]]; do
+        attempt=$((attempt + 1))
+        if [[ -f "$result_path" ]]; then
+            local status
+            status="$(tr -d '[:space:]' < "$result_path")"
+            rm -f "$result_path"
+            [[ "$status" == "0" ]] && exit 0
+            die "后台更新失败（退出码 ${status:-未知}），请查看 $log_path 后重试。"
+        fi
+        local current_pid
+        current_pid="$(systemctl --user show --property MainPID --value lystar-web-gateway.service 2>/dev/null || true)"
+        if [[ "$current_pid" != "$gateway_pid" ]]; then
+            exit 0
+        fi
+        sleep 1
+    done
+    die "等待 Web 更新任务接管超时，请查看 ${log_path}。"
+}
 
 replace_symlink() {
     local target="$1"
@@ -240,11 +318,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-print_banner
 if [[ "$ACTION" == "help" ]]; then
+    print_banner
     print_usage
     exit 0
 fi
+maybe_handoff_web_update
+print_banner
 
 case "$ACTION" in
     install) print_info '当前操作：安装或更新' ;;

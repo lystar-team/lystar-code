@@ -225,7 +225,7 @@ function InviteAgentDialog({
 			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader>
 					<DialogTitle>添加智能体</DialogTitle>
-					<DialogDescription>从智能体配置创建新的 Room 成员。加入后会从昵称库分配运行时昵称。</DialogDescription>
+					<DialogDescription>从智能体配置创建新的协作成员。加入后会从昵称库分配运行时昵称。</DialogDescription>
 				</DialogHeader>
 				<div className="grid gap-3 py-2">
 					{profilesLoading ? (
@@ -250,7 +250,7 @@ function InviteAgentDialog({
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>取消</Button>
 					<Button disabled={submitting || !selection} onClick={() => void submit()}>
-						{submitting ? "添加中…" : "添加到 Room"}
+						{submitting ? "添加中…" : "添加到智能体协作"}
 					</Button>
 				</DialogFooter>
 			</DialogContent>
@@ -342,9 +342,9 @@ export function RoomWorkspace({
 				<div className="grid size-12 place-items-center rounded-2xl bg-muted text-muted-foreground">
 					<MessageSquare className="size-5" aria-hidden="true" />
 				</div>
-				<h2 className="mt-4 text-base font-semibold">选择一个 Room</h2>
+				<h2 className="mt-4 text-base font-semibold">选择一个智能体协作</h2>
 				<p className="mt-1 max-w-sm text-sm leading-6 text-muted-foreground">
-					Room 按项目归属显示在左侧。选择后可以查看成员消息并继续协作。
+					智能体协作按项目归属显示在左侧。选择后可以查看成员消息并继续协作。
 				</p>
 				<Button className="mt-4" variant="outline" onClick={onModeChange}>
 					返回会话
@@ -362,7 +362,7 @@ export function RoomWorkspace({
 			<div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-border/60 px-4 py-2 sm:px-8 @min-[48rem]/room-workspace:grid-cols-[minmax(0,1fr)_minmax(13rem,18rem)_minmax(0,1fr)]">
 				<div className="min-w-0">
 					<div className="flex items-center gap-2 text-sm font-medium">
-						<span>Room 成员</span>
+						<span>智能体协作成员</span>
 						<span className="text-xs font-normal text-muted-foreground">{activeMembers.length} 位</span>
 					</div>
 					<div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
@@ -428,7 +428,7 @@ export function RoomWorkspace({
 					</div>
 				</div>
 				<div className="col-span-2 row-start-2 w-full max-w-72 justify-self-center @min-[48rem]/room-workspace:col-span-1 @min-[48rem]/room-workspace:col-start-2 @min-[48rem]/room-workspace:row-start-1">
-					<WorkbenchTabBar activeId={section} tabs={ROOM_TABS} label="Room 视图" className="!w-full" />
+					<WorkbenchTabBar activeId={section} tabs={ROOM_TABS} label="智能体协作视图" className="!w-full" />
 				</div>
 				<Button
 					className="col-start-2 row-start-1 shrink-0 justify-self-end px-2 @min-[48rem]/room-workspace:col-start-3"
@@ -447,7 +447,7 @@ export function RoomWorkspace({
 					{controller.roomMessagesLoading ? (
 							<div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground" role="status">
 								<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-								正在加载 Room 消息
+								正在加载智能体协作消息
 							</div>
 						) : controller.roomMessagesError ? (
 							<div className="flex items-center justify-center gap-2 py-12 text-sm text-destructive" role="alert">
@@ -529,7 +529,7 @@ export function RoomWorkspace({
 					<form onSubmit={(event) => { event.preventDefault(); void submitRename(); }}>
 						<DialogHeader>
 							<DialogTitle>智能体改名</DialogTitle>
-							<DialogDescription>修改这个 Room 中的昵称，不影响智能体配置文件。</DialogDescription>
+							<DialogDescription>修改这个智能体协作中的昵称，不影响智能体配置文件。</DialogDescription>
 						</DialogHeader>
 						<label className="mt-4 block text-sm font-medium" htmlFor="room-member-nickname">昵称</label>
 						<Input id="room-member-nickname" className="mt-2" maxLength={128} value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} />
@@ -555,7 +555,7 @@ export function RoomWorkspace({
 						<DialogTitle>移除智能体</DialogTitle>
 						<DialogDescription>
 							将 {removeTarget ? sessionLabel(memberSessions.get(removeTarget.member.sessionId), removeTarget.member.sessionId, removeTarget.member) : ""}
-							（{removeTarget?.member.profileName ?? removeTarget?.member.profileId ?? "协作智能体"}）移出 Room？
+							（{removeTarget?.member.profileName ?? removeTarget?.member.profileId ?? "协作智能体"}）移出智能体协作？
 							未完成任务回到待认领；会话和历史消息保留，正在运行的回合不会强制停止。
 						</DialogDescription>
 					</DialogHeader>

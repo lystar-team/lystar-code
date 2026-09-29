@@ -19,7 +19,7 @@ import {
 	nextLiveToolBatchId,
 	runningAgentStepId,
 } from "./workbench-live-state.ts";
-import { mergeImageGenerationSummary, mergeWebSearchToolSummary } from "./tool-batching.ts";
+import { mergeImageGenerationSummary, mergeWebSearchToolSummary, sessionToolLabel } from "./tool-batching.ts";
 import { gitCredentialAuthorizationMessageFromProgress, sessionActivityFromProgress } from "./workbench-state.ts";
 import type { WorkbenchState } from "./workbench-types.ts";
 
@@ -159,7 +159,10 @@ export function useWorkbenchProgressActions({
 										`live-tools:${liveTurnItemRef.current++}`,
 										current.liveTurnId,
 									),
-							statusText: `正在执行 ${progress.name}`,
+							statusText:
+								progress.name === "sessions"
+									? sessionToolLabel(summary, "running") ?? "正在处理智能体协作"
+									: `正在执行 ${progress.name}`,
 						};
 					}
 					case "tool_update": {
@@ -248,7 +251,11 @@ export function useWorkbenchProgressActions({
 										`live-tools:${liveTurnItemRef.current++}`,
 										current.liveTurnId,
 									),
-							statusText: progress.status === "error" ? `${progress.name} 执行失败` : `${progress.name} 已完成`,
+							statusText:
+								progress.name === "sessions"
+									? sessionToolLabel(summary ?? "", progress.status === "error" ? "error" : "completed") ??
+										"智能体协作已完成"
+									: progress.status === "error" ? `${progress.name} 执行失败` : `${progress.name} 已完成`,
 						};
 					}
 					case "queue_update": {
@@ -297,6 +304,7 @@ export function useWorkbenchProgressActions({
 							...(progress.phase === "turn"
 								? {
 										liveTurnStartRevision: current.transcriptRevision,
+										lastOutputSpeed: undefined,
 										liveTurnActive: true,
 										liveTurnItems,
 										liveTools: {},
@@ -354,15 +362,17 @@ export function useWorkbenchProgressActions({
 					case "status":
 						return { ...current, statusText: progress.status };
 					case "usage":
-						return progress.usage.elapsedMs && progress.usage.outputTokens
-							? {
-									...current,
-									lastOutputSpeed: {
-										outputTokens: progress.usage.outputTokens,
-										elapsedMs: progress.usage.elapsedMs,
-									},
-								}
-							: current;
+						return {
+							...current,
+							...(progress.usage.elapsedMs && progress.usage.outputTokens
+								? {
+										lastOutputSpeed: {
+											outputTokens: progress.usage.outputTokens,
+											elapsedMs: progress.usage.elapsedMs,
+										},
+									}
+								: {}),
+						};
 				}
 			});
 		},

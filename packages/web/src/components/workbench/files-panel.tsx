@@ -47,6 +47,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { FileTypeIcon } from "./file-type-icon";
 import { preloadMonacoRuntime } from "./monaco-runtime";
 import type { WorkbenchActions } from "./types";
@@ -104,6 +105,24 @@ function isFileDrag(event: ReactDragEvent<HTMLElement>): boolean {
 	return Array.from(event.dataTransfer.types).includes("Files");
 }
 
+function TruncatedFileName({ name }: { name: string }) {
+	const [truncated, setTruncated] = useState(false);
+	return (
+		<Tooltip open={truncated}>
+			<TooltipTrigger asChild>
+				<span
+					className="block truncate"
+					onPointerEnter={(event) => setTruncated(event.currentTarget.scrollWidth > event.currentTarget.clientWidth)}
+					onPointerLeave={() => setTruncated(false)}
+				>
+					{name}
+				</span>
+			</TooltipTrigger>
+			<TooltipContent className="max-w-[min(28rem,calc(100vw-2rem))] break-all text-left">{name}</TooltipContent>
+		</Tooltip>
+	);
+}
+
 function ProjectFileRow({
 	entry,
 	detail,
@@ -131,11 +150,11 @@ function ProjectFileRow({
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
 				<div onContextMenu={onContextOpen}>
-					<FileTreeFile path={entry.path} name={entry.name}>
+					<FileTreeFile path={entry.path} name={entry.name} className="min-w-0 w-full">
 						<span className="size-4 shrink-0" aria-hidden="true" />
 						<FileTypeIcon path={entry.path} />
 						<span className="min-w-0 flex-1">
-							<span className="block truncate">{entry.name}</span>
+							<TruncatedFileName name={entry.name} />
 							{detail ? <span className="block truncate text-[11px] text-muted-foreground">{detail}</span> : null}
 						</span>
 					</FileTreeFile>
@@ -350,6 +369,25 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			window.clearTimeout(timer);
 		};
 	}, [normalizedSearch, searchRevision, state.currentProjectId]);
+
+	useEffect(() => {
+		if (!normalizedSearch || !tree) return;
+		setSearchRevision((current) => current + 1);
+	}, [normalizedSearch, tree]);
+
+	useEffect(() => {
+		if (!state.currentProjectId || !state.inspectorOpen || state.inspectorMode !== "files") return;
+		const refreshWhenVisible = () => {
+			if (document.visibilityState !== "visible") return;
+			void actions.refreshProjectFiles([""], false)
+				.then(() => {
+					if (normalizedSearch) setSearchRevision((current) => current + 1);
+				})
+				.catch(() => {});
+		};
+		document.addEventListener("visibilitychange", refreshWhenVisible);
+		return () => document.removeEventListener("visibilitychange", refreshWhenVisible);
+	}, [actions.refreshProjectFiles, normalizedSearch, state.currentProjectId, state.inspectorMode, state.inspectorOpen]);
 
 	const findEntry = (path: string, items: readonly ProjectTreeEntry[]): ProjectTreeEntry | undefined => {
 		for (const entry of items) {
@@ -770,7 +808,11 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 						<Button
 							size="icon"
 							variant="ghost"
-							onClick={() => void actions.loadProjectTree(tree?.path)}
+							onClick={() => {
+								void (tree ? actions.refreshProjectFiles([""], false) : actions.loadProjectTree())
+									.then(() => setSearchRevision((current) => current + 1))
+									.catch(handleError);
+							}}
 							aria-label="刷新文件树"
 						>
 							<RefreshCw className={cn("size-4", state.fileTreeLoading && "animate-spin")} />

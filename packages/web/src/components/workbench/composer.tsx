@@ -1,4 +1,4 @@
-import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Clock3, LoaderCircle, Pencil, Plus, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Clock3, LoaderCircle, Pencil, Plus, Square, Trash2, Zap } from "lucide-react";
 import { gsap } from "gsap";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
@@ -25,7 +25,9 @@ import {
 } from "./constants";
 import { formatModelDisplayName } from "./model-utils";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
-import type { WebCompletionResult } from "../../types";
+import type { FileUploadResponse, PromptAttachmentPreview, WebCompletionResult, WebSessionSummary } from "../../types";
+import type { PromptInputAttachment } from "../ai-elements/prompt-input";
+import { CollaborationCapsules } from "./collaboration-capsules";
 
 function internalFileReference(path: string, filename: string | undefined, mimeType: string, index: number): string {
 	const displayName = filename || `附件 ${index + 1}`;
@@ -67,6 +69,33 @@ async function transcriptAttachmentFile(
 	return new File([buffer], attachment.filename || "图片", { type: image.mimeType });
 }
 
+const MAX_IMAGE_PREVIEW_BYTES = 8 * 1024 * 1024;
+
+export async function createSubmittedAttachmentPreviews(
+	files: PromptInputAttachment[],
+	uploadedFiles: FileUploadResponse[],
+): Promise<PromptAttachmentPreview[]> {
+	return Promise.all(uploadedFiles.map(async (image, index) => {
+		const file = files[index];
+		const sourceFile = file?.sourceFile;
+		let url = "";
+		if (image.mimeType.startsWith("image/") && sourceFile && sourceFile.size <= MAX_IMAGE_PREVIEW_BYTES) {
+			url = await new Promise<string>((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+				reader.onerror = () => reject(reader.error ?? new Error("图片预览读取失败"));
+				reader.readAsDataURL(sourceFile);
+			});
+		}
+		return {
+			id: image.path,
+			filename: file?.filename ?? `附件 ${index + 1}`,
+			mediaType: image.mimeType,
+			url,
+		};
+	}));
+}
+
 type ComposerProps = {
 	state: WorkbenchState;
 	actions: WorkbenchActions;
@@ -75,7 +104,11 @@ type ComposerProps = {
 	roomId?: string;
 	roomSending?: boolean;
 	roomMentionItems?: WebCompletionResult["items"];
+	collaborationSessions?: WebSessionSummary[];
 	editRequest?: PromptEditRequest;
+	inline?: boolean;
+	globalDrop?: boolean;
+	disabled?: boolean;
 	onCancelEdit: () => void;
 	onEditComplete: () => void;
 };
@@ -92,6 +125,7 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.liveTurnActive === next.liveTurnActive &&
 		previous.lastOutputSpeed === next.lastOutputSpeed &&
 		previous.models === next.models &&
+		previous.modelOptions === next.modelOptions &&
 		previous.providers === next.providers &&
 		previous.queuedUserPrompts === next.queuedUserPrompts &&
 		previous.readOnly === next.readOnly &&
@@ -111,7 +145,11 @@ function composerPropsEqual(previous: ComposerProps, next: ComposerProps): boole
 		previous.roomId === next.roomId &&
 		previous.roomSending === next.roomSending &&
 		previous.roomMentionItems === next.roomMentionItems &&
+		previous.collaborationSessions === next.collaborationSessions &&
 		previous.editRequest === next.editRequest &&
+		previous.inline === next.inline &&
+		previous.globalDrop === next.globalDrop &&
+		previous.disabled === next.disabled &&
 		previous.onCancelEdit === next.onCancelEdit &&
 		previous.onEditComplete === next.onEditComplete
 	);
@@ -125,7 +163,11 @@ export const Composer = memo(function Composer({
 	roomId,
 	roomSending = false,
 	roomMentionItems = [],
+	collaborationSessions = [],
 	editRequest,
+	inline = false,
+	globalDrop = true,
+	disabled: externallyDisabled = false,
 	onCancelEdit,
 	onEditComplete,
 }: ComposerProps) {
@@ -217,7 +259,7 @@ export const Composer = memo(function Composer({
 		setModelSelectorOpen(false);
 		setQueueActionId(undefined);
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
-	const disabled = roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state);
+	const disabled = externallyDisabled || (roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state));
 	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
 	const getPromptCompletions = useCallback(
 		async (text: string, cursor: number): Promise<WebCompletionResult> => {
@@ -258,6 +300,7 @@ export const Composer = memo(function Composer({
 	const selectedModel = state.modelOptions.find(
 		(model) => model.provider === state.session?.model?.provider && model.id === state.session?.model?.id,
 	);
+	const fastModeSupported = selectedModel?.fastModeSupported === true;
 	const contextWindow = state.session?.contextWindow ?? selectedModel?.contextWindow ?? 0;
 	const contextTokens = state.session?.contextTokens ?? 0;
 	const thinkingLevels = visibleThinkingLevels(
@@ -278,7 +321,11 @@ export const Composer = memo(function Composer({
 	}, [state.hiddenModelProviders, state.modelOptionProviders, state.modelOptions]);
 
 	return (
-		<div className="shrink-0 bg-background px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] sm:px-8">
+		<div
+			className={inline
+				? "w-full min-w-0"
+				: "shrink-0 bg-background px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] sm:px-8"}
+		>
 			<div className="mx-auto w-full max-w-[var(--conversation-width)]">
 				<PromptInputProvider
 					key={`${inputScopeKey ?? "no-session"}:${editRequestKey ?? "draft"}`}
@@ -293,7 +340,7 @@ export const Composer = memo(function Composer({
 						sessionId={state.sessionId}
 					>
 						<div className="relative" ref={promptAnimationScopeRef}>
-							{queuedFollowUpPrompts.length ? (
+							{!inline && queuedFollowUpPrompts.length ? (
 								<GsapReveal
 									animationKey={queuedFollowUpPrompts.at(-1)?.id ?? "queue"}
 									className="w-full"
@@ -307,7 +354,13 @@ export const Composer = memo(function Composer({
 									/>
 								</GsapReveal>
 							) : null}
-							{activeSubagents.length ? (
+							{!inline && !roomMode && collaborationSessions.length ? (
+								<CollaborationCapsules
+									sessions={collaborationSessions}
+									onOpenSession={(sessionId) => void actions.selectSession(sessionId)}
+								/>
+							) : null}
+							{!inline && activeSubagents.length ? (
 								<SubagentCapsules
 									subagents={activeSubagents}
 									selectedId={state.selectedSubagentId}
@@ -316,7 +369,7 @@ export const Composer = memo(function Composer({
 							) : null}
 							{activeEditRequest ? (
 								<div
-									className="mb-2 flex min-h-9 items-center gap-2 rounded-xl border border-border/70 bg-muted/25 px-3 py-1.5 text-xs text-muted-foreground"
+									className="mb-2 flex min-h-9 items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground"
 									role="status"
 									aria-live="polite"
 								>
@@ -328,10 +381,6 @@ export const Composer = memo(function Composer({
 												? "正在加载原消息附件"
 												: "正在修改已发送的 Prompt"}
 									</span>
-									<Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={onCancelEdit}>
-										<X className="size-3.5" />
-										取消
-									</Button>
 								</div>
 							) : null}
 							{visibleUploadProgress ? (
@@ -344,15 +393,28 @@ export const Composer = memo(function Composer({
 									</div>
 									<div className="mt-1 truncate text-muted-foreground" title={visibleUploadProgress.filename}>{visibleUploadProgress.filename}</div>
 									{visibleUploadProgress.phase !== "sending" ? (
-										<progress aria-label="文件上传进度" className="mt-2 h-1.5 w-full accent-primary" max={100}
-											value={visibleUploadProgress.phase === "processing" ? 100 : visibleUploadProgress.percent} />
+										<div
+											aria-label="文件上传进度"
+											aria-valuemin={0}
+											aria-valuemax={100}
+											aria-valuenow={visibleUploadProgress.phase === "processing" ? 100 : visibleUploadProgress.percent}
+											className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted-foreground/20"
+											role="progressbar"
+										>
+											<div
+												className="h-full rounded-full bg-black"
+												style={{ width: `${visibleUploadProgress.phase === "processing" ? 100 : visibleUploadProgress.percent}%` }}
+											/>
+										</div>
 									) : null}
 								</div>
 							) : null}
 							<PromptCompletionMenu />
 							<PromptInput
-								className="prompt-input-shell [&_[data-slot=input-group]]:rounded-[var(--radius)] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
-								globalDrop
+								className={inline
+									? "prompt-input-shell [&_[data-slot=input-group]]:rounded-[var(--radius)] [&_[data-slot=input-group]]:bg-muted/25 [&_[data-slot=input-group]]:shadow-none"
+									: "prompt-input-shell [&_[data-slot=input-group]]:rounded-[var(--radius)] [&_[data-slot=input-group]]:bg-background [&_[data-slot=input-group]]:shadow-[0_2px_12px_rgb(0_0_0/0.05)]"}
+								globalDrop={!disabled && !inline && globalDrop}
 								multiple
 								maxFileSize={1024 * 1024 * 1024}
 								onError={(error) => {
@@ -423,12 +485,7 @@ export const Composer = memo(function Composer({
 										const promptText = !roomMode && uploadedFiles.length
 											? `${text}\n\n${uploadedFiles.map((file, index) => internalFileReference(file.path, files[index]?.filename, files[index]?.mediaType || file.mimeType, index)).join("\n")}`
 											: text;
-										const attachmentPreviews = uploadedFiles.map((image, index) => ({
-											id: image.path,
-											filename: files[index]?.filename ?? `附件 ${index + 1}`,
-											mediaType: image.mimeType,
-											url: files[index]?.url ?? "",
-										}));
+										const attachmentPreviews = await createSubmittedAttachmentPreviews(files, uploadedFiles);
 										if (submissionEditRequest) {
 											if (
 												editRequestRef.current?.entryId !== submissionEditRequest.entryId ||
@@ -469,25 +526,31 @@ export const Composer = memo(function Composer({
 								<PromptInputBody>
 									<PromptCompletionTextarea
 										autoFocus={Boolean(activeEditRequest)}
+										aria-label={inline ? "编辑 Prompt" : "输入 Prompt"}
 										placeholder={
 											roomMode
 												? roomSending
-													? "正在等待 Room 回复…"
-													: "发送消息给 Room 中的 Agent…"
+													? "正在等待智能体协作回复…"
+											: "发送消息给智能体协作中的智能体…"
 												: state.sessionId && !state.sessionReady
 													? "正在同步会话"
-													: disabled
-														? "当前会话不可写"
-														: "描述你想完成的工作…"
+											: externallyDisabled
+												? "请先完成当前 Prompt 编辑"
+												: disabled
+													? "当前会话不可写"
+													: inline ? "输入 Prompt…" : "描述你想完成的工作…"
 										}
 										disabled={disabled}
 									/>
 								</PromptInputBody>
-								<PromptInputFooter className="items-center !pb-2">
-									<PromptInputTools className="shrink-0">
+								<PromptInputFooter className={fastModeSupported && !inline && !roomMode
+									? "flex-wrap items-center gap-y-1 !pb-2 md:flex-nowrap"
+									: "items-center !pb-2"}>
+									<PromptInputTools className={fastModeSupported && !inline && !roomMode ? "order-5 shrink-0 md:order-none" : "shrink-0"}>
 										<FileUploadButton disabled={disabled || editAttachmentState === "loading" || Boolean(visibleUploadProgress)} />
 									</PromptInputTools>
-									{!roomMode && state.sessionId ? (
+									{!inline && !roomMode && state.sessionId ? (
+										<div className={fastModeSupported ? "order-6 md:contents" : "contents"}>
 										<ComposerSessionStats
 											key={state.sessionId}
 											sessionId={state.sessionId}
@@ -497,14 +560,44 @@ export const Composer = memo(function Composer({
 											connected={state.connected}
 											lastOutputSpeed={state.lastOutputSpeed}
 										/>
+										</div>
 									) : null}
-									<PromptInputTools className="min-w-0 flex-1 justify-end gap-0.5 md:shrink-0 md:flex-none md:gap-1">
-									{roomMode ? <span className="px-2 text-xs text-muted-foreground">Room 协作</span> : <ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />}
-									{roomMode ? null : <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
+									<PromptInputTools className={fastModeSupported && !inline && !roomMode
+										? "contents md:flex md:min-w-0 md:flex-1 md:justify-end md:gap-0"
+										: "min-w-0 flex-1 justify-end gap-0.5 md:shrink-0 md:flex-none md:gap-1"}>
+									{inline ? (
+										<>
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												className="h-8 px-2 text-muted-foreground hover:text-foreground"
+												onClick={onCancelEdit}
+											>
+												取消
+											</Button>
+											<PromptInputSubmit
+												className="h-8 rounded-full bg-foreground px-4 text-background hover:bg-foreground/90 hover:text-background"
+												size="sm"
+												status="ready"
+												disabled={disabled || Boolean(visibleUploadProgress) || editAttachmentState !== "ready"}
+											>
+												发送
+											</PromptInputSubmit>
+										</>
+									) : null}
+									{inline ? null : roomMode ? <span className="px-2 text-xs text-muted-foreground">智能体协作</span> : (
+										<div className={fastModeSupported ? "order-7 ml-auto md:order-none md:ml-0" : ""}>
+											<ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />
+										</div>
+									)}
+									{inline || roomMode ? null : <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
 											<ModelSelectorTrigger asChild>
 												<PromptInputButton
-													className="data-[state=open]:bg-accent"
-													disabled={!state.sessionId}
+													className={fastModeSupported
+													? "order-1 px-1.5 has-[>svg]:px-1.5 data-[state=open]:bg-accent md:order-none"
+													: "data-[state=open]:bg-accent"}
+													disabled={disabled || !state.sessionId}
 												>
 													<span className="max-w-24 truncate md:max-w-40">
 														{formatModelDisplayName(
@@ -544,8 +637,9 @@ export const Composer = memo(function Composer({
 												</ModelSelectorList>
 											</ModelSelectorContent>
 										</ModelSelector>}
-										{!roomMode && selectedModel?.reasoning ? (
+										{!inline && !roomMode && selectedModel?.reasoning ? (
 											<PromptInputSelect
+												disabled={disabled}
 												value={selectedVisibleThinkingLevel(
 													state.session?.thinkingLevel ?? "off",
 													thinkingLevels,
@@ -553,7 +647,9 @@ export const Composer = memo(function Composer({
 												onValueChange={actions.updateThinking}
 											>
 												<PromptInputSelectTrigger
-													className="flex h-8 w-auto min-w-0 max-w-[7rem] shrink border-0 px-2 text-xs shadow-none focus-visible:ring-0 sm:max-w-none"
+													className={fastModeSupported
+														? "order-2 flex h-8 w-auto min-w-0 max-w-[7rem] shrink border-0 px-1.5 text-xs shadow-none focus-visible:ring-0 md:order-none sm:max-w-none"
+														: "flex h-8 w-auto min-w-0 max-w-[7rem] shrink border-0 px-2 text-xs shadow-none focus-visible:ring-0 sm:max-w-none"}
 													aria-label="思考强度"
 												>
 													<PromptInputSelectValue>
@@ -572,7 +668,21 @@ export const Composer = memo(function Composer({
 												</PromptInputSelectContent>
 											</PromptInputSelect>
 										) : null}
-										<ComposerSubmitActions
+										{!inline && !roomMode && fastModeSupported ? (
+											<PromptInputButton
+												className="order-3 h-8 shrink-0 gap-1 bg-transparent px-1.5 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground has-[>svg]:px-1.5 md:order-none"
+												aria-label={state.session?.fastMode ? "关闭快速模式" : "开启快速模式"}
+												aria-pressed={state.session?.fastMode === true}
+												disabled={disabled || stopping || !state.sessionReady}
+												onClick={() => void actions.updateFastMode(!state.session?.fastMode)}
+												tooltip="快速模式会改变计费模式，消耗更多用量。"
+											>
+												<Zap className="size-3.5" />
+												{state.session?.fastMode ? "快速" : "普通"}
+											</PromptInputButton>
+										) : null}
+										{fastModeSupported && !inline && !roomMode ? <div aria-hidden="true" className="order-4 basis-full border-t border-border/50 md:hidden" /> : null}
+										{inline ? null : <div className={fastModeSupported && !roomMode ? "order-8 md:order-none md:ml-2.5" : ""}><ComposerSubmitActions
 											disabled={disabled}
 											onAbort={() => void actions.abort()}
 											roomMode={roomMode}
@@ -584,7 +694,7 @@ export const Composer = memo(function Composer({
 												Boolean(visibleUploadProgress) ||
 												(Boolean(activeEditRequest) && editAttachmentState !== "ready")
 											}
-										/>
+										/></div>}
 									</PromptInputTools>
 								</PromptInputFooter>
 							</PromptInput>
@@ -1045,7 +1155,7 @@ function ComposerAttachments() {
 								: "min-w-0 max-w-full"}
 						>
 							<AttachmentPreview />
-							<AttachmentInfo showMediaType={!previewable} />
+							<AttachmentInfo />
 							<AttachmentRemove label="移除附件" className="shrink-0" />
 						</Attachment>
 					);

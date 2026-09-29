@@ -13,8 +13,8 @@ export function createRoomClaimTool(
 ): ToolDefinition<typeof ClaimParams> {
 	return {
 		name: "room_claim",
-		label: "认领 Room 任务",
-		description: "认领一张待认领的 Room 任务卡。认领失败时不要执行该任务。",
+		label: "认领智能体协作任务",
+		description: "认领一张待认领的智能体协作任务卡。认领失败时不要执行该任务。",
 		parameters: ClaimParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext): Promise<AgentToolResult> {

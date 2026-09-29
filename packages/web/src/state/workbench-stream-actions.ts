@@ -415,6 +415,14 @@ export function useWorkbenchStreamActions({
 					};
 				});
 				if (event.connected && !sessionId && next.connected) reconnectAttemptRef.current = 0;
+				if (
+					event.connected &&
+					next.inspectorOpen &&
+					next.inspectorMode === "files" &&
+					next.currentProjectId &&
+					next.fileTree
+				)
+					void refreshProjectFilesRef.current([""]).catch(() => {});
 				if (shouldRestoreSubscription && sessionId) restoreSelectedSessionSubscription(sessionId);
 				return;
 			}

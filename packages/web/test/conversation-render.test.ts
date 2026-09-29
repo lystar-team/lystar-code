@@ -1483,7 +1483,7 @@ describe("conversation render items", () => {
 		expect(prependedPage.findIndex((item) => item.key === previousFirstKey)).toBe(1);
 		expect(
 			resolveTranscriptFirstItemIndex(
-				{ sessionKey: "session-1", firstItemIndex: 1_000, firstKey: previousFirstKey },
+				{ firstItemIndex: 1_000, itemKeys: tailPage.map((item) => item.key) },
 				prependedPage.map((item) => item.key),
 			),
 		).toBe(999);

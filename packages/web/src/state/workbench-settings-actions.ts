@@ -88,6 +88,14 @@ export function useWorkbenchSettingsActions({
 		[refreshModelOptions, refreshModelSettings, showToast, updateState],
 	);
 
+	const saveImageModelProviders = useCallback(
+		async (providers: Record<string, string>) => {
+			await webApi.imageModelProviders(providers);
+			await refreshModelSettings();
+			showToast("生图模型 Provider 配置已保存");
+		},
+		[refreshModelSettings, showToast],
+	);
 	const saveProviderModel = useCallback(
 		async (provider: string, input: WebProviderModelInput) => {
 			await webApi.providerModel(provider, input);
@@ -96,6 +104,7 @@ export function useWorkbenchSettingsActions({
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
+
 
 	const setProviderModelEnabled = useCallback(
 		async (provider: string, modelId: string, enabled: boolean) => {
@@ -220,6 +229,7 @@ export function useWorkbenchSettingsActions({
 			updateState((current) => ({
 				...current,
 				subagentConfigs: [],
+				subagentTools: [],
 				subagentConfigsLoading: false,
 				subagentConfigsError: "请先选择一个项目",
 			}));
@@ -231,6 +241,7 @@ export function useWorkbenchSettingsActions({
 			updateState((current) => ({
 				...current,
 				subagentConfigs: result.subagents,
+				subagentTools: result.tools,
 				subagentConfigsLoading: false,
 				subagentConfigsError: undefined,
 			}));
@@ -252,6 +263,7 @@ export function useWorkbenchSettingsActions({
 			model?: string;
 			thinkingLevel?: WebThinkingLevel;
 			tools?: string[];
+			excludeTools?: string[];
 			skills?: string[];
 			tags?: string[];
 			content: string;
@@ -482,6 +494,41 @@ export function useWorkbenchSettingsActions({
 		[showToast, updateState],
 	);
 
+	const refreshToolRecoverySettings = useCallback(async () => {
+		updateState((current) => ({ ...current, toolRecoverySettingsLoading: true, toolRecoverySettingsError: undefined }));
+		try {
+			const settings = await webApi.toolRecoverySettings();
+			updateState((current) => ({
+				...current,
+				toolRecoverySettings: settings,
+				toolRecoverySettingsLoading: false,
+				toolRecoverySettingsError: undefined,
+			}));
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, toolRecoverySettingsLoading: false, toolRecoverySettingsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
+	const saveToolRecoverySettings = useCallback(async (input: { model?: string; thinkingLevel: WebThinkingLevel }) => {
+		updateState((current) => ({ ...current, toolRecoverySettingsSaving: true, toolRecoverySettingsError: undefined }));
+		try {
+			const settings = await webApi.saveToolRecoverySettings(input);
+			updateState((current) => ({
+				...current,
+				toolRecoverySettings: settings,
+				toolRecoverySettingsSaving: false,
+				toolRecoverySettingsError: undefined,
+			}));
+			showToast("错题本设置已保存");
+		} catch (error) {
+			const message = errorMessage(error);
+			updateState((current) => ({ ...current, toolRecoverySettingsSaving: false, toolRecoverySettingsError: message }));
+			showToast(message);
+		}
+	}, [showToast, updateState]);
+
 	const openSettings = useCallback(
 		async (tab: SettingsTab = "appearance") => {
 			updateState((current) => ({ ...current, settingsOpen: true, settingsTab: tab }));
@@ -489,6 +536,7 @@ export function useWorkbenchSettingsActions({
 				const tasks: Promise<void>[] = [];
 				if (stateRef.current.models.length === 0) tasks.push(refreshModelSettings());
 				if (!stateRef.current.sessionNameSettings) tasks.push(refreshSessionNameSettings());
+				if (!stateRef.current.toolRecoverySettings) tasks.push(refreshToolRecoverySettings());
 				await Promise.all(tasks);
 			}
 			if (tab === "instructions") await refreshHostInstructions();
@@ -516,6 +564,7 @@ export function useWorkbenchSettingsActions({
 			refreshHostInstructions,
 			refreshModelSettings,
 			refreshSessionNameSettings,
+			refreshToolRecoverySettings,
 			refreshSecuritySettings,
 			refreshSkills,
 			refreshSubagentConfigs,
@@ -597,6 +646,7 @@ export function useWorkbenchSettingsActions({
 		setModelProviderVisibility,
 		saveModelProvider,
 		removeModelProvider,
+		saveImageModelProviders,
 		saveProviderModel,
 		setProviderModelEnabled,
 		syncModelProvider,
@@ -614,6 +664,8 @@ export function useWorkbenchSettingsActions({
 		saveBranding,
 		refreshSessionNameSettings,
 		saveSessionNameSettings,
+		refreshToolRecoverySettings,
+		saveToolRecoverySettings,
 		refreshHostInstructions,
 		saveHostInstruction,
 		openSettings,

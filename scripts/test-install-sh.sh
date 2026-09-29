@@ -55,9 +55,50 @@ grep -F -- '--progress=bar:force' "$ROOT/scripts/install.sh" >/dev/null
 grep -F '当前版本：' "$ROOT/scripts/install.sh" >/dev/null
 grep -F -- '--help' "$ROOT/scripts/install.sh" >/dev/null
 grep -F '当前版本没有切换' "$ROOT/scripts/install.sh" >/dev/null
+grep -F 'LYSTAR_WEB_UPDATE_DETACHED' "$ROOT/scripts/install.sh" >/dev/null
+grep -F 'systemd-run --user --quiet --collect' "$ROOT/scripts/install.sh" >/dev/null
+grep -F 'Web 服务首次切换未完成，正在重试' "$ROOT/scripts/install.sh" >/dev/null
 help_output="$(HOME="$tmp/home-help" bash "$ROOT/scripts/install.sh" --help)"
 printf '%s\n' "$help_output" | grep -F 'install.sh --no-path-update' >/dev/null
 printf '%s\n' "$help_output" | grep -F '版本切换前失败会保留已有安装' >/dev/null
+
+handoff_home="$tmp/home-handoff"
+handoff_agent="$handoff_home/.pi/agent"
+handoff_bin="$tmp/handoff-bin"
+handoff_state="$tmp/handoff-state"
+mkdir -p "$handoff_agent/web" "$handoff_bin"
+cat > "$handoff_bin/systemctl" <<'SYSTEMCTL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"is-active"* ]]; then exit 0; fi
+if [[ "$*" == *"show"* ]]; then
+    if [[ -f "$HANDOFF_STATE" ]]; then printf '%s\n' '456'; else printf '%s\n' '123'; fi
+    exit 0
+fi
+exit 1
+SYSTEMCTL
+cat > "$handoff_bin/systemd-run" <<'SYSTEMD_RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+helper=""
+for argument in "$@"; do helper="$argument"; done
+bash -n "$helper"
+: > "$HANDOFF_STATE"
+SYSTEMD_RUN
+chmod +x "$handoff_bin/systemctl" "$handoff_bin/systemd-run"
+handoff_output="$({
+    HOME="$handoff_home" \
+    PI_CODING_AGENT_DIR="$handoff_agent" \
+    HANDOFF_STATE="$handoff_state" \
+    LYSTAR_WEB_SERVICE_TARGET_VERSION="$VERSION" \
+    PATH="$handoff_bin:$ORIGINAL_PATH" \
+        bash "$ROOT/scripts/install.sh" --version "$VERSION"
+} 2>&1)"
+printf '%s\n' "$handoff_output" | grep -F '更新已交给独立后台任务' >/dev/null
+handoff_helper="$(find "$handoff_agent/web/update-handoff" -name 'update-*.sh' -print -quit)"
+[[ -n "$handoff_helper" ]]
+bash -n "$handoff_helper"
+grep -F 'export LYSTAR_WEB_UPDATE_DETACHED=1' "$handoff_helper" >/dev/null
 
 fake_curl_dir="$tmp/fake-curl"
 mkdir -p "$fake_curl_dir"

@@ -143,6 +143,7 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export { supportsFastMode } from "./fast-mode.ts";
 export {
 	discoverHarnessImports,
 	type HarnessId,
@@ -175,14 +176,17 @@ export {
 	SETTINGS_SELECTOR_PERSISTENT_IDS,
 } from "./lystar-settings-catalog.ts";
 export {
+	clearModelsJsonImageModelProvidersConfig,
 	clearModelsJsonModelOverride,
 	clearModelsJsonProviderCatalogProvider,
 	ModelConfig,
+	type ModelsJsonImageModelProviders,
 	type ModelsJsonModel,
 	type ModelsJsonModelOverride,
 	type ModelsJsonProvider,
 	removeModelsJsonModels,
 	removeModelsJsonProvider,
+	saveModelsJsonImageModelProvidersConfig,
 	saveModelsJsonModel,
 	saveModelsJsonModelOverride,
 	saveModelsJsonModels,

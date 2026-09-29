@@ -107,6 +107,15 @@ describe("platform service lifecycle", () => {
 		expect(stopWebService(spec, true).running).toBe(false);
 	});
 
+	it("lets Gateway update helpers outlive a systemd restart without weakening Runtime cleanup", () => {
+		Object.defineProperty(process, "platform", { value: "linux" });
+		installWebService(spec);
+		installWebService(runtimeSpec);
+
+		expect(files.get(getWebServiceStatus(spec).servicePath!)).toContain("KillMode=process");
+		expect(files.get(getWebServiceStatus(runtimeSpec).servicePath!)).toContain("KillMode=mixed");
+	});
+
 	it("does not mark a loaded macOS daemon without a PID as running", () => {
 		Object.defineProperty(process, "platform", { value: "darwin" });
 		const status = getWebServiceStatus(spec);
@@ -153,6 +162,7 @@ describe("platform service lifecycle", () => {
 		expect(status.servicePath).toContain("/Library/LaunchAgents/com.lystar.web-runtime");
 		const plist = files.get(status.servicePath!);
 		expect(plist).not.toContain("<key>UserName</key>");
+		expect(plist).not.toContain("<key>AbandonProcessGroup</key>");
 		expect(spawnSync).toHaveBeenCalledWith(
 			"/bin/launchctl",
 			expect.arrayContaining(["bootstrap", expect.stringMatching(/^gui\/\d+$/u), status.servicePath]),
@@ -177,6 +187,7 @@ describe("platform service lifecycle", () => {
 		expect(spawnSync).toHaveBeenCalledWith("sudo", ["-v"], { stdio: "inherit" });
 		const plist = [...files.values()].find((value) => value.includes("<plist"));
 		expect(plist).toContain("<key>WorkingDirectory</key><string>/test/user space/agent</string>");
+		expect(plist).toContain("<key>AbandonProcessGroup</key><true/>");
 		expect(plist).toContain("/test/user space/agent/web/bin");
 		expect(files.get("/test/user space/agent/web/bin/sudo")).toContain("web-service-admin");
 		const osascriptWrapper = files.get("/test/user space/agent/web/bin/osascript");
@@ -215,9 +226,11 @@ describe("platform service lifecycle", () => {
 		);
 	});
 
-	it("waits for Windows STOPPED and installs the requested version of the service host", () => {
+	it("waits for Windows STOPPED and keeps the current service host when the app service rolls back", () => {
 		Object.defineProperty(process, "platform", { value: "win32" });
-		files.set("/test/user space/versions/0.85.1-lystar.5/lystar-web-service.exe", "new-host");
+		files.set("/test/user space/current", "0.85.2-lystar.1\n");
+		files.set("/test/user space/versions/0.85.2-lystar.1/lystar-web-service.exe", "new-host");
+		files.set("/test/user space/versions/0.85.1-lystar.5/lystar-web-service.exe", "old-version-host");
 		files.set("/test/user space/agent/web/services/lystar-web-service.exe", "old-host");
 		let stopped = false;
 		let queriesAfterStop = 0;
@@ -232,8 +245,9 @@ describe("platform service lifecycle", () => {
 			return success();
 		});
 		installWebService(spec);
-		expect(files.get("/test/user space/agent/web/services/lystar-web-service-0.85.1-lystar.5.exe")).toBe("new-host");
+		expect(files.get("/test/user space/agent/web/services/lystar-web-service-0.85.2-lystar.1.exe")).toBe("new-host");
 		expect(files.get("/test/user space/agent/web/services/lystar-web-service.exe")).toBe("old-host");
+		expect(files.get(getWebServiceStatus(spec).servicePath!)).toContain("allowChildBreakaway=true");
 	});
 
 	it("force-stops a Windows service process tree instead of waiting for graceful shutdown", () => {

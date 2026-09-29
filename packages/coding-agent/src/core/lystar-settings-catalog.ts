@@ -239,6 +239,15 @@ export const LYSTAR_SETTINGS_CATALOG: readonly LystarSettingDefinition[] = [
 		},
 	),
 	integerSetting(
+		"runtime-read-concurrency",
+		"Runtime 读取并发",
+		"同时读取会话和项目数据的数量；0 表示根据主机 CPU 与内存自动设置。",
+		{ min: 0, max: 16 },
+		(settings) => settings.getRuntimeReadConcurrency(),
+		(settings, value) => settings.setRuntimeReadConcurrency(value),
+		{ format: (value) => (value === 0 ? "自动" : `${value} 个`) },
+	),
+	integerSetting(
 		"http-idle-timeout",
 		"HTTP 空闲超时",
 		"流式响应没有新数据时等待多久；0 表示关闭。",

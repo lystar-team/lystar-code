@@ -1,8 +1,9 @@
 import { Line } from "@ant-design/plots";
 import type { LineConfig } from "@ant-design/plots";
-import { Activity, CheckCircle2, CircleAlert, Cpu, HardDrive, MemoryStick, RotateCw, Server, XCircle } from "lucide-react";
+import { Activity, CheckCircle2, CircleAlert, Cpu, Gauge, HardDrive, MemoryStick, RotateCw, Server, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { webApi } from "../../../adapters/host-protocol/api.ts";
 import { cn } from "../../../lib/utils";
 import type { WorkbenchActions } from "../types";
 import type { WorkbenchState } from "../../../state/use-workbench";
@@ -10,6 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from "../../ui/alert";
 import { Button } from "../../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { Progress } from "../../ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { Separator } from "../../ui/separator";
 import { SettingSection, StatText } from "./shared";
 
@@ -25,6 +27,14 @@ type DiagnosticsSnapshot = {
 	disk?: ResourceSnapshot & { path?: string; available?: boolean };
 	processMemory?: { totalRssBytes?: number; processes?: ProcessSnapshot[] };
 	checks?: Array<{ id?: string; status?: string; message?: string }>;
+	runtimeReadConcurrency?: {
+		configured?: number;
+		suggested?: number;
+		effective?: number;
+		source?: "auto" | "manual";
+		cpuCores?: number;
+		totalMemoryBytes?: number;
+	};
 };
 
 type ServiceSnapshot = {
@@ -392,6 +402,91 @@ function ResourceTrendPanel({ history, palette, reducedMotion }: { history: Char
 	);
 }
 
+function formatConcurrencyMemory(value: number | undefined): string {
+	return formatBytes(value);
+}
+
+function concurrencyLabel(value: number | undefined): string {
+	return value === undefined ? "—" : `${value} 个读槽`;
+}
+
+function RuntimeReadConcurrencyPanel({
+	state,
+	actions,
+	value,
+}: {
+	state: WorkbenchState;
+	actions: WorkbenchActions;
+	value: DiagnosticsSnapshot["runtimeReadConcurrency"];
+}) {
+	const configured = value?.configured ?? 0;
+	const canEdit = Boolean(state.sessionId) && !state.readOnly;
+	const [saving, setSaving] = useState(false);
+	const [error, setError] = useState<string>();
+
+	const update = async (nextValue: string) => {
+		if (!canEdit) return;
+		setSaving(true);
+		setError(undefined);
+		try {
+			await webApi.setSetting(state.sessionId!, "runtime-read-concurrency", Number(nextValue));
+			await actions.refreshDiagnostics();
+			actions.showToast("Runtime 读取并发已更新");
+		} catch (updateError) {
+			setError(updateError instanceof Error ? updateError.message : String(updateError));
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	return (
+		<Card className="min-w-0 rounded-xl shadow-none">
+			<CardHeader className="gap-2 px-4 pb-3 sm:px-6">
+				<div className="flex flex-wrap items-start justify-between gap-3">
+					<div>
+						<CardTitle className="text-base">Runtime 读取队列</CardTitle>
+						<p className="mt-1 text-xs leading-5 text-muted-foreground">
+							自动模式会根据当前主机配置选择建议值，手动值在下次读批次开始时生效。
+						</p>
+					</div>
+					<Gauge className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
+				</div>
+			</CardHeader>
+			<CardContent className="grid gap-4 px-4 pb-5 sm:px-6 sm:pb-6">
+				<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+					<StatText label="当前生效" value={concurrencyLabel(value?.effective)} />
+					<StatText label="建议值" value={concurrencyLabel(value?.suggested)} />
+					<StatText label="计算依据" value={`${value?.cpuCores ?? "—"} 核 · ${formatConcurrencyMemory(value?.totalMemoryBytes)}`} />
+					<StatText label="来源" value={value?.source === "manual" ? "手动" : value?.source === "auto" ? "自动" : "—"} />
+				</div>
+				<div className="flex flex-col gap-2 border-t pt-4 sm:flex-row sm:items-end sm:justify-between">
+					<div className="min-w-0">
+						<label className="text-sm font-medium" htmlFor="runtime-read-concurrency">
+							设置方式
+						</label>
+						<p className="mt-1 text-xs text-muted-foreground">自动或固定 2～16 个读槽。</p>
+					</div>
+					<Select value={String(configured)} onValueChange={(nextValue) => void update(nextValue)} disabled={!canEdit || saving}>
+						<SelectTrigger id="runtime-read-concurrency" className="w-full sm:w-48">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="0">自动</SelectItem>
+							{Array.from({ length: 15 }, (_, index) => index + 2).map((option) => (
+								<SelectItem key={option} value={String(option)}>
+									固定 {option} 个
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+				{!canEdit ? <p className="text-xs text-muted-foreground">需要当前会话的控制权才能修改。</p> : null}
+				{error ? <p className="text-xs text-destructive">{error}</p> : null}
+			</CardContent>
+		</Card>
+	);
+}
+
 function ChecksSummary({ checks }: { checks: Array<{ id?: string; status?: string; message?: string }> }) {
 	if (!checks.length) {
 		return <Card className="min-w-0 rounded-xl shadow-none"><CardContent className="py-6 text-center text-sm text-muted-foreground">等待诊断数据</CardContent></Card>;
@@ -588,6 +683,10 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 					<StatText label="Runtime 持久化" value={diagnostics.runtime?.persistent ? "已启用" : "未启用"} />
 					<StatText label="磁盘路径" value={diagnostics.disk?.path ?? "—"} />
 				</div>
+			</SettingSection>
+
+			<SettingSection title="Runtime 调度">
+				<RuntimeReadConcurrencyPanel state={state} actions={actions} value={diagnostics.runtimeReadConcurrency} />
 			</SettingSection>
 
 			<SettingSection title="检查结果">

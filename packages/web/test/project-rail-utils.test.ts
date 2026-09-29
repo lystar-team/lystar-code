@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	countSessionsByTab,
 	excludeRoomAgentSessions,
+	filterSessionsByTab,
+	hasCollaborationChildren,
 	hasUnreadProjectSessions,
 	hasUnreadSessions,
 	isResumedCompletedSession,
@@ -10,6 +12,8 @@ import {
 	reorderIds,
 	searchProjectSessions,
 	sessionMatchesTab,
+	topLevelSessions,
+	visibleSessionTree,
 } from "../src/components/workbench/project-rail-utils.ts";
 import type { WebProject } from "../src/types.ts";
 
@@ -65,6 +69,58 @@ describe("项目和会话列表", () => {
 		).toEqual(["other", "orphan", "root", "child", "grandchild"]);
 	});
 
+	it("默认折叠协作子会话，分页只统计顶层会话", () => {
+		const base = {
+			createdAt: 1,
+			updatedAt: 1,
+			messageCount: 1,
+			firstMessage: "任务",
+			activity: "idle" as const,
+			writeAccess: "available" as const,
+		};
+		const sessions = [
+			{ ...base, id: "root-1" },
+			{ ...base, id: "child-1", parentId: "root-1", relation: "collaboration" as const },
+			{ ...base, id: "child-2", parentId: "root-1", relation: "collaboration" as const },
+			{ ...base, id: "root-2" },
+			{ ...base, id: "root-3" },
+		];
+		const ordered = orderedSessions({ id: "project", name: "项目", path: "/project", sessions });
+
+		expect(topLevelSessions(ordered).map((session) => session.id)).toEqual(["root-1", "root-2", "root-3"]);
+		expect(visibleSessionTree(ordered, 2, new Set()).map(({ session }) => session.id)).toEqual(["root-1", "root-2"]);
+		expect(
+			visibleSessionTree(ordered, 2, new Set(["root-1"])).map(({ session, depth }) => [session.id, depth]),
+		).toEqual([
+			["root-1", 0],
+			["child-1", 1],
+			["child-2", 1],
+			["root-2", 0],
+		]);
+		expect(hasCollaborationChildren(ordered, "root-1")).toBe(true);
+		expect(countSessionsByTab(new Map([["project", ordered]]), {})).toEqual({ all: 3, running: 0, completed: 0 });
+	});
+
+	it("筛选智能体子会话时保留父会话作为树节点", () => {
+		const root = {
+			id: "root",
+			createdAt: 1,
+			updatedAt: 1,
+			messageCount: 1,
+			firstMessage: "父会话",
+			activity: "idle" as const,
+			writeAccess: "available" as const,
+		};
+		const child = {
+			...root,
+			id: "child",
+			parentId: root.id,
+			relation: "collaboration" as const,
+			activity: "running" as const,
+		};
+		const sessions = [root, child];
+		expect(filterSessionsByTab(sessions, "running", {}).map((session) => session.id)).toEqual(["root", "child"]);
+	});
 	it("按会话状态聚合项目和项目组的未读提示", () => {
 		const unreadSessionIds = { "session-1": true } as const;
 		const unreadProject = [{ id: "session-1", activity: "idle" as const }];

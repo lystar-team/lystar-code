@@ -53,7 +53,23 @@ import { Tabs, TabsContent } from "../ui/tabs";
 import { ProjectGroupDialog, ProjectGroupPickerDialog, ProjectGroupProjectPickerDialog } from "./project-group-dialog";
 import { AgentSessionDialog } from "./agent-session-dialog";
 import { RailFooter } from "./rail-footer";
-import { type DropPosition, type SessionListTab, countSessionsByTab, hasUnreadSessions, isResumedCompletedSession, isSessionRunning, isSessionUnread, orderedSessions, reorderIds, searchProjectSessions, sessionMatchesTab } from "./project-rail-utils";
+import {
+	type DropPosition,
+	type SessionListTab,
+	type VisibleSession,
+	countSessionsByTab,
+	filterSessionsByTab,
+	hasCollaborationChildren,
+	hasUnreadSessions,
+	isResumedCompletedSession,
+	isSessionRunning,
+	isSessionUnread,
+	orderedSessions,
+	reorderIds,
+	searchProjectSessions,
+	topLevelSessions,
+	visibleSessionTree,
+} from "./project-rail-utils";
 import { SessionRenameDialog } from "./dialogs";
 import { SessionButton, type SessionButtonProps } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
@@ -79,6 +95,7 @@ type SessionDropTarget = { projectId: string; sessionId: string; position: DropP
 type SessionButtonHandlers = Pick<
 	SessionButtonProps,
 	| "onClick"
+	| "onToggleChildren"
 	| "onRename"
 	| "onContextRename"
 	| "onTogglePinned"
@@ -135,8 +152,8 @@ function dropPosition(event: ReactDragEvent<HTMLElement>): DropPosition {
 	return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
-function sessionItemKey(session: WebSessionSummary): string {
-	return session.id;
+function sessionItemKey(item: VisibleSession): string {
+	return item.session.id;
 }
 
 function ProjectRailChevron({ className, open }: { className?: string; open: boolean }) {
@@ -182,6 +199,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>(state.currentProjectId);
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [sessionVisibleCounts, setSessionVisibleCounts] = useState<Record<string, number>>({});
+	const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(() => new Set());
 	const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
 	const [openGroupMenuId, setOpenGroupMenuId] = useState<string | null>(null);
 	const [projectDropTarget, setProjectDropTarget] = useState<ProjectDropTarget>();
@@ -234,9 +252,9 @@ export const ProjectRail = memo(function ProjectRail({
 		[tabCounts],
 	);
 	const matchingSessionsByProject = useMemo(
-		() => sessionTab === "all" ? searchedSessionsByProject : new Map(projects.map((project) => [
+		() => new Map(projects.map((project) => [
 			project.id,
-			searchedSessionsByProject.get(project.id)!.filter((session) => sessionMatchesTab(session, sessionTab, state.unreadSessionIds)),
+			filterSessionsByTab(searchedSessionsByProject.get(project.id)!, sessionTab, state.unreadSessionIds),
 		] as const)),
 		[projects, searchedSessionsByProject, sessionTab, state.unreadSessionIds],
 	);
@@ -258,9 +276,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const selectedProject = projects.find((project) => project.id === selectedProjectId);
 	const pinnedSessions = useMemo(
 		() => visibleProjects.flatMap((project) =>
-			matchingSessionsByProject.get(project.id)!
-				.filter((session) => session.pinned)
-				.map((session) => ({ project, session })),
+			topLevelSessions(matchingSessionsByProject.get(project.id)!).filter((session) => session.pinned).map((session) => ({ project, session })),
 		),
 		[visibleProjects, matchingSessionsByProject],
 	);
@@ -582,16 +598,27 @@ export const ProjectRail = memo(function ProjectRail({
 		setPendingDeleteSession({ id: session.id, title: sessionTitle(session) });
 	}, []);
 
+	const toggleSessionChildren = useCallback((sessionId: string) => {
+		setExpandedSessionIds((current) => {
+			const next = new Set(current);
+			if (next.has(sessionId)) next.delete(sessionId);
+			else next.add(sessionId);
+			return next;
+		});
+	}, []);
+
 	const sessionHandlers = useMemo(() => {
 		const handlers = new Map<string, SessionButtonHandlers>();
 		for (const project of projects) {
+			const searchableSessions = searchedSessionsByProject.get(project.id) ?? [];
 			for (const session of project.sessions) {
+				const hasChildren = hasCollaborationChildren(searchableSessions, session.id);
 				handlers.set(session.id, {
 					onClick: () => {
 						setSelectedProjectId(project.id);
 						if (sessionTab === "completed") {
 							if (!session.pinned) {
-								const index = searchedSessionsByProject.get(project.id)!.findIndex((candidate) => candidate.id === session.id);
+								const index = topLevelSessions(searchedSessionsByProject.get(project.id)!).findIndex((candidate) => candidate.id === session.id);
 								setSessionVisibleCounts((current) => index >= (current[project.id] ?? SESSION_PAGE_SIZE)
 									? { ...current, [project.id]: index + 1 }
 									: current);
@@ -601,6 +628,7 @@ export const ProjectRail = memo(function ProjectRail({
 						void actions.selectSession(session.id);
 						onNavigate?.();
 					},
+					onToggleChildren: hasChildren ? () => toggleSessionChildren(session.id) : undefined,
 					onRename: (name) => actions.renameSession(session.id, name),
 					onContextRename: () => setSessionRenameTarget(session),
 					onTogglePinned: () => void actions.setSessionPinned(session.id, !session.pinned),
@@ -625,6 +653,7 @@ export const ProjectRail = memo(function ProjectRail({
 		requestSessionDelete,
 		resetSessionDrag,
 		searchedSessionsByProject,
+		toggleSessionChildren,
 		sessionTab,
 	]);
 
@@ -644,20 +673,13 @@ export const ProjectRail = memo(function ProjectRail({
 		const expanded = expandedProjectIds.has(project.id);
 		const projectActionsVisible = openProjectMenuId === project.id;
 		const sessions = matchingSessionsByProject.get(project.id)!;
-		const sessionDepths = new Map<string, number>();
-		for (const session of sessions) {
-			const parentDepth = session.parentId ? sessionDepths.get(session.parentId) : undefined;
-			sessionDepths.set(
-				session.id,
-				session.relation === "collaboration" && parentDepth !== undefined ? parentDepth + 1 : 0,
-			);
-		}
+		const topLevelSessionList = topLevelSessions(sessions);
 		const runningSessionCount = sessions.filter(isSessionRunning).length;
 		const hasUnread = hasUnreadSessions(sessions, state.unreadSessionIds);
 		const visibleSessionCount = sessionVisibleCounts[project.id] ?? SESSION_PAGE_SIZE;
-		const visibleSessions = sessions.slice(0, visibleSessionCount);
-		const hasMoreSessions = visibleSessions.length < sessions.length;
-		const canCollapseSessions = visibleSessionCount > SESSION_PAGE_SIZE && sessions.length > SESSION_PAGE_SIZE;
+		const visibleSessions = visibleSessionTree(sessions, visibleSessionCount, expandedSessionIds);
+		const hasMoreSessions = visibleSessionCount < topLevelSessionList.length;
+		const canCollapseSessions = visibleSessionCount > SESSION_PAGE_SIZE && topLevelSessionList.length > SESSION_PAGE_SIZE;
 		const hasSessionPagination = hasMoreSessions || canCollapseSessions;
 
 		return (
@@ -814,7 +836,7 @@ export const ProjectRail = memo(function ProjectRail({
 												<span className="size-2 shrink-0 rounded-full bg-emerald-500" />
 												<span>{state.connected ? "已连接" : "未连接"}</span>
 												<span>·</span>
-												<span>{sessions.length} 个会话</span>
+												<span>{topLevelSessionList.length} 个会话</span>
 											</div>
 											{runningSessionCount > 0 ? (
 												<div className="flex min-w-0 items-center gap-2 text-primary">
@@ -916,24 +938,26 @@ export const ProjectRail = memo(function ProjectRail({
 												items={visibleSessions}
 															getKey={sessionItemKey}
 															scrollRef={sessionViewportRef}
-												renderItem={(session) => {
-													const running = isSessionRunning(session);
+															renderItem={({ session, depth }) => {
+																const running = isSessionRunning(session);
 													const sessionDrop =
 														sessionDropTarget?.projectId === project.id &&
 														sessionDropTarget.sessionId === session.id;
 											return (
 												<div
 													className="h-full"
-													style={{ paddingLeft: Math.min(sessionDepths.get(session.id) ?? 0, 5) * 12 }}
+													style={{ paddingLeft: Math.min(depth, 5) * 12 }}
 												>
 													<SessionButton
 														projectName={project.name}
 														session={session}
 														active={state.sessionId === session.id}
 														running={running}
-														unread={isSessionUnread(session, state.unreadSessionIds)}
-														dragging={draggedSession?.sessionId === session.id}
-														dropTarget={sessionDrop}
+																		unread={isSessionUnread(session, state.unreadSessionIds)}
+																		hasChildren={hasCollaborationChildren(sessions, session.id)}
+																		childrenExpanded={expandedSessionIds.has(session.id)}
+																		dragging={draggedSession?.sessionId === session.id}
+																		dropTarget={sessionDrop}
 														dropPosition={sessionDrop ? sessionDropTarget?.position : undefined}
 														{...sessionHandlers.get(session.id)!}
 													/>
@@ -1032,7 +1056,10 @@ export const ProjectRail = memo(function ProjectRail({
 			(total, sessions) => total + sessions.filter(isSessionRunning).length,
 			0,
 		);
-		const groupSessionCount = visibleGroupSessions.reduce((total, sessions) => total + sessions.length, 0);
+		const groupSessionCount = visibleGroupSessions.reduce(
+			(total, sessions) => total + topLevelSessions(sessions).length,
+			0,
+		);
 		const groupHasUnread = visibleGroupSessions.some((sessions) => hasUnreadSessions(sessions, state.unreadSessionIds));
 
 		const groupActionsVisible = openGroupMenuId === group.id;

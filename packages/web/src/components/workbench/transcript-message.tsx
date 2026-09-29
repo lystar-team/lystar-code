@@ -85,7 +85,7 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 					</div>
 				) : null}
 			</MessageContent>
-			{((role === "user" || role === "assistant") && text) ? (
+			{((role === "user" && (text || attachments.length > 0)) || (role === "assistant" && text)) ? (
 				<MessageActionBar
 					text={text}
 					role={role}
@@ -249,7 +249,7 @@ function MessageActionBar({
 					<Trash2 className="size-4" />
 				</MessageAction>
 			) : null}
-			<MessageAction
+			{text ? <MessageAction
 				label={label}
 				tooltip={label}
 				tooltipOpen={tooltipOpen}
@@ -258,7 +258,7 @@ function MessageActionBar({
 				onClick={() => void copy()}
 			>
 				{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}
-			</MessageAction>
+			</MessageAction> : null}
 		</MessageActions>
 	);
 }

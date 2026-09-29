@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { RoomWorkspace } from "../src/components/workbench/room-workspace.tsx";
+import { WorkspaceModeSwitch } from "../src/components/workbench/workspace-mode-switch.tsx";
+import { WorkspaceNavigationRail } from "../src/components/workbench/workspace-navigation-rail.tsx";
 import type { WorkbenchActions } from "../src/components/workbench/types.ts";
 import type { RoomWorkspaceController } from "../src/state/use-room-workspace.ts";
 import type { WorkbenchState } from "../src/state/use-workbench.ts";
@@ -33,15 +35,32 @@ function markup(section: "chat" | "board", roomController = controller): string 
 	);
 }
 
-describe("Room 视图切换", () => {
-	it("在 Room 头部居中使用会话列表的标签样式", () => {
+describe("智能体协作视图切换", () => {
+	it("左侧导航和模式切换使用智能体协作名称", () => {
+		const navigation = renderToStaticMarkup(
+			<WorkspaceNavigationRail
+				branding={{ name: "LYStar Code" } as WorkbenchState["branding"]}
+				mode="rooms"
+				panelOpen
+				onModeChange={() => {}}
+				onPanelOpen={() => {}}
+				expandButtonRef={null}
+				actions={{ openSettings: () => {}, signOut: () => {} } as unknown as Pick<WorkbenchActions, "openSettings" | "signOut">}
+			/>,
+		);
+		const switchMarkup = renderToStaticMarkup(<WorkspaceModeSwitch mode="rooms" onChange={() => {}} />);
+		expect(navigation).toContain('>智能体协作</span>');
+		expect(switchMarkup).toContain('>智能体协作</button>');
+	});
+
+	it("在智能体协作头部居中使用会话列表的标签样式", () => {
 		const html = markup("chat");
-		expect(html).toContain('aria-label="Room 视图"');
+		expect(html).toContain('aria-label="智能体协作视图"');
 		expect(html).toContain("grid-cols-[minmax(0,1fr)_auto]");
 		expect(html).toContain("@min-[48rem]/room-workspace:grid-cols-[minmax(0,1fr)_minmax(13rem,18rem)_minmax(0,1fr)]");
 		expect(html).toContain("col-span-2 row-start-2 w-full max-w-72 justify-self-center");
 		expect(html).toContain('aria-label="添加智能体"');
-		expect(html).toContain("添加智能体");
+		expect(html).toContain("智能体协作成员");
 		expect(html).not.toContain("邀请 Agent");
 		expect(html.match(/data-slot="tabs-trigger"/g)).toHaveLength(2);
 		expect(html).toContain('aria-label="对话"');

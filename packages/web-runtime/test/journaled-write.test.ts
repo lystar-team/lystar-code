@@ -209,6 +209,9 @@ class FakeRuntime implements RuntimeSession {
 	async setThinkingLevel() {
 		this.counts.set_session_thinking = (this.counts.set_session_thinking ?? 0) + 1;
 	}
+	async setFastMode() {
+		this.counts.set_session_fast_mode = (this.counts.set_session_fast_mode ?? 0) + 1;
+	}
 	async cycleModel() {
 		this.counts.cycle_session_model = (this.counts.cycle_session_model ?? 0) + 1;
 		return { changed: true, isScoped: false };
@@ -468,6 +471,8 @@ function request(command: string, cwd: string, sessionPath: string, leaseId: str
 			return { command, sessionPath, leaseId, model: { provider: "provider", id: "model" }, ...identity };
 		case "set_session_thinking":
 			return { command, sessionPath, leaseId, level: "off", ...identity };
+		case "set_session_fast_mode":
+			return { command, sessionPath, leaseId, enabled: true, ...identity };
 		case "cycle_session_model":
 			return { command, sessionPath, leaseId, direction: "forward", ...identity };
 		case "cycle_session_thinking":
@@ -535,6 +540,7 @@ const WRITE_COMMANDS = [
 	"rename_session",
 	"set_session_model",
 	"set_session_thinking",
+	"set_session_fast_mode",
 	"cycle_session_model",
 	"cycle_session_thinking",
 	"reload_resources",
@@ -561,6 +567,7 @@ const SESSION_COMMANDS = new Set([
 	"rename_session",
 	"set_session_model",
 	"set_session_thinking",
+	"set_session_fast_mode",
 	"cycle_session_model",
 	"cycle_session_thinking",
 	"reload_resources",

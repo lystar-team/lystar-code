@@ -99,6 +99,16 @@ export const DiagnosticsSchema = StrictObject({
 	agentDir: Type.Optional(Type.String({ minLength: 1 })),
 	platform: Type.Optional(Type.String({ minLength: 1 })),
 	arch: Type.Optional(Type.String({ minLength: 1 })),
+	runtimeReadConcurrency: Type.Optional(
+		StrictObject({
+			configured: Type.Integer({ minimum: 0, maximum: 16 }),
+			suggested: Type.Integer({ minimum: 2, maximum: 16 }),
+			effective: Type.Integer({ minimum: 2, maximum: 16 }),
+			source: Type.Union([Type.Literal("auto"), Type.Literal("manual")]),
+			cpuCores: Type.Integer({ minimum: 1 }),
+			totalMemoryBytes: Type.Integer({ minimum: 0 }),
+		}),
+	),
 	recovery: Type.Optional(ToolRecoveryDiagnosticsSchema),
 	lessons: Type.Optional(
 		StrictObject({
@@ -194,6 +204,7 @@ export const ModelSummarySchema = StrictObject({
 	name: Type.String({ minLength: 1, maxLength: 4096 }),
 	api: Type.String({ minLength: 1, maxLength: 4096 }),
 	reasoning: Type.Boolean(),
+	fastModeSupported: Type.Optional(Type.Boolean()),
 	input: Type.Array(ModelInputSchema, { minItems: 1, maxItems: 8 }),
 	contextWindow: Type.Integer({ minimum: 1 }),
 	maxTokens: Type.Integer({ minimum: 1 }),
@@ -207,6 +218,11 @@ export const ModelSummarySchema = StrictObject({
 	authSource: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
 export type ModelSummary = Static<typeof ModelSummarySchema>;
+
+export const ImageModelSettingsSchema = StrictObject({
+	providers: Type.Record(Id, Id),
+});
+export type ImageModelSettings = Static<typeof ImageModelSettingsSchema>;
 
 export const ModelProviderSummarySchema = StrictObject({
 	id: Id,
@@ -230,6 +246,7 @@ export const ModelOptionSchema = StrictObject({
 	id: Id,
 	name: Type.String({ minLength: 1, maxLength: 4096 }),
 	reasoning: Type.Boolean(),
+	fastModeSupported: Type.Optional(Type.Boolean()),
 	contextWindow: Type.Integer({ minimum: 1 }),
 	supportedThinkingLevels: Type.Array(ThinkingLevelSchema, { maxItems: 8 }),
 });
@@ -476,6 +493,7 @@ export const SessionStateSnapshotSchema = StrictObject({
 	activity: SessionActivitySchema,
 	model: Type.Optional(ModelRefSchema),
 	thinkingLevel: ThinkingLevelSchema,
+	fastMode: Type.Optional(Type.Boolean()),
 	attached: Type.Boolean(),
 	writeAccess: WriteAccessSchema,
 	revision: Type.Integer({ minimum: 0 }),
@@ -993,6 +1011,7 @@ export const SubagentConfigSchema = StrictObject({
 	model: Type.Optional(Id),
 	thinkingLevel: Type.Optional(ThinkingLevelSchema),
 	tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
+	excludeTools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 	skills: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 	tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 12 })),
 	content: Type.String({ maxLength: 4 * 1024 * 1024 }),
@@ -1246,8 +1265,11 @@ export const ListProjectInstructionsResultSchema = Type.Array(ProjectInstruction
 export const SaveProjectInstructionResultSchema = ListProjectInstructionsResultSchema;
 export const ListHostInstructionsResultSchema = Type.Array(ProjectInstructionSchema, { maxItems: 32 });
 export const SaveHostInstructionResultSchema = ListHostInstructionsResultSchema;
-export const ListSubagentConfigsResultSchema = Type.Array(SubagentConfigSchema, { maxItems: 1_000 });
-export const SaveSubagentConfigResultSchema = ListSubagentConfigsResultSchema;
+export const ListSubagentConfigsResultSchema = StrictObject({
+	subagents: Type.Array(SubagentConfigSchema, { maxItems: 1_000 }),
+	tools: Type.Array(StrictObject({ name: Id, description: Type.String() }), { maxItems: 512 }),
+});
+export const SaveSubagentConfigResultSchema = Type.Array(SubagentConfigSchema, { maxItems: 1_000 });
 export const DeleteSubagentConfigResultSchema = ListSubagentConfigsResultSchema;
 export const UpdateStatusSchema = StrictObject({
 	currentVersion: Type.String({ minLength: 1, maxLength: 4096 }),
@@ -1281,6 +1303,9 @@ export const SetSettingResultSchema = StrictObject({ setting: SettingSummarySche
 export const ListModelsResultSchema = Type.Array(ModelSummarySchema, { maxItems: 10_000 });
 export const ListModelProvidersResultSchema = Type.Array(ModelProviderSummarySchema, { maxItems: 1_000 });
 export const ListModelOptionsResultSchema = ModelOptionsSchema;
+export const ImageModelSettingsResultSchema = StrictObject({
+	imageModelProviders: Type.Optional(ImageModelSettingsSchema),
+});
 export const DeleteSessionsResultSchema = StrictObject({
 	deletedPaths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 10_000 }),
 	failures: Type.Array(
@@ -1295,6 +1320,7 @@ export const DeleteSessionsResultSchema = StrictObject({
 });
 export const SetSessionModelResultSchema = SessionStateSnapshotSchema;
 export const SetSessionThinkingResultSchema = SessionStateSnapshotSchema;
+export const SetSessionFastModeResultSchema = SessionStateSnapshotSchema;
 export const CycleSessionModelResultSchema = StrictObject({
 	snapshot: SessionStateSnapshotSchema,
 	changed: Type.Boolean(),
@@ -1484,12 +1510,15 @@ export const WorkspaceCommandResultSchemas = {
 	list_models: ListModelsResultSchema,
 	list_model_providers: ListModelProvidersResultSchema,
 	list_model_options: ListModelOptionsResultSchema,
+	get_image_model_settings: ImageModelSettingsResultSchema,
+	set_image_model_settings: ImageModelSettingsResultSchema,
 	delete_sessions: DeleteSessionsResultSchema,
 	sync_model_provider: ListModelsResultSchema,
 	remove_model_provider: ListModelProvidersResultSchema,
 	set_provider_model_enabled: ListModelsResultSchema,
 	set_session_model: SetSessionModelResultSchema,
 	set_session_thinking: SetSessionThinkingResultSchema,
+	set_session_fast_mode: SetSessionFastModeResultSchema,
 	cycle_session_model: CycleSessionModelResultSchema,
 	cycle_session_thinking: CycleSessionThinkingResultSchema,
 	reload_resources: ReloadResourcesResultSchema,
@@ -1823,6 +1852,13 @@ export const CommandSchema = Type.Union([
 	}),
 	StrictObject({ command: Type.Literal("list_models") }),
 	StrictObject({ command: Type.Literal("list_model_providers") }),
+	StrictObject({ command: Type.Literal("get_image_model_settings") }),
+	StrictObject({
+		command: Type.Literal("set_image_model_settings"),
+		providers: Type.Record(Id, Id),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
 	StrictObject({
 		command: Type.Literal("list_model_options"),
 		includeProviders: Type.Optional(Type.Array(Id, { maxItems: 1_000 })),
@@ -1867,6 +1903,7 @@ export const CommandSchema = Type.Union([
 		api: Type.Optional(Type.String({ minLength: 1 })),
 		baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 		reasoning: Type.Boolean(),
+		fastModeSupported: Type.Optional(Type.Boolean()),
 		thinkingLevelMap: Type.Optional(ModelThinkingLevelMapSchema),
 		resetOverride: Type.Optional(Type.Boolean()),
 		input: Type.Array(ModelInputSchema, { minItems: 1 }),
@@ -1909,6 +1946,14 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,
 		level: ThinkingLevelSchema,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("set_session_fast_mode"),
+		sessionPath: Type.String({ minLength: 1 }),
+		leaseId: Id,
+		enabled: Type.Boolean(),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
@@ -2025,6 +2070,7 @@ export const CommandSchema = Type.Union([
 		model: Type.Optional(Id),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
+		excludeTools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 		skills: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 		tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 12 })),
 		content: Type.String({ maxLength: 4 * 1024 * 1024 }),

@@ -95,6 +95,7 @@ export interface SessionProfileSnapshot {
 	model?: string;
 	thinkingLevel?: string;
 	tools?: string[];
+	excludeTools?: string[];
 	skillNames?: string[];
 	systemPrompt?: string;
 	agentsInstructions?: string;
@@ -1447,6 +1448,7 @@ export type SessionListProgress = (
 ) => void;
 
 const MAX_CONCURRENT_SESSION_INFO_LOADS = 2;
+const MAX_CONCURRENT_METADATA_SESSION_INFO_LOADS = 16;
 const MAX_CONCURRENT_SESSION_DISCOVERY_LOADS = 64;
 const CURRENT_SESSION_LIST_PUBLISH_INTERVAL = 10;
 const ALL_SESSION_LIST_PUBLISH_INTERVAL = 100;
@@ -1489,7 +1491,7 @@ function buildSessionInfosWithConcurrency(
 ): Promise<(SessionInfo | null)[]> {
 	return mapWithConcurrency(
 		files,
-		MAX_CONCURRENT_SESSION_INFO_LOADS,
+		options.metadataOnly ? MAX_CONCURRENT_METADATA_SESSION_INFO_LOADS : MAX_CONCURRENT_SESSION_INFO_LOADS,
 		async (file, index) => {
 			const info = await buildSessionInfo(file.path, options, file.stats);
 			onLoaded(info, index);

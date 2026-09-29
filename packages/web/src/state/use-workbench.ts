@@ -303,6 +303,7 @@ export function useWorkbench() {
 										liveTools: {},
 										liveTurnItems: [],
 										liveTurnActive: false,
+										lastOutputSpeed: undefined,
 										pendingUserPrompts: [],
 										queuedUserPrompts: [],
 										liveCompaction: undefined,
@@ -326,18 +327,17 @@ export function useWorkbench() {
 	);
 
 	const loadTranscript = useCallback(
-		async (sessionId = stateRef.current.sessionId, cursor?: string, deferCommit = false, completeHistory = false) => {
+		async (sessionId = stateRef.current.sessionId, cursor?: string, deferCommit = false, completeTurn = false) => {
 			if (!sessionId) return;
 			const requestedHistory = {
 				generation: stateRef.current.transcriptGeneration,
 				leafId: stateRef.current.transcriptLeafId,
 			};
 			const historySelection = selectionRef.current;
+			const historyRequestIsActive = () =>
+				selectionRef.current === historySelection && stateRef.current.sessionId === sessionId;
 			const historyStillCurrent = () =>
-				selectionRef.current === historySelection &&
-				stateRef.current.sessionId === sessionId &&
-				stateRef.current.transcriptGeneration === requestedHistory.generation &&
-				stateRef.current.previousCursor === cursor;
+				historyRequestIsActive() && stateRef.current.transcriptGeneration === requestedHistory.generation;
 			const requestId = cursor ? transcriptRequestRef.current : ++transcriptRequestRef.current;
 			if (!cursor && (!stateRef.current.transcriptPageLoaded || stateRef.current.transcriptError)) {
 				updateState((current) =>
@@ -348,24 +348,27 @@ export function useWorkbench() {
 			}
 			try {
 				let result = await webApi.transcript(sessionId, { cursor, limit: MAX_TRANSCRIPT_PAGE_SIZE });
-				if (cursor && completeHistory) {
+				if (cursor && completeTurn) {
 					const pages = [result];
 					const firstPage = result;
 					const visitedCursors = new Set([cursor]);
-					while (result.hasMorePrevious && result.previousCursor) {
-						if (!historyStillCurrent()) return;
-						if (visitedCursors.has(result.previousCursor)) throw new Error("历史游标未前进");
+					const userIds = new Set(result.items.filter((item) => item.view?.type === "user").map((item) => item.entryId));
+					const requiredUsers = stateRef.current.transcript.some((item) => item.view?.type === "user") ? 1 : 2;
+					while (result.hasMorePrevious && userIds.size < requiredUsers) {
+						if (!historyStillCurrent()) {
+							if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
+							return;
+						}
+						if (!result.previousCursor || visitedCursors.has(result.previousCursor)) throw new Error("历史游标未前进");
 						visitedCursors.add(result.previousCursor);
 						const older = await webApi.transcript(sessionId, {
 							cursor: result.previousCursor,
 							limit: MAX_TRANSCRIPT_PAGE_SIZE,
 						});
-						if (
-							older.transcriptGeneration !== firstPage.transcriptGeneration ||
-							older.leafId !== firstPage.leafId
-						)
+						if (older.transcriptGeneration !== firstPage.transcriptGeneration || older.leafId !== firstPage.leafId)
 							throw new Error("历史记录发生变化，请重新打开会话");
 						pages.push(older);
+						for (const item of older.items) if (item.view?.type === "user") userIds.add(item.entryId);
 						result = older;
 					}
 					result = {
@@ -374,8 +377,10 @@ export function useWorkbench() {
 						agentSteps: pages.flatMap((page) => page.agentSteps ?? []),
 					};
 				}
-				if (cursor ? !historyStillCurrent() : requestId !== transcriptRequestRef.current || stateRef.current.sessionId !== sessionId)
+				if (cursor && !historyStillCurrent()) {
+					if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
 					return;
+				}
 				(deferCommit && !cursor ? transitionState : updateState)((current) => {
 					if (current.sessionId !== sessionId) return current;
 					const currentHistoryChangedSinceRequest = cursor
@@ -393,9 +398,7 @@ export function useWorkbench() {
 							result,
 						) ||
 							(current.transcriptGeneration === result.transcriptGeneration &&
-								(!cursor ||
-									(requestedHistory.leafId === result.leafId &&
-										current.transcript.some((item) => item.entryId === requestedHistory.leafId))))) &&
+								(!cursor || current.transcript.some((item) => item.entryId === result.leafId)))) &&
 						!(
 							current.transcriptPageLoaded &&
 							current.transcriptGeneration === undefined &&
@@ -498,7 +501,7 @@ export function useWorkbench() {
 					};
 				});
 			} catch (error) {
-				if ((cursor ? historyStillCurrent() : requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId)) {
+				if ((cursor ? historyRequestIsActive() : requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId)) {
 					updateState((current) => ({
 						...current,
 						transcriptLoading: false,
@@ -934,6 +937,7 @@ export function useWorkbench() {
 						...current,
 						models: result.models,
 						providers: result.providers,
+						imageModelProviders: result.imageModelProviders?.providers,
 						modelCatalogRevision: result.revision,
 						hiddenModelProviders,
 						modelSettingsLoading: false,
@@ -1156,6 +1160,7 @@ export function useWorkbench() {
 		ensureSessionControl,
 		updateModel,
 		updateThinking,
+		updateFastMode,
 	} = useWorkbenchSessionActions({
 		stateRef,
 		updateState,
@@ -1274,6 +1279,7 @@ export function useWorkbench() {
 	const {
 		setModelProviderVisibility,
 		saveModelProvider,
+		saveImageModelProviders,
 		removeModelProvider,
 		saveProviderModel,
 		setProviderModelEnabled,
@@ -1292,6 +1298,8 @@ export function useWorkbench() {
 		saveBranding,
 		refreshSessionNameSettings,
 		saveSessionNameSettings,
+		refreshToolRecoverySettings,
+		saveToolRecoverySettings,
 		refreshHostInstructions,
 		saveHostInstruction,
 		openSettings,
@@ -1326,19 +1334,6 @@ export function useWorkbench() {
 	refreshModelOptionsRef.current = refreshModelOptions;
 	refreshModelSettingsRef.current = refreshModelSettings;
 
-	useEffect(() => {
-		if (
-			!state.sessionId ||
-			!state.transcriptPageLoaded ||
-			!state.hasMorePrevious ||
-			!state.previousCursor ||
-			state.loadingEarlier ||
-			state.transcriptError
-		)
-			return;
-		void loadEarlier().catch(() => {});
-	}, [loadEarlier, state.sessionId, state.transcriptPageLoaded, state.hasMorePrevious, state.previousCursor, state.loadingEarlier, state.transcriptError]);
-
 	const actions = useMemo(
 		() => ({
 			selectProject,
@@ -1354,6 +1349,8 @@ export function useWorkbench() {
 			saveBranding,
 			refreshSessionNameSettings,
 			saveSessionNameSettings,
+			refreshToolRecoverySettings,
+			saveToolRecoverySettings,
 			closeSettings,
 			signOut,
 			setComposerMode,
@@ -1375,6 +1372,7 @@ export function useWorkbench() {
 			loadGitDiff,
 			closeGitDiff,
 			loadProjectTree,
+			refreshProjectFiles,
 			openFile,
 			openResource,
 			saveFile,
@@ -1404,6 +1402,7 @@ export function useWorkbench() {
 			updateThinking,
 			setModelProviderVisibility,
 			saveModelProvider,
+			saveImageModelProviders,
 			removeModelProvider,
 			saveProviderModel,
 			setProviderModelEnabled,
@@ -1460,6 +1459,7 @@ export function useWorkbench() {
 			loadGitDiff,
 			closeGitDiff,
 			loadProjectTree,
+			refreshProjectFiles,
 			openFile,
 			openResource,
 			saveFile,
@@ -1489,6 +1489,7 @@ export function useWorkbench() {
 			updateThinking,
 			setModelProviderVisibility,
 			saveModelProvider,
+			saveImageModelProviders,
 			removeModelProvider,
 			saveProviderModel,
 			setProviderModelEnabled,
@@ -1512,9 +1513,12 @@ export function useWorkbench() {
 			refreshProjectSessions,
 			refreshSessionNameSettings,
 			saveSessionNameSettings,
+			refreshToolRecoverySettings,
+			saveToolRecoverySettings,
 			showToast,
 		],
 	);
+	const actionsWithFastMode = useMemo(() => ({ ...actions, updateFastMode }), [actions, updateFastMode]);
 
 	useEffect(() => {
 		if (typeof BroadcastChannel === "undefined") return;
@@ -1656,7 +1660,7 @@ export function useWorkbench() {
 
 	return {
 		state,
-		actions,
+		actions: actionsWithFastMode,
 		currentProject,
 		currentSessions,
 		currentSessionSummary,
@@ -1709,9 +1713,11 @@ export function useWorkbench() {
 		refreshModelSettings,
 		refreshBranding,
 		refreshSessionNameSettings,
+		refreshToolRecoverySettings,
 		refreshSecuritySettings,
 		saveBranding,
 		saveSessionNameSettings,
+		saveToolRecoverySettings,
 		saveSecuritySettings,
 		loadGitStatus,
 		loadGitRepositoryStats,

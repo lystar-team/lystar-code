@@ -458,6 +458,7 @@ export function useWorkbenchSessionActions({
 				currentOperation: undefined,
 				liveTurnActive: false,
 				liveTurnStartRevision: undefined,
+				lastOutputSpeed: undefined,
 				liveTools: {},
 				liveSteps: {},
 							liveTurnItems: [],
@@ -566,6 +567,7 @@ export function useWorkbenchSessionActions({
 			statusText: "",
 			liveTurnActive: false,
 			liveTurnStartRevision: undefined,
+			lastOutputSpeed: undefined,
 			liveTools: {},
 			liveTurnItems: [],
 			liveCompaction: undefined,
@@ -898,6 +900,7 @@ export function useWorkbenchSessionActions({
 							currentOperation: undefined,
 							liveTurnActive: false,
 							liveTurnStartRevision: undefined,
+							lastOutputSpeed: undefined,
 							liveTools: {},
 							liveSteps: {},
 							liveTurnItems: [],
@@ -942,6 +945,9 @@ export function useWorkbenchSessionActions({
 				return;
 			}
 			selectionRef.current++;
+			if (oldSessionId !== result.session.id) {
+				cacheSessionDetail(sessionDetailCacheRef.current, oldSessionId, sessionDetailCacheFromState(current));
+			}
 			const socket = socketRef.current;
 			if (socket && oldSessionId !== result.session.id) webApi.unsubscribeSession(socket, oldSessionId);
 			updateState((next) => ({
@@ -970,6 +976,7 @@ export function useWorkbenchSessionActions({
 				currentOperation: undefined,
 				liveTurnActive: false,
 				liveTurnStartRevision: undefined,
+				lastOutputSpeed: undefined,
 				liveTools: {},
 				liveSteps: {},
 				liveTurnItems: [],
@@ -1110,6 +1117,27 @@ export function useWorkbenchSessionActions({
 		[ensureSessionControl, showToast, updateState],
 	);
 
+	const updateFastMode = useCallback(
+		async (enabled: boolean) => {
+			const sessionId = stateRef.current.sessionId;
+			if (!sessionId || !(await ensureSessionControl(sessionId))) return;
+			if (stateRef.current.sessionId !== sessionId) return;
+			try {
+				const result = await webApi.fastMode(sessionId, enabled);
+				if (stateRef.current.sessionId !== sessionId) return;
+				updateState((next) => ({
+					...next,
+					session: result.session,
+					readOnly: result.session.writeAccess !== "owned",
+				}));
+				showToast(enabled ? "已切换至快速模式" : "已切换至普通模式");
+			} catch (error) {
+				showToast(errorMessage(error));
+			}
+		},
+		[ensureSessionControl, showToast, updateState],
+	);
+
 	return {
 		selectSession,
 		selectProject,
@@ -1129,5 +1157,6 @@ export function useWorkbenchSessionActions({
 		ensureSessionControl,
 		updateModel,
 		updateThinking,
+		updateFastMode,
 	};
 }

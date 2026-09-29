@@ -25,12 +25,24 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 
 const MAX_EDIT_IMAGES = 5;
 const IMAGE_PROVIDER_ORDER = ["openai-codex", "openai", "openrouter"] as const;
-const IMAGE_MODEL_IDS = ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"] as const;
+const IMAGE_MODEL_IDS = ["gpt-image-1", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"] as const;
 const OPENAI_COMPATIBLE_IMAGE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 const CONTENT_POLICY_ERROR = /content[_ -]?policy|content[_ -]?filter|moderation|safety system|safety violation/i;
 
 type ImageProviderId = (typeof IMAGE_PROVIDER_ORDER)[number];
 type ImageModelId = (typeof IMAGE_MODEL_IDS)[number];
+
+const IMAGE_MODEL_NAMES: Record<ImageModelId, string> = {
+	"gpt-image-1": "GPT Image 1",
+	"gpt-image-2": "GPT Image 2",
+	"gpt-image-2.5-flare": "GPT Image 2.5 Flare",
+	"gpt-image-2.5-sunburst": "GPT Image 2.5 Sunburst",
+};
+
+function isImageProviderId(value: string): value is ImageProviderId {
+	return (IMAGE_PROVIDER_ORDER as readonly string[]).includes(value);
+}
+
 type ImageModelPreference = "auto" | ImageModelId;
 type ImageProfile = "fast" | "standard" | "precision";
 type ImageMode = "generate" | "edit";
@@ -54,6 +66,7 @@ const imageGenSchema = Type.Object(
 			Type.Union(
 				[
 					Type.Literal("auto"),
+					Type.Literal("gpt-image-1"),
 					Type.Literal("gpt-image-2"),
 					Type.Literal("gpt-image-2.5-flare"),
 					Type.Literal("gpt-image-2.5-sunburst"),
@@ -104,6 +117,29 @@ function imageModelId(provider: ImageProviderId, modelId: ImageModelId): string 
 	return provider === "openrouter" ? `openai/${modelId}` : modelId;
 }
 
+function createCompatibleImageModel(
+	provider: ImageProviderId,
+	modelId: ImageModelId,
+	baseUrl: string,
+): ImagesModel<ImagesApi> {
+	return {
+		id: imageModelId(provider, modelId),
+		name: IMAGE_MODEL_NAMES[modelId],
+		api: provider === "openrouter" ? "openrouter-images" : "openai-images",
+		provider,
+		baseUrl,
+		input: ["text", "image"],
+		output: ["image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	};
+}
+
+function imageProviderForConfiguredProvider(providerId: string, model: Model<Api> | undefined): ImageProviderId {
+	if (providerId === "openai-codex" || model?.api === "openai-codex-responses") return "openai-codex";
+	if (providerId === "openrouter" || model?.baseUrl.includes("openrouter.ai")) return "openrouter";
+	return "openai";
+}
+
 function imageProviderForActiveModel(model: Model<Api>): ImageProviderId | undefined {
 	if (model.provider === "openai-codex" || model.api === "openai-codex-responses") return "openai-codex";
 	if (model.provider === "openrouter") return "openrouter";
@@ -135,19 +171,21 @@ async function getActiveImageCandidate(
 	if (!activeModel) return undefined;
 	const imageProvider = imageProviderForActiveModel(activeModel);
 	if (!imageProvider) return undefined;
-	const imageModel = ctx.modelRegistry.findImage(imageProvider, imageModelId(imageProvider, modelId));
-	if (!imageModel) return undefined;
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(activeModel);
 	if (!auth.ok) {
-		failures.push(`${activeModel.provider}/${imageModel.id}: ${auth.error}`);
+		failures.push(`${activeModel.provider}/${modelId}: ${auth.error}`);
 		return undefined;
 	}
 	if (!auth.apiKey) return undefined;
+	const baseUrl = activeImageBaseUrl(activeModel, imageProvider, auth.baseUrl);
+	const imageModel =
+		ctx.modelRegistry.findImage(imageProvider, imageModelId(imageProvider, modelId)) ??
+		createCompatibleImageModel(imageProvider, modelId, baseUrl);
 	return {
 		sourceProvider: activeModel.provider,
 		model: {
 			...imageModel,
-			baseUrl: activeImageBaseUrl(activeModel, imageProvider, auth.baseUrl),
+			baseUrl,
 		},
 		options: { apiKey: auth.apiKey, headers: auth.headers, env: auth.env },
 	};
@@ -155,19 +193,75 @@ async function getActiveImageCandidate(
 
 async function getConfiguredImageCandidate(
 	ctx: ExtensionContext,
-	provider: ImageProviderId,
+	providerId: string,
 	modelId: ImageModelId,
 	failures: string[],
 ): Promise<ImageGenerationCandidate | undefined> {
-	const model = ctx.modelRegistry.findImage(provider, imageModelId(provider, modelId));
-	if (!model) return undefined;
+	const provider = ctx.modelRegistry.getProvider?.(providerId);
+	if (!provider) {
+		if (!isImageProviderId(providerId)) {
+			failures.push(`${providerId}/${modelId}: Provider 不存在`);
+			return undefined;
+		}
+		const imageModel = ctx.modelRegistry.findImage(providerId, imageModelId(providerId, modelId));
+		if (!imageModel) return undefined;
+		try {
+			const auth = await ctx.modelRegistry.getImageProviderAuth(providerId);
+			return auth?.auth.apiKey ? { sourceProvider: providerId, model: imageModel } : undefined;
+		} catch (error) {
+			failures.push(`${providerId}/${imageModel.id}: ${error instanceof Error ? error.message : String(error)}`);
+			return undefined;
+		}
+	}
+	const sourceModel = ctx.modelRegistry.getAll().find((model) => model.provider === providerId);
+	const imageProvider = imageProviderForConfiguredProvider(providerId, sourceModel);
+	let apiKey: string | undefined;
+	let headers: Record<string, string | null> | undefined;
+	let env: Record<string, string> | undefined;
+	let resolvedBaseUrl: string | undefined;
 	try {
-		const auth = await ctx.modelRegistry.getImageProviderAuth(provider);
-		return auth?.auth.apiKey ? { sourceProvider: provider, model } : undefined;
+		if (sourceModel) {
+			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(sourceModel);
+			if (!auth.ok) {
+				failures.push(`${providerId}/${modelId}: ${auth.error}`);
+				return undefined;
+			}
+			apiKey = auth.apiKey;
+			headers = auth.headers;
+			env = auth.env;
+			resolvedBaseUrl = auth.baseUrl;
+		} else {
+			const auth = await ctx.modelRegistry.getProviderAuth(providerId);
+			apiKey = auth?.auth.apiKey;
+			headers = auth?.auth.headers;
+			env = auth?.env;
+			resolvedBaseUrl = auth?.auth.baseUrl;
+		}
 	} catch (error) {
-		failures.push(`${provider}/${model.id}: ${error instanceof Error ? error.message : String(error)}`);
+		failures.push(`${providerId}/${modelId}: ${error instanceof Error ? error.message : String(error)}`);
 		return undefined;
 	}
+	if (!apiKey) return undefined;
+	const baseUrl = resolvedBaseUrl ?? sourceModel?.baseUrl ?? provider.baseUrl;
+	if (!baseUrl) {
+		failures.push(`${providerId}/${modelId}: Provider 没有 Base URL`);
+		return undefined;
+	}
+	const imageModel =
+		ctx.modelRegistry.findImage(imageProvider, imageModelId(imageProvider, modelId)) ??
+		createCompatibleImageModel(imageProvider, modelId, baseUrl);
+	const requestBaseUrl =
+		imageProvider === "openai-codex"
+			? activeImageBaseUrl(sourceModel ?? ({ baseUrl } as Model<Api>), imageProvider, baseUrl)
+			: baseUrl;
+	return {
+		sourceProvider: providerId,
+		model: {
+			...imageModel,
+			baseUrl: requestBaseUrl,
+		},
+		options: { apiKey, headers, env },
+	};
 }
 
 async function tryImageCandidate(
@@ -206,7 +300,19 @@ async function generateWithProviderFallback(
 	const failures: string[] = [];
 	let configuredCandidates = 0;
 
+	const configured = ctx.modelRegistry.getImageModelProviders?.() ?? {};
 	for (const modelId of selection.modelIds) {
+		const configuredProvider = configured[modelId];
+		if (configuredProvider) {
+			configuredCandidates++;
+			const candidate = await getConfiguredImageCandidate(ctx, configuredProvider, modelId, failures);
+			if (!candidate) continue;
+			onAttempt?.(candidate);
+			const result = await tryImageCandidate(ctx, candidate, context, failures, signal);
+			if (result) return { candidate, result };
+			continue;
+		}
+
 		const activeCandidate = await getActiveImageCandidate(ctx, modelId, failures);
 		if (activeCandidate) {
 			configuredCandidates++;
@@ -230,7 +336,7 @@ async function generateWithProviderFallback(
 	if (configuredCandidates === 0) {
 		const detail = failures.length > 0 ? ` (${failures.join("; ")})` : "";
 		throw new Error(
-			`No image provider is configured for ${requested}. Configure the active OpenAI-compatible provider, sign in to OpenAI Codex, set OPENAI_API_KEY, or configure OpenRouter.${detail}`,
+			`No image Provider is configured for ${requested}. Configure an existing Provider with a compatible image endpoint or set a per-model image Provider mapping.${detail}`,
 		);
 	}
 	throw new Error(`Image generation failed for ${requested}. ${failures.join("; ")}`);

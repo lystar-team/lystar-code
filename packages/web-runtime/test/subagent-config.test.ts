@@ -92,4 +92,39 @@ describe("subagent config adapter", () => {
 		);
 		expect(configs.some((config) => config.scope === "user" && config.name === "review-specialist")).toBe(false);
 	});
+
+	it("saves disabled tools and lists tools registered for the project", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-subagent-tools-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+		const options = await adapter.listSubagentTools(cwd);
+		expect(options).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "read", description: expect.any(String) }),
+				expect.objectContaining({ name: "sessions", description: expect.any(String) }),
+				expect.objectContaining({ name: "image_gen", description: expect.any(String) }),
+			]),
+		);
+		const configs = await adapter.saveSubagentConfig(
+			cwd,
+			{
+				scope: "user",
+				name: "restricted",
+				description: "Limited tools",
+				excludeTools: ["bash", "write"],
+				content: "Read and review.",
+			},
+			async () => ({ cancelled: true }),
+		);
+		expect(configs.find((config) => config.name === "restricted")).toMatchObject({
+			excludeTools: ["bash", "write"],
+		});
+		expect(
+			parseSubagentMarkdown(readFileSync(join(agentDir, "agents", "restricted.md"), "utf8"), "restricted"),
+		).toMatchObject({ excludeTools: ["bash", "write"] });
+	});
 });

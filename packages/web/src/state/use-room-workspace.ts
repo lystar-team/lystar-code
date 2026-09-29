@@ -205,7 +205,7 @@ export function useRoomWorkspace({
 				project?.sessions[0]?.id ??
 				roomSessionId(summary, sessionId);
 			if (!senderSessionId) {
-				showToast("Room 没有关联可用会话");
+				showToast("智能体协作没有关联可用会话");
 				return;
 			}
 			const key = roomKey(projectId, summary.room.id);
@@ -293,7 +293,7 @@ export function useRoomWorkspace({
 					return next;
 				});
 			} catch {
-				// 轮询失败不打断当前 Room，下一轮继续尝试。
+				// 轮询失败不打断当前智能体协作，下一轮继续尝试。
 			} finally {
 				polling = false;
 				if (pollAgain && !disposed) {
@@ -358,25 +358,25 @@ export function useRoomWorkspace({
 	}, [active, refreshRoomTasks, roomMessagesLoading, selectedRoom?.room.id, selectedRoomKey]);
 
 	const createRoomTask = useCallback(async (title: string, description: string) => {
-		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择智能体协作");
 		await webApi.createRoomTask(selectedRoomProjectId, selectedRoom.room.id, selectedRoomSessionId, title, description);
 		await refreshRoomTasks();
 	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
 
 	const updateRoomTask = useCallback(async (taskId: string, status: WebRoomTaskStatus, note?: string) => {
-		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择智能体协作");
 		await webApi.updateRoomTask(selectedRoomProjectId, selectedRoom.room.id, taskId, selectedRoomSessionId, status, note);
 		await refreshRoomTasks();
 	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
 
 	const editRoomTask = useCallback(async (taskId: string, changes: { title?: string; description?: string; assigneeSessionId?: string | null }) => {
-		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择智能体协作");
 		await webApi.editRoomTask(selectedRoomProjectId, selectedRoom.room.id, taskId, selectedRoomSessionId, changes);
 		await refreshRoomTasks();
 	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
 
 	const commentRoomTask = useCallback(async (taskId: string, body: string) => {
-		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择 Room");
+		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择智能体协作");
 		await webApi.commentRoomTask(selectedRoomProjectId, selectedRoom.room.id, taskId, selectedRoomSessionId, body);
 		await refreshRoomTasks();
 	}, [refreshRoomTasks, selectedRoom, selectedRoomProjectId, selectedRoomSessionId]);
@@ -433,7 +433,7 @@ export function useRoomWorkspace({
 		async (member: RoomMemberSelection) => {
 			const projectId = selectedRoomProjectId;
 			const room = selectedRoom;
-			if (!projectId || !room) throw new Error("请先选择 Room");
+			if (!projectId || !room) throw new Error("请先选择智能体协作");
 			const identity = roomMemberIdentity(member, room);
 			let createdSessionId: string | undefined;
 			let joinedRoom = false;
@@ -465,8 +465,8 @@ export function useRoomWorkspace({
 		async (memberSessionId: string) => {
 			const projectId = selectedRoomProjectId;
 			const room = selectedRoom;
-			if (!projectId || !room) throw new Error("请先选择 Room");
-			if (memberSessionId === room.room.ownerSessionId) throw new Error("Room Owner 不能退出 Room");
+			if (!projectId || !room) throw new Error("请先选择智能体协作");
+			if (memberSessionId === room.room.ownerSessionId) throw new Error("智能体协作的创建者不能退出智能体协作");
 			const left = await webApi.leaveRoom(projectId, room.room.id, memberSessionId);
 			setSelectedRoom(left);
 			setPendingAgentReplies((current) =>
@@ -486,7 +486,7 @@ export function useRoomWorkspace({
 	const renameRoomMember = useCallback(async (memberSessionId: string, nickname: string) => {
 		const projectId = selectedRoomProjectId;
 		const room = selectedRoom;
-		if (!projectId || !room) throw new Error("请先选择 Room");
+		if (!projectId || !room) throw new Error("请先选择智能体协作");
 		const renamed = await webApi.renameRoomMember(projectId, room.room.id, memberSessionId, nickname);
 		if (selectedRoomKeyRef.current === roomKey(projectId, room.room.id)) setSelectedRoom(renamed);
 		setRoomsByProject((current) => ({
@@ -502,7 +502,7 @@ export function useRoomWorkspace({
 			const projectId = selectedRoomProjectId;
 			const room = selectedRoom;
 			const senderSessionId = selectedRoomSessionId ?? sessionId;
-			if (!projectId || !room || !senderSessionId) throw new Error("请先选择 Room");
+			if (!projectId || !room || !senderSessionId) throw new Error("请先选择智能体协作");
 			const key = roomKey(projectId, room.room.id);
 			const tokens = new Set(body.split(/[\s,，。；;!?！？、()[\]{}<>]+/u).filter(Boolean));
 			const targetSessionIds = roomMentionItems

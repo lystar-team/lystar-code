@@ -619,6 +619,27 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 		}
 	});
 
+	it("repairs Web services when a Web update retry finds the app already current", async () => {
+		vi.stubEnv("LYSTAR_WEB_SERVICE_TARGET_VERSION", VERSION);
+		vi.stubEnv("LYSTAR_WEB_PREVIOUS_SERVICE_VERSION", "0.85.1-lystar.12");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ version: VERSION })),
+		);
+		const reconcile = vi.fn(async () => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await expect(
+			handlePackageCommand(["update", "--self"], { reconcileWebServicesAfterUpdate: reconcile }),
+		).resolves.toBe(true);
+
+		expect(reconcile).toHaveBeenCalledWith(VERSION, "0.85.1-lystar.12");
+		expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+			"应用已是最新版本，正在修复 Web 服务",
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+
 	it.each(["lc", "lystar"])("treats %s as a self-update target", async (target) => {
 		const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
 		vi.stubGlobal("fetch", fetchMock);

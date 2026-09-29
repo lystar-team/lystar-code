@@ -59,12 +59,12 @@ function parseJournalRecord(line: string): RoomJournalRecord {
 		value = JSON.parse(line);
 	} catch (error) {
 		throw roomError(
-			`Room 记录不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
+			`智能体协作记录不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
 			"room_store_corrupt",
 		);
 	}
 	if (!isRecord(value) || typeof value.type !== "string") {
-		throw roomError("Room 记录缺少类型", "room_store_corrupt");
+		throw roomError("智能体协作记录缺少类型", "room_store_corrupt");
 	}
 	if (
 		value.type !== "room_created" &&
@@ -79,7 +79,7 @@ function parseJournalRecord(line: string): RoomJournalRecord {
 		value.type !== "task_created" &&
 		value.type !== "task_updated"
 	) {
-		throw roomError(`Room 记录类型未知：${value.type}`, "room_store_corrupt");
+		throw roomError(`智能体协作记录类型未知：${value.type}`, "room_store_corrupt");
 	}
 	return value as unknown as RoomJournalRecord;
 }
@@ -137,9 +137,9 @@ export class SessionRoomStore {
 	}
 
 	createRoom(room: SessionRoom, owner: SessionRoomMember): SessionRoomSummary {
-		if (this.rooms.has(room.id)) throw roomError(`Room 已存在：${room.id}`, "room_exists");
+		if (this.rooms.has(room.id)) throw roomError(`智能体协作已存在：${room.id}`, "room_exists");
 		if (owner.roomId !== room.id || owner.sessionId !== room.ownerSessionId) {
-			throw roomError("Room Owner 与 Room 不一致", "room_owner_invalid");
+			throw roomError("智能体协作的创建者与协作不一致", "room_owner_invalid");
 		}
 		this.commit([
 			{ type: "room_created", room },
@@ -154,7 +154,7 @@ export class SessionRoomStore {
 
 	room(roomId: string): SessionRoom {
 		const room = this.rooms.get(roomId);
-		if (!room) throw roomError(`未找到 Room：${roomId}`, "room_not_found");
+		if (!room) throw roomError(`未找到智能体协作：${roomId}`, "room_not_found");
 		return clone(room);
 	}
 
@@ -179,7 +179,7 @@ export class SessionRoomStore {
 		const room = this.room(roomId);
 		const member = this.member(roomId, sessionId);
 		if (member.leftAt !== undefined || member.role !== "member")
-			throw roomError("只能修改 Room 中智能体的昵称", "room_member_rename_forbidden");
+			throw roomError("只能修改智能体协作中智能体的昵称", "room_member_rename_forbidden");
 		const name = nickname.trim();
 		if (!name || name.length > 128 || !/^[\p{L}\p{N}_-]+$/u.test(name))
 			throw roomError("昵称只能包含文字、数字、下划线或连字符，且不能超过 128 字符", "room_member_nickname_invalid");
@@ -192,7 +192,7 @@ export class SessionRoomStore {
 					(candidate.nickname?.trim() || collaborationAlias(candidate.sessionId)) === name,
 			)
 		)
-			throw roomError("Room 中已有同名成员", "room_member_nickname_conflict");
+			throw roomError("智能体协作中已有同名成员", "room_member_nickname_conflict");
 		if (member.nickname === name) return this.summary(roomId);
 		this.commit([
 			{ type: "room_updated", room: { ...room, updatedAt: new Date().toISOString() } },
@@ -233,13 +233,13 @@ export class SessionRoomStore {
 		const room = this.room(draft.roomId);
 		const sender = this.membersByRoom.get(draft.roomId)?.get(draft.senderSessionId);
 		if (!sender || sender.leftAt !== undefined) {
-			throw roomError(`发送者不是 Room 活跃成员：${draft.senderSessionId}`, "room_sender_not_member");
+			throw roomError(`发送者不是智能体协作的活跃成员：${draft.senderSessionId}`, "room_sender_not_member");
 		}
 		const idempotencyKey = `${draft.roomId}:${draft.senderSessionId}:${draft.idempotencyKey}`;
 		const previous = this.idempotency.get(idempotencyKey);
 		if (previous) {
 			if (!messageMatchesDraft(previous, draft)) {
-				throw roomError("相同幂等键对应的 Room 消息内容不一致", "room_idempotency_conflict");
+				throw roomError("相同幂等键对应的智能体协作消息内容不一致", "room_idempotency_conflict");
 			}
 			return { message: clone(previous), deduplicated: true };
 		}
@@ -260,7 +260,7 @@ export class SessionRoomStore {
 						message.kind === "message",
 				)
 			) {
-				throw roomError("Room 有新消息，请读取后重新回复", "room_reply_stale");
+				throw roomError("智能体协作有新消息，请读取后重新回复", "room_reply_stale");
 			}
 			if (
 				recent.some(
@@ -365,7 +365,7 @@ export class SessionRoomStore {
 	member(roomId: string, sessionId: string): SessionRoomMember {
 		this.room(roomId);
 		const member = this.membersByRoom.get(roomId)?.get(sessionId);
-		if (!member) throw roomError(`不是 Room 成员：${sessionId}`, "room_member_not_found");
+		if (!member) throw roomError(`不是智能体协作成员：${sessionId}`, "room_member_not_found");
 		return clone(member);
 	}
 
@@ -408,13 +408,13 @@ export class SessionRoomStore {
 	task(roomId: string, taskId: string): SessionRoomTask {
 		this.room(roomId);
 		const task = this.tasksByRoom.get(roomId)?.get(taskId);
-		if (!task) throw roomError(`未找到 Room 任务：${taskId}`, "room_task_not_found");
+		if (!task) throw roomError(`未找到智能体协作任务：${taskId}`, "room_task_not_found");
 		return clone(task);
 	}
 
 	claimTask(roomId: string, taskId: string, sessionId: string): SessionRoomTask {
 		const member = this.activeMember(roomId, sessionId);
-		if (member.role !== "member") throw roomError("只有 Room Agent 可以认领任务", "room_task_agent_required");
+		if (member.role !== "member") throw roomError("只有智能体协作中的智能体可以认领任务", "room_task_agent_required");
 		const task = this.task(roomId, taskId);
 		if (task.assigneeSessionId === sessionId && task.status === "doing") return task;
 		if (task.status !== "todo" || task.assigneeSessionId) {
@@ -448,13 +448,13 @@ export class SessionRoomStore {
 		const member = this.activeMember(roomId, sessionId);
 		const task = this.task(roomId, taskId);
 		if (member.role !== "owner" && task.assigneeSessionId !== sessionId) {
-			throw roomError("任务只能由负责人或 Room Owner 更新", "room_task_not_assignee");
+			throw roomError("任务只能由负责人或智能体协作的创建者更新", "room_task_not_assignee");
 		}
 		if (status !== "todo" && !task.assigneeSessionId) {
 			throw roomError("任务尚未认领", "room_task_unclaimed");
 		}
 		if (task.status === "done" && member.role !== "owner") {
-			throw roomError("已完成任务只能由 Room Owner 调整", "room_task_done");
+			throw roomError("已完成任务只能由智能体协作的创建者调整", "room_task_done");
 		}
 		if (status === task.status && !note) return task;
 		const now = new Date().toISOString();
@@ -479,7 +479,7 @@ export class SessionRoomStore {
 	): SessionRoomTask {
 		const room = this.room(roomId);
 		if (sessionId !== room.ownerSessionId)
-			throw roomError("只有 Room Owner 可以编辑或指派任务", "room_task_owner_required");
+			throw roomError("只有智能体协作的创建者可以编辑或指派任务", "room_task_owner_required");
 		this.activeMember(roomId, sessionId);
 		const task = this.task(roomId, taskId);
 		const title = edit.title === undefined ? task.title : edit.title.trim();
@@ -500,7 +500,7 @@ export class SessionRoomStore {
 				(member) => member.sessionId === assigneeSessionId && member.role === "member" && !member.leftAt,
 			)
 		) {
-			throw roomError("负责人不是 Room 中的智能体", "room_task_assignee_invalid");
+			throw roomError("负责人不是智能体协作中的智能体", "room_task_assignee_invalid");
 		}
 		if (title === task.title && description === task.description && assigneeSessionId === task.assigneeSessionId)
 			return task;
@@ -595,7 +595,7 @@ export class SessionRoomStore {
 
 	private activeMember(roomId: string, sessionId: string): SessionRoomMember {
 		const member = this.member(roomId, sessionId);
-		if (member.leftAt !== undefined) throw roomError(`Room 成员已退出：${sessionId}`, "room_member_left");
+		if (member.leftAt !== undefined) throw roomError(`智能体协作成员已退出：${sessionId}`, "room_member_left");
 		return member;
 	}
 
@@ -630,7 +630,7 @@ export class SessionRoomStore {
 			try {
 				this.onChange({ cwd: room.cwd, roomId, latestSeq: this.messages.get(roomId)?.at(-1)?.seq ?? 0, ...flags });
 			} catch {
-				// 通知失败不能把已写入的 Room 记录当作失败操作重试。
+				// 通知失败不能把已写入的智能体协作记录当作失败操作重试。
 			}
 		}
 	}

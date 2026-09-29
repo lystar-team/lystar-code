@@ -773,6 +773,13 @@ export class WebApi {
 		});
 	}
 
+	async fastMode(sessionId: string, enabled: boolean): Promise<{ session: WebSessionSnapshot }> {
+		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}/fast-mode`, {
+			method: "POST",
+			body: JSON.stringify({ enabled, clientRequestId: createUuid() }),
+		});
+	}
+
 	async operations(sessionId: string): Promise<{ operations: WebOperation[] }> {
 		return this.request<{ operations: WebOperation[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/operations`);
 	}
@@ -814,11 +821,19 @@ export class WebApi {
 		api: string;
 		apiKey?: string;
 		catalogProvider?: string;
-		clearCatalogProvider?: boolean;
 	}): Promise<{ providers: ModelsResponse["providers"] }> {
 		return this.request<{ providers: ModelsResponse["providers"] }>("/api/model-providers", {
 			method: "POST",
 			body: JSON.stringify(input),
+		});
+	}
+
+	async imageModelProviders(
+		providers: Record<string, string>,
+	): Promise<{ imageModelProviders: NonNullable<ModelsResponse["imageModelProviders"]> }> {
+		return this.request<{ imageModelProviders: NonNullable<ModelsResponse["imageModelProviders"]> }>("/api/image-model", {
+			method: "POST",
+			body: JSON.stringify({ providers, clientRequestId: createUuid() }),
 		});
 	}
 
@@ -830,6 +845,7 @@ export class WebApi {
 			api?: string;
 			baseUrl?: string;
 			reasoning: boolean;
+			fastModeSupported?: boolean;
 			thinkingLevelMap?: Partial<
 				Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
 			>;
@@ -913,13 +929,14 @@ export class WebApi {
 		model?: string;
 			thinkingLevel?: WebThinkingLevel;
 			tools?: string[];
+			excludeTools?: string[];
 			skills?: string[];
 			tags?: string[];
 			content: string;
 			expectedHash?: string;
 		},
-	): Promise<SubagentConfigsResponse> {
-		return this.request<SubagentConfigsResponse>(
+	): Promise<Pick<SubagentConfigsResponse, "subagents">> {
+		return this.request<Pick<SubagentConfigsResponse, "subagents">>(
 			`/api/settings/subagents?projectId=${encodeURIComponent(projectId)}`,
 			{
 				method: "POST",
@@ -931,8 +948,8 @@ export class WebApi {
 	async deleteSubagentConfig(
 		projectId: string,
 		input: Pick<SubagentConfig, "name" | "contentHash"> & { scope: "user" | "project" },
-	): Promise<SubagentConfigsResponse> {
-		return this.request<SubagentConfigsResponse>(
+	): Promise<Pick<SubagentConfigsResponse, "subagents">> {
+		return this.request<Pick<SubagentConfigsResponse, "subagents">>(
 			`/api/settings/subagents?projectId=${encodeURIComponent(projectId)}`,
 			{
 				method: "DELETE",
@@ -979,6 +996,20 @@ export class WebApi {
 		thinkingLevel: WebThinkingLevel;
 	}): Promise<{ model?: string; thinkingLevel: WebThinkingLevel }> {
 		return this.request<{ model?: string; thinkingLevel: WebThinkingLevel }>("/api/session-name-settings", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
+	}
+
+	async toolRecoverySettings(): Promise<{ model?: string; thinkingLevel: WebThinkingLevel }> {
+		return this.request<{ model?: string; thinkingLevel: WebThinkingLevel }>("/api/tool-recovery-settings");
+	}
+
+	async saveToolRecoverySettings(input: {
+		model?: string;
+		thinkingLevel: WebThinkingLevel;
+	}): Promise<{ model?: string; thinkingLevel: WebThinkingLevel }> {
+		return this.request<{ model?: string; thinkingLevel: WebThinkingLevel }>("/api/tool-recovery-settings", {
 			method: "POST",
 			body: JSON.stringify(input),
 		});

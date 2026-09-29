@@ -3,17 +3,18 @@
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import type { ToolDiff, WebSearchProgress } from "@lystar/code-web-protocol";
 import {
+	BotIcon,
 	CheckCircleIcon,
 	ChevronDownIcon,
-	CircleAlertIcon,
-	CopyIcon,
 	ExternalLinkIcon,
 	EyeIcon,
 	FileCode2Icon,
 	FileTextIcon,
 	FolderIcon,
+	GitBranchIcon,
 	ImagesIcon,
 	LoaderCircleIcon,
+	PackageIcon,
 	PencilIcon,
 	SearchIcon,
 	SparklesIcon,
@@ -39,8 +40,15 @@ import {
 	useResourceImageSource,
 } from "./resource-preview";
 import { ImageGeneration, type ImageGenerationStatus } from "../agents/image-generation";
-import { skillNameFromTool } from "../../state/tool-batching";
+import {
+	sessionToolAgent,
+	sessionToolLabel,
+	sessionToolTask,
+	skillNameFromTool,
+	type SessionToolPhase,
+} from "../../state/tool-batching";
 import { languageForPath } from "../../lib/file-language.ts";
+import { commandPresentation, commandRowLabel } from "./command-presentation";
 import { Source } from "./sources";
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
@@ -158,30 +166,41 @@ const statusLabels: Record<ToolBatchState, string> = {
 };
 
 
-function toolIcon(name: string, className?: string, skill = false, images = false): ReactNode {
+const commandIcons = {
+	search: SearchIcon,
+	folder: FolderIcon,
+	file: FileTextIcon,
+	git: GitBranchIcon,
+	script: PackageIcon,
+	terminal: TerminalIcon,
+} as const;
+
+function toolIcon(name: string, className?: string, skill = false, images = false, command?: string): ReactNode {
 	const Icon = images
 		? ImagesIcon
 		: skill
 			? SparklesIcon
 			: name === "bash"
-				? TerminalIcon
+				? commandIcons[commandPresentation(command ?? "").icon]
 				: name === "edit" || name === "write" || name === "apply_patch"
 					? PencilIcon
 					: name === "read"
 						? FileTextIcon
-				: name === "find" || name === "grep" || name === "web_search"
-					? SearchIcon
-							: name === "ls"
-								? FolderIcon
-								: WrenchIcon;
+						: name === "find" || name === "grep" || name === "web_search"
+							? SearchIcon
+							: name === "sessions"
+								? BotIcon
+								: name === "ls"
+									? FolderIcon
+									: WrenchIcon;
 	return <Icon className={cn("size-4 shrink-0 text-muted-foreground", className)} />;
 }
 
-// 运行中把 Loading 放在工具图标的位置，执行结束后换回原工具图标。
-function toolLeadingIcon(state: ToolBatchState, name: string, skill = false, images = false): ReactNode {
-	if (state === "input-available")
+// Bash 执行时保留动作图标，运行状态由旁边的进度图标表示。
+function toolLeadingIcon(state: ToolBatchState, name: string, skill = false, images = false, command?: string): ReactNode {
+	if (state === "input-available" && name !== "bash")
 		return <LoaderCircleIcon className="size-4 shrink-0 animate-spin text-muted-foreground" />;
-	return toolIcon(name, undefined, skill, images);
+	return toolIcon(name, undefined, skill, images, command);
 }
 
 function toolStatusIndicator(state: ToolBatchState): ReactNode {
@@ -275,6 +294,7 @@ function webSearchDetail(summary: string, webSearch?: WebSearchProgress): { labe
 
 function toolTitle(tool: ToolBatchTool): string {
 	if (tool.name === "web_search") return webSearchTitle(tool.summary, tool.webSearch);
+	if (tool.name === "sessions") return sessionToolTask(tool.summary) ?? "智能体协作";
 	const parsed = parseToolSummary(tool.summary);
 	if (tool.name === "image_gen" && typeof parsed?.prompt === "string") return parsed.prompt;
 	if (typeof parsed?.command === "string") return parsed.command;
@@ -306,6 +326,7 @@ function toolActionLabel(name: string): string {
 		image_gen: "生成了图片",
 		web_search: "搜索了网页",
 		ls: "查看了目录",
+		sessions: "进行了智能体协作",
 	};
 	return labels[name] ?? `调用了 ${name}`;
 }
@@ -328,9 +349,20 @@ const activeToolLabels: Record<string, string> = {
 	image_gen: "正在生成图片",
 	web_search: "正在搜索网页",
 	ls: "正在查看目录",
+	sessions: "正在派发智能体",
 };
 
-function toolRowActionLabel(name: string, state: ToolBatchState, preparing = false): string {
+function sessionToolPhase(state: ToolBatchState): SessionToolPhase {
+	if (state === "input-available") return "running";
+	if (state === "input-queued") return "queued";
+	if (state === "output-error") return "error";
+	if (state === "output-cancelled") return "cancelled";
+	if (state === "output-interrupted") return "interrupted";
+	return "completed";
+}
+
+function toolRowActionLabel(name: string, state: ToolBatchState, preparing = false, summary = ""): string {
+	if (name === "sessions") return sessionToolLabel(summary, sessionToolPhase(state)) ?? activeToolLabels.sessions;
 	if (state === "input-available") return preparing && name === "write" ? "准备写入" : activeToolLabels[name] ?? "运行中";
 	if (state === "input-queued") return "已排队";
 	const labels: Record<string, string> = {
@@ -385,7 +417,14 @@ export function toolRowTitle(tool: ToolBatchTool): string {
 						: toolRowActionLabel(tool.name, tool.state);
 		return title && title !== tool.name ? `${action} · ${title}` : action;
 	}
+	if (tool.name === "sessions") {
+		const action = toolRowActionLabel(tool.name, tool.state, tool.preparing, tool.summary);
+		const agent = sessionToolAgent(tool.summary, tool.detail);
+		const task = sessionToolTask(tool.summary);
+		return [action, agent?.nickname, task].filter(Boolean).join(" · ") || action;
+	}
 	if (tool.images?.length) return `已查看 ${tool.images.length} 张图像`;
+	if (tool.name === "bash") return commandRowLabel(toolTitle(tool), tool.state);
 	const skillName = skillNameFromTool(tool);
 	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
 	const title = toolTitle(tool);
@@ -493,7 +532,6 @@ type ToolActivityKind = "read" | "command" | "mutation";
 
 function activityPathParts(tool: ToolBatchTool): { filename: string; directory?: string } {
 	const title = toolTitle(tool).replaceAll("\\", "/");
-	if (tool.name === "bash") return { filename: title || "命令" };
 	const separator = title.lastIndexOf("/");
 	if (separator < 0) return { filename: title || "文件" };
 	return {
@@ -575,15 +613,16 @@ function ToolActivityRow({
 	onOpenChange?: (open: boolean) => void;
 }) {
 	const [open, setOpen] = useControllableState({ defaultProp: initialOpen, prop: controlledOpen, onChange: onOpenChange });
-	const hasDetails = Boolean(isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length);
+	const hasDetails = Boolean(tool.name === "bash" || isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length);
 	const stats = diffStats(tool.diff);
 	const lineRange = readLineRange(tool);
 	const { filename, directory } = activityPathParts(tool);
+	const title = tool.name === "bash" ? toolRowTitle(tool) : toolTitle(tool);
 	return (
 		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
-					aria-label={`${toolTitle(tool)}，${activityStatusLabel(tool.state)}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
+					aria-label={`${title}，${activityStatusLabel(tool.state)}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 					data-transcript-resize-anchor
 					className="grid min-h-7 w-full min-w-0 grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
 					type="button"
@@ -591,14 +630,14 @@ function ToolActivityRow({
 					<span className="relative z-10 flex size-3 items-center justify-center bg-background">
 						{activityStatusIcon(tool.state)}
 					</span>
-					{toolIcon(tool.name, "size-3.5")}
+					{toolIcon(tool.name, "size-3.5", false, false, tool.name === "bash" ? toolTitle(tool) : undefined)}
 					{tool.name === "bash" ? (
 						<span
 							className="min-w-0 truncate font-mono text-[13px] leading-5 text-foreground"
 							data-command-title="true"
-							title={filename}
+							title={title}
 						>
-							{filename}
+							{title}
 						</span>
 					) : (
 						<span
@@ -674,10 +713,14 @@ function ToolActivityGroup({
 }) {
 	const active = tools.some((tool) => tool.state === "input-available");
 	const label = toolActivityBatchLabel(tools, kind);
+	const firstCommand = tools[0] ? toolTitle(tools[0]) : undefined;
+	const sharedCommand = kind === "command" && firstCommand && tools.every(
+		(tool) => commandPresentation(toolTitle(tool)).icon === commandPresentation(firstCommand).icon,
+	) ? firstCommand : undefined;
 	const headerIcon = active
 		? <LoaderCircleIcon className="size-4 animate-spin text-primary" />
 		: kind === "command"
-			? <TerminalIcon className="size-4 text-muted-foreground" />
+			? toolIcon("bash", "size-4", false, false, sharedCommand)
 			: kind === "mutation"
 				? <PencilIcon className="size-4 text-muted-foreground" />
 				: <FileTextIcon className="size-4 text-muted-foreground" />;
@@ -710,67 +753,6 @@ function ToolActivityGroup({
 					))}
 				</div>
 			</GsapCollapsibleContent>
-		</Collapsible>
-	);
-}
-
-function commandErrorExcerpt(detail: string | undefined): string | undefined {
-	const lines = detail?.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean) ?? [];
-	return lines.find((line) => /(?:error|failed|exception|失败|错误)/iu.test(line)) ?? lines.at(-1);
-}
-
-function CommandErrorPanel({
-	tool,
-	open,
-	onOpenChange,
-	className,
-}: {
-	tool: ToolBatchTool;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-	className?: string;
-}) {
-	const [copied, setCopied] = useState(false);
-	const excerpt = commandErrorExcerpt(tool.detail);
-	const command = toolTitle(tool);
-	const copyOutput = async () => {
-		if (!tool.detail || !navigator.clipboard?.writeText) return;
-		await navigator.clipboard.writeText(tool.detail);
-		setCopied(true);
-	};
-	return (
-		<Collapsible className={cn("min-w-0 w-full overflow-hidden rounded-xl border border-border bg-muted/20", className)} open={open} onOpenChange={onOpenChange}>
-			<div className="grid gap-3 p-4">
-				<div className="flex min-w-0 items-center justify-between gap-2">
-					<div className="flex min-w-0 items-center gap-1.5 font-mono text-[13px]">
-						<TerminalIcon className="size-4 shrink-0 text-muted-foreground" />
-						<span>命令执行失败</span>
-					</div>
-					{tool.detail ? (
-						<CollapsibleTrigger asChild>
-							<Button className="command-output-toggle -my-0.5 h-7 shrink-0 gap-1 px-1.5 font-mono text-[13px] leading-5 text-brand" size="sm" type="button" variant="ghost">
-								{open ? "收起输出" : "查看输出"}
-								<ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
-							</Button>
-						</CollapsibleTrigger>
-					) : null}
-				</div>
-				<div className="min-w-0 max-w-full overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-[13px] leading-5 whitespace-pre">$ {command}</div>
-				<div className="flex min-w-0 items-start gap-2">
-					<CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
-					<span className="min-w-0 flex-1 break-words font-mono text-[13px] leading-5 text-destructive">{excerpt ?? "命令执行失败"}</span>
-				</div>
-			</div>
-			{tool.detail ? (
-				<GsapCollapsibleContent open={open} className="border-t border-border bg-background">
-					<div className="relative max-h-60 overflow-auto p-4 pr-12 font-mono text-[13px] leading-5">
-						<pre className="tool-command-output whitespace-pre-wrap break-words text-foreground"><AnsiOutput>{tool.detail}</AnsiOutput></pre>
-						<Button aria-label="复制命令输出" className="absolute right-3 top-3" onClick={() => void copyOutput()} size="icon-sm" type="button" variant="ghost">
-							{copied ? <CheckCircleIcon className="size-4" /> : <CopyIcon className="size-4" />}
-						</Button>
-					</div>
-				</GsapCollapsibleContent>
-			) : null}
 		</Collapsible>
 	);
 }
@@ -1219,7 +1201,7 @@ function ToolBatchRow({
 			? true
 			: tool.name === "web_search"
 				? true
-				: Boolean(isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length || tool.subagents?.length);
+				: Boolean(tool.name === "bash" || isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length || tool.subagents?.length);
 
 	useEffect(() => {
 		if (
@@ -1248,7 +1230,7 @@ function ToolBatchRow({
 					type="button"
 					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
-					{toolLeadingIcon(tool.state, tool.name, Boolean(skillName), Boolean(tool.images?.length))}
+					{toolLeadingIcon(tool.state, tool.name, Boolean(skillName), Boolean(tool.images?.length), tool.name === "bash" ? toolTitle(tool) : undefined)}
 					{pathParts ? (
 						<span
 							className="flex min-w-0 flex-1 items-baseline overflow-hidden font-mono text-[13px]"
@@ -1275,6 +1257,7 @@ function ToolBatchRow({
 						</span>
 					) : null}
 					<span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+						{tool.name === "bash" && tool.state === "input-available" ? <LoaderCircleIcon className="size-3 shrink-0 animate-spin text-primary" /> : null}
 						{tool.name === "web_search" && webSearchSources(tool).length ? (
 							<span className="text-xs text-muted-foreground">来源 · {webSearchSources(tool).length}</span>
 						) : null}
@@ -1386,9 +1369,6 @@ export const ToolBatch = memo(function ToolBatch({
 				className={className}
 			/>
 		);
-	}
-	if (tools.length === 1 && tools[0]?.name === "bash" && tools[0].state === "output-error") {
-		return <CommandErrorPanel tool={tools[0]} open={open} onOpenChange={setOpen} className={className} />;
 	}
 	if (
 		imageGeneration &&

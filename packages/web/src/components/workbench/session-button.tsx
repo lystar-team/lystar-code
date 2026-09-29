@@ -1,4 +1,4 @@
-import { Clock3, Folder, LoaderCircle, Pencil, Pin, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock3, Folder, LoaderCircle, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
 import { memo, useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
@@ -60,6 +60,9 @@ export interface SessionButtonProps {
 	active: boolean;
 	running: boolean;
 	unread: boolean;
+	hasChildren?: boolean;
+	childrenExpanded?: boolean;
+	onToggleChildren?: () => void;
 	onClick: () => void;
 	onRename: (name: string) => Promise<void>;
 	onContextRename: () => void;
@@ -80,6 +83,9 @@ function SessionButtonComponent({
 	active,
 	running,
 	unread,
+	hasChildren = false,
+	childrenExpanded = false,
+	onToggleChildren,
 	onClick,
 	onRename,
 	onContextRename,
@@ -145,57 +151,81 @@ function SessionButtonComponent({
 				>
 					<HoverCard openDelay={140} closeDelay={80}>
 						<HoverCardTrigger asChild>
-							<Button
-								className={cn(
-									"mobile-session-button h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 text-left text-xs",
-									collaboration ? "!pl-10" : "!pl-8",
-								)}
-								variant={active ? "secondary" : "ghost"}
-								onClick={onClick}
-							>
-								{collaboration ? (
-									<AgentIdentityIcon
-										session={session}
-										className="size-3.5 shrink-0 object-contain text-muted-foreground"
-									/>
-								) : null}
-								<span className={cn("project-list-item-label min-w-0 flex-1", agentSession ? "flex items-center gap-1.5" : "truncate")}>
-									{collaboration ? (
-										<>
-											<span className="font-medium text-foreground">{alias}</span>
-											<span className="text-muted-foreground"> · {displayTitle}</span>
-										</>
-									) : agentSession ? (
-										<>
-											<span className="min-w-0 flex-1 truncate">{displayTitle}</span>
-											<Badge className="max-w-[45%] min-w-0 gap-1 px-1.5 py-0 text-[11px] leading-4 text-muted-foreground" variant="outline" title={profileName}>
-												<AgentIdentityIcon session={session} className="size-3 shrink-0 object-contain" />
-												<span className="truncate">{profileName}</span>
-											</Badge>
-										</>
-									) : (
-										displayTitle
+							<div className="relative">
+								<Button
+									className={cn(
+										"mobile-session-button relative h-8 w-full min-w-0 justify-start gap-2 py-1 pr-8 text-left text-xs",
+										hasChildren ? "!pl-8" : collaboration ? "!pl-10" : "!pl-8",
 									)}
-								</span>
-								<span className="mobile-session-status absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
-									{session.pinned ? (
-										<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
-									) : null}
-									{running ? (
-										<LoaderCircle
-											className="size-3.5 shrink-0 animate-spin text-primary"
-											aria-label="会话进行中"
-										/>
-									) : unread ? (
-										<span
-											role="img"
-											className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
-											aria-label="有新的会话内容"
-											title="有新的会话内容"
+									variant={active ? "secondary" : "ghost"}
+									onClick={onClick}
+								>
+									{collaboration ? (
+										<AgentIdentityIcon
+											session={session}
+											className="size-3.5 shrink-0 object-contain text-muted-foreground"
 										/>
 									) : null}
-								</span>
-							</Button>
+									<span className={cn("project-list-item-label min-w-0 flex-1", agentSession ? "flex items-center gap-1.5" : "truncate")}>
+										{collaboration ? (
+											<>
+												<span className="font-medium text-foreground">{alias}</span>
+												<span className="text-muted-foreground"> · {displayTitle}</span>
+											</>
+										) : agentSession ? (
+											<>
+												<span className="min-w-0 flex-1 truncate">{displayTitle}</span>
+												<Badge className="max-w-[45%] min-w-0 gap-1 px-1.5 py-0 text-[11px] leading-4 text-muted-foreground" variant="outline" title={profileName}>
+													<AgentIdentityIcon session={session} className="size-3 shrink-0 object-contain" />
+													<span className="truncate">{profileName}</span>
+												</Badge>
+											</>
+										) : (
+											displayTitle
+										)}
+									</span>
+									<span className="mobile-session-status absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
+										{session.pinned ? (
+											<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
+										) : null}
+										{running ? (
+											<LoaderCircle
+												className="size-3.5 shrink-0 animate-spin text-primary"
+												aria-label="会话进行中"
+											/>
+										) : unread ? (
+											<span
+												role="img"
+												className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
+												aria-label="有新的会话内容"
+												title="有新的会话内容"
+											/>
+										) : null}
+									</span>
+								</Button>
+								{hasChildren ? (
+									<Button
+										type="button"
+										aria-label={childrenExpanded ? "收起子会话" : "展开子会话"}
+										aria-expanded={childrenExpanded}
+										className="absolute top-1/2 left-1 z-10 size-6 -translate-y-1/2 text-muted-foreground"
+										draggable={false}
+										size="icon-xs"
+										variant="ghost"
+										onPointerDown={(event) => event.stopPropagation()}
+										onClick={(event) => {
+											event.stopPropagation();
+											onToggleChildren?.();
+										}}
+									>
+										{childrenExpanded ? (
+											<ChevronDown className="size-3.5" aria-hidden="true" />
+										) : (
+											<ChevronRight className="size-3.5" aria-hidden="true" />
+										)}
+									</Button>
+								) : null}
+							</div>
 						</HoverCardTrigger>
 						<HoverCardContent
 							side="right"
@@ -282,18 +312,22 @@ function SessionButtonComponent({
 						</HoverCardContent>
 					</HoverCard>
 					<Button
-						aria-label={`删除会话：${title}`}
-						className="mobile-hover-action pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/session:pointer-events-auto group-hover/session:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+						aria-label={session.pinned ? "取消置顶会话" : `删除会话：${title}`}
+						className={cn(
+							"mobile-hover-action pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100",
+							session.pinned ? "hover:text-foreground" : "hover:text-destructive",
+						)}
 						draggable={false}
 						size="icon-sm"
 						variant="ghost"
 						onPointerDown={(event) => event.stopPropagation()}
 						onClick={(event) => {
 							event.stopPropagation();
-							onDelete();
+							if (session.pinned) onTogglePinned();
+							else onDelete();
 						}}
 					>
-						<Trash2 className="size-3.5" />
+						{session.pinned ? <PinOff className="size-3.5" /> : <Trash2 className="size-3.5" />}
 					</Button>
 				</li>
 			</ContextMenuTrigger>

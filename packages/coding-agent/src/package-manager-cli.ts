@@ -747,6 +747,7 @@ function prepareWindowsNpmSelfUpdate(): void {
 
 export interface PackageCommandRuntimeOptions {
 	extensionFactories?: InlineExtension[];
+	reconcileWebServicesAfterUpdate?: typeof reconcileWebServicesAfterUpdate;
 }
 
 interface CommandSettingsResult {
@@ -889,6 +890,7 @@ export async function handlePackageCommand(
 	args: string[],
 	runtimeOptions: PackageCommandRuntimeOptions = {},
 ): Promise<boolean> {
+	const reconcileAfterUpdate = runtimeOptions.reconcileWebServicesAfterUpdate ?? reconcileWebServicesAfterUpdate;
 	const options = parsePackageCommand(args);
 	if (!options) {
 		return false;
@@ -1066,7 +1068,16 @@ export async function handlePackageCommand(
 					}
 
 					const plan = await getSelfUpdatePlan(options.force);
-					if (!plan.shouldRun) return true;
+					if (!plan.shouldRun) {
+						if (process.env.LYSTAR_WEB_SERVICE_TARGET_VERSION?.trim()) {
+							console.log(chalk.dim("应用已是最新版本，正在修复 Web 服务..."));
+							await reconcileAfterUpdate(
+								VERSION,
+								process.env.LYSTAR_WEB_PREVIOUS_SERVICE_VERSION?.trim() || VERSION,
+							);
+						}
+						return true;
+					}
 					if (managedInstallRoot) {
 						if (plan.note) {
 							printSelfUpdateNote(plan.note);
@@ -1076,7 +1087,7 @@ export async function handlePackageCommand(
 							console.log(chalk.dim(`Updating managed ${APP_NAME} installation...`));
 							await _runManagedSelfUpdate(managedInstallRoot, plan.version);
 							managedReleaseActivated = true;
-							await reconcileWebServicesAfterUpdate(plan.version, VERSION);
+							await reconcileAfterUpdate(plan.version, VERSION);
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : "Unknown managed update error";
 							console.error(
@@ -1132,7 +1143,7 @@ export async function handlePackageCommand(
 							prepareWindowsNpmSelfUpdate();
 						}
 						await runSelfUpdate(selfUpdateCommand);
-						await reconcileWebServicesAfterUpdate(plan.version, VERSION);
+						await reconcileAfterUpdate(plan.version, VERSION);
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));

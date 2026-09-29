@@ -7,7 +7,7 @@ export function WorkspaceModeSwitch({ mode, onChange }: { mode: WorkspaceMode; o
 		<div className="flex rounded-lg bg-muted/45 p-0.5" role="tablist" aria-label="工作区类型">
 			{([
 				["sessions", "会话"],
-				["rooms", "Room"],
+				["rooms", "智能体协作"],
 			] as const).map(([value, label]) => (
 				<button
 					aria-selected={mode === value}

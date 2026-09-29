@@ -916,7 +916,7 @@ pi.on("before_agent_start", async (event, ctx) => {
 }, { scope: { origins: ["user"] } });
 ```
 
-Room turns do not run Extension Hooks, even when a handler explicitly includes `"room"` in its scope. They also do not execute extension commands or expand skill commands and prompt templates. A runtime opened only to deliver Room messages defers `session_start`, `resources_discover`, and `session_shutdown` until a regular client uses that session; ordinary runtimes keep their existing lifecycle. `ctx.currentTurn` provides the active turn for hooks without `event.turn`.
+Agent collaboration turns do not run Extension Hooks, even when a handler explicitly includes `"room"` in its scope. They also do not execute extension commands or expand skill commands and prompt templates. A runtime opened only to deliver agent collaboration messages defers `session_start`, `resources_discover`, and `session_shutdown` until a regular client uses that session; ordinary runtimes keep their existing lifecycle. `ctx.currentTurn` provides the active turn for hooks without `event.turn`.
 
 ## ExtensionContext
 
