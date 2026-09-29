@@ -489,7 +489,7 @@ export class ToolActivityTracker {
 				if (!isTerminal(activity.state)) {
 					activity.state = "queued";
 					activity.args = content.arguments;
-					activity.summary = this.summary(content.name, content.arguments);
+					activity.summary = this.summary(content.name, content.arguments, activity.summary);
 					activity.diff = toolProgressDiff(content.name, content.arguments) ?? activity.diff;
 					snapshots.push(this.touch(activity));
 				}
@@ -501,7 +501,7 @@ export class ToolActivityTracker {
 			if (isTerminal(activity.state) && activity.state !== "interrupted") return [];
 			activity.state = "running";
 			activity.args = event.args;
-			activity.summary = this.summary(event.toolName, event.args);
+			activity.summary = this.summary(event.toolName, event.args, activity.summary);
 			activity.diff = toolProgressDiff(event.toolName, event.args) ?? activity.diff;
 			activity.startedAt ??= Date.now();
 			return [this.touch(activity)];
@@ -511,7 +511,7 @@ export class ToolActivityTracker {
 			if (isTerminal(activity.state) && activity.state !== "interrupted") return [];
 			activity.state = "running";
 			activity.args = event.args;
-			activity.summary = this.summary(event.toolName, event.args);
+			activity.summary = this.summary(event.toolName, event.args, activity.summary);
 			activity.progress =
 				textFromResult(event.partialResult) ?? toolOutputSummary(event.partialResult, event.toolName);
 			activity.diff = toolProgressDiff(event.toolName, event.args, event.partialResult) ?? activity.diff;
@@ -544,7 +544,7 @@ export class ToolActivityTracker {
 		if (!isTerminal(activity.state)) {
 			activity.state = "preparing";
 			activity.args = args;
-			activity.summary = this.summary(name, args);
+			activity.summary = this.summary(name, args, activity.summary);
 			const now = Date.now();
 			if (
 				includeDiff ||
@@ -589,8 +589,9 @@ export class ToolActivityTracker {
 		return activity;
 	}
 
-	private summary(name: string, args: unknown): string {
-		return toolInputSummary(name, args) || name;
+	private summary(name: string, args: unknown, previous?: string): string {
+		const next = toolInputSummary(name, args) || name;
+		return isDiffTool(name) && next === name && previous && previous !== name ? previous : next;
 	}
 
 	private touch(activity: InternalToolActivity): ToolActivitySnapshot {

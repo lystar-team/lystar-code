@@ -306,7 +306,7 @@ function toolTitle(tool: ToolBatchTool): string {
 	}
 	if (tool.diff?.files[0]?.path) return tool.diff.files[0].path;
 	if ((tool.name === "read" || tool.name === "edit" || tool.name === "write") && tool.summary === tool.name)
-		return "文件路径未记录";
+		return tool.name === "edit" && tool.preparing ? "文件" : tool.preparing ? "文件路径尚未返回" : "文件路径未记录";
 	return tool.summary || tool.name;
 }
 
@@ -363,7 +363,10 @@ function sessionToolPhase(state: ToolBatchState): SessionToolPhase {
 
 function toolRowActionLabel(name: string, state: ToolBatchState, preparing = false, summary = ""): string {
 	if (name === "sessions") return sessionToolLabel(summary, sessionToolPhase(state)) ?? activeToolLabels.sessions;
-	if (state === "input-available") return preparing && name === "write" ? "准备写入" : activeToolLabels[name] ?? "运行中";
+	if (state === "input-available") {
+		if (preparing && name === "write") return "准备写入";
+		return activeToolLabels[name] ?? "运行中";
+	}
 	if (state === "input-queued") return "已排队";
 	const labels: Record<string, string> = {
 		bash: "已运行",
@@ -430,6 +433,7 @@ export function toolRowTitle(tool: ToolBatchTool): string {
 	const title = toolTitle(tool);
 	const action = toolRowActionLabel(tool.name, tool.state, tool.preparing);
 	if (tool.name === "web_search" && title === "网页搜索") return action;
+	if (tool.name === "edit" && tool.preparing && title === "文件") return "正在编辑文件";
 	const namedFile =
 		(tool.name === "read" || tool.name === "edit" || tool.name === "write") &&
 		parseToolSummary(tool.summary)?.path === title;
@@ -540,8 +544,8 @@ function activityPathParts(tool: ToolBatchTool): { filename: string; directory?:
 	};
 }
 
-function activityStatusLabel(state: ToolBatchState): string {
-	if (state === "input-available") return "运行中";
+function activityStatusLabel(state: ToolBatchState, preparing = false): string {
+	if (state === "input-available") return preparing ? "准备中" : "运行中";
 	if (state === "input-queued") return "已排队";
 	if (state === "output-available") return "已完成";
 	return statusLabels[state];
@@ -618,17 +622,19 @@ function ToolActivityRow({
 	const lineRange = readLineRange(tool);
 	const { filename, directory } = activityPathParts(tool);
 	const title = tool.name === "bash" ? toolRowTitle(tool) : toolTitle(tool);
+	const outcomeUncertain = tool.name === "bash" && tool.state === "output-available" && commandPresentation(toolTitle(tool)).resultUncertain;
+	const status = outcomeUncertain ? "已执行" : activityStatusLabel(tool.state, tool.preparing && tool.name !== "edit");
 	return (
 		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
-					aria-label={`${title}，${activityStatusLabel(tool.state)}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
+					aria-label={`${title}，${status}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 					data-transcript-resize-anchor
 					className="grid min-h-7 w-full min-w-0 grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
 					type="button"
 				>
 					<span className="relative z-10 flex size-3 items-center justify-center bg-background">
-						{activityStatusIcon(tool.state)}
+						{outcomeUncertain ? <span aria-label="已执行" className="size-1.5 rounded-full bg-muted-foreground/60" role="img" /> : activityStatusIcon(tool.state)}
 					</span>
 					{toolIcon(tool.name, "size-3.5", false, false, tool.name === "bash" ? toolTitle(tool) : undefined)}
 					{tool.name === "bash" ? (
@@ -662,7 +668,7 @@ function ToolActivityRow({
 								{stats.deletions ? <span className="text-destructive">-{stats.deletions}</span> : null}
 							</span>
 						) : null}
-						<span className={cn("text-xs", tool.state === "input-available" ? "text-brand" : "text-muted-foreground")}>{activityStatusLabel(tool.state)}</span>
+						<span className={cn("text-xs", tool.state === "input-available" ? "text-brand" : "text-muted-foreground")}>{status}</span>
 					</span>
 				</button>
 			</CollapsibleTrigger>
@@ -1228,7 +1234,7 @@ function ToolBatchRow({
 						onOpenSubagent(subagent.agentId);
 					}}
 					type="button"
-					aria-label={`${title}，${statusLabels[tool.state]}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
+					aria-label={`${title}，${activityStatusLabel(tool.state, tool.preparing && tool.name !== "edit")}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
 					{toolLeadingIcon(tool.state, tool.name, Boolean(skillName), Boolean(tool.images?.length), tool.name === "bash" ? toolTitle(tool) : undefined)}
 					{pathParts ? (
@@ -1263,7 +1269,7 @@ function ToolBatchRow({
 						) : null}
 						{toolStatusIndicator(tool.state)}
 						{tool.state !== "output-available" ? (
-							<span className="text-xs text-muted-foreground">{statusLabels[tool.state]}</span>
+							<span className="text-xs text-muted-foreground">{activityStatusLabel(tool.state, tool.preparing && tool.name !== "edit")}</span>
 						) : null}
 						{hasDetails ? (
 							<ChevronDownIcon

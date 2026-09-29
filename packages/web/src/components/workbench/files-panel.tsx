@@ -47,7 +47,6 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { FileTypeIcon } from "./file-type-icon";
 import { preloadMonacoRuntime } from "./monaco-runtime";
 import type { WorkbenchActions } from "./types";
@@ -105,24 +104,6 @@ function isFileDrag(event: ReactDragEvent<HTMLElement>): boolean {
 	return Array.from(event.dataTransfer.types).includes("Files");
 }
 
-function TruncatedFileName({ name }: { name: string }) {
-	const [truncated, setTruncated] = useState(false);
-	return (
-		<Tooltip open={truncated}>
-			<TooltipTrigger asChild>
-				<span
-					className="block truncate"
-					onPointerEnter={(event) => setTruncated(event.currentTarget.scrollWidth > event.currentTarget.clientWidth)}
-					onPointerLeave={() => setTruncated(false)}
-				>
-					{name}
-				</span>
-			</TooltipTrigger>
-			<TooltipContent className="max-w-[min(28rem,calc(100vw-2rem))] break-all text-left">{name}</TooltipContent>
-		</Tooltip>
-	);
-}
-
 function ProjectFileRow({
 	entry,
 	detail,
@@ -150,11 +131,11 @@ function ProjectFileRow({
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
 				<div onContextMenu={onContextOpen}>
-					<FileTreeFile path={entry.path} name={entry.name} className="min-w-0 w-full">
+					<FileTreeFile path={entry.path} name={entry.name} title={entry.name} className="min-w-0 w-full">
 						<span className="size-4 shrink-0" aria-hidden="true" />
 						<FileTypeIcon path={entry.path} />
 						<span className="min-w-0 flex-1">
-							<TruncatedFileName name={entry.name} />
+							<span className="block truncate">{entry.name}</span>
 							{detail ? <span className="block truncate text-[11px] text-muted-foreground">{detail}</span> : null}
 						</span>
 					</FileTreeFile>
@@ -753,7 +734,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			</div>
 		) : searchResults.length ? (
 			<ScrollArea className="h-full w-full">
-				<FileTree className="min-w-0 rounded-none border-0 bg-transparent" {...treeProps}>
+				<FileTree className="w-0 min-w-full rounded-none border-0 bg-transparent" {...treeProps}>
 					{searchResults.map((entry) => fileRow(entry, entry.path))}
 				</FileTree>
 			</ScrollArea>
@@ -764,7 +745,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 		)
 	) : tree ? (
 		<ScrollArea className="h-full w-full">
-			<FileTree className="min-w-0 rounded-none border-0 bg-transparent" {...treeProps}>
+			<FileTree className="w-0 min-w-full rounded-none border-0 bg-transparent" {...treeProps}>
 				{renderEntries(entries)}
 			</FileTree>
 		</ScrollArea>

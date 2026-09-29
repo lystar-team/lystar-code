@@ -36,6 +36,29 @@ describe("command presentation", () => {
 		expect(commandRowLabel("sed -n '1,3p'", "output-available")).toBe("已读取文件");
 	});
 
+	it("distinguishes Git tag and push effects from reads and dry runs", () => {
+		const cases = [
+			["git tag -a v1 -m release", "已创建 Git 标签"],
+			["git tag -f v1 HEAD", "已创建或更新 Git 标签"],
+			["git tag --force v1 HEAD", "已创建或更新 Git 标签"],
+			["git tag -l 'v*'", "已查看 Git 标签"],
+			["git tag -d v1", "已删除 Git 标签"],
+			["git tag --verify v1", "已验证 Git 标签"],
+			["git push origin main", "已推送到远端仓库"],
+			["git push origin --delete obsolete", "已删除远端引用"],
+			["git push origin :obsolete", "已删除远端引用"],
+			["git push --mirror origin", "已同步远端引用"],
+			["git push --prune origin", "已同步远端引用"],
+			["git push --force origin main", "已强制更新远端引用"],
+			["git push --dry-run --delete origin obsolete", "已检查远端引用删除"],
+			["git ls-remote origin refs/tags/v1", "已查询远端标签"],
+		] as const;
+		for (const [command, label] of cases) {
+			expect(commandRowLabel(command, "output-available")).toBe(label);
+			expect(commandPresentation(command).icon).toBe("git");
+		}
+	});
+
 	it("reflects failed, queued and cancelled states without claiming success", () => {
 		expect(commandRowLabel("find src -name app.ts", "input-queued")).toBe("准备查找 app.ts 文件（src）");
 		expect(commandRowLabel("find src -name app.ts", "output-error")).toBe("查找 app.ts 文件（src）失败");
@@ -69,24 +92,67 @@ describe("command presentation", () => {
 	});
 
 	it("never treats separators, switches or missing runner targets as script names", () => {
-		for (const command of [
-			"npm exec --",
-			"npm exec -- --unknown",
-			"npm run --",
-			"npm exec --package -- tsgo",
-			"npm exec -- tsgo | tee output.log",
-		]) {
+		for (const command of ["npm exec --", "npm exec -- --unknown", "npm run --", "npm exec --package -- tsgo"]) {
 			expect(commandRowLabel(command, "output-available")).toBe("已运行 npm 命令");
 			expect(commandPresentation(command).icon).toBe("terminal");
 		}
+		expect(commandRowLabel("npm exec -- tsgo | tee output.log", "output-available")).toBe("已执行运行 tsgo 工具");
 		expect(commandRowLabel("npx --", "output-available")).toBe("已运行 npx 命令");
+	});
+
+	it("keeps common compound actions concise without certifying masked side effects", () => {
+		const cases = [
+			["cd /workspace && find src -name '*.tsx'", "已查找 *.tsx 文件（src）", "search"],
+			["cd /workspace && rg -n 'renewal' src | head -20", "已搜索 renewal（src）", "search"],
+			["cd /workspace && npm run check", "已检查项目代码", "script"],
+			["cd /workspace; git status --short", "已查看代码变更", "git"],
+			["cd /workspace && git status && npm run check", "已查看代码变更并检查项目代码", "terminal"],
+			["cd /workspace", "已切换工作目录（/workspace）", "folder"],
+			["find . -name '*.ts' && echo done", "已查找 *.ts 文件", "search"],
+			["rg secret src | head -20", "已搜索 secret（src）", "search"],
+			["echo info && git push origin main", "已推送到远端仓库", "git"],
+			["git push origin main | tail -5", "已执行推送到远端仓库", "git"],
+			["git push origin main; true", "已执行推送到远端仓库并运行 true 命令", "terminal"],
+		] as const;
+		for (const [command, label, icon] of cases) {
+			expect(commandRowLabel(command, "output-available")).toBe(label);
+			expect(commandPresentation(command).icon).toBe(icon);
+		}
+		expect(commandRowLabel("cd /workspace && false && git push origin main", "output-error")).toBe(
+			"运行 false 命令并推送到远端仓库未完成",
+		);
+		expect(commandRowLabel("git push origin main | tail -5", "input-available")).toBe("正在推送到远端仓库");
+		expect(commandRowLabel("git push origin main | tail -5", "input-queued")).toBe("准备推送到远端仓库");
+		expect(commandRowLabel("git push origin main | tail -5", "output-cancelled")).toBe("推送到远端仓库已取消");
+	});
+
+	it("describes tag creation, remote push and verification across assignments and a pipe", () => {
+		const command = `cd /workspace && version="0.87.1-lystar.4" && tag="v\${version}" && git tag -a "$tag" HEAD -m "LYStar Code $tag" && git push origin "$tag" 2>&1 | tail -5 && echo "TAG VERIFY" && git ls-remote origin "refs/tags/$tag"`;
+		expect(commandRowLabel(command, "input-available")).toBe("正在创建 Git 标签、推送到远端仓库并查询远端标签");
+		expect(commandRowLabel(command, "output-available")).toBe("已执行创建 Git 标签、推送到远端仓库并查询远端标签");
+		expect(commandRowLabel(command, "output-error")).toBe("创建 Git 标签、推送到远端仓库并查询远端标签未完成");
+		expect(commandPresentation(command).icon).toBe("git");
+	});
+
+	it("uses a neutral compound title when branch selection or syntax is uncertain", () => {
+		for (const command of [
+			"cd /workspace && git push origin main || echo failed",
+			"cd /workspace && git status &&",
+			"cd /workspace && git status |",
+			"cd /workspace && git tag -a 'unfinished",
+			"cd /workspace && version=$(date +%s) && git tag v1",
+			"cd /workspace\ngit status",
+		]) {
+			expect(commandRowLabel(command, "output-available")).toBe("已执行组合命令");
+			expect(commandPresentation(command).icon).toBe("terminal");
+		}
 	});
 
 	it("names the program when the full action cannot be inferred", () => {
 		const cases = [
 			["custom-task --verbose", "已运行 custom-task 命令", "terminal"],
-			["rg secret src | head -20", "已运行 rg 命令", "terminal"],
-			["find . -name '*.ts' && echo done", "已运行 find 命令", "terminal"],
+			["rg secret src | head -20", "已搜索 secret（src）", "search"],
+			["find . -name '*.ts' && echo done", "已查找 *.ts 文件", "search"],
 			["find . -name '*.tmp' -delete", "已运行 find 命令", "terminal"],
 			["sed -i 's/a/b/' src/app.ts", "已运行 sed 命令", "terminal"],
 			["find . -name 'unfinished", "已运行 find 命令", "terminal"],

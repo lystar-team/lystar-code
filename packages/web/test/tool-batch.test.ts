@@ -403,19 +403,19 @@ describe("Skill read tool display", () => {
 		}
 	});
 
-	it("names the command when its full purpose is unclear", () => {
+	it("names the intent of compound commands and the program of unknown commands", () => {
 		const cases = [
-			["rg secret src | head -20", "已运行 rg 命令"],
-			["find . -name '*.ts' && echo done", "已运行 find 命令"],
-			["custom-task --verbose", "已运行 custom-task 命令"],
+			["rg secret src | head -20", "已搜索 secret（src）", "lucide-search"],
+			["find . -name '*.ts' && echo done", "已查找 *.ts 文件", "lucide-search"],
+			["custom-task --verbose", "已运行 custom-task 命令", "lucide-terminal"],
 		] as const;
-		for (const [command, label] of cases) {
+		for (const [command, label, icon] of cases) {
 			const tool: ToolBatchTool = { id: command, name: "bash", summary: command, state: "output-available" };
 			expect(toolRowTitle(tool)).toBe(label);
 			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 			expect(markup).toContain(label);
 			expect(markup).not.toContain(command);
-			expect(markup).toContain("lucide-terminal");
+			expect(markup).toContain(icon);
 		}
 	});
 
@@ -476,6 +476,34 @@ describe("Skill read tool display", () => {
 		expect(markup).not.toContain("npm run check");
 		expect(markup).not.toContain("git diff --check");
 		expect(markup).not.toContain("2 条命令执行完成");
+	});
+
+	it("keeps compound command completion neutral while preserving single-command success", () => {
+		const compound: ToolBatchTool = {
+			id: "push-pipeline",
+			name: "bash",
+			summary: JSON.stringify({ command: "git push origin main | tail -5" }),
+			state: "output-available",
+		};
+		const single: ToolBatchTool = {
+			id: "status",
+			name: "bash",
+			summary: JSON.stringify({ command: "git status --short" }),
+			state: "output-available",
+		};
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [compound, single], initialOpen: true }));
+		expect(markup).toContain("已执行推送到远端仓库，已执行，展开详情");
+		expect(markup).toContain('aria-label="已执行" class="size-1.5 rounded-full bg-muted-foreground/60"');
+		expect(markup).toContain("已查看代码变更，已完成，展开详情");
+		expect(markup).toContain("lucide-circle-check");
+		const failed = renderToStaticMarkup(
+			createElement(ToolBatch, {
+				tools: [{ ...compound, state: "output-error" }, single],
+				initialOpen: true,
+			}),
+		);
+		expect(failed).toContain("推送到远端仓库未完成，出错，展开详情");
+		expect(failed).toContain("lucide-circle-x");
 	});
 
 	it("keeps the command intent in the full flexible column", () => {

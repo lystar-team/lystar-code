@@ -34,6 +34,26 @@ describe("file tool paths across transcript pages", () => {
 		expect(namedRead).not.toContain("文件路径未记录");
 	});
 
+	it("shows a streamed edit path before execution and distinguishes missing input from a missing record", () => {
+		const preparing: ToolBatchTool = {
+			id: "edit-stream", name: "edit", summary: "edit", state: "input-available", preparing: true,
+		};
+		const pending = renderToStaticMarkup(createElement(ToolBatch, { tools: [preparing] }));
+		expect(pending).toContain("正在编辑文件");
+		expect(pending).toContain("运行中");
+		expect(pending).not.toContain("文件路径未记录");
+
+		const path = "/workspace/src/app.ts";
+		const withPath = { ...preparing, diff: { files: [{ path }] } };
+		const streaming = renderToStaticMarkup(createElement(ToolBatch, { tools: [withPath] }));
+		expect(toolRowTitle(withPath)).toBe(`正在编辑 ${path}`);
+		expect(streaming).toContain("/workspace/src/");
+		expect(streaming).toContain("app.ts");
+		expect(streaming).not.toContain("文件路径尚未返回");
+		expect(streaming).toContain("运行中");
+		expect(toolRowTitle({ ...withPath, preparing: false })).toBe(`正在编辑 ${path}`);
+	});
+
 	it("replaces a live card with the persisted result when only the result is in the page", () => {
 		const transcript: WebTranscriptItem[] = [{
 			entryId: "read-result", renderId: "read-result", parentId: "call", timestamp: "2026-09-26T00:00:00Z",

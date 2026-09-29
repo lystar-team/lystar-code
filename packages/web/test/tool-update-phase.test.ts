@@ -90,6 +90,30 @@ describe("streamed tool phase", () => {
 		expect(toolRowTitle(activityView)).toBe("正在编辑 src/app.ts");
 	});
 
+	it("shows the path as soon as edit execution reports it after an unnamed preview", () => {
+		const pending = liveToolFromUpdate(
+			{ type: "tool_update", toolCallId: "edit-late-path", name: "edit", summary: "edit" },
+			undefined,
+			"batch-1",
+			"edit",
+		);
+		expect(toolRowTitle(toLiveToolViewModel(pending))).toBe("正在编辑文件");
+		const running = liveToolFromActivity(
+			{
+				activityEpoch: "edit-stream",
+				revision: 1,
+				toolCallId: "edit-late-path",
+				name: "edit",
+				state: "running",
+				summary: "src/app.ts",
+				updatedAt: 1,
+			},
+			pending,
+			"batch-1",
+		);
+		expect(toolRowTitle(toLiveToolViewModel(running))).toBe("正在编辑 src/app.ts");
+	});
+
 	it("retains the image prompt when progress events report only a status", () => {
 		const input = JSON.stringify({ prompt: "保留导航的三栏结构并调整项目入口", model: "auto" });
 		const activity: ToolActivity = {

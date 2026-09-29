@@ -129,6 +129,35 @@ describe("ToolActivityTracker", () => {
 		});
 	});
 
+	it("文件路径出现后，后续不完整参数不会抹掉流式编辑的目标", () => {
+		const tracker = new ToolActivityTracker();
+		const update = (args: unknown, type: "toolcall_start" | "toolcall_delta") =>
+			tracker.apply(
+				event({
+					type: "message_update",
+					message: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "edit-path", name: "edit", arguments: args }],
+					},
+					assistantMessageEvent: { type, contentIndex: 0 },
+				}),
+			)[0];
+
+		expect(update({}, "toolcall_start")?.summary).toBe("edit");
+		expect(update({ path: "src/app.ts" }, "toolcall_delta")?.summary).toBe("src/app.ts");
+		expect(update({ edits: [{ oldText: "old" }] }, "toolcall_delta")?.summary).toBe("src/app.ts");
+		expect(
+			tracker.apply(
+				event({
+					type: "tool_execution_start",
+					toolCallId: "edit-path",
+					toolName: "edit",
+					args: { path: "src/app.ts", edits: [] },
+				}),
+			)[0]?.summary,
+		).toBe("src/app.ts");
+	});
+
 	it("流式写入预览按时间间隔更新，不逐片重算", () => {
 		const now = vi.spyOn(Date, "now");
 		try {

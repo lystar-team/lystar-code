@@ -58,6 +58,45 @@ describe("command activity card", () => {
 		expect(expanded).toContain("$ npm exec -- tsgo -p packages/web/tsconfig.json --noEmit");
 	});
 
+	it("keeps compound command titles distinct from raw commands while preserving the full detail", () => {
+		const command = `cd /workspace && version="0.87.1-lystar.4" && tag="v\${version}" && git tag -a "$tag" HEAD -m "LYStar Code $tag" && git push origin "$tag" 2>&1 | tail -5 && git ls-remote origin "refs/tags/$tag"`;
+		const tool = commandTool(command, "input-available");
+		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+		expect(collapsed).toContain("正在创建 Git 标签、推送到远端仓库并查询远端标签");
+		expect(collapsed).toContain("lucide-git-branch");
+		expect(collapsed).not.toContain("正在运行 cd 命令");
+		expect(collapsed).not.toContain(command);
+		const expanded = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
+		expect(expanded).toContain("tool-command-block");
+		expect(expanded).toContain("git tag -a");
+		expect(expanded).toContain("git ls-remote");
+	});
+
+	it("does not certify a pipeline's push from the shell exit status", () => {
+		const command = "git push origin main 2>&1 | tail -5";
+		const tool = commandTool(command, "output-available", "fatal: push failed");
+		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+		expect(collapsed).toContain("已执行推送到远端仓库");
+		expect(collapsed).not.toContain(" · ");
+		expect(collapsed).toContain("lucide-git-branch");
+		expect(collapsed).not.toContain("已推送到远端仓库");
+		const expanded = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], initialOpen: true }));
+		expect(expanded).toContain("fatal: push failed");
+		expect(expanded).toContain("git push origin main");
+	});
+
+	it("shows Git mutations accurately without changing the tool row", () => {
+		for (const [command, title] of [
+			["git tag -f v1 HEAD", "已创建或更新 Git 标签"],
+			["git push origin --delete obsolete", "已删除远端引用"],
+		] as const) {
+			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [commandTool(command)] }));
+			expect(markup).toContain(title);
+			expect(markup).toContain("lucide-git-branch");
+			expect(markup).not.toContain(command);
+		}
+	});
+
 	it("renders a failed command like other failed tools with traceable details", () => {
 		const tool = commandTool("npm run check", "output-error", "error TS2304: Cannot find name 'config'");
 		const failedRead: ToolBatchTool = {
@@ -91,7 +130,7 @@ describe("command activity card", () => {
 		const command = "biome check --error-on-warnings && npm run check:pinned-deps";
 		const tool = commandTool(command, "output-error", `> ${command}\nFound 1 error.`);
 		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], open: false }));
-		expect(collapsed).toContain("运行 biome 命令失败");
+		expect(collapsed).toContain("运行 biome 命令并运行 check:pinned-deps 脚本未完成");
 		expect(collapsed).toContain("出错");
 		expect(collapsed).not.toContain("Found 1 error.");
 		expect(collapsed).not.toContain(command);
