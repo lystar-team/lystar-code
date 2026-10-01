@@ -1,130 +1,230 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseSubagentMarkdown } from "../../coding-agent/src/core/subagent-config.ts";
+import { discoverSessionProfiles, findSessionProfile } from "../../coding-agent/src/core/session-profile.ts";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 
-describe("subagent config adapter", () => {
-	const cleanups: Array<() => void> = [];
-	afterEach(() => {
-		for (const cleanup of cleanups.splice(0)) cleanup();
-	});
+const ui = async () => ({ cancelled: true });
 
-	it("saves, renames, protects, and deletes user Markdown configs", async () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-subagent-crud-"));
+describe("subagent config adapter", () => {
+	const roots: string[] = [];
+	afterEach(() => {
+		for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	});
+	function fixture() {
+		const root = mkdtempSync(join(tmpdir(), "lystar-role-crud-"));
+		roots.push(root);
 		const cwd = join(root, "project");
 		const agentDir = join(root, "agent");
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-		const adapter = new CodingAgentRuntimeAdapter(agentDir);
-		const ui = async () => ({ cancelled: true });
+		writeFileSync(join(agentDir, "AGENTS.md"), "公共规则\n");
+		return { cwd, agentDir, adapter: new CodingAgentRuntimeAdapter(agentDir) };
+	}
 
+	it("creates Chinese directory roles, renames without changing id, and deletes only the role", async () => {
+		const { cwd, agentDir, adapter } = fixture();
 		let configs = await adapter.saveSubagentConfig(
 			cwd,
 			{
 				scope: "user",
-				name: "reviewer",
-				description: "Review code",
+				name: "前端开发",
+				description: "实现页面",
 				icon: "code",
-				provider: "openai",
-				model: "gpt-5",
+				provider: "custom",
+				model: "review-model",
 				thinkingLevel: "high",
-				tools: ["read", "grep"],
+				tools: ["read", "edit"],
 				skills: ["review", "codegraph"],
-				tags: ["审查", "回归", "安全"],
-				content: "Review the requested changes.",
+				tags: ["页面", "回归"],
+				content: "只处理指定页面。",
 			},
 			ui,
 		);
-		const saved = configs.find((config) => config.scope === "user" && config.name === "reviewer");
-		expect(saved?.fileName).toBe("reviewer.md");
-		expect(saved?.contentHash).toBeDefined();
-		expect(
-			parseSubagentMarkdown(readFileSync(join(agentDir, "agents", "reviewer.md"), "utf8"), "reviewer"),
-		).toMatchObject({
+		const saved = configs[0]!;
+		expect(saved).toMatchObject({ scope: "user", name: "前端开发", editable: true });
+		expect(saved.id).toBeTruthy();
+		expect(saved.fileName).toBe(`${saved.id}/profile.json`);
+		const roleDir = join(agentDir, "agents", saved.id);
+		expect(JSON.parse(readFileSync(join(roleDir, "profile.json"), "utf8"))).toMatchObject({
+			name: "前端开发",
 			icon: "code",
-			provider: "openai",
-			model: "gpt-5",
+			provider: "custom",
+			model: "review-model",
 			thinkingLevel: "high",
-			tools: ["read", "grep"],
+			tools: ["read", "edit"],
 			skills: ["review", "codegraph"],
-			tags: ["审查", "回归", "安全"],
-			content: "Review the requested changes.",
+			tags: ["页面", "回归"],
+		});
+		expect(readFileSync(join(roleDir, "PROMPT.md"), "utf8")).toBe("只处理指定页面。\n");
+		expect(readFileSync(join(roleDir, "AGENTS.md"), "utf8")).toBe("公共规则\n");
+		expect(findSessionProfile(cwd, saved.id, agentDir)).toMatchObject({
+			name: "前端开发",
+			model: "custom/review-model",
+			thinkingLevel: "high",
+			systemPrompt: "只处理指定页面。",
+			skillNames: ["review", "codegraph"],
+			agentsInstructions: "公共规则",
 		});
 
 		configs = await adapter.saveSubagentConfig(
 			cwd,
 			{
 				scope: "user",
-				originalName: "reviewer",
-				name: "review-specialist",
-				description: "Review code",
-				content: "Review the requested changes.",
-				expectedHash: saved?.contentHash,
+				id: saved.id,
+				name: "页面审查",
+				description: "审查页面",
+				excludeTools: ["bash", "write"],
+				content: "读取页面并检查。",
+				expectedHash: saved.contentHash,
 			},
 			ui,
 		);
-		const renamed = configs.find((config) => config.scope === "user" && config.name === "review-specialist");
-		expect(renamed?.fileName).toBe("review-specialist.md");
-		expect(renamed?.contentHash).toBeDefined();
-		expect(configs.some((config) => config.scope === "user" && config.name === "reviewer")).toBe(false);
-
+		const renamed = configs[0]!;
+		expect(renamed.id).toBe(saved.id);
+		expect(renamed.name).toBe("页面审查");
+		expect(renamed.contentHash).not.toBe(saved.contentHash);
+		expect(findSessionProfile(cwd, saved.id, agentDir)).toMatchObject({
+			systemPrompt: "读取页面并检查。",
+			excludeTools: ["bash", "write"],
+		});
 		await expect(
 			adapter.saveSubagentConfig(
 				cwd,
 				{
 					scope: "user",
-					name: "review-specialist",
-					description: "Stale update",
-					content: "Do not save.",
-					expectedHash: "stale",
+					id: saved.id,
+					name: "页面审查",
+					description: "旧版本",
+					content: "不能保存",
+					expectedHash: saved.contentHash,
 				},
 				ui,
 			),
 		).rejects.toMatchObject({ code: "subagent_conflict" });
-
+		await expect(
+			adapter.deleteSubagentConfig(
+				cwd,
+				{
+					scope: "user",
+					id: saved.id,
+					expectedHash: saved.contentHash!,
+				},
+				ui,
+			),
+		).rejects.toMatchObject({ code: "subagent_conflict" });
 		configs = await adapter.deleteSubagentConfig(
 			cwd,
-			{ scope: "user", name: "review-specialist", expectedHash: renamed?.contentHash ?? "" },
+			{
+				scope: "user",
+				id: renamed.id,
+				expectedHash: renamed.contentHash!,
+			},
 			ui,
 		);
-		expect(configs.some((config) => config.scope === "user" && config.name === "review-specialist")).toBe(false);
+		expect(configs).toEqual([]);
+		expect(discoverSessionProfiles(cwd, agentDir)).toEqual([]);
+		expect(existsSync(roleDir)).toBe(false);
+		expect(readFileSync(join(agentDir, "AGENTS.md"), "utf8")).toBe("公共规则\n");
 	});
 
-	it("saves disabled tools and lists tools registered for the project", async () => {
-		const root = mkdtempSync(join(tmpdir(), "lystar-subagent-tools-"));
-		const cwd = join(root, "project");
-		const agentDir = join(root, "agent");
-		mkdirSync(cwd, { recursive: true });
-		mkdirSync(agentDir, { recursive: true });
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-		const adapter = new CodingAgentRuntimeAdapter(agentDir);
+	it("registers create_agent and preserves disabled tools in directory profiles", async () => {
+		const { cwd, agentDir, adapter } = fixture();
 		const options = await adapter.listSubagentTools(cwd);
 		expect(options).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ name: "read", description: expect.any(String) }),
 				expect.objectContaining({ name: "sessions", description: expect.any(String) }),
 				expect.objectContaining({ name: "image_gen", description: expect.any(String) }),
+				expect.objectContaining({ name: "create_agent", description: expect.any(String) }),
 			]),
 		);
-		const configs = await adapter.saveSubagentConfig(
+		const [saved] = await adapter.saveSubagentConfig(
 			cwd,
 			{
 				scope: "user",
-				name: "restricted",
-				description: "Limited tools",
+				name: "审查",
+				description: "读取文件",
 				excludeTools: ["bash", "write"],
-				content: "Read and review.",
+				content: "检查页面。",
 			},
-			async () => ({ cancelled: true }),
+			ui,
 		);
-		expect(configs.find((config) => config.name === "restricted")).toMatchObject({
-			excludeTools: ["bash", "write"],
+		expect(saved).toMatchObject({ excludeTools: ["bash", "write"] });
+		expect(findSessionProfile(cwd, saved!.id, agentDir)?.excludeTools).toEqual(["bash", "write"]);
+	});
+
+	it("protects same-scope display names and never recreates externally deleted ids", async () => {
+		const { cwd, agentDir, adapter } = fixture();
+		const input = { scope: "user" as const, name: "审查", description: "检查页面", content: "读取页面。" };
+		const [saved] = await adapter.saveSubagentConfig(cwd, input, ui);
+		await expect(adapter.saveSubagentConfig(cwd, input, ui)).rejects.toMatchObject({
+			code: "subagent_name_conflict",
 		});
-		expect(
-			parseSubagentMarkdown(readFileSync(join(agentDir, "agents", "restricted.md"), "utf8"), "restricted"),
-		).toMatchObject({ excludeTools: ["bash", "write"] });
+		await expect(adapter.saveSubagentConfig(cwd, { ...input, id: saved!.id }, ui)).rejects.toMatchObject({
+			code: "subagent_conflict",
+		});
+		rmSync(join(agentDir, "agents", saved!.id), { recursive: true });
+		await expect(
+			adapter.saveSubagentConfig(
+				cwd,
+				{
+					...input,
+					id: saved!.id,
+					expectedHash: saved!.contentHash,
+				},
+				ui,
+			),
+		).rejects.toMatchObject({ code: "subagent_conflict" });
+	});
+
+	it("hashes both JSON and PROMPT but does not edit shared AGENTS instructions", async () => {
+		const { cwd, agentDir, adapter } = fixture();
+		const input = { scope: "user" as const, name: "审查", description: "检查页面", content: "读取页面。" };
+		const [saved] = await adapter.saveSubagentConfig(cwd, input, ui);
+		const promptPath = join(agentDir, "agents", saved!.id, "PROMPT.md");
+		writeFileSync(promptPath, "外部修改\n");
+		await expect(
+			adapter.saveSubagentConfig(
+				cwd,
+				{
+					...input,
+					id: saved!.id,
+					expectedHash: saved!.contentHash,
+				},
+				ui,
+			),
+		).rejects.toMatchObject({ code: "subagent_conflict" });
+		const [reloaded] = await adapter.listSubagentConfigs(cwd);
+		writeFileSync(join(agentDir, "AGENTS.md"), "更新公共规则\n");
+		await adapter.saveSubagentConfig(cwd, { ...input, id: saved!.id, expectedHash: reloaded!.contentHash }, ui);
+		expect(readFileSync(join(agentDir, "AGENTS.md"), "utf8")).toBe("更新公共规则\n");
+		expect(findSessionProfile(cwd, saved!.id, agentDir)?.agentsInstructions).toBe("更新公共规则");
+	});
+
+	it("edits existing imported Markdown as a directory with the same id", async () => {
+		const { cwd, agentDir, adapter } = fixture();
+		const directory = join(agentDir, "agents");
+		mkdirSync(directory);
+		const oldPath = join(directory, "reviewer.md");
+		writeFileSync(oldPath, "---\nname: 审查\ndescription: 检查页面\n---\n旧提示词\n");
+		const [old] = await adapter.listSubagentConfigs(cwd);
+		const [saved] = await adapter.saveSubagentConfig(
+			cwd,
+			{
+				scope: "user",
+				id: old!.id,
+				name: "审查",
+				description: "检查页面",
+				content: "新提示词",
+				expectedHash: old!.contentHash,
+			},
+			ui,
+		);
+		expect(saved?.id).toBe("reviewer");
+		expect(saved?.fileName).toBe("reviewer/profile.json");
+		expect(existsSync(oldPath)).toBe(false);
+		expect(findSessionProfile(cwd, "reviewer", agentDir)?.systemPrompt).toBe("新提示词");
 	});
 });

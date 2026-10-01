@@ -2128,7 +2128,7 @@ export class WebRuntimeService {
 						...(sessionPath ? { sessionPath } : {}),
 						cwd,
 						scope: request.scope,
-						...(request.originalName ? { originalName: request.originalName } : {}),
+						...(request.id ? { id: request.id } : {}),
 						name: request.name,
 						description: request.description,
 						...(request.provider ? { provider: request.provider } : {}),
@@ -2148,7 +2148,7 @@ export class WebRuntimeService {
 							cwd,
 							{
 								scope: request.scope,
-								...(request.originalName ? { originalName: request.originalName } : {}),
+								...(request.id ? { id: request.id } : {}),
 								name: request.name,
 								description: request.description,
 								...(request.provider ? { provider: request.provider } : {}),
@@ -2182,14 +2182,14 @@ export class WebRuntimeService {
 						...(sessionPath ? { sessionPath } : {}),
 						cwd,
 						scope: request.scope,
-						name: request.name,
+						id: request.id,
 						expectedHash: request.expectedHash,
 					},
 					run: async (operation) => {
 						const runtime = this.assertMutationSession(connection, request, cwd);
 						const result = await this.adapter.deleteSubagentConfig(
 							cwd,
-							{ scope: request.scope, name: request.name, expectedHash: request.expectedHash },
+							{ scope: request.scope, id: request.id, expectedHash: request.expectedHash },
 							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
 						);
 						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);

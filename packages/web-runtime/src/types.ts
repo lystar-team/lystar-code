@@ -321,7 +321,7 @@ export interface RuntimeAdapter {
 		cwd: string,
 		input: {
 			scope: "user" | "project";
-			originalName?: string;
+			id?: string;
 			name: string;
 			description: string;
 			icon?: string;
@@ -339,7 +339,7 @@ export interface RuntimeAdapter {
 	): Promise<SubagentConfig[]>;
 	deleteSubagentConfig(
 		cwd: string,
-		input: { scope: "user" | "project"; name: string; expectedHash: string },
+		input: { scope: "user" | "project"; id: string; expectedHash: string },
 		onUiRequest: UiRequestHandler,
 	): Promise<SubagentConfig[]>;
 	importHarnessResources(cwd: string, itemIds: string[], onUiRequest: UiRequestHandler): Promise<HarnessImportResult>;

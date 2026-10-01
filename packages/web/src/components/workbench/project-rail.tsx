@@ -354,7 +354,7 @@ export const ProjectRail = memo(function ProjectRail({
 
 	const createProjectSession = async (
 		projectId: string,
-		agentProfile?: Pick<SubagentConfig, "name" | "icon">,
+		agentProfile?: Pick<SubagentConfig, "id" | "name" | "icon">,
 	) => {
 		if (projectId !== state.currentProjectId) await actions.selectProject(projectId);
 		await actions.createSession(agentProfile);

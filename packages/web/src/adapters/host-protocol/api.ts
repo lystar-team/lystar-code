@@ -921,7 +921,7 @@ export class WebApi {
 		projectId: string,
 		input: {
 			scope: "user" | "project";
-			originalName?: string;
+			id?: string;
 		name: string;
 		description: string;
 		icon?: string;
@@ -947,7 +947,7 @@ export class WebApi {
 
 	async deleteSubagentConfig(
 		projectId: string,
-		input: Pick<SubagentConfig, "name" | "contentHash"> & { scope: "user" | "project" },
+		input: Pick<SubagentConfig, "id" | "contentHash"> & { scope: "user" | "project" },
 	): Promise<Pick<SubagentConfigsResponse, "subagents">> {
 		return this.request<Pick<SubagentConfigsResponse, "subagents">>(
 			`/api/settings/subagents?projectId=${encodeURIComponent(projectId)}`,
@@ -955,7 +955,7 @@ export class WebApi {
 				method: "DELETE",
 				body: JSON.stringify({
 					scope: input.scope,
-					name: input.name,
+					id: input.id,
 					expectedHash: input.contentHash,
 					clientRequestId: createUuid(),
 				}),

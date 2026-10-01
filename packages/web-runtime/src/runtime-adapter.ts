@@ -14,6 +14,7 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -26,6 +27,7 @@ import { type Api, type AuthResult, contentText, type Model } from "@earendil-wo
 import {
 	type AgentCapabilityLease,
 	type AgentInputOrigin,
+	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
 	type AgentTurnContext,
@@ -85,7 +87,6 @@ import {
 	readSessionInspection,
 	removeModelsJsonModels,
 	removeModelsJsonProvider,
-	renderSubagentMarkdown,
 	renderTerminalRichText,
 	requestWebSessionHandoff,
 	resolveProjectTrusted,
@@ -157,6 +158,7 @@ import type {
 	TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { RUNTIME_MAX_FRAME_LENGTH, RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
+import { createAgentCreationTool } from "./agent-creation-tool.ts";
 import {
 	AGENT_STEP_CUSTOM_TYPE,
 	AGENT_STEP_TOOL_NAMES,
@@ -377,7 +379,7 @@ function sessionProfileSnapshot(profile: SessionProfile): SessionProfileSnapshot
 
 const READ_ONLY_SESSION_TOOLS = ["read", "sessions"] as const;
 
-function validSubagentName(value: string): string {
+function validSubagentId(value: string): string {
 	const name = value.trim();
 	if (
 		!name ||
@@ -388,7 +390,7 @@ function validSubagentName(value: string): string {
 		name.includes("\\") ||
 		name.includes("\0")
 	)
-		throw Object.assign(new Error("智能体名称无效"), { code: "subagent_name_invalid" });
+		throw Object.assign(new Error("智能体标识无效"), { code: "subagent_id_invalid" });
 	return name;
 }
 
@@ -3749,6 +3751,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		});
 		const sessionManager = SessionManager.inMemory(projectRoot);
 		const stepController = new AgentStepController(sessionManager);
+		const onUiRequest: UiRequestHandler = async () => ({ cancelled: true });
+		let runtimeSession: AgentSession;
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager,
@@ -3757,8 +3761,16 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				createSessionsTool(() => this.sessionCoordinator),
 				createRoomClaimTool(() => this.sessionCoordinator),
 				createRoomTasksTool(() => this.sessionCoordinator),
+				createAgentCreationTool({
+					cwd: projectRoot,
+					agentDir: this.agentDir,
+					listSkills: async () => (await this.listSkills(projectRoot, onUiRequest)).skills,
+					listTools: () => runtimeSession.getAllTools().map(({ name, description }) => ({ name, description })),
+					save: (input) => this.saveSubagentConfig(projectRoot, input, onUiRequest),
+				}),
 			],
 		});
+		runtimeSession = session;
 		try {
 			return session.getAllTools().map(({ name, description }) => ({ name, description }));
 		} finally {
@@ -3768,10 +3780,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	listSubagentConfigs(cwd: string): SubagentConfig[] {
 		return discoverAgentDefinitions(canonicalDirectory(cwd), this.agentDir).definitions.map((definition) => ({
+			id: definition.id,
 			name: definition.name,
 			description: definition.description,
 			scope: definition.scope,
-			...(definition.scope !== "builtin" ? { fileName: basename(definition.filePath) } : {}),
+			fileName: statSync(definition.filePath).isDirectory()
+				? `${definition.id}/profile.json`
+				: basename(definition.filePath),
 			...(definition.tags ? { tags: definition.tags } : {}),
 			...(definition.icon ? { icon: definition.icon } : {}),
 			...(definition.provider ? { provider: definition.provider } : {}),
@@ -3790,7 +3805,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		cwd: string,
 		input: {
 			scope: "user" | "project";
-			originalName?: string;
+			id?: string;
 			name: string;
 			description: string;
 			icon?: string;
@@ -3810,66 +3825,80 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		if (input.scope === "project") await this.createTrustedSettings(projectRoot, onUiRequest);
 		const root = input.scope === "user" ? canonicalDirectory(this.agentDir) : projectRoot;
 		const directory = input.scope === "user" ? join(root, "agents") : join(root, CONFIG_DIR_NAME, "agents");
-		mkdirSync(directory, { recursive: true });
-		const name = validSubagentName(input.name);
-		const originalName = validSubagentName(input.originalName ?? name);
-		const originalPath = join(directory, `${originalName}.md`);
-		const targetPath = join(directory, `${name}.md`);
-		if (existsSync(originalPath)) {
-			const currentHash = contentHash(readFileSync(originalPath, "utf8"));
-			if (!input.expectedHash || currentHash !== input.expectedHash)
+		const name = input.name.trim();
+		if (!name || name.length > SUBAGENT_NAME_MAX_LENGTH)
+			throw Object.assign(new Error("智能体名称无效"), { code: "subagent_name_invalid" });
+		const definitions = discoverAgentDefinitions(projectRoot, this.agentDir).definitions;
+		const id = input.id ? validSubagentId(input.id) : randomUUID();
+		const current = definitions.find((definition) => definition.scope === input.scope && definition.id === id);
+		if (current) {
+			if (!input.expectedHash || contentHash(current.rawContent) !== input.expectedHash)
 				throw Object.assign(new Error("智能体已被外部修改，请重新加载后再保存"), {
 					code: "subagent_conflict",
 					retryable: true,
 				});
-		} else if (input.expectedHash) {
+		} else if (input.id || input.expectedHash) {
 			throw Object.assign(new Error("智能体已被外部删除，请重新加载后再保存"), {
 				code: "subagent_conflict",
 				retryable: true,
 			});
 		}
-		if (targetPath !== originalPath && existsSync(targetPath))
+		if (
+			definitions.some(
+				(definition) => definition.scope === input.scope && definition.name === name && definition.id !== id,
+			)
+		)
 			throw Object.assign(new Error("同一范围内已存在同名智能体"), { code: "subagent_name_conflict" });
 		const description = input.description.trim();
 		if (!description) throw Object.assign(new Error("智能体描述不能为空"), { code: "subagent_description_invalid" });
 		if (input.provider && !input.model)
 			throw Object.assign(new Error("选择供应商后必须选择模型"), { code: "subagent_model_invalid" });
-		const rendered = renderSubagentMarkdown({
+		const config = {
 			name,
 			description,
 			...(input.icon ? { icon: input.icon } : {}),
 			...(input.provider ? { provider: input.provider } : {}),
 			...(input.model ? { model: input.model } : {}),
 			...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
-			...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
-			...(input.excludeTools && input.excludeTools.length > 0 ? { excludeTools: input.excludeTools } : {}),
-			...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
-			...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
-			content: input.content,
-		});
-		atomicWriteUtf8(targetPath, rendered);
-		if (targetPath !== originalPath && existsSync(originalPath)) unlinkSync(originalPath);
+			...(input.tools?.length ? { tools: [...new Set(input.tools)] } : {}),
+			...(input.excludeTools?.length ? { excludeTools: [...new Set(input.excludeTools)] } : {}),
+			...(input.skills?.length ? { skills: [...new Set(input.skills)] } : {}),
+			...(input.tags?.length ? { tags: [...new Set(input.tags)] } : {}),
+		};
+		const currentIsDirectory = current ? statSync(current.filePath).isDirectory() : false;
+		const targetDirectory = currentIsDirectory
+			? current!.filePath
+			: join(current ? dirname(current.filePath) : directory, id);
+		mkdirSync(targetDirectory, { recursive: true });
+		atomicWriteUtf8(join(targetDirectory, "PROMPT.md"), `${input.content.trim()}\n`);
+		const commonInstructions = join(this.agentDir, "AGENTS.md");
+		const instructionsPath = join(targetDirectory, "AGENTS.md");
+		if (!existsSync(instructionsPath) && existsSync(commonInstructions))
+			symlinkSync(relative(targetDirectory, commonInstructions), instructionsPath, "file");
+		atomicWriteUtf8(join(targetDirectory, "profile.json"), `${JSON.stringify(config, null, 2)}\n`);
+		if (current && !currentIsDirectory) unlinkSync(current.filePath);
 		return this.listSubagentConfigs(projectRoot);
 	}
 
 	async deleteSubagentConfig(
 		cwd: string,
-		input: { scope: "user" | "project"; name: string; expectedHash: string },
+		input: { scope: "user" | "project"; id: string; expectedHash: string },
 		onUiRequest: UiRequestHandler,
 	): Promise<SubagentConfig[]> {
 		const projectRoot = canonicalDirectory(cwd);
 		if (input.scope === "project") await this.createTrustedSettings(projectRoot, onUiRequest);
-		const root = input.scope === "user" ? canonicalDirectory(this.agentDir) : projectRoot;
-		const directory = input.scope === "user" ? join(root, "agents") : join(root, CONFIG_DIR_NAME, "agents");
-		const path = join(directory, `${validSubagentName(input.name)}.md`);
-		if (!existsSync(path)) throw Object.assign(new Error("智能体不存在"), { code: "subagent_not_found" });
-		const currentHash = contentHash(readFileSync(path, "utf8"));
-		if (currentHash !== input.expectedHash)
+		const id = validSubagentId(input.id);
+		const current = discoverAgentDefinitions(projectRoot, this.agentDir).definitions.find(
+			(definition) => definition.scope === input.scope && definition.id === id,
+		);
+		if (!current) throw Object.assign(new Error("智能体不存在"), { code: "subagent_not_found" });
+		if (contentHash(current.rawContent) !== input.expectedHash)
 			throw Object.assign(new Error("智能体已被外部修改，请重新加载后再删除"), {
 				code: "subagent_conflict",
 				retryable: true,
 			});
-		unlinkSync(path);
+		if (statSync(current.filePath).isDirectory()) rmSync(current.filePath, { recursive: true });
+		else unlinkSync(current.filePath);
 		return this.listSubagentConfigs(projectRoot);
 	}
 
@@ -4710,26 +4739,37 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 							}
 						: undefined,
 			});
-			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager: runtimeSessionManager,
-					sessionStartEvent,
-					deferExtensionLifecycle: deferRuntimeExtensionLifecycle,
-					model: resolveProfileModel(effectiveProfile, services.modelRuntime),
-					thinkingLevel: effectiveProfile?.thinkingLevel,
-					...(activeTools ? { tools: activeTools } : {}),
-					...(effectiveProfile?.excludeTools ? { excludeTools: effectiveProfile.excludeTools } : {}),
-					customTools: [
-						...createAgentStepTools(stepController),
-						createSessionsTool(() => this.sessionCoordinator),
-						createRoomClaimTool(() => this.sessionCoordinator),
-						createRoomTasksTool(() => this.sessionCoordinator),
-					],
-				})),
+			let runtimeSession: AgentSession;
+			const result = await createAgentSessionFromServices({
 				services,
-				diagnostics: services.diagnostics,
-			};
+				sessionManager: runtimeSessionManager,
+				sessionStartEvent,
+				deferExtensionLifecycle: deferRuntimeExtensionLifecycle,
+				model: resolveProfileModel(effectiveProfile, services.modelRuntime),
+				thinkingLevel: effectiveProfile?.thinkingLevel,
+				...(activeTools ? { tools: activeTools } : {}),
+				...(effectiveProfile?.excludeTools ? { excludeTools: effectiveProfile.excludeTools } : {}),
+				customTools: [
+					...createAgentStepTools(stepController),
+					createSessionsTool(() => this.sessionCoordinator),
+					createRoomClaimTool(() => this.sessionCoordinator),
+					createRoomTasksTool(() => this.sessionCoordinator),
+					...(!readOnly
+						? [
+								createAgentCreationTool({
+									cwd: runtimeCwd,
+									agentDir,
+									listSkills: async () => (await this.listSkills(runtimeCwd, onUiRequest)).skills,
+									listTools: () =>
+										runtimeSession.getAllTools().map(({ name, description }) => ({ name, description })),
+									save: (input) => this.saveSubagentConfig(runtimeCwd, input, onUiRequest),
+								}),
+							]
+						: []),
+				],
+			});
+			runtimeSession = result.session;
+			return { ...result, services, diagnostics: services.diagnostics };
 		};
 		const projectTrustContext: ProjectTrustContext = {
 			cwd,

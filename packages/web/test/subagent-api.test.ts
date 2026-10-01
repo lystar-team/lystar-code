@@ -54,4 +54,35 @@ describe("WebApi Subagent endpoints", () => {
 			},
 		]);
 	});
+
+	it("sends the stable role id for session creation, editing and deletion, not the display name", async () => {
+		vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+		const requests: Array<{ path: string; method: string; body: Record<string, unknown> }> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				requests.push({ path: String(input), method: init?.method ?? "GET", body: JSON.parse(String(init?.body)) });
+				return new Response(JSON.stringify({ subagents: [], session: { id: "session" }, lease: {} }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}),
+		);
+		const api = new WebApi();
+		await api.createSession("project", "frontend-developer");
+		await api.saveSubagentConfig("project", {
+			scope: "user",
+			id: "frontend-developer",
+			name: "页面开发",
+			description: "实现页面",
+			content: "只处理页面。",
+			expectedHash: "hash",
+		});
+		await api.deleteSubagentConfig("project", { scope: "user", id: "frontend-developer", contentHash: "hash" });
+		expect(requests[0]!.body).toMatchObject({ profileId: "frontend-developer" });
+		expect(requests[1]!.body).toMatchObject({ id: "frontend-developer", name: "页面开发", expectedHash: "hash" });
+		expect(requests[1]!.body).not.toHaveProperty("originalName");
+		expect(requests[2]!.body).toMatchObject({ scope: "user", id: "frontend-developer", expectedHash: "hash" });
+		expect(requests[2]!.body).not.toHaveProperty("name");
+	});
 });

@@ -1,12 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONFIG_DIR_NAME } from "../src/config.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import { builtInExtensions } from "../src/extensions/index.ts";
-import { type AgentConfig, BUILTIN_AGENTS, discoverAgents } from "../src/extensions/subagent/agents.ts";
+import { type AgentConfig, discoverAgents } from "../src/extensions/subagent/agents.ts";
 import subagentExtension, {
 	abortSubagent,
 	continueSubagentSession,
@@ -24,8 +24,29 @@ import { uiGlyphs } from "../src/modes/interactive/ui-glyphs.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const tempDirs: string[] = [];
+const TEST_WORKER: AgentConfig = {
+	name: "worker",
+	description: "Test worker",
+	source: "user",
+	filePath: "<test-worker>",
+	systemPrompt: "Test task.",
+};
+
+beforeEach(() => {
+	const agentDir = mkdtempSync(join(tmpdir(), "lystar-subagent-config-"));
+	tempDirs.push(agentDir);
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+	const roleDir = join(agentDir, "agents", TEST_WORKER.name);
+	mkdirSync(roleDir, { recursive: true });
+	writeFileSync(
+		join(roleDir, "profile.json"),
+		JSON.stringify({ name: "测试开发", description: TEST_WORKER.description }),
+	);
+	writeFileSync(join(roleDir, "PROMPT.md"), TEST_WORKER.systemPrompt);
+});
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	vi.useRealTimers();
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -146,12 +167,13 @@ describe("built-in subagent extension", () => {
 		expect(tool.name).toBe("subagent");
 	});
 
-	it("ships three fallback agents without fixed models", () => {
-		expect(BUILTIN_AGENTS.map((agent) => agent.name)).toEqual(["research-specialist", "review-specialist", "worker"]);
-		expect(BUILTIN_AGENTS.every((agent) => agent.model === undefined)).toBe(true);
+	it("does not inject fallback agents into an empty configuration", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-subagent-empty-"));
+		tempDirs.push(root);
+		expect(discoverAgents(root, "both", root).agents).toEqual([]);
 	});
 
-	it("lets a project agent override a built-in agent", () => {
+	it("lets a project agent override a configured user agent with the same id", () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-subagent-"));
 		tempDirs.push(root);
 		const agentsDir = join(root, CONFIG_DIR_NAME, "agents");
@@ -161,14 +183,12 @@ describe("built-in subagent extension", () => {
 			"---\nname: worker\ndescription: Project worker\ntools: read\n---\n\nProject instructions.\n",
 		);
 
-		const result = discoverAgents(root, "project");
+		const result = discoverAgents(root, "both");
 		expect(result.agents.find((agent) => agent.name === "worker")).toMatchObject({
 			source: "project",
 			description: "Project worker",
 		});
-		expect(result.agents).toEqual(
-			expect.arrayContaining([expect.objectContaining({ name: "research-specialist", source: "builtin" })]),
-		);
+		expect(result.agents).toHaveLength(1);
 	});
 
 	it("runs single, parallel, and chain tasks through RPC with stable identities", async () => {
@@ -435,7 +455,7 @@ describe("built-in subagent extension", () => {
 	});
 
 	it("supports steer, follow-up, abort, and retention disposal through the RPC controller", async () => {
-		const agent: AgentConfig = { ...BUILTIN_AGENTS.find((candidate) => candidate.name === "worker")! };
+		const agent: AgentConfig = { ...TEST_WORKER };
 		let updateCount = 0;
 		const controller = new SubagentRunController({
 			runId: "run-1",

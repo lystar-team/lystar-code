@@ -42,6 +42,70 @@ class MemoryTransport implements ByteTransport {
 }
 
 describe("Web Runtime Protocol v1", () => {
+	it("separates stable role ids from display names and rejects built-in roles", () => {
+		const config = {
+			id: "frontend-developer",
+			name: "前端开发",
+			description: "实现页面",
+			scope: "user",
+			editable: true,
+			content: "只处理页面。",
+		};
+		expect(() =>
+			assertWorkspaceCommandResult("list_subagent_configs", { subagents: [config], tools: [] }),
+		).not.toThrow();
+		for (const command of ["save_subagent_config", "delete_subagent_config"] as const) {
+			expect(() => assertWorkspaceCommandResult(command, [config])).not.toThrow();
+			expect(() => assertWorkspaceCommandResult(command, [])).not.toThrow();
+			expect(() => assertWorkspaceCommandResult(command, { subagents: [config], tools: [] })).toThrow();
+		}
+		expect(() =>
+			assertWorkspaceCommandResult("list_subagent_configs", {
+				subagents: [{ ...config, id: undefined }],
+				tools: [],
+			}),
+		).toThrow();
+		expect(() =>
+			assertWorkspaceCommandResult("list_subagent_configs", {
+				subagents: [{ ...config, scope: "builtin" }],
+				tools: [],
+			}),
+		).toThrow();
+		const metadata = {
+			cwd: "/project",
+			scope: "user" as const,
+			clientInstanceId: "client",
+			clientRequestId: "role-edit",
+		};
+		const save = {
+			type: "request" as const,
+			id: "save",
+			request: {
+				...metadata,
+				command: "save_subagent_config" as const,
+				id: config.id,
+				name: "页面审查",
+				description: "检查页面",
+				content: "读取页面。",
+				expectedHash: "before",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(save))).toEqual([save]);
+		const remove = {
+			type: "request" as const,
+			id: "delete",
+			request: {
+				...metadata,
+				command: "delete_subagent_config" as const,
+				id: config.id,
+				expectedHash: "after",
+			},
+		};
+		expect(new ClientMessageDecoder().push(encodeClientMessage(remove))).toEqual([remove]);
+		expect(() =>
+			encodeClientMessage({ ...remove, request: { ...remove.request, id: undefined, name: config.name } } as never),
+		).toThrow();
+	});
 	it("恢复响应基线先于同批后续增量应用", async () => {
 		const clientTransport = new MemoryTransport();
 		const serverTransport = new MemoryTransport();

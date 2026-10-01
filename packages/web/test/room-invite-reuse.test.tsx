@@ -43,7 +43,7 @@ describe("Room 添加智能体", () => {
 			},
 			selectedRoomMessages: [],
 			pendingAgentReplies: [],
-			agentProfiles: [{ name: "worker", description: "完成任务", scope: "user", content: "", editable: true }],
+			agentProfiles: [{ id: "worker", name: "前端开发", description: "完成任务", scope: "user", content: "", editable: true }],
 			agentProfilesLoading: false,
 			roomTasks: [],
 			roomTasksLoading: false,
@@ -75,7 +75,7 @@ describe("Room 添加智能体", () => {
 			},
 			selectedRoomMessages: [],
 			pendingAgentReplies: [],
-			agentProfiles: [{ name: "worker", fileName: "actual-worker.md", description: "完成任务", scope: "user", content: "", editable: true }],
+			agentProfiles: [{ id: "worker", name: "前端开发", fileName: "worker/profile.json", description: "完成任务", scope: "user", content: "", editable: true }],
 			agentProfilesLoading: false,
 			roomTasks: [],
 			roomTasksLoading: false,
@@ -91,7 +91,8 @@ describe("Room 添加智能体", () => {
 			/>,
 		);
 		expect(html.match(/room-member-chip/g)).toHaveLength(2);
-		expect(html).toContain("配置文件：actual-worker.md");
+		expect(html).toContain("配置文件：worker/profile.json");
+		expect(html).toContain("前端开发");
 		expect(html).toContain("改名");
 	});
 
@@ -106,7 +107,7 @@ describe("Room 添加智能体", () => {
 			},
 			selectedRoomMessages: [],
 			pendingAgentReplies: [],
-			agentProfiles: [{ name: "luna-worker", description: "完成任务", scope: "user", content: "", editable: true }],
+			agentProfiles: [{ id: "luna-worker", name: "页面审查", description: "完成任务", scope: "user", content: "", editable: true }],
 			agentProfilesLoading: false,
 			roomTasks: [],
 			roomTasksLoading: false,

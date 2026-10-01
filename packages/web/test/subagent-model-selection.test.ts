@@ -20,11 +20,27 @@ describe("智能体切换基础模型", () => {
 		expect(thinkingLevelAfterModelChange("high", undefined)).toBe("high");
 	});
 
-	it("宽屏四列卡片区分内置与个人智能体", () => {
+	it("宽屏四列卡片展示可管理角色，不提供内置角色", () => {
 		const state = {
 			subagentConfigs: [
-				{ name: "worker", description: "内置", content: "", scope: "builtin", editable: false },
-				{ name: "custom", description: "个人", content: "", scope: "user", editable: true, contentHash: "hash" },
+				{
+					id: "frontend-developer",
+					name: "前端开发",
+					description: "开发页面",
+					content: "",
+					scope: "user",
+					editable: true,
+					contentHash: "first",
+				},
+				{
+					id: "reviewer",
+					name: "页面审查",
+					description: "检查页面",
+					content: "",
+					scope: "project",
+					editable: true,
+					contentHash: "second",
+				},
 			],
 			modelOptions: [],
 			modelOptionProviders: [],
@@ -32,7 +48,8 @@ describe("智能体切换基础模型", () => {
 		} as WorkbenchState;
 		const html = renderToStaticMarkup(createElement(SubagentSettings, { state, actions: {} as WorkbenchActions }));
 		expect(html).toContain("2xl:grid-cols-4");
-		expect(html).toContain("内置智能体不可删除");
-		expect(html.match(/>删除<\/button>/gu)).toHaveLength(1);
+		expect(html).not.toContain("内置智能体");
+		expect(html).toContain("前端开发");
+		expect(html.match(/>删除<\/button>/gu)).toHaveLength(2);
 	});
 });

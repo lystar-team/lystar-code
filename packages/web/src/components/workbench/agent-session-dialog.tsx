@@ -8,10 +8,9 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
-import type { AgentIconKey } from "./collaboration-session";
 import { AgentProfileCard } from "./agent-profile-card";
 
-type AgentSessionProfile = Pick<SubagentConfig, "name" | "icon">;
+type AgentSessionProfile = Pick<SubagentConfig, "id" | "name" | "icon">;
 
 interface AgentSessionDialogProps {
 	open: boolean;
@@ -23,18 +22,6 @@ interface AgentSessionDialogProps {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-const DEFAULT_AGENT_ICONS: Partial<Record<string, AgentIconKey>> = {
-	"research-specialist": "research",
-	"review-specialist": "shield",
-	worker: "code-2",
-	"lua-worker": "wrench",
-};
-
-function profileForCard(profile: SubagentConfig): SubagentConfig {
-	if (profile.icon) return profile;
-	return { ...profile, icon: DEFAULT_AGENT_ICONS[profile.name] ?? "general" };
 }
 
 function matchesProfile(profile: SubagentConfig, query: string): boolean {
@@ -70,21 +57,21 @@ export function AgentSessionDialog({
 	onManageAgents,
 }: AgentSessionDialogProps) {
 	const [profiles, setProfiles] = useState<SubagentConfig[]>([]);
-	const [selectedName, setSelectedName] = useState("");
+	const [selectedId, setSelectedId] = useState("");
 	const [searchQuery, setSearchQuery] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [submitting, setSubmitting] = useState(false);
 	const [loadError, setLoadError] = useState<string>();
 	const [submitError, setSubmitError] = useState<string>();
 	const [retryKey, setRetryKey] = useState(0);
-	const selectedProfile = profiles.find((profile) => profile.name === selectedName);
+	const selectedProfile = profiles.find((profile) => profile.id === selectedId);
 	const visibleProfiles = profiles.filter((profile) => matchesProfile(profile, searchQuery));
 
 	useEffect(() => {
 		if (!open || !projectId) return;
 		let active = true;
 		setProfiles([]);
-		setSelectedName("");
+		setSelectedId("");
 		setSearchQuery("");
 		setLoadError(undefined);
 		setSubmitError(undefined);
@@ -93,8 +80,9 @@ export function AgentSessionDialog({
 			.subagentConfigs(projectId)
 			.then((response) => {
 				if (!active) return;
-				setProfiles(response.subagents);
-				setSelectedName(response.subagents[0]?.name ?? "");
+				const candidates = [...new Map(response.subagents.map((profile) => [profile.id, profile])).values()];
+				setProfiles(candidates);
+				setSelectedId(candidates[0]?.id ?? "");
 			})
 			.catch((error: unknown) => {
 				if (active) setLoadError(errorMessage(error));
@@ -109,7 +97,7 @@ export function AgentSessionDialog({
 
 	const handleSearchChange = (value: string) => {
 		setSearchQuery(value);
-		if (selectedProfile && !matchesProfile(selectedProfile, value)) setSelectedName("");
+		if (selectedProfile && !matchesProfile(selectedProfile, value)) setSelectedId("");
 	};
 
 	const createSession = async () => {
@@ -118,6 +106,7 @@ export function AgentSessionDialog({
 		setSubmitError(undefined);
 		try {
 			await onCreateSession({
+				id: selectedProfile.id,
 				name: selectedProfile.name,
 				...(selectedProfile.icon ? { icon: selectedProfile.icon } : {}),
 			});
@@ -195,12 +184,12 @@ export function AgentSessionDialog({
 								>
 									{visibleProfiles.map((profile) => (
 										<AgentProfileCard
-											key={`${profile.scope}:${profile.name}`}
-											profile={profileForCard(profile)}
+											key={profile.id}
+											profile={profile}
 											tagLimit={profile.tags?.length}
-											selected={selectedName === profile.name}
+											selected={selectedId === profile.id}
 											disabled={submitting}
-											onClick={() => setSelectedName(profile.name)}
+											onClick={() => setSelectedId(profile.id)}
 										/>
 									))}
 									{visibleProfiles.length === 0 ? (

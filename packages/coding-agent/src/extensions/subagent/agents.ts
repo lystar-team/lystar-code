@@ -7,13 +7,17 @@ import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import {
 	formatSubagentModelReference,
+	normalizeSubagentSkills,
+	normalizeSubagentTags,
+	normalizeSubagentTools,
 	parseSubagentMarkdown,
 	parseSubagentModelReference,
+	SUBAGENT_THINKING_LEVELS,
 	type SubagentThinkingLevel,
 } from "../../core/subagent-config.ts";
 
 export type AgentScope = "user" | "project" | "both";
-export type AgentDefinitionScope = "builtin" | "user" | "project";
+export type AgentDefinitionScope = "user" | "project";
 
 export interface AgentConfig {
 	name: string;
@@ -23,11 +27,12 @@ export interface AgentConfig {
 	excludeTools?: string[];
 	model?: string;
 	systemPrompt: string;
-	source: "builtin" | "user" | "project";
+	source: AgentDefinitionScope;
 	filePath: string;
 }
 
 export interface AgentDefinition {
+	id: string;
 	name: string;
 	description: string;
 	icon?: string;
@@ -39,10 +44,11 @@ export interface AgentDefinition {
 	excludeTools?: string[];
 	skillNames?: string[];
 	content: string;
+	agentsInstructions?: string;
 	scope: AgentDefinitionScope;
 	editable: boolean;
 	filePath: string;
-	rawContent?: string;
+	rawContent: string;
 }
 
 export interface AgentDiscoveryResult {
@@ -50,59 +56,34 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
-export const BUILTIN_AGENTS: AgentConfig[] = [
-	{
-		name: "research-specialist",
-		description: "只读调查代码、配置和文档，向主代理返回简洁证据",
-		tags: ["调研", "代码", "文档", "只读"],
-		tools: ["read", "grep", "find", "ls"],
-		systemPrompt: `你是只读研究子代理。严格按任务范围调查代码、配置和文档，不修改文件。先定位入口和调用关系，再读取关键实现；结论必须给出准确路径和证据，无法确认时说明缺口。最终返回简洁、可供主代理继续工作的结果。`,
-		source: "builtin",
-		filePath: "<builtin:research-specialist>",
-	},
-	{
-		name: "review-specialist",
-		description: "只读审查正确性、回归、安全风险和验证缺口",
-		tags: ["审查", "回归", "安全", "验证"],
-		tools: ["read", "grep", "find", "ls"],
-		systemPrompt: `你是只读审查子代理。独立检查任务范围内的正确性、行为回归、安全风险和验证缺口，不修改文件。问题按严重程度排序，每条写清路径、触发条件和影响；没有发现问题时明确说明剩余验证边界。`,
-		source: "builtin",
-		filePath: "<builtin:review-specialist>",
-	},
-	{
-		name: "worker",
-		description: "在明确文件范围内完成一个实现单元并运行必要验证",
-		tags: ["开发", "实现", "验证"],
-		systemPrompt: `你是实现子代理。只完成任务卡分配的单个工作单元，在指定文件范围内实现和验证。保留其他人的改动，不派发其他代理，不执行破坏性 Git 操作。优先复用现有能力，修正责任位置上的根因，最终只报告实际改动、验证结果和未完成事项。`,
-		source: "builtin",
-		filePath: "<builtin:worker>",
-	},
-];
+function stringValue(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
 
-function loadAgentDefinitionsFromDir(dir: string, scope: "user" | "project"): AgentDefinition[] {
-	const agents: AgentDefinition[] = [];
-	if (!fs.existsSync(dir)) return agents;
-
+function loadAgentDefinitionsFromDir(dir: string, scope: AgentDefinitionScope): AgentDefinition[] {
+	if (!fs.existsSync(dir)) return [];
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
 	} catch {
-		return agents;
+		return [];
 	}
 
+	const definitions = new Map<string, AgentDefinition>();
 	for (const entry of entries) {
-		if (!entry.name.endsWith(".md")) continue;
-		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+		if (!entry.name.endsWith(".md") || (!entry.isFile() && !entry.isSymbolicLink())) continue;
 		const filePath = path.join(dir, entry.name);
 		let rawContent: string;
 		try {
-			rawContent = fs.readFileSync(filePath, "utf-8");
+			rawContent = fs.readFileSync(filePath, "utf8");
 		} catch {
 			continue;
 		}
-		const parsed = parseSubagentMarkdown(rawContent, path.basename(entry.name, ".md"));
+		const id = path.basename(entry.name, ".md");
+		const parsed = parseSubagentMarkdown(rawContent, id);
 		if (!parsed) continue;
-		agents.push({
+		definitions.set(id, {
+			id,
 			name: parsed.name,
 			description: parsed.description,
 			...(parsed.tags ? { tags: parsed.tags } : {}),
@@ -120,55 +101,72 @@ function loadAgentDefinitionsFromDir(dir: string, scope: "user" | "project"): Ag
 			rawContent,
 		});
 	}
-	return agents;
-}
 
-function isDirectory(value: string): boolean {
-	try {
-		return fs.statSync(value).isDirectory();
-	} catch {
-		return false;
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const filePath = path.join(dir, entry.name);
+		const profilePath = path.join(filePath, "profile.json");
+		if (!fs.existsSync(profilePath)) continue;
+		let config: Record<string, unknown>;
+		let rawConfig: string;
+		let rawPrompt: string;
+		let agentsInstructions: string | undefined;
+		try {
+			rawConfig = fs.readFileSync(profilePath, "utf8");
+			const parsed: unknown = JSON.parse(rawConfig);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+			config = parsed as Record<string, unknown>;
+			const promptPath = path.join(filePath, "PROMPT.md");
+			const agentsPath = path.join(filePath, "AGENTS.md");
+			rawPrompt = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, "utf8") : "";
+			agentsInstructions = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, "utf8").trim() : undefined;
+		} catch {
+			continue;
+		}
+		const id = entry.name;
+		const name = stringValue(config.name) ?? id;
+		const parsedModel = parseSubagentModelReference(stringValue(config.model));
+		const provider = stringValue(config.provider) ?? parsedModel.provider;
+		const thinkingLevel = SUBAGENT_THINKING_LEVELS.includes(config.thinkingLevel as SubagentThinkingLevel)
+			? (config.thinkingLevel as SubagentThinkingLevel)
+			: parsedModel.thinkingLevel;
+		const tools = normalizeSubagentTools(config.tools);
+		const excludeTools = normalizeSubagentTools(config.excludeTools);
+		const skills = normalizeSubagentSkills(config.skills);
+		const tags = normalizeSubagentTags(config.tags);
+		const icon = stringValue(config.icon);
+		definitions.set(id, {
+			id,
+			name,
+			description: stringValue(config.description) ?? name,
+			...(icon ? { icon } : {}),
+			...(provider ? { provider } : {}),
+			...(parsedModel.model ? { model: parsedModel.model } : {}),
+			...(thinkingLevel ? { thinkingLevel } : {}),
+			...(tools ? { tools } : {}),
+			...(excludeTools ? { excludeTools } : {}),
+			...(skills ? { skillNames: skills } : {}),
+			...(tags ? { tags } : {}),
+			content: rawPrompt.trim(),
+			...(agentsInstructions ? { agentsInstructions } : {}),
+			scope,
+			editable: true,
+			filePath,
+			rawContent: JSON.stringify([rawConfig, rawPrompt]),
+		});
 	}
+	return [...definitions.values()];
 }
 
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
 		const candidate = path.join(currentDir, CONFIG_DIR_NAME, "agents");
-		if (isDirectory(candidate)) return candidate;
+		if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) return candidate;
 		const parentDir = path.dirname(currentDir);
 		if (parentDir === currentDir) return null;
 		currentDir = parentDir;
 	}
-}
-
-function builtinDefinitions(): AgentDefinition[] {
-	return BUILTIN_AGENTS.map((agent) => ({
-		name: agent.name,
-		description: agent.description,
-		...(agent.tags ? { tags: agent.tags } : {}),
-		...parseBuiltinModel(agent.model),
-		...(agent.tools ? { tools: agent.tools } : {}),
-		...(agent.excludeTools ? { excludeTools: agent.excludeTools } : {}),
-		content: agent.systemPrompt,
-		scope: "builtin",
-		editable: false,
-		filePath: agent.filePath,
-	}));
-}
-
-function parseBuiltinModel(reference: string | undefined): {
-	provider?: string;
-	model?: string;
-	thinkingLevel?: SubagentThinkingLevel;
-} {
-	if (!reference) return {};
-	const parsed = parseSubagentModelReference(reference);
-	return {
-		...(parsed.provider ? { provider: parsed.provider } : {}),
-		...(parsed.model ? { model: parsed.model } : {}),
-		...(parsed.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
-	};
 }
 
 export function discoverAgentDefinitions(
@@ -178,12 +176,10 @@ export function discoverAgentDefinitions(
 	definitions: AgentDefinition[];
 	projectAgentsDir: string | null;
 } {
-	const userDir = path.join(agentDir, "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 	return {
 		definitions: [
-			...builtinDefinitions(),
-			...loadAgentDefinitionsFromDir(userDir, "user"),
+			...loadAgentDefinitionsFromDir(path.join(agentDir, "agents"), "user"),
 			...(projectAgentsDir ? loadAgentDefinitionsFromDir(projectAgentsDir, "project") : []),
 		],
 		projectAgentsDir,
@@ -192,7 +188,7 @@ export function discoverAgentDefinitions(
 
 function toAgentConfig(definition: AgentDefinition): AgentConfig {
 	return {
-		name: definition.name,
+		name: definition.id,
 		description: definition.description,
 		...(definition.tags ? { tags: definition.tags } : {}),
 		...(definition.tools ? { tools: definition.tools } : {}),
@@ -206,7 +202,7 @@ function toAgentConfig(definition: AgentDefinition): AgentConfig {
 					}),
 				}
 			: {}),
-		systemPrompt: definition.content,
+		systemPrompt: [definition.agentsInstructions, definition.content].filter(Boolean).join("\n\n"),
 		source: definition.scope,
 		filePath: definition.filePath,
 	};
@@ -215,20 +211,10 @@ function toAgentConfig(definition: AgentDefinition): AgentConfig {
 export function discoverAgents(cwd: string, scope: AgentScope, agentDir = getAgentDir()): AgentDiscoveryResult {
 	const { definitions, projectAgentsDir } = discoverAgentDefinitions(cwd, agentDir);
 	const agentMap = new Map<string, AgentConfig>();
-	for (const definition of definitions.filter((candidate) => candidate.scope === "builtin")) {
-		agentMap.set(definition.name, toAgentConfig(definition));
+	for (const definition of definitions) {
+		if (scope === "both" || definition.scope === scope) agentMap.set(definition.id, toAgentConfig(definition));
 	}
-	if (scope === "both" || scope === "user") {
-		for (const definition of definitions.filter((candidate) => candidate.scope === "user")) {
-			agentMap.set(definition.name, toAgentConfig(definition));
-		}
-	}
-	if (scope === "both" || scope === "project") {
-		for (const definition of definitions.filter((candidate) => candidate.scope === "project")) {
-			agentMap.set(definition.name, toAgentConfig(definition));
-		}
-	}
-	return { agents: Array.from(agentMap.values()), projectAgentsDir };
+	return { agents: [...agentMap.values()], projectAgentsDir };
 }
 
 export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { discoverSessionProfiles, findSessionProfile } from "../src/core/session-profile.ts";
+import { discoverAgentDefinitions, discoverAgents } from "../src/extensions/subagent/agents.ts";
 
 const tempDirs: string[] = [];
 
@@ -57,5 +58,65 @@ describe("session profiles", () => {
 		const profiles = discoverSessionProfiles(root, join(root, "agent"));
 		expect(profiles.map((profile) => profile.id)).toContain("valid");
 		expect(profiles.map((profile) => profile.id)).not.toContain("invalid");
+	});
+
+	it("uses one registry for directory management and execution, with stable ids and Chinese names", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-role-registry-"));
+		tempDirs.push(root);
+		const agentDir = join(root, "agent");
+		const roleDir = join(agentDir, "agents", "frontend-developer");
+		mkdirSync(roleDir, { recursive: true });
+		const rawConfig = JSON.stringify({
+			name: "前端开发",
+			description: "实现页面",
+			icon: "code",
+			provider: "custom",
+			model: "review-model",
+			thinkingLevel: "high",
+			tools: ["read", "edit"],
+			excludeTools: ["bash"],
+			skills: ["vue"],
+			tags: ["页面", "开发"],
+		});
+		const rawPrompt = "只处理指定页面。\n";
+		writeFileSync(join(roleDir, "profile.json"), rawConfig);
+		writeFileSync(join(roleDir, "PROMPT.md"), rawPrompt);
+		writeFileSync(join(roleDir, "AGENTS.md"), "公共规则\n");
+		const [definition] = discoverAgentDefinitions(root, agentDir).definitions;
+		const profile = findSessionProfile(root, "frontend-developer", agentDir);
+		expect(definition).toMatchObject({
+			id: "frontend-developer",
+			name: "前端开发",
+			scope: "user",
+			editable: true,
+			content: "只处理指定页面。",
+			agentsInstructions: "公共规则",
+			rawContent: JSON.stringify([rawConfig, rawPrompt]),
+		});
+		expect(profile).toMatchObject({
+			id: definition.id,
+			name: definition.name,
+			model: "custom/review-model",
+			thinkingLevel: "high",
+			tools: ["read", "edit"],
+			excludeTools: ["bash"],
+			skillNames: ["vue"],
+			tags: ["页面", "开发"],
+			systemPrompt: "只处理指定页面。",
+			agentsInstructions: "公共规则",
+		});
+		expect(findSessionProfile(root, "前端开发", agentDir)).toBeUndefined();
+		expect(discoverAgents(root, "user", agentDir).agents).toMatchObject([
+			{ name: "frontend-developer", systemPrompt: "公共规则\n\n只处理指定页面。" },
+		]);
+	});
+
+	it("returns empty lists when no roles have been configured", () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-role-empty-"));
+		tempDirs.push(root);
+		const agentDir = join(root, "agent");
+		expect(discoverAgentDefinitions(root, agentDir).definitions).toEqual([]);
+		expect(discoverSessionProfiles(root, agentDir)).toEqual([]);
+		expect(discoverAgents(root, "both", agentDir).agents).toEqual([]);
 	});
 });

@@ -60,7 +60,7 @@ export function RoomRail({
 	const [agentProfilesLoading, setAgentProfilesLoading] = useState(false);
 	const [agentProfilesError, setAgentProfilesError] = useState<string>();
 	const effectiveAgentProfiles = useMemo(
-		() => [...new Map(agentProfiles.map((profile) => [profile.name, profile])).values()],
+		() => [...new Map(agentProfiles.map((profile) => [profile.id, profile])).values()],
 		[agentProfiles],
 	);
 	const [openProjects, setOpenProjects] = useState<Set<string>>(
@@ -90,7 +90,8 @@ export function RoomRail({
 				.then((response) => {
 					if (cancelled) return;
 					setAgentProfiles(response.subagents);
-					setCreateProfileId((current) => current || response.subagents[0]?.name || "");
+					setCreateProfileId((current) => response.subagents.some((profile) => profile.id === current)
+						? current : response.subagents[0]?.id ?? "");
 				})
 			.catch((error) => {
 				if (cancelled) return;
@@ -114,11 +115,11 @@ export function RoomRail({
 	};
 
 	const submitCreate = async () => {
-		if (!onCreateRoom || !createProjectId || !createProfileId || !createTitle.trim()) return;
-		const profile = effectiveAgentProfiles.find((candidate) => candidate.name === createProfileId);
+		if (!onCreateRoom || agentProfilesLoading || creating || !createProjectId || !createProfileId || !createTitle.trim()) return;
+		const profile = effectiveAgentProfiles.find((candidate) => candidate.id === createProfileId);
 		if (!profile) return;
 		const member = {
-			profileId: profile.name,
+			profileId: profile.id,
 			profileName: profile.name,
 			...(profile.icon ? { profileIcon: profile.icon } : {}),
 		};
@@ -288,16 +289,23 @@ export function RoomRail({
 								<div className="grid max-h-72 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
 									{effectiveAgentProfiles.map((profile) => (
 										<AgentProfileCard
-											key={`${profile.scope}:${profile.name}`}
+											key={profile.id}
 											profile={profile}
-											selected={createProfileId === profile.name}
-											onClick={() => setCreateProfileId(profile.name)}
+											selected={createProfileId === profile.id}
+											disabled={creating}
+											onClick={() => setCreateProfileId(profile.id)}
 										/>
 									))}
 								</div>
 							) : (
 								<div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
 									{agentProfilesError ?? "当前项目没有可用的智能体配置"}
+									<Button className="mt-2" size="sm" variant="ghost" onClick={() => {
+										setCreateOpen(false);
+										void actions.openSettings("subagents");
+									}}>
+										管理智能体
+									</Button>
 								</div>
 							)}
 							<span className="text-xs font-normal text-muted-foreground">昵称会在智能体加入智能体协作后从昵称库分配。</span>
@@ -305,7 +313,7 @@ export function RoomRail({
 					</div>
 					<DialogFooter>
 						<Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-						<Button disabled={creating || !createProjectId || !createProfileId || !createTitle.trim()} onClick={() => void submitCreate()}>
+						<Button disabled={creating || agentProfilesLoading || !createProjectId || !createProfileId || !createTitle.trim()} onClick={() => void submitCreate()}>
 							{creating ? "创建中…" : "创建智能体协作"}
 						</Button>
 					</DialogFooter>

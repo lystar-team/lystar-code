@@ -221,6 +221,60 @@ describe("SessionRoomCoordinator", () => {
 		expect(ownerRead.messages[0]).toMatchObject({ senderSessionId: "owner", senderType: "user", body: "请分别回复" });
 	});
 
+	it("records the main Agent answer to its user's broadcast without allowing self-directed messages", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-room-owner-answer-"));
+		tempDirs.push(root);
+		const store = new SessionRoomStore(join(root, "rooms.jsonl"));
+		const api = new SessionRoomCoordinator({ store, deliver: async () => {} }).api();
+		const { room } = await api.create({ cwd: root, ownerSessionId: "owner" });
+		await api.join({ cwd: root, roomId: room.id, sessionId: "member", profileId: "reviewer" });
+		const request = await api.send({
+			cwd: root,
+			roomId: room.id,
+			senderSessionId: "owner",
+			senderType: "user",
+			route: "broadcast",
+			body: "请读取文件",
+		});
+		const reply = {
+			cwd: root,
+			roomId: room.id,
+			senderSessionId: "owner",
+			route: "direct" as const,
+			targetSessionIds: ["owner"],
+			kind: "answer" as const,
+			body: "读取完成",
+			replyToMessageId: request.message.id,
+			basedOnSeq: request.message.seq,
+			idempotencyKey: "owner-answer",
+		};
+		const answer = await api.send(reply);
+		expect(answer.message).toMatchObject({
+			senderType: "agent",
+			senderSessionId: "owner",
+			targetSessionIds: ["owner"],
+			kind: "answer",
+			body: "读取完成",
+		});
+		expect(store.hasPendingDelivery(answer.message.id, "owner")).toBe(false);
+		expect((await api.send(reply)).deduplicated).toBe(true);
+		await expect(api.send({ ...reply, replyToMessageId: "not-a-user-message" })).rejects.toMatchObject({
+			code: "room_target_sender",
+		});
+		await expect(api.send({ ...reply, kind: "message" })).rejects.toMatchObject({ code: "room_target_sender" });
+		await api.send({
+			cwd: root,
+			roomId: room.id,
+			senderSessionId: "owner",
+			senderType: "user",
+			route: "broadcast",
+			body: "改读另一文件",
+		});
+		await expect(api.send({ ...reply, body: "旧回复", idempotencyKey: "old-owner-answer" })).rejects.toMatchObject({
+			code: "room_reply_stale",
+		});
+	});
+
 	it("persists Room attachments, keeps them out of the visible body, and deduplicates retries", async () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-room-attachments-"));
 		tempDirs.push(root);

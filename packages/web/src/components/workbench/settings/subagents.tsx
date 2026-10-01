@@ -210,6 +210,7 @@ const TOOL_PURPOSES: Record<string, string> = {
 	subagent: "委派任务给子智能体",
 	sessions: "管理会话与子会话",
 	room_tasks: "查看和处理协作任务",
+	create_agent: "创建可用于会话和协作的智能体",
 	room_claim: "领取协作任务",
 	step_start: "标记当前任务步骤开始",
 	step_end: "标记当前任务步骤完成",
@@ -313,14 +314,14 @@ function AgentConfigurationFields({
 					<div className="grid gap-3">
 						<label className="grid gap-2 text-sm font-medium">
 							范围
-							<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.scope} onChange={(event) => onChange({ ...draft, scope: event.target.value as "user" | "project" })} disabled={Boolean(draft.source && draft.source.scope !== "builtin")}>
+							<select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={draft.scope} onChange={(event) => onChange({ ...draft, scope: event.target.value as "user" | "project" })} disabled={Boolean(draft.source)}>
 								<option value="user">个人</option>
 								<option value="project">项目</option>
 							</select>
 						</label>
 						<label className="grid gap-2 text-sm font-medium">
 							名称
-							<Input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} placeholder="review-specialist" />
+							<Input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} placeholder="例如：前端开发" />
 						</label>
 						<label className="grid gap-2 text-sm font-medium">
 							描述
@@ -546,7 +547,7 @@ function AgentMarkdownPanel({
 				theme={theme}
 				value={draft.content}
 				ariaLabel="智能体正文"
-				fileName={`${draft.name || "agent"}.md`}
+				fileName="PROMPT.md"
 			/>
 		</div>
 	);
@@ -642,7 +643,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 		}
 		const saved = await actions.saveSubagentConfig({
 			scope: draft.scope,
-			...(draft.source && draft.source.scope !== "builtin" ? { originalName: draft.source.name } : {}),
+			...(draft.source ? { id: draft.source.id } : {}),
 			name,
 			description,
 			...(draft.provider ? { provider: draft.provider } : {}),
@@ -668,7 +669,7 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 		<div className="space-y-5">
 			<NicknameLibrarySettings />
 			<div className="flex flex-wrap items-center justify-between gap-3">
-				<p className="text-sm text-muted-foreground">智能体配置文件是唯一配置源。名称、描述、标签和运行参数会用于识别与启动 Agent。</p>
+				<p className="text-sm text-muted-foreground">创建和管理智能体，用于新建会话和加入协作。</p>
 				<div className="flex items-center gap-2">
 					<Button variant="outline" size="sm" onClick={() => void actions.refreshSubagentConfigs()} disabled={state.subagentConfigsLoading}>
 						<RefreshCw className={state.subagentConfigsLoading ? "size-4 animate-spin" : "size-4"} />
@@ -693,8 +694,8 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 				<div className="rounded-xl border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">没有可用的智能体</div>
 			) : (
 				<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-					{state.subagentConfigs.map((config, index) => (
-						<div key={`${config.scope}:${config.name}:${index}`} className="flex min-h-44 min-w-0 flex-col rounded-xl border border-border/70 bg-card p-4">
+					{state.subagentConfigs.map((config) => (
+						<div key={`${config.scope}:${config.id}`} className="flex min-h-44 min-w-0 flex-col rounded-xl border border-border/70 bg-card p-4">
 							<div className="flex items-start justify-between gap-3">
 								<div className="min-w-0">
 									<div className="flex min-w-0 items-center gap-2">
@@ -711,7 +712,6 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 								<span>{config.excludeTools?.length ? `禁用 ${config.excludeTools.length} 个工具` : config.tools?.length ? `允许 ${config.tools.length} 个工具` : "默认工具"}</span>
 							</div>
 							<div className="mt-4 flex items-center justify-end gap-2 border-t border-border/60 pt-4">
-								{config.scope === "builtin" ? <span className="mr-auto text-xs text-muted-foreground">内置智能体不可删除</span> : null}
 								{config.editable ? (
 									<Button variant="ghost" size="sm" disabled={state.subagentConfigsSaving} onClick={() => void remove(config)}>
 										<Trash2 className="size-4" />

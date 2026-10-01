@@ -187,24 +187,25 @@ function InviteAgentDialog({
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string>();
 	const profileCandidates = useMemo(
-		() => [...new Map(profiles.map((profile) => [profile.name, profile])).values()],
+		() => [...new Map(profiles.map((profile) => [profile.id, profile])).values()],
 		[profiles],
 	);
 
 	useEffect(() => {
 		if (!open) return;
 		setError(undefined);
-		setSelection(profileCandidates[0]?.name ?? "");
+		setSelection(profileCandidates[0]?.id ?? "");
 	}, [open, profileCandidates]);
 
 	const submit = async () => {
-		const profile = profileCandidates.find((candidate) => candidate.name === selection);
+		if (profilesLoading || submitting) return;
+		const profile = profileCandidates.find((candidate) => candidate.id === selection);
 		if (!profile) {
 			setError("请选择智能体");
 			return;
 		}
 		const member: RoomMemberSelection = {
-			profileId: profile.name,
+			profileId: profile.id,
 			profileName: profile.name,
 			...(profile.icon ? { profileIcon: profile.icon } : {}),
 		};
@@ -234,11 +235,11 @@ function InviteAgentDialog({
 						<div className="grid max-h-[min(58dvh,520px)] gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
 							{profileCandidates.map((profile) => (
 								<AgentProfileCard
-									key={`${profile.scope}:${profile.name}`}
+									key={profile.id}
 									profile={profile}
-									selected={selection === profile.name}
+									selected={selection === profile.id}
 									disabled={submitting}
-									onClick={() => setSelection(profile.name)}
+									onClick={() => setSelection(profile.id)}
 								/>
 							))}
 						</div>
@@ -249,7 +250,7 @@ function InviteAgentDialog({
 				</div>
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>取消</Button>
-					<Button disabled={submitting || !selection} onClick={() => void submit()}>
+					<Button disabled={submitting || profilesLoading || !selection} onClick={() => void submit()}>
 						{submitting ? "添加中…" : "添加到智能体协作"}
 					</Button>
 				</DialogFooter>
@@ -287,8 +288,8 @@ export function RoomWorkspace({
 	const [renameDraft, setRenameDraft] = useState("");
 	const [renameError, setRenameError] = useState<string>();
 	const [renaming, setRenaming] = useState(false);
-	const profilesByName = useMemo(
-		() => new Map(controller.agentProfiles.map((profile) => [profile.name, profile])),
+	const profilesById = useMemo(
+		() => new Map(controller.agentProfiles.map((profile) => [profile.id, profile])),
 		[controller.agentProfiles],
 	);
 	const activeMembers = useMemo(
@@ -370,14 +371,12 @@ export function RoomWorkspace({
 							const memberSession = memberSessions.get(member.sessionId);
 							const label = sessionLabel(memberSession, member.sessionId, member);
 							const profileName = member.profileName?.trim() || member.profileId?.trim();
-							const profile = profilesByName.get(member.profileId ?? member.profileName ?? "");
+							const profile = profilesById.get(member.profileId ?? "");
 							const configurationLabel = profile?.fileName
 								? `配置文件：${profile.fileName}`
-								: profile?.scope === "builtin"
-									? `内置配置：${profileName ?? profile.name}`
-									: profileName
-										? `配置名称：${profileName}`
-										: "配置名称：未记录";
+								: profileName
+									? `配置名称：${profileName}`
+									: "配置名称：未记录";
 							const chip = (
 								<>
 									<AgentIdentityIcon member={member} session={memberSession} className="size-3.5 object-contain" />
@@ -435,7 +434,10 @@ export function RoomWorkspace({
 					variant="outline"
 					size="sm"
 					aria-label="添加智能体"
-					onClick={() => setInviteOpen(true)}
+					onClick={() => {
+						setInviteOpen(true);
+						void controller.refreshAgentProfiles();
+					}}
 				>
 					<UserPlus className="size-3.5" aria-hidden="true" />
 					<span className="hidden @min-[32rem]/room-workspace:inline">添加智能体</span>

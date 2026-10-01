@@ -389,14 +389,31 @@ export class SessionRoomCoordinator {
 			if (value) availability.set(member.sessionId, value);
 		}
 		const senderType = input.senderType ?? "agent";
-		const targets = resolveSessionRoomTargets({
-			route: input.route,
-			senderSessionId: input.senderSessionId,
-			senderType,
-			targetSessionIds: input.targetSessionIds,
-			members,
-			availability,
-		});
+		const userRequest =
+			senderType === "agent" &&
+			input.kind === "answer" &&
+			input.route === "direct" &&
+			input.targetSessionIds?.length === 1 &&
+			input.targetSessionIds[0] === input.senderSessionId &&
+			input.replyToMessageId &&
+			input.basedOnSeq !== undefined
+				? this.store.readMessages(input.roomId, input.senderSessionId, input.basedOnSeq - 1, 1).messages[0]
+				: undefined;
+		// 用户借主会话发送广播，主智能体的答案只记录到该用户消息，不构成自发任务。
+		const targets =
+			userRequest?.id === input.replyToMessageId &&
+			userRequest?.senderType === "user" &&
+			userRequest.senderSessionId === input.senderSessionId &&
+			userRequest.targetSessionIds.includes(input.senderSessionId)
+				? [input.senderSessionId]
+				: resolveSessionRoomTargets({
+						route: input.route,
+						senderSessionId: input.senderSessionId,
+						senderType,
+						targetSessionIds: input.targetSessionIds,
+						members,
+						availability,
+					});
 		if (targets.length === 0) throw roomError("智能体协作没有其他成员可响应", "room_no_targets");
 		if (input.capabilities && input.kind !== "task") {
 			throw roomError("只有智能体协作任务可以携带能力租约", "room_capabilities_kind_invalid");

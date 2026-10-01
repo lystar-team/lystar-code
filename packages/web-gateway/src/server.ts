@@ -4602,7 +4602,7 @@ export class WebGatewayServer {
 					command: "save_subagent_config",
 					cwd: project.cwd,
 					scope,
-					...(typeof body.originalName === "string" ? { originalName: body.originalName } : {}),
+					...(typeof body.id === "string" ? { id: body.id } : {}),
 					name,
 					description,
 					...(icon ? { icon } : {}),
@@ -4625,15 +4625,15 @@ export class WebGatewayServer {
 				const body = await parseJsonBody(request);
 				const scope = body.scope === "user" || body.scope === "project" ? body.scope : undefined;
 				if (!scope) throw new HttpError(400, "subagent_scope_invalid", "智能体范围无效");
-				const name = stringValue(body.name);
+				const id = stringValue(body.id);
 				const expectedHash = stringValue(body.expectedHash);
-				if (!name || !expectedHash)
-					throw new HttpError(400, "subagent_delete_invalid", "删除智能体需要名称和文件版本");
+				if (!id || !expectedHash)
+					throw new HttpError(400, "subagent_delete_invalid", "缺少智能体或配置版本，请刷新后重试");
 				const subagents = await client.request<SubagentConfig[]>({
 					command: "delete_subagent_config",
 					cwd: project.cwd,
 					scope,
-					name,
+					id,
 					expectedHash,
 					clientInstanceId: context.id,
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),

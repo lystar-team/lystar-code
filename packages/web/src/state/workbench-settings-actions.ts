@@ -255,7 +255,7 @@ export function useWorkbenchSettingsActions({
 	const saveSubagentConfig = useCallback(
 		async (input: {
 			scope: "user" | "project";
-			originalName?: string;
+			id?: string;
 			name: string;
 			description: string;
 			icon?: string;
@@ -296,11 +296,11 @@ export function useWorkbenchSettingsActions({
 	const deleteSubagentConfig = useCallback(
 		async (config: SubagentConfig): Promise<boolean> => {
 			const projectId = stateRef.current.currentProjectId;
-			if (!projectId || config.scope === "builtin" || !config.contentHash) return false;
+			if (!projectId || !config.contentHash) return false;
 			updateState((current) => ({ ...current, subagentConfigsSaving: true, subagentConfigsError: undefined }));
 			try {
 				const result = await webApi.deleteSubagentConfig(projectId, {
-					name: config.name,
+					id: config.id,
 					scope: config.scope,
 					contentHash: config.contentHash,
 				});

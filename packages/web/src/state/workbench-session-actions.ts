@@ -496,11 +496,11 @@ export function useWorkbenchSessionActions({
 		}
 	}, [loadTranscript, updateState]);
 
-	const createSession = useCallback(async (agentProfile?: Pick<SubagentConfig, "name" | "icon">) => {
+	const createSession = useCallback(async (agentProfile?: Pick<SubagentConfig, "id" | "name" | "icon">) => {
 		const projectId = stateRef.current.currentProjectId;
 		if (!projectId) return;
 		const selectionRequest = selectionRef.current;
-		const result = await webApi.createSession(projectId, agentProfile?.name);
+		const result = await webApi.createSession(projectId, agentProfile?.id);
 		if (selectionRef.current !== selectionRequest || stateRef.current.currentProjectId !== projectId) {
 			await webApi.release(result.session.id).catch(() => {});
 			return;
@@ -529,7 +529,7 @@ export function useWorkbenchSessionActions({
 									...result.session,
 									...(agentProfile
 										? {
-											profileId: agentProfile.name,
+											profileId: agentProfile.id,
 											profileName: agentProfile.name,
 											...(agentProfile.icon ? { profileIcon: agentProfile.icon } : {}),
 										}

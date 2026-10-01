@@ -56,6 +56,7 @@ export interface RoomWorkspaceController {
 	leaveRoomMember: (sessionId: string) => Promise<void>;
 	renameRoomMember: (sessionId: string, nickname: string) => Promise<void>;
 	refreshRooms: () => Promise<void>;
+	refreshAgentProfiles: () => Promise<void>;
 	sendRoomMessage: (body: string, attachments?: Array<{ path: string; mimeType: string; filename: string }>) => Promise<void>;
 }
 
@@ -174,26 +175,31 @@ export function useRoomWorkspace({
 		if (active) void refreshRooms();
 	}, [active, refreshRooms]);
 
-	useEffect(() => {
+	const refreshAgentProfiles = useCallback(async () => {
+		const requestId = ++profileRequestIdRef.current;
 		const projectId = selectedRoomProjectId;
 		if (!projectId) {
 			setAgentProfiles([]);
+			setAgentProfilesLoading(false);
 			return;
 		}
-		const requestId = ++profileRequestIdRef.current;
 		setAgentProfilesLoading(true);
-		void webApi
-			.subagentConfigs(projectId)
-			.then((response) => {
-				if (requestId === profileRequestIdRef.current) setAgentProfiles(response.subagents);
-			})
-			.catch(() => {
-				if (requestId === profileRequestIdRef.current) setAgentProfiles([]);
-			})
-			.finally(() => {
-				if (requestId === profileRequestIdRef.current) setAgentProfilesLoading(false);
-			});
-	}, [selectedRoomProjectId]);
+		try {
+			const response = await webApi.subagentConfigs(projectId);
+			if (requestId === profileRequestIdRef.current) setAgentProfiles(response.subagents);
+		} catch (error) {
+			if (requestId === profileRequestIdRef.current) {
+				setAgentProfiles([]);
+				showToast(error instanceof Error ? error.message : String(error));
+			}
+		} finally {
+			if (requestId === profileRequestIdRef.current) setAgentProfilesLoading(false);
+		}
+	}, [selectedRoomProjectId, showToast]);
+
+	useEffect(() => {
+		void refreshAgentProfiles();
+	}, [refreshAgentProfiles]);
 
 	const selectRoom = useCallback(
 		async (projectId: string, summary: WebRoomSummary) => {
@@ -598,6 +604,7 @@ export function useRoomWorkspace({
 		leaveRoomMember,
 		renameRoomMember,
 		refreshRooms,
+		refreshAgentProfiles,
 		sendRoomMessage,
 	};
 }

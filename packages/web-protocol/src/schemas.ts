@@ -2,7 +2,7 @@ import Type, { type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 11 as const;
+export const RUNTIME_PROTOCOL_VERSION = 12 as const;
 export const MAX_TRANSCRIPT_PAGE_SIZE = 400;
 export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
 export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
@@ -995,13 +995,10 @@ export const ProjectInstructionSchema = StrictObject({
 });
 export type ProjectInstruction = Static<typeof ProjectInstructionSchema>;
 
-export const SubagentConfigScopeSchema = Type.Union([
-	Type.Literal("builtin"),
-	Type.Literal("user"),
-	Type.Literal("project"),
-]);
+export const SubagentConfigScopeSchema = Type.Union([Type.Literal("user"), Type.Literal("project")]);
 export type SubagentConfigScope = Static<typeof SubagentConfigScopeSchema>;
 export const SubagentConfigSchema = StrictObject({
+	id: Type.String({ minLength: 1, maxLength: 128 }),
 	name: Type.String({ minLength: 1, maxLength: 128 }),
 	description: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 	scope: SubagentConfigScopeSchema,
@@ -1270,7 +1267,7 @@ export const ListSubagentConfigsResultSchema = StrictObject({
 	tools: Type.Array(StrictObject({ name: Id, description: Type.String() }), { maxItems: 512 }),
 });
 export const SaveSubagentConfigResultSchema = Type.Array(SubagentConfigSchema, { maxItems: 1_000 });
-export const DeleteSubagentConfigResultSchema = ListSubagentConfigsResultSchema;
+export const DeleteSubagentConfigResultSchema = SaveSubagentConfigResultSchema;
 export const UpdateStatusSchema = StrictObject({
 	currentVersion: Type.String({ minLength: 1, maxLength: 4096 }),
 	checkedAt: Type.Integer({ minimum: 0 }),
@@ -2062,7 +2059,7 @@ export const CommandSchema = Type.Union([
 		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1 }),
 		scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
-		originalName: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+		id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 		name: Type.String({ minLength: 1, maxLength: 128 }),
 		description: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 		icon: Type.Optional(Id),
@@ -2084,7 +2081,7 @@ export const CommandSchema = Type.Union([
 		leaseId: Type.Optional(Id),
 		cwd: Type.String({ minLength: 1 }),
 		scope: Type.Union([Type.Literal("user"), Type.Literal("project")]),
-		name: Type.String({ minLength: 1, maxLength: 128 }),
+		id: Type.String({ minLength: 1, maxLength: 128 }),
 		expectedHash: Id,
 		clientInstanceId: Id,
 		clientRequestId: Id,

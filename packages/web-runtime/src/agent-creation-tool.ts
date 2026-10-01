@@ -17,8 +17,11 @@ const AgentCreationParams = Type.Union([
 		name: Name,
 		description: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 		content: Type.String({ minLength: 1, maxLength: 4 * 1024 * 1024, description: "智能体提示词" }),
+		icon: Type.Optional(Name),
 		tools: Type.Optional(Selection),
+		excludeTools: Type.Optional(Selection),
 		skills: Type.Optional(Selection),
+		tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { minItems: 1, maxItems: 12 })),
 		provider: Type.Optional(Name),
 		model: Type.Optional(Name),
 		thinkingLevel: Type.Optional(
@@ -41,8 +44,11 @@ type CreateInput = {
 	name: string;
 	description: string;
 	content: string;
+	icon?: string;
 	tools?: string[];
+	excludeTools?: string[];
 	skills?: string[];
+	tags?: string[];
 	provider?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
@@ -60,7 +66,7 @@ export function createAgentCreationTool(options: {
 		name: "create_agent",
 		label: "创建智能体",
 		description:
-			"为 LYStar Code Web 创建个人或项目智能体。先用 suggest 查看已有 Skill 和 Tool，结合职责向用户说明推荐理由；用户选定后用 create 写入配置。不创建 Skill 或 Tool 定义。",
+			"为 LYStar Code 创建个人或项目智能体。先用 suggest 查看已有 Skill 和 Tool，结合职责向用户说明推荐理由；用户选定后用 create 创建可在 Web 管理和协作中使用的智能体。不创建 Skill 或 Tool 定义。",
 		promptSnippet: "查看可用 Skill 和 Tool，向用户推荐组合并创建智能体",
 		promptGuidelines: [
 			"创建智能体前调用 create_agent 的 suggest，依据返回的 Skill 和 Tool 清单向用户推荐相关项并说明理由；用户选择后调用 create。",
@@ -73,7 +79,6 @@ export function createAgentCreationTool(options: {
 				const skills = (await options.listSkills())
 					.filter((skill) => skill.enabled && skill.eligible)
 					.map(({ name, description }) => ({ name, description }));
-				const tools = options.listTools();
 				catalogViewed = true;
 				return {
 					content: [
@@ -82,7 +87,7 @@ export function createAgentCreationTool(options: {
 							text: JSON.stringify({
 								goal: params.goal,
 								skills,
-								tools,
+								tools: options.listTools(),
 								instruction:
 									"根据职责向用户推荐现有 Skill 和 Tool，说明理由，询问范围、名称和提示词；用户选择后调用 create。",
 							}),
@@ -95,7 +100,9 @@ export function createAgentCreationTool(options: {
 			const skills = (await options.listSkills()).filter((skill) => skill.enabled && skill.eligible);
 			const toolNames = new Set(options.listTools().map((tool) => tool.name));
 			const skillNames = new Set(skills.map((skill) => skill.name));
-			const unknownTools = params.tools?.filter((name) => !toolNames.has(name)) ?? [];
+			const unknownTools = [...(params.tools ?? []), ...(params.excludeTools ?? [])].filter(
+				(name) => !toolNames.has(name),
+			);
 			const unknownSkills = params.skills?.filter((name) => !skillNames.has(name)) ?? [];
 			if (unknownTools.length) throw new Error(`工具不可用：${unknownTools.join("、")}`);
 			if (unknownSkills.length) throw new Error(`Skill 不可用：${unknownSkills.join("、")}`);
@@ -103,7 +110,7 @@ export function createAgentCreationTool(options: {
 			if (params.provider && !params.model) throw new Error("选择供应商后必须选择模型");
 			const approved = await ctx.ui.confirm(
 				"创建智能体？",
-				`${params.name.trim()} · ${params.scope === "user" ? "个人" : "项目"}\nSkill：${params.skills?.join("、") ?? "沿用现有配置"}\n工具：${params.tools?.join("、") ?? "沿用现有配置"}\n确认后写入智能体配置文件。`,
+				`${params.name.trim()} · ${params.scope === "user" ? "个人" : "项目"}\nSkill：${params.skills?.join("、") ?? "沿用现有配置"}\n工具：${params.tools?.join("、") ?? "沿用现有配置"}\n确认后创建智能体。`,
 				{ signal },
 			);
 			if (!approved) return { content: [{ type: "text", text: "已取消创建智能体" }], details: null };
@@ -112,30 +119,34 @@ export function createAgentCreationTool(options: {
 				name: params.name,
 				description: params.description,
 				content: params.content,
+				...(params.icon ? { icon: params.icon } : {}),
 				...(params.tools ? { tools: [...new Set(params.tools)] } : {}),
+				...(params.excludeTools ? { excludeTools: [...new Set(params.excludeTools)] } : {}),
 				...(params.skills ? { skills: [...new Set(params.skills)] } : {}),
+				...(params.tags ? { tags: [...new Set(params.tags)] } : {}),
 				...(params.provider ? { provider: params.provider } : {}),
 				...(params.model ? { model: params.model } : {}),
 				...(params.thinkingLevel ? { thinkingLevel: params.thinkingLevel } : {}),
 			});
 			const saved = configs.find((config) => config.name === params.name.trim() && config.scope === params.scope);
-			if (!saved) throw new Error("智能体文件已写入，但配置列表中未找到该智能体");
+			if (!saved) throw new Error("智能体已保存，但配置列表中未找到该智能体");
 			catalogViewed = false;
-			const path = join(
-				params.scope === "user" ? options.agentDir : join(options.cwd, CONFIG_DIR_NAME),
-				"agents",
-				`${saved.name}.md`,
-			);
 			return {
 				content: [
 					{
 						type: "text",
 						text: JSON.stringify({
+							id: saved.id,
 							name: saved.name,
 							scope: saved.scope,
-							path,
+							path: join(
+								params.scope === "user" ? options.agentDir : join(options.cwd, CONFIG_DIR_NAME),
+								"agents",
+								saved.id,
+							),
 							skills: saved.skills ?? [],
 							tools: saved.tools ?? [],
+							excludeTools: saved.excludeTools ?? [],
 							contentHash: saved.contentHash,
 						}),
 					},
