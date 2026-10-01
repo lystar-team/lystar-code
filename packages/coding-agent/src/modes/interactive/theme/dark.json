@@ -1,13 +1,17 @@
 {
 	"$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
 	"name": "dark",
+	"appearance": "dark",
 	"vars": {
-		"cyan": "#00d7ff",
+		"text": "#e6e6e6",
+		"muted": "okhsl(229 6% 67%)",
+		"violet": "okhsl(295 50% 67%)",
 		"blue": "#5f87ff",
 		"green": "#b5bd68",
 		"red": "#cc6666",
 		"yellow": "#ffff00",
-		"text": "#e6e6e6",
+		"blueBg": "okhsl(233 41% 24%)",
+		"cyan": "#00d7ff",
 		"gray": "#8a8a8a",
 		"dimGray": "#666666",
 		"darkGray": "#4a4a4a",
@@ -25,7 +29,6 @@
 		"border": "darkGray",
 		"borderAccent": "accent",
 		"borderMuted": "darkGray",
-		"toolDivider": "toolDivider",
 		"success": "green",
 		"error": "red",
 		"warning": "yellow",
@@ -33,7 +36,6 @@
 		"dim": "dimGray",
 		"text": "text",
 		"thinkingText": "gray",
-
 		"selectedBg": "selectedBg",
 		"scrollbarTrack": "darkGray",
 		"scrollbarThumb": "text",
@@ -49,7 +51,6 @@
 		"toolErrorBg": "toolErrorBg",
 		"toolTitle": "text",
 		"toolOutput": "gray",
-
 		"mdHeading": "accent",
 		"mdLink": "accent",
 		"mdLinkUrl": "dimGray",
@@ -60,11 +61,9 @@
 		"mdQuoteBorder": "gray",
 		"mdHr": "gray",
 		"mdListBullet": "gray",
-
 		"toolDiffAdded": "green",
 		"toolDiffRemoved": "red",
 		"toolDiffContext": "gray",
-
 		"syntaxComment": "#6A9955",
 		"syntaxKeyword": "#569CD6",
 		"syntaxFunction": "#DCDCAA",
@@ -74,7 +73,6 @@
 		"syntaxType": "#4EC9B0",
 		"syntaxOperator": "#D4D4D4",
 		"syntaxPunctuation": "#D4D4D4",
-
 		"thinkingOff": "darkGray",
 		"thinkingMinimal": "#6e6e6e",
 		"thinkingLow": "#5f87af",
@@ -82,8 +80,8 @@
 		"thinkingHigh": "#b294bb",
 		"thinkingXhigh": "#d183e8",
 		"thinkingMax": "#ff5fff",
-
-		"bashMode": "green"
+		"bashMode": "green",
+		"toolDivider": "toolDivider"
 	},
 	"export": {
 		"pageBg": "#111111",

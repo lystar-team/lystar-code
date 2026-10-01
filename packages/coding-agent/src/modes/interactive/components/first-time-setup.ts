@@ -38,6 +38,11 @@ export class FirstTimeSetupComponent extends Container {
 		this.update();
 	}
 
+	override invalidate(): void {
+		this.update();
+		super.invalidate();
+	}
+
 	private update(): void {
 		this.clear();
 		this.addChild(new DynamicBorder());

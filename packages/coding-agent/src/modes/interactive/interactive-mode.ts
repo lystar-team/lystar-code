@@ -31,6 +31,7 @@ import type {
 	Terminal,
 	TuiInputListener,
 	TuiMainScreenRenderState,
+	WheelScrollLines,
 } from "@earendil-works/pi-tui";
 import {
 	CombinedAutocompleteProvider,
@@ -133,7 +134,8 @@ import {
 	normalizeChangelogLinks,
 	parseChangelog,
 } from "../../utils/changelog.ts";
-import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
+import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
+
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
@@ -201,6 +203,7 @@ import {
 } from "./components/status-indicator.ts";
 import type { SubagentRunTarget } from "./components/subagent-run.ts";
 import { SubagentSessionViewComponent } from "./components/subagent-session-view.ts";
+import { ThemedText } from "./components/themed-text.ts";
 import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { ToolExecutionStackComponent } from "./components/tool-execution-stack.ts";
@@ -235,6 +238,7 @@ import {
 	getMarkdownTheme,
 	getThemeByName,
 	onThemeChange,
+	SYSTEM_THEME_NAME,
 	setRegisteredThemes,
 	stopThemeWatcher,
 	Theme,
@@ -247,6 +251,10 @@ import { uiGlyphs } from "./ui-glyphs.ts";
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
 	setExpanded(expanded: boolean): void;
+}
+
+interface ActiveEditor extends EditorComponent {
+	getCursor?(): { line: number; col: number };
 }
 
 interface WorkingStatusEditor extends EditorComponent {
@@ -267,9 +275,8 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
-class ExpandableText extends Text implements Expandable {
-	private readonly getCollapsedText: () => string;
-	private readonly getExpandedText: () => string;
+class ExpandableText extends ThemedText implements Expandable {
+	private readonly state: { expanded: boolean };
 
 	constructor(
 		getCollapsedText: () => string,
@@ -278,13 +285,14 @@ class ExpandableText extends Text implements Expandable {
 		paddingX = 0,
 		paddingY = 0,
 	) {
-		super(expanded ? getExpandedText() : getCollapsedText(), paddingX, paddingY);
-		this.getCollapsedText = getCollapsedText;
-		this.getExpandedText = getExpandedText;
+		const state = { expanded };
+		super(() => (state.expanded ? getExpandedText() : getCollapsedText()), paddingX, paddingY);
+		this.state = state;
 	}
 
 	setExpanded(expanded: boolean): void {
-		this.setText(expanded ? this.getExpandedText() : this.getCollapsedText());
+		this.state.expanded = expanded;
+		this.invalidate();
 	}
 }
 
@@ -535,6 +543,7 @@ interface InteractiveTuiOptions {
 	terminal?: Terminal;
 	copyOnSelect?: boolean;
 	fullscreenCopyOnSelect?: boolean;
+	fullscreenWheelScrollLines?: WheelScrollLines;
 	onRightClickPaste?: () => void;
 }
 
@@ -546,6 +555,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 		return new LystarTUI(terminal, options.showHardwareCursor, options.logDirectory, {
 			mouse: options.mouse,
 			copyOnSelect: options.fullscreenCopyOnSelect ?? options.copyOnSelect,
+			wheelScrollLines: options.fullscreenWheelScrollLines,
 			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			searchNavigationButtonStyle: (text, hovered) => (hovered ? theme.underline(text) : text),
@@ -632,7 +642,7 @@ export class InteractiveMode {
 	private pendingMessagesContainer: Container;
 	private statusContainer: Container;
 	private defaultEditor: CustomEditor;
-	private editor: EditorComponent;
+	private editor: ActiveEditor;
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
@@ -673,7 +683,8 @@ export class InteractiveMode {
 
 	// Status line tracking (for mutating immediately-sequential status updates)
 	private lastStatusSpacer: Spacer | undefined = undefined;
-	private lastStatusText: Text | undefined = undefined;
+	private lastStatusText: ThemedText | undefined = undefined;
+	private lastStatusMessage = "";
 	private managedToolStatusStarted = false;
 
 	// Streaming message tracking
@@ -855,7 +866,7 @@ export class InteractiveMode {
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
-			await this.themeController.applyFromSettings();
+			this.themeController.applyFromSettings();
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -868,6 +879,7 @@ export class InteractiveMode {
 			workspaceSearchTarget: () => this.workspace?.getAltScreenSearchTarget?.(),
 			onRightClickPaste: this.onRightClickPaste,
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
+			fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines?.(),
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setReduceMotion(lystarSettings.settings.reduceMotion);
@@ -963,7 +975,8 @@ export class InteractiveMode {
 	}
 
 	private getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {
-		if (!sourceInfo) {
+		// Built-in extension commands are untagged, like built-in commands.
+		if (!sourceInfo || sourceInfo.source === "builtin") {
 			return undefined;
 		}
 
@@ -1155,6 +1168,7 @@ export class InteractiveMode {
 			this.chatContainer.addChild(new Text(condensedText, 1, 0));
 		} else {
 			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "更新内容")), 1, 0));
+
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(
 				new Markdown(this.changelogMarkdown.trim(), 1, 0, this.getMarkdownThemeWithSettings()),
@@ -1211,6 +1225,7 @@ export class InteractiveMode {
 			terminal,
 			onRightClickPaste: this.onRightClickPaste,
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
+			fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines?.(),
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
 		nextUi.setReduceMotion(reduceMotion);
@@ -1281,7 +1296,10 @@ export class InteractiveMode {
 		this.ui.start();
 		this.isInitialized = true;
 
-		await this.themeController.applyFromSettings();
+		this.themeController.applyFromSettings();
+		// The header and startup notices bake theme colors into their text, so build them once the terminal
+		// reported its colors. This ends at the terminal's DA1 reply, or after 100 ms if it answers nothing.
+		await this.themeController.waitForTerminalColors();
 
 		this.builtInHeader = new WorkspaceHeader(() => {
 			const usage = this.getHeaderContextUsage();
@@ -1307,6 +1325,7 @@ export class InteractiveMode {
 			};
 		});
 		this.headerContainer.addChild(this.builtInHeader);
+
 		this.ui.requestRender();
 
 		const [fdPath] = await Promise.all([
@@ -2002,15 +2021,16 @@ export class InteractiveMode {
 			}
 			return theme.fg("dim", `  ${labels.join(", ")}`);
 		};
+		// Bodies are built on demand so the listing follows theme changes.
 		const addLoadedSection = (
 			name: string,
-			collapsedBody: string,
+			collapsedBody: () => string,
 			expandedBody = collapsedBody,
 			color: ThemeColor = "mdHeading",
 		): void => {
 			const section = new ExpandableText(
-				() => `${sectionHeader(name, color)}\n${collapsedBody}`,
-				() => `${sectionHeader(name, color)}\n${expandedBody}`,
+				() => `${sectionHeader(name, color)}\n${collapsedBody()}`,
+				() => `${sectionHeader(name, color)}\n${expandedBody()}`,
 				this.getStartupExpansionState(),
 				0,
 				0,
@@ -2082,13 +2102,13 @@ export class InteractiveMode {
 			];
 			if (contextFiles.length > 0) {
 				this.loadedResourcesContainer.addChild(new Spacer(1));
-				const contextList = contextFiles
-					.map((f) => theme.fg("dim", `  ${this.formatDisplayPath(f.path)}`))
-					.join("\n");
-				const contextCompactList = formatCompactList(
-					contextFiles.map((contextFile) => this.formatContextPath(contextFile.path)),
-					{ sort: false },
-				);
+				const contextList = () =>
+					contextFiles.map((f) => theme.fg("dim", `  ${this.formatDisplayPath(f.path)}`)).join("\n");
+				const contextCompactList = () =>
+					formatCompactList(
+						contextFiles.map((contextFile) => this.formatContextPath(contextFile.path)),
+						{ sort: false },
+					);
 				addLoadedSection("上下文", contextCompactList, contextList);
 			}
 
@@ -2097,11 +2117,12 @@ export class InteractiveMode {
 				const groups = this.buildScopeGroups(
 					skills.map((skill) => ({ path: skill.filePath, sourceInfo: skill.sourceInfo })),
 				);
-				const skillList = this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-				});
-				const skillCompactList = formatCompactList(skills.map((skill) => skill.name));
+				const skillList = () =>
+					this.formatScopeGroups(groups, {
+						formatPath: (item) => this.formatDisplayPath(item.path),
+						formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+					});
+				const skillCompactList = () => formatCompactList(skills.map((skill) => skill.name));
 				addLoadedSection("Skill", skillCompactList, skillList);
 			}
 
@@ -2111,28 +2132,30 @@ export class InteractiveMode {
 					templates.map((template) => ({ path: template.filePath, sourceInfo: template.sourceInfo })),
 				);
 				const templateByPath = new Map(templates.map((t) => [t.filePath, t]));
-				const templateList = this.formatScopeGroups(groups, {
-					formatPath: (item) => {
-						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
-					},
-					formatPackagePath: (item) => {
-						const template = templateByPath.get(item.path);
-						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
-					},
-				});
-				const promptCompactList = formatCompactList(templates.map((template) => `/${template.name}`));
+				const templateList = () =>
+					this.formatScopeGroups(groups, {
+						formatPath: (item) => {
+							const template = templateByPath.get(item.path);
+							return template ? `/${template.name}` : this.formatDisplayPath(item.path);
+						},
+						formatPackagePath: (item) => {
+							const template = templateByPath.get(item.path);
+							return template ? `/${template.name}` : this.formatDisplayPath(item.path);
+						},
+					});
+				const promptCompactList = () => formatCompactList(templates.map((template) => `/${template.name}`));
 				addLoadedSection("Prompt", promptCompactList, templateList);
 			}
 
 			if (extensions.length > 0) {
 				const groups = this.buildScopeGroups(extensions);
-				const extList = this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatExtensionDisplayPath(item.path),
-					formatPackagePath: (item) =>
-						this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
-				});
-				const extensionCompactList = formatCompactList(this.getCompactExtensionLabels(extensions));
+				const extList = () =>
+					this.formatScopeGroups(groups, {
+						formatPath: (item) => this.formatExtensionDisplayPath(item.path),
+						formatPackagePath: (item) =>
+							this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
+					});
+				const extensionCompactList = () => formatCompactList(this.getCompactExtensionLabels(extensions));
 				addLoadedSection("Extension", extensionCompactList, extList, "mdHeading");
 			}
 
@@ -2146,16 +2169,18 @@ export class InteractiveMode {
 						sourceInfo: loadedTheme.sourceInfo,
 					})),
 				);
-				const themeList = this.formatScopeGroups(groups, {
-					formatPath: (item) => this.formatDisplayPath(item.path),
-					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
-				});
-				const themeCompactList = formatCompactList(
-					customThemes.map(
-						(loadedTheme) =>
-							loadedTheme.name ?? this.getCompactPathLabel(loadedTheme.sourcePath!, loadedTheme.sourceInfo),
-					),
-				);
+				const themeList = () =>
+					this.formatScopeGroups(groups, {
+						formatPath: (item) => this.formatDisplayPath(item.path),
+						formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+					});
+				const themeCompactList = () =>
+					formatCompactList(
+						customThemes.map(
+							(loadedTheme) =>
+								loadedTheme.name ?? this.getCompactPathLabel(loadedTheme.sourcePath!, loadedTheme.sourceInfo),
+						),
+					);
 				addLoadedSection("主题", themeCompactList, themeList);
 			}
 		}
@@ -2163,28 +2188,29 @@ export class InteractiveMode {
 		if (showDiagnostics) {
 			const skillDiagnostics = skillsResult.diagnostics;
 			if (skillDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+				const warningLines = () => this.formatDiagnostics(skillDiagnostics, sourceInfos);
 				this.loadedResourcesContainer.addChild(
-					new Text(`${theme.fg("warning", "[Skill 冲突]")}\n${warningLines}`, 0, 0),
+					new ThemedText(() => `${theme.fg("warning", "[Skill 冲突]")}\n${warningLines()}`, 0, 0),
 				);
 				this.loadedResourcesContainer.addChild(new Spacer(1));
 			}
 
 			const promptDiagnostics = promptsResult.diagnostics;
 			if (promptDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(promptDiagnostics, sourceInfos);
+				const warningLines = () => this.formatDiagnostics(promptDiagnostics, sourceInfos);
 				this.loadedResourcesContainer.addChild(
-					new Text(`${theme.fg("warning", "[Prompt 冲突]")}\n${warningLines}`, 0, 0),
+					new ThemedText(() => `${theme.fg("warning", "[Prompt 冲突]")}\n${warningLines()}`, 0, 0),
 				);
 				this.loadedResourcesContainer.addChild(new Spacer(1));
 			}
 
 			const extensionDiagnostics: ResourceDiagnostic[] = [];
-			const extensionErrors = this.session.resourceLoader.getExtensions().errors;
-			if (extensionErrors.length > 0) {
-				for (const error of extensionErrors) {
-					extensionDiagnostics.push({ type: "error", message: error.error, path: error.path });
-				}
+			const extensionsResult = this.session.resourceLoader.getExtensions();
+			for (const error of extensionsResult.errors) {
+				extensionDiagnostics.push({ type: "error", message: error.error, path: error.path });
+			}
+			for (const warning of extensionsResult.warnings ?? []) {
+				extensionDiagnostics.push({ type: "warning", message: warning.warning, path: warning.path });
 			}
 
 			const commandDiagnostics = this.session.extensionRunner.getCommandDiagnostics();
@@ -2195,18 +2221,18 @@ export class InteractiveMode {
 			extensionDiagnostics.push(...shortcutDiagnostics);
 
 			if (extensionDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(extensionDiagnostics, sourceInfos);
+				const warningLines = () => this.formatDiagnostics(extensionDiagnostics, sourceInfos);
 				this.loadedResourcesContainer.addChild(
-					new Text(`${theme.fg("warning", "[Extension 问题]")}\n${warningLines}`, 0, 0),
+					new ThemedText(() => `${theme.fg("warning", "[Extension 问题]")}\n${warningLines()}`, 0, 0),
 				);
 				this.loadedResourcesContainer.addChild(new Spacer(1));
 			}
 
 			const themeDiagnostics = themesResult.diagnostics;
 			if (themeDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(themeDiagnostics, sourceInfos);
+				const warningLines = () => this.formatDiagnostics(themeDiagnostics, sourceInfos);
 				this.loadedResourcesContainer.addChild(
-					new Text(`${theme.fg("warning", "[主题冲突]")}\n${warningLines}`, 0, 0),
+					new ThemedText(() => `${theme.fg("warning", "[主题冲突]")}\n${warningLines()}`, 0, 0),
 				);
 				this.loadedResourcesContainer.addChild(new Spacer(1));
 			}
@@ -2310,6 +2336,7 @@ export class InteractiveMode {
 		this.applyFullscreenScrollbarSetting();
 		if (this.renderer instanceof TuiAltScreen) {
 			this.renderer.setCopyOnSelect(this.settingsManager.getFullscreenCopyOnSelect());
+			this.renderer.setWheelScrollLines(this.settingsManager.getFullscreenWheelScrollLines());
 		}
 		this.footer.setSession(this.session);
 		this.footerDataProvider.setCwd(this.sessionManager.getCwd());
@@ -2437,10 +2464,11 @@ export class InteractiveMode {
 		this.showError(`${prefix}: ${message}`);
 		const extensionHint = this.getCrashExtensionHint(error);
 		if (extensionHint) {
-			this.chatContainer.addChild(new Text(theme.fg("warning", extensionHint), this.outputPad, 0));
+			this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", extensionHint), this.outputPad, 0));
 		}
 		if (this.recordCrash("fatal_error", error)) {
-			this.chatContainer.addChild(new Text(theme.fg("muted", this.crashReportInstructions()), this.outputPad, 0));
+			const instructions = this.crashReportInstructions();
+			this.chatContainer.addChild(new ThemedText(() => theme.fg("muted", instructions), this.outputPad, 0));
 		}
 		stopThemeWatcher();
 		this.stop("transcript");
@@ -2485,8 +2513,8 @@ export class InteractiveMode {
 		if (this.bugReportHintShown) return;
 		this.bugReportHintShown = true;
 		this.chatContainer.addChild(
-			new Text(
-				theme.fg("muted", `If this looks like a ${APP_NAME} bug, /bug sends a report to the developers.`),
+			new ThemedText(
+				() => theme.fg("muted", `If this looks like a ${APP_NAME} bug, /bug sends a report to the developers.`),
 				this.outputPad,
 				0,
 			),
@@ -3322,16 +3350,14 @@ export class InteractiveMode {
 	private showExtensionError(extensionPath: string, error: string, stack?: string): void {
 		const errorMsg = `Extension“${extensionPath}”执行失败：${error}`;
 		const errorText = new Text(theme.fg("error", errorMsg), 1, 0);
+
 		this.chatContainer.addChild(errorText);
 		if (stack) {
 			// Show stack trace in dim color, indented
-			const stackLines = stack
-				.split("\n")
-				.slice(1) // Skip first line (duplicates error message)
-				.map((line) => theme.fg("dim", `  ${line.trim()}`))
-				.join("\n");
-			if (stackLines) {
-				this.chatContainer.addChild(new Text(stackLines, 1, 0));
+			const stackLines = stack.split("\n").slice(1); // Skip first line (duplicates error message)
+			if (stackLines.length > 0) {
+				const renderStack = () => stackLines.map((line) => theme.fg("dim", `  ${line.trim()}`)).join("\n");
+				this.chatContainer.addChild(new ThemedText(renderStack, 1, 0));
 			}
 		}
 		this.ui.requestRender();
@@ -3515,8 +3541,8 @@ export class InteractiveMode {
 			}
 		};
 
-		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
-		// otherwise, paste plain text from the system clipboard.
+		// Handle clipboard paste (triggered on Ctrl+V). Copied files use their original paths,
+		// images are attached via temporary files, and plain text is the final fallback.
 		this.defaultEditor.onPasteImage = () => {
 			void this.handleClipboardPaste();
 		};
@@ -3538,6 +3564,23 @@ export class InteractiveMode {
 
 	private async handleClipboardPaste(): Promise<void> {
 		try {
+			const filePaths = await readClipboardFilePaths();
+			if (filePaths) {
+				if (filePaths.some((filePath) => /\p{Cc}/u.test(filePath))) {
+					throw new Error("Clipboard file path contains control characters");
+				}
+				const paths = this.isBashMode ? filePaths.map(quoteIfNeeded).join(" ") : filePaths.join("\n");
+				const cursor = this.editor.getCursor?.();
+				const currentLine = cursor ? (this.editor.getText().split("\n")[cursor.line] ?? "") : "";
+				const characterBeforeCursor = cursor && cursor.col > 0 ? currentLine[cursor.col - 1] : "";
+				const characterAfterCursor = cursor ? currentLine[cursor.col] : "";
+				const leadingSpace = characterBeforeCursor && !/\s/.test(characterBeforeCursor) ? " " : "";
+				const trailingSpace = characterAfterCursor && !/\s/.test(characterAfterCursor) ? " " : "";
+				this.editor.insertTextAtCursor?.(`${leadingSpace}${paths}${trailingSpace}`);
+				this.ui.requestRender();
+				return;
+			}
+
 			let image = await readClipboardImage();
 			let terminalText: string | undefined;
 			if (!image) {
@@ -3568,17 +3611,14 @@ export class InteractiveMode {
 			if (text) {
 				this.editor.insertTextAtCursor?.(text);
 				this.ui.requestRender();
-				return;
 			}
-
-			const remote = Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.MOSH_CONNECTION);
-			this.showWarning(
-				remote
-					? `未读取到剪贴板内容。SSH${process.env.TMUX ? "/tmux" : ""} 下需要支持 OSC 5522 的终端${process.env.TMUX ? "，并启用 tmux allow-passthrough" : ""}；也可以粘贴远端图片路径。`
-					: "剪贴板中没有可用的图片或文本。",
-			);
 		} catch (error) {
-			this.showWarning(`粘贴剪贴板失败：${error instanceof Error ? error.message : String(error)}`);
+			const message = error instanceof Error ? error.message : String(error);
+			if (typeof this.showError === "function") {
+				this.showError(`Failed to paste from clipboard: ${message}`);
+			} else {
+				this.showWarning(`粘贴剪贴板失败：${message}`);
+			}
 		}
 	}
 
@@ -4432,7 +4472,8 @@ export class InteractiveMode {
 						this.showError(event.errorMessage);
 					} else {
 						this.chatContainer.addChild(new Spacer(1));
-						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+						const errorMessage = event.errorMessage;
+						this.chatContainer.addChild(new ThemedText(() => theme.fg("error", errorMessage), 1, 0));
 					}
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
@@ -4522,7 +4563,7 @@ export class InteractiveMode {
 		}
 		const message = status.type === "warning" ? `Warning: ${status.message}` : status.message;
 		const color = status.type === "warning" ? "warning" : "dim";
-		this.chatContainer.addChild(new Text(theme.fg(color, message), 1, 0));
+		this.chatContainer.addChild(new ThemedText(() => theme.fg(color, message), 1, 0));
 		this.lastStatusSpacer = undefined;
 		this.lastStatusText = undefined;
 		this.ui.requestRender();
@@ -4540,13 +4581,15 @@ export class InteractiveMode {
 		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
 
 		if (last && secondLast && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
-			this.lastStatusText.setText(theme.fg("dim", message));
+			this.lastStatusMessage = message;
+			this.lastStatusText.invalidate();
 			this.ui.requestRender();
 			return;
 		}
 
 		const spacer = new Spacer(1);
-		const text = new Text(theme.fg("dim", message), 1, 0);
+		this.lastStatusMessage = message;
+		const text = new ThemedText(() => theme.fg("dim", this.lastStatusMessage), 1, 0);
 		this.chatContainer.addChild(spacer);
 		this.chatContainer.addChild(text);
 		this.lastStatusSpacer = spacer;
@@ -4856,7 +4899,7 @@ export class InteractiveMode {
 		const label = notice.kind === "compaction" ? "Compaction" : "Branch summary";
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(
-			new Text(theme.fg("warning", `${label}: ${formatTokens(tokens)} tokens billed${cost}`), 1, 0),
+			new ThemedText(() => theme.fg("warning", `${label}: ${formatTokens(tokens)} tokens billed${cost}`), 1, 0),
 		);
 	}
 
@@ -4936,9 +4979,8 @@ export class InteractiveMode {
 		} else if (miss.idleMs >= CACHE_TTL_MS) {
 			label = `空闲 ${Math.round(miss.idleMs / 60_000)} 分钟后 Prompt Cache 未命中`;
 		}
-		const text = theme.fg("warning", `${label}：${reBilled}`);
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
 	}
 
 	renderInitialMessages(): void {
@@ -5165,6 +5207,7 @@ export class InteractiveMode {
 					"warning",
 					`当前项目尚未信任，项目级 ${CONFIG_DIR_NAME} 资源和 Package 暂不加载。运行 /trust 保存选择后，重启 ${APP_NAME} 生效。`,
 				),
+
 				1,
 				0,
 			),
@@ -5584,6 +5627,7 @@ export class InteractiveMode {
 		this.chatContainer.addChild(
 			new Text(theme.fg("error", t("common.error", { message: errorMessage })), this.outputPad, 0),
 		);
+
 		this.ui.requestRender();
 	}
 
@@ -5592,6 +5636,7 @@ export class InteractiveMode {
 		this.chatContainer.addChild(
 			new Text(theme.fg("warning", t("common.warning", { message: warningMessage })), 1, 0),
 		);
+
 		this.ui.requestRender();
 	}
 
@@ -5605,7 +5650,8 @@ export class InteractiveMode {
 		const changelogLink = getCapabilities().hyperlinks
 			? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)
 			: theme.fg("accent", changelogUrl);
-		const changelogLine = theme.fg("muted", t("update.changelog")) + changelogLink;
+		const changelogLine = () => theme.fg("muted", t("update.changelog")) + changelogLink;
+
 		const note = release.note?.trim();
 
 		this.chatContainer.addChild(new Spacer(1));
@@ -5622,7 +5668,7 @@ export class InteractiveMode {
 			);
 			this.chatContainer.addChild(new Spacer(1));
 		}
-		this.chatContainer.addChild(new Text(changelogLine, 1, 0));
+		this.chatContainer.addChild(new ThemedText(changelogLine, 1, 0));
 		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
 		this.ui.requestRender();
 	}
@@ -5630,6 +5676,7 @@ export class InteractiveMode {
 	showPackageUpdateNotification(packages: string[]): void {
 		const action = theme.fg("accent", `${APP_NAME} update --extensions`);
 		const updateInstruction = theme.fg("muted", t("update.packagesInstruction", { command: action }));
+
 		const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
 
 		this.chatContainer.addChild(new Spacer(1));
@@ -5637,6 +5684,7 @@ export class InteractiveMode {
 		this.chatContainer.addChild(
 			new Text(
 				`${theme.bold(theme.fg("warning", t("update.packagesAvailable")))}\n${updateInstruction}\n${theme.fg("muted", t("update.packages"))}\n${packageLines}`,
+
 				1,
 				0,
 			),
@@ -5890,13 +5938,14 @@ export class InteractiveMode {
 					thinkingLevel: this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
 					availableThinkingLevels: [...THINKING_LEVEL_OPTIONS],
 					modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
-					currentTheme: this.themeController.getThemeSelection() || "dark",
+					currentTheme: this.themeController.getThemeSelection() || SYSTEM_THEME_NAME,
 					terminalTheme: this.themeController.getTerminalTheme(),
 					availableThemes: getAvailableThemes(),
 					tuiMode: this.ui.mode,
 					fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
+					fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 					warnings: this.settingsManager.getWarnings(),
 				},
 				{
@@ -6072,7 +6121,7 @@ export class InteractiveMode {
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);
-						void this.themeController.setThemeSetting(themeSetting);
+						this.themeController.setThemeSetting(themeSetting);
 					},
 					onThemePreview: (themeName) => this.themeController.preview(themeName),
 					onHideThinkingBlockChange: (hidden) => {
@@ -6177,6 +6226,11 @@ export class InteractiveMode {
 						this.settingsManager.setFullscreenCopyOnSelect(enabled);
 						if (this.renderer instanceof TuiAltScreen) this.renderer.setCopyOnSelect(enabled);
 					},
+					onFullscreenWheelScrollLinesChange: (lines) => {
+						this.settingsManager.setFullscreenWheelScrollLines(lines);
+						if (this.renderer instanceof TuiAltScreen) this.renderer.setWheelScrollLines(lines);
+					},
+
 					onCancel: () => {
 						done();
 						this.ui.requestRender();
@@ -7327,11 +7381,16 @@ export class InteractiveMode {
 		providerId: string,
 		method: "api_key" | "oauth",
 	): Promise<void> {
-		await this.session.modelRuntime.login(providerId, method, {
-			signal: dialog.signal,
-			prompt: (prompt) => this.showAuthPrompt(dialog, prompt),
-			notify: (event) => this.notifyAuthDialog(dialog, event),
-		});
+		await this.session.modelRuntime.login(
+			providerId,
+			method,
+			{
+				signal: dialog.signal,
+				prompt: (prompt) => this.showAuthPrompt(dialog, prompt),
+				notify: (event) => this.notifyAuthDialog(dialog, event),
+			},
+			{ getDeviceId: () => this.settingsManager.getOrCreateDeviceId() },
+		);
 	}
 
 	private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
@@ -7427,7 +7486,7 @@ export class InteractiveMode {
 			}
 			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 			this.applyRuntimeSettings();
-			await this.themeController.applyFromSettings();
+			this.themeController.applyFromSettings();
 			this.setupAutocompleteProvider();
 			const runner = this.session.extensionRunner;
 			this.setupExtensionShortcuts(runner);
@@ -7648,59 +7707,62 @@ export class InteractiveMode {
 		}
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `会话名称已设置：${sessionName ?? name}`), 1, 0));
+
 		this.ui.requestRender();
 	}
 
 	private handleSessionCommand(): void {
 		const sessionInfo = this.session.getSessionInfo();
+		const renderInfo = () => {
+			let info = `${theme.bold("会话信息")}\n\n`;
+			if (sessionInfo.name) {
+				info += `${theme.fg("dim", "名称：")} ${sessionInfo.name}\n`;
+			}
+			info += `${theme.fg("dim", "文件：")} ${sessionInfo.sessionFile ?? "仅存于内存"}\n`;
+			info += `${theme.fg("dim", "ID：")} ${sessionInfo.sessionId}\n\n`;
+			info += `${theme.bold("消息")}\n`;
+			info += `${theme.fg("dim", "总数：")} ${sessionInfo.messages.total}\n`;
+			info += `${theme.fg("dim", "用户：")} ${sessionInfo.messages.user}\n`;
+			info += `${theme.fg("dim", "Agent：")} ${sessionInfo.messages.agent}\n`;
+			info += `${theme.fg("dim", "工具：")} ${sessionInfo.messages.toolCalls} 次调用，${sessionInfo.messages.toolResults} 次返回\n\n`;
+			info += `${theme.bold("Token 用量（会话累计）")}\n`;
+			// "Input" is the full prompt volume. With cache activity, split it into
+			// cached (served from cache) vs uncached (everything else) - the only
+			// provider-independent split. Cache writes, where reported, are a detail
+			// of the uncached portion.
+			const { input, cacheRead, cacheWrite } = sessionInfo.tokens;
+			const promptTokens = input + cacheRead + cacheWrite;
+			info += `${theme.fg("dim", "输入：")} ${promptTokens.toLocaleString()}\n`;
+			if (promptTokens > 0 && (cacheRead > 0 || cacheWrite > 0)) {
+				const hitRate = theme.fg("dim", `（${((cacheRead / promptTokens) * 100).toFixed(1)}%）`);
+				info += `  ${theme.fg("dim", "缓存命中：")} ${cacheRead.toLocaleString()} ${hitRate}\n`;
+				const written = cacheWrite > 0 ? ` ${theme.fg("dim", `（写入缓存 ${cacheWrite.toLocaleString()}）`)}` : "";
+				info += `  ${theme.fg("dim", "未缓存：")} ${(input + cacheWrite).toLocaleString()}${written}\n`;
+			}
+			info += `${theme.fg("dim", "输出：")} ${sessionInfo.tokens.output.toLocaleString()}\n`;
+			info += `${theme.fg("dim", "合计：")} ${sessionInfo.tokens.total.toLocaleString()}\n`;
 
-		let info = `${theme.bold("会话信息")}\n\n`;
-		if (sessionInfo.name) {
-			info += `${theme.fg("dim", "名称：")} ${sessionInfo.name}\n`;
-		}
-		info += `${theme.fg("dim", "文件：")} ${sessionInfo.sessionFile ?? "仅存于内存"}\n`;
-		info += `${theme.fg("dim", "ID：")} ${sessionInfo.sessionId}\n\n`;
-		info += `${theme.bold("消息")}\n`;
-		info += `${theme.fg("dim", "总数：")} ${sessionInfo.messages.total}\n`;
-		info += `${theme.fg("dim", "用户：")} ${sessionInfo.messages.user}\n`;
-		info += `${theme.fg("dim", "Agent：")} ${sessionInfo.messages.agent}\n`;
-		info += `${theme.fg("dim", "工具：")} ${sessionInfo.messages.toolCalls} 次调用，${sessionInfo.messages.toolResults} 次返回\n\n`;
-		info += `${theme.bold("Token 用量（会话累计）")}\n`;
-		// "Input" is the full prompt volume. With cache activity, split it into
-		// cached (served from cache) vs uncached (everything else) - the only
-		// provider-independent split. Cache writes, where reported, are a detail
-		// of the uncached portion.
-		const { input, cacheRead, cacheWrite } = sessionInfo.tokens;
-		const promptTokens = input + cacheRead + cacheWrite;
-		info += `${theme.fg("dim", "输入：")} ${promptTokens.toLocaleString()}\n`;
-		if (promptTokens > 0 && (cacheRead > 0 || cacheWrite > 0)) {
-			const hitRate = theme.fg("dim", `（${((cacheRead / promptTokens) * 100).toFixed(1)}%）`);
-			info += `  ${theme.fg("dim", "缓存命中：")} ${cacheRead.toLocaleString()} ${hitRate}\n`;
-			const written = cacheWrite > 0 ? ` ${theme.fg("dim", `（写入缓存 ${cacheWrite.toLocaleString()}）`)}` : "";
-			info += `  ${theme.fg("dim", "未缓存：")} ${(input + cacheWrite).toLocaleString()}${written}\n`;
-		}
-		info += `${theme.fg("dim", "输出：")} ${sessionInfo.tokens.output.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "合计：")} ${sessionInfo.tokens.total.toLocaleString()}\n`;
-
-		if (sessionInfo.cost > 0 || sessionInfo.cacheWaste.missedTokens > 0) {
-			info += `\n${theme.bold("费用")}\n`;
-			info += `${theme.fg("dim", "合计：")} $${sessionInfo.cost.toFixed(3)}`;
-			if (sessionInfo.usageBreakdown.length > 1) {
-				for (const entry of sessionInfo.usageBreakdown) {
-					info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `（${formatTokens(entry.tokens)} Token）`)}`;
+			if (sessionInfo.cost > 0 || sessionInfo.cacheWaste.missedTokens > 0) {
+				info += `\n${theme.bold("费用")}\n`;
+				info += `${theme.fg("dim", "合计：")} $${sessionInfo.cost.toFixed(3)}`;
+				if (sessionInfo.usageBreakdown.length > 1) {
+					for (const entry of sessionInfo.usageBreakdown) {
+						info += `\n  ${theme.fg("dim", `${entry.key}:`)} $${entry.cost.toFixed(3)} ${theme.fg("dim", `（${formatTokens(entry.tokens)} Token）`)}`;
+					}
+				}
+				if (sessionInfo.cacheWaste.missedTokens > 0) {
+					const detail = `${sessionInfo.cacheWaste.missedTokens.toLocaleString()} Token，${sessionInfo.cacheWaste.missCount} 次未命中`;
+					info +=
+						sessionInfo.cacheWaste.missedCost >= 0.0001
+							? `\n${theme.fg("dim", "Cache 重复计费：")} $${sessionInfo.cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `（${detail}）`)}`
+							: `\n${theme.fg("dim", "Cache 重复计费：")} ${detail}`;
 				}
 			}
-			if (sessionInfo.cacheWaste.missedTokens > 0) {
-				const detail = `${sessionInfo.cacheWaste.missedTokens.toLocaleString()} Token，${sessionInfo.cacheWaste.missCount} 次未命中`;
-				info +=
-					sessionInfo.cacheWaste.missedCost >= 0.0001
-						? `\n${theme.fg("dim", "Cache 重复计费：")} $${sessionInfo.cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `（${detail}）`)}`
-						: `\n${theme.fg("dim", "Cache 重复计费：")} ${detail}`;
-			}
-		}
+			return info;
+		};
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.chatContainer.addChild(new ThemedText(renderInfo, 1, 0));
 		this.ui.requestRender();
 	}
 
@@ -8035,6 +8097,7 @@ export class InteractiveMode {
 		this.chatContainer.addChild(
 			new Text(theme.bold(theme.fg("accent", t("update.changelogTitle", { app: APP_TITLE }))), 1, 0),
 		);
+
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(changelogMarkdown, 1, 1, this.getMarkdownThemeWithSettings()));
 		this.chatContainer.addChild(new DynamicBorder());
@@ -8145,6 +8208,7 @@ export class InteractiveMode {
 | \`/\` | 斜杠命令 |
 | \`!\` | 运行 Shell 命令 |
 | \`!!\` | 运行不写入上下文的 Shell 命令 |
+
 `;
 
 		// Add extension-registered shortcuts
@@ -8166,6 +8230,7 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder());
 		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "快捷键")), 1, 0));
+
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
 		this.chatContainer.addChild(new DynamicBorder());
@@ -8181,6 +8246,7 @@ export class InteractiveMode {
 			}
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(new Text(`${theme.fg("accent", `${uiGlyphs.success} 已新建会话`)}`, 1, 1));
+
 			this.ui.requestRender();
 		} catch (error: unknown) {
 			await this.handleFatalRuntimeError("新建会话失败", error);

@@ -13,6 +13,7 @@ import {
 	SettingsList,
 	Spacer,
 	Text,
+	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
 import {
 	DEFAULT_HTTP_IDLE_TIMEOUT_MS,
@@ -37,6 +38,7 @@ import {
 	getSelectListTheme,
 	getSettingsListTheme,
 	parseAutoThemeSetting,
+	SYSTEM_THEME_NAME,
 	type TerminalTheme,
 	theme,
 } from "../theme/theme.ts";
@@ -97,6 +99,7 @@ export interface SettingsConfig {
 	tuiMode: "regular" | "fullscreen";
 	fullscreenExitOutput: "transcript" | "resume-hint";
 	fullscreenScrollbar: ScrollViewScrollbar;
+	fullscreenWheelScrollLines?: WheelScrollLines;
 	fullscreenCopyOnSelect?: boolean;
 	warnings?: WarningSettings;
 	hideThinkingBlock?: boolean;
@@ -151,8 +154,10 @@ export interface SettingsCallbacks {
 	onTuiModeChange?: (mode: TuiMode) => void;
 	onFullscreenExitOutputChange?: (output: FullscreenExitOutput) => void;
 	onFullscreenScrollbarChange?: (mode: ScrollViewScrollbar) => void;
+	onFullscreenWheelScrollLinesChange?: (lines: WheelScrollLines) => void;
 	onFullscreenCopyOnSelectChange?: (enabled: boolean) => void;
 	onWarningsChange?: (warnings: WarningSettings) => void;
+
 	onCancel: () => void;
 }
 
@@ -338,9 +343,14 @@ function modelThinkingOverridesSummary(overrides: Record<string, ThinkingLevel>)
 function modelItemLabel(model: Model<any>): string {
 	return `${model.id} ${theme.fg("muted", `[${model.provider}]`)}`;
 }
+
 const AUTOMATIC_THEME_VALUE = "/";
 
+/** The system theme comes first, then automatic mode, then the remaining themes. */
 function singleModeThemeItems(availableThemes: string[], currentTheme: string): SelectItem[] {
+	const items = themeItems(availableThemes, currentTheme);
+	const systemIndex = items.findIndex((item) => item.value === SYSTEM_THEME_NAME);
+	if (systemIndex !== -1) items.splice(systemIndex, 1);
 	return [
 		{ value: AUTOMATIC_THEME_VALUE, label: "自动", description: "根据终端浅色或深色外观切换主题" },
 		...themeItems(availableThemes, currentTheme),
@@ -361,6 +371,7 @@ function defaultAutomaticThemes(
 	if (autoTheme) return autoTheme;
 	const fixedTheme = currentThemeSetting.includes("/") ? undefined : currentThemeSetting;
 	const themeName = preferredTheme(availableThemes, fixedTheme, "dark");
+
 	return { lightTheme: themeName, darkTheme: themeName };
 }
 
@@ -398,7 +409,7 @@ class ThemeSubmenu extends Container {
 		this.singleTheme = preferredTheme(
 			availableThemes,
 			fixedTheme ?? (autoTheme ? this.getActiveAutomaticTheme() : undefined),
-			"dark",
+			SYSTEM_THEME_NAME,
 		);
 		if (this.mode === "automatic") this.showAutomaticMenu();
 		else this.showSingleMenu();
@@ -820,6 +831,20 @@ export class SettingsSelectorComponent extends Container {
 				values: ["true", "false"],
 			},
 			{
+				id: "fullscreen-wheel-scroll-lines",
+				label: "Fullscreen wheel scrolling",
+				description:
+					"Lines per mouse-wheel event in fullscreen mode; 'auto' speeds up fast wheel spins where the terminal does not",
+				currentValue: String(config.fullscreenWheelScrollLines),
+				values: [
+					"auto",
+					...[...new Set([1, 2, 3, 5, 10, config.fullscreenWheelScrollLines])]
+						.filter((lines): lines is number => typeof lines === "number")
+						.sort((a, b) => a - b)
+						.map(String),
+				],
+			},
+			{
 				id: "theme",
 				label: "Theme",
 				description: "Color theme for the interface",
@@ -1058,6 +1083,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "fullscreen-copy-on-select":
 						callbacks.onFullscreenCopyOnSelectChange?.(newValue === "true");
+						break;
+					case "fullscreen-wheel-scroll-lines":
+						callbacks.onFullscreenWheelScrollLinesChange?.(newValue === "auto" ? "auto" : parseInt(newValue, 10));
 						break;
 					case "theme":
 						callbacks.onThemeChange?.(newValue);

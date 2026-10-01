@@ -1905,24 +1905,24 @@ export class SessionManager {
 		this._releaseWriterLease(lease);
 	}
 
+	/**
+	 * A new session file is created only once the session contains a user or assistant message.
+	 * Setup entries alone (model, thinking level, system prompt) stay in memory so opening and
+	 * closing pi without chatting leaves no file behind. Starting at the user message (not the
+	 * first assistant reply) keeps the prompt on disk if the first turn never completes (#10000).
+	 */
+	private _hasConversation(): boolean {
+		return this.fileEntries.some(
+			(e) => e.type === "message" && (e.message.role === "assistant" || e.message.role === "bashExecution"),
+		);
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 		this._assertWritable();
 
-		const hasCompletedEntry = this.fileEntries.some(
-			(e) => e.type === "message" && (e.message.role === "assistant" || e.message.role === "bashExecution"),
-		);
-		if (!hasCompletedEntry) {
-			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
-			} else {
-				// Delay creating empty or user-only sessions until a completed transcript entry exists.
-				this.flushed = false;
-			}
-			return;
-		}
-
 		if (!this.flushed) {
+			if (!this._hasConversation()) return;
 			const fd = openSync(this.sessionFile, "wx");
 			try {
 				for (const e of this.fileEntries) {
@@ -2092,10 +2092,10 @@ export class SessionManager {
 	/** Get the current session name from the latest session_info entry, if any. */
 	getSessionName(): string | undefined {
 		// Walk entries in reverse to find the latest session_info entry.
-		// Empty names explicitly clear the session title.
-		const entries = this.getEntries();
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
+		// Empty names explicitly clear the session title. Reads fileEntries directly: the footer
+		// calls this on every frame, and getEntries() copies the whole session.
+		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
+			const entry = this.fileEntries[i];
 			if (entry.type === "session_info") {
 				return entry.name?.trim() || undefined;
 			}
@@ -2282,6 +2282,11 @@ export class SessionManager {
 		return h ? (h as SessionHeader) : null;
 	}
 
+	/** Number of session entries (excludes header), without copying them like `getEntries()`. */
+	getEntryCount(): number {
+		return this.byId.size;
+	}
+
 	/**
 	 * Get all session entries (excludes header). Returns a shallow copy.
 	 * The session is append-only: use appendXXX() to add entries, branch() to
@@ -2463,6 +2468,7 @@ export class SessionManager {
 
 		const pathEntryIds = new Set(pathWithoutLabels.map((entry) => entry.id));
 		let parentId = pathWithoutLabels.at(-1)?.id ?? null;
+
 		const labelEntries: LabelEntry[] = [];
 		for (const [targetId, label] of this.labelsById) {
 			if (!pathEntryIds.has(targetId)) continue;
@@ -2497,12 +2503,7 @@ export class SessionManager {
 			manager.sessionId = branched.header.id;
 			manager.fileEntries = [branched.header, ...branched.entries];
 			manager._buildIndex();
-			const hasCompletedEntry = branched.entries.some(
-				(entry) =>
-					entry.type === "message" &&
-					(entry.message.role === "assistant" || entry.message.role === "bashExecution"),
-			);
-			if (hasCompletedEntry) {
+			if (manager._hasConversation()) {
 				manager._rewriteFile();
 				manager.flushed = true;
 			} else {

@@ -60,7 +60,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "./utils.ts";
-import { WheelScrollNormalizer } from "./wheel-scroll.ts";
+import { WheelScrollAccelerator, type WheelScrollLines, WheelScrollNormalizer } from "./wheel-scroll.ts";
 
 const ENTER_ALT_SCREEN = "\x1b[?1049h";
 const EXIT_ALT_SCREEN = "\x1b[?1049l";
@@ -179,8 +179,11 @@ export interface AltScreenSearchTarget {
 }
 
 export interface TuiAltScreenOptions {
-	/** Number of logical lines moved for each mouse-wheel event. */
-	wheelScrollLines?: number;
+	/**
+	 * Logical lines moved for each mouse-wheel event (default: 1). `"auto"` accelerates fast wheel
+	 * spins on terminals that send one event per notch. Alt+wheel moves five times as far.
+	 */
+	wheelScrollLines?: WheelScrollLines;
 	/** Normalize discrete wheel, precision trackpad, and touch-generated wheel bursts. */
 	adaptiveWheelScroll?: boolean;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
@@ -259,6 +262,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	};
 	private readonly wheelScrollLines: number;
 	private readonly wheelScrollNormalizer: WheelScrollNormalizer | undefined;
+	private readonly wheelScroll: WheelScrollAccelerator;
 	private readonly mouseEnabled: boolean;
 	private readonly allMouseMotion: boolean;
 	private readonly searchTarget: (() => AltScreenSearchTarget | undefined) | undefined;
@@ -288,7 +292,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		};
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
-		this.wheelScrollLines = Math.max(1, Math.floor(options.wheelScrollLines ?? 1));
+		const configuredWheelLines = options.wheelScrollLines ?? (options.adaptiveWheelScroll ? "auto" : 1);
+		this.wheelScroll = new WheelScrollAccelerator(configuredWheelLines);
+		this.wheelScrollLines =
+			typeof configuredWheelLines === "number" ? Math.max(1, Math.floor(configuredWheelLines)) : 1;
 		this.wheelScrollNormalizer = options.adaptiveWheelScroll ? new WheelScrollNormalizer() : undefined;
 		this.mouseEnabled = options.mouse ?? true;
 		this.allMouseMotion = options.allMouseMotion ?? false;
@@ -326,6 +333,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	get isFollowingOutput(): boolean {
 		return this.getPrimaryScrollView().isFollowingEnd;
+	}
+
+	setWheelScrollLines(lines: WheelScrollLines): void {
+		this.wheelScroll.setLines(lines);
 	}
 
 	getCopyOnSelect(): boolean {
@@ -369,6 +380,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override beforeTerminalStart(): void {
 		this.wheelScrollNormalizer?.reset();
+		this.wheelScroll.reset();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -822,9 +834,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		const wheelEvent = this.parseWheelEvent(data);
 		if (wheelEvent) {
-			const event = this.createMouseEvent("wheel", wheelEvent.button, wheelEvent.x, wheelEvent.y, {
-				wheelDelta: wheelEvent.direction * this.getWheelScrollLines(wheelEvent.button),
-			});
+			const configuredLines = this.wheelScroll.next(wheelEvent.direction, performance.now());
+			const normalizedLines = this.wheelScrollNormalizer?.getDelta(wheelEvent.direction);
+			const lines = normalizedLines ?? wheelEvent.direction * configuredLines;
+			// SGR mouse button codes use bit 3 (value 8) for the Alt modifier.
+			const wheelDelta = (wheelEvent.button & 8) !== 0 ? lines * ALT_WHEEL_SCROLL_MULTIPLIER : lines;
+			const event = this.createMouseEvent("wheel", wheelEvent.button, wheelEvent.x, wheelEvent.y, { wheelDelta });
 			const overlay = this.dispatchMouseToOverlay(event);
 			const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 			if (result) {
@@ -832,7 +847,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				return { consume: true };
 			}
 			if (this.shouldDeferViewportInputToOverlay()) return undefined;
-			this.routeWheel(wheelEvent);
+			this.routeWheel(wheelEvent, wheelDelta);
 			return { consume: true };
 		}
 		const mouseEvent = this.parseSgrMouseEvent(data);
@@ -1109,18 +1124,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return undefined;
 	}
 
-	private getWheelScrollLines(button: number): number {
-		// SGR mouse button codes use bit 3 (value 8) for the Alt modifier.
-		return (button & 8) !== 0 ? this.wheelScrollLines * ALT_WHEEL_SCROLL_MULTIPLIER : this.wheelScrollLines;
-	}
-
-	private routeWheel(event: WheelEvent): void {
-		const baseDelta = event.direction * this.getWheelScrollLines(event.button);
-		const normalizedDelta = this.wheelScrollNormalizer?.getDelta(event.direction);
-		let remaining =
-			normalizedDelta === undefined
-				? baseDelta
-				: normalizedDelta * (this.getWheelScrollLines(event.button) / this.wheelScrollLines);
+	private routeWheel(event: WheelEvent, delta: number): void {
+		let remaining = delta;
 		const seen = new Set<ScrollView>();
 		for (const scrollView of this.currentLayout ? getScrollViewsAt(this.currentLayout, event.x, event.y) : []) {
 			seen.add(scrollView);

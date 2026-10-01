@@ -312,6 +312,8 @@ export class Markdown implements Component {
 	private cachedText?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	// Parsed tokens depend only on the source, so they survive theme and width invalidation.
+	private cachedTokens?: { source: string; tokens: Token[] };
 
 	constructor(
 		text: string,
@@ -372,8 +374,12 @@ export class Markdown implements Component {
 
 		const normalizedText = text.replace(/\t/g, "   ");
 		const parseStartedAt = performance.now();
-		const tokens = markdownParser.lexer(normalizedText);
-		trimPartialClosingFences(tokens);
+		let tokens = this.cachedTokens?.source === normalizedText ? this.cachedTokens.tokens : undefined;
+		if (!tokens) {
+			tokens = markdownParser.lexer(normalizedText);
+			trimPartialClosingFences(tokens);
+			this.cachedTokens = { source: normalizedText, tokens };
+		}
 		const parseMs = performance.now() - parseStartedAt;
 
 		const renderedLines: string[] = [];

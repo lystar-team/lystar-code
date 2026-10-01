@@ -33,6 +33,7 @@ import type {
 	AgentMessage,
 	AgentTool,
 	AgentToolCall,
+	AgentToolCallOutcome,
 	AgentToolResult,
 	PrepareNextTurnContext,
 	StreamFn,
@@ -417,6 +418,8 @@ async function streamAssistantResponse(
 		apiKey: resolvedApiKey,
 		signal,
 	});
+	// Record the requested level, whichever stream function answered.
+	const result = async () => Object.assign(await response.result(), { thinkingLevel: config.reasoning ?? "off" });
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
@@ -455,7 +458,7 @@ async function streamAssistantResponse(
 
 			case "done":
 			case "error": {
-				const finalMessage = await response.result();
+				const finalMessage = await result();
 				if (addedPartial) {
 					context.messages[context.messages.length - 1] = finalMessage;
 				} else {
@@ -470,7 +473,7 @@ async function streamAssistantResponse(
 		}
 	}
 
-	const finalMessage = await response.result();
+	const finalMessage = await result();
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = finalMessage;
 	} else {
@@ -836,11 +839,12 @@ type ExecutedToolCallOutcome = {
 	recoveryFinalized?: boolean;
 };
 
-type FinalizedToolCallOutcome = {
-	toolCall: AgentToolCall;
-	result: AgentToolResult<any>;
-	isError: boolean;
-};
+type FinalizedToolCallOutcome = AgentToolCallOutcome;
+
+/** The `beforeToolCall` and `afterToolCall` hooks of {@link AgentLoopConfig}. */
+export type ToolCallHooks = Pick<AgentLoopConfig, "beforeToolCall" | "afterToolCall" | "toolRecoveryController">;
+
+type ToolUpdateSink = (partialResult: AgentToolResult<any>) => Promise<void> | void;
 
 type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
 type PreparedToolCallBatchEntry = {
@@ -873,7 +877,7 @@ async function runBeforeToolCallHook(
 	assistantMessage: AssistantMessage,
 	toolCall: AgentToolCall,
 	args: unknown,
-	config: AgentLoopConfig,
+	config: ToolCallHooks,
 	signal: AbortSignal | undefined,
 ): Promise<ImmediateToolCallOutcome | undefined> {
 	if (!config.beforeToolCall) return undefined;
@@ -913,19 +917,16 @@ async function prepareToolCall(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
 	toolCall: AgentToolCall,
-	config: AgentLoopConfig,
+	config: ToolCallHooks,
 	signal: AbortSignal | undefined,
 	runBeforeToolCall = true,
+	tools: readonly AgentTool<any>[] = currentContext.tools ?? [],
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
-	const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
+	const tool = tools.find((t) => t.name === toolCall.name);
 	if (!tool) {
-		const availableTools = currentContext.tools?.map((candidate) => candidate.name).join(", ") || "none";
-		const editSuggestion = toolCall.name === "apply_patch" ? '\nFor file changes, retry with "edit".' : "";
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(
-				`Tool "${toolCall.name}" is unavailable.\nAvailable tools: ${availableTools}.${editSuggestion}`,
-			),
+			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
 			isError: true,
 		};
 	}
@@ -968,11 +969,49 @@ async function prepareToolCall(
 	}
 }
 
+/** Options for {@link runToolCall}. */
+export interface RunToolCallOptions extends ToolCallHooks {
+	/** Tools the call resolves against. */
+	tools: readonly AgentTool<any>[];
+	/** Passed to the hooks as the message that issued the call. */
+	assistantMessage: AssistantMessage;
+	/** Passed to the hooks as the current agent context. */
+	context: AgentContext;
+	signal?: AbortSignal;
+	onUpdate?: ToolUpdateSink;
+}
+
+/**
+ * Run one tool call through the same steps as a model-issued call: argument preparation, schema
+ * validation, `beforeToolCall`, execution, and `afterToolCall`. Emits no events and adds no
+ * messages. Tools that call other tools use this so the hooks (for example permission checks)
+ * apply to those calls too.
+ *
+ * Never rejects for tool failures: unknown tools, validation errors, blocked calls, and thrown
+ * errors come back as `isError: true`.
+ */
+export async function runToolCall(toolCall: AgentToolCall, options: RunToolCallOptions): Promise<AgentToolCallOutcome> {
+	const { assistantMessage, context, signal } = options;
+	const preparation = await prepareToolCall(context, assistantMessage, toolCall, options, signal, true, options.tools);
+	if (preparation.kind === "immediate") {
+		return { toolCall, result: preparation.result, isError: preparation.isError };
+	}
+	const executed = await executePreparedToolCall(
+		preparation,
+		signal,
+		async () => {},
+		options.toolRecoveryController,
+		options.onUpdate ?? (() => {}),
+	);
+	return finalizeExecutedToolCall(context, assistantMessage, preparation, executed, options, signal, async () => {});
+}
+
 async function executePreparedToolCall(
 	prepared: PreparedToolCall,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	toolRecoveryController: ToolRecoveryController | undefined,
+	onUpdate: ToolUpdateSink = () => {},
 ): Promise<ExecutedToolCallOutcome> {
 	const controller = toolRecoveryController;
 	const now = controller?.now ? () => controller.now!() : Date.now;
@@ -1042,6 +1081,7 @@ async function executePreparedToolCall(
 				signal,
 				(partialResult) => {
 					if (!acceptingUpdates) return;
+					updateEvents.push(Promise.resolve(onUpdate(partialResult)));
 					updateEvents.push(
 						Promise.resolve(
 							emit({
@@ -1057,7 +1097,7 @@ async function executePreparedToolCall(
 			);
 			acceptingUpdates = false;
 			await Promise.all(updateEvents);
-			return { result, isError: false, recovery };
+			return { result, isError: result.isError === true, recovery };
 		} catch (error) {
 			acceptingUpdates = false;
 			await Promise.all(updateEvents);
@@ -1124,7 +1164,7 @@ async function finalizeExecutedToolCall(
 	assistantMessage: AssistantMessage,
 	prepared: PreparedToolCall,
 	executed: ExecutedToolCallOutcome,
-	config: AgentLoopConfig,
+	config: ToolCallHooks,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 ): Promise<FinalizedToolCallOutcome> {
@@ -1147,6 +1187,9 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
+				// Structured content not replaced along with the content may no longer match it.
+				const structuredContent =
+					afterResult.structuredContent ?? (afterResult.content ? undefined : result.structuredContent);
 				const afterMarkedError = afterResult.isError === true && !isError;
 				result = {
 					...result,
@@ -1155,6 +1198,8 @@ async function finalizeExecutedToolCall(
 					usage: afterResult.usage ?? result.usage,
 					terminate: afterResult.terminate ?? result.terminate,
 				};
+				if (structuredContent === undefined) delete result.structuredContent;
+				else result.structuredContent = structuredContent;
 				isError = afterResult.isError ?? isError;
 				if (afterMarkedError) {
 					recoveryError = undefined;
