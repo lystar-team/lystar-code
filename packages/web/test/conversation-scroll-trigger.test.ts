@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useConversationScroll } from "../src/components/workbench/use-conversation-scroll.ts";
 
 const hooks = vi.hoisted(() => ({
@@ -51,7 +51,37 @@ beforeEach(() => {
 	loadEarlier.mockReset().mockResolvedValue();
 });
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("conversation history scroll intent", () => {
+	it("暂停跟随后取消回到底部的滚动定时器", () => {
+		const timers = new Map<number, () => void>();
+		let timerId = 0;
+		vi.stubGlobal("window", {
+			setTimeout: ((callback: () => void) => {
+				timerId += 1;
+				timers.set(timerId, callback);
+				return timerId;
+			}) as typeof setTimeout,
+			clearTimeout: ((id: number) => {
+				timers.delete(id);
+			}) as typeof clearTimeout,
+			matchMedia: () => ({ matches: true }),
+		});
+		const scroll = renderScroll();
+		const scroller = { scrollTop: 100, scrollHeight: 400, clientHeight: 100 } as unknown as HTMLElement;
+		scroll.handleTranscriptScrollerRef(scroller);
+		scroll.handleReturnToBottom();
+		expect(timers.size).toBe(1);
+		const staleCallback = [...timers.values()][0]!;
+		scroll.pauseFollowOutput();
+		expect(timers.size).toBe(0);
+		scroller.scrollHeight = 800;
+		scroller.scrollTop = 100;
+		staleCallback();
+		expect(scroller.scrollTop).toBe(100);
+	});
+
 	it("loads on the first upward gesture even when the top callback arrives later", async () => {
 		const scroll = renderScroll();
 		scroll.handleUserScrollUp();

@@ -16,6 +16,9 @@ export type MessageRenderItem = {
 	live: boolean;
 	role: "user" | "assistant" | "system";
 	text: string;
+	fullText?: string;
+	contentRef?: string;
+	truncated?: boolean;
 	timestamp?: string;
 	sentAt?: number;
 	durationLabel?: string;
@@ -126,6 +129,8 @@ function groupPersistedToolBatches(rendered: Array<RawRenderItem>): GroupedPersi
 		}
 		if (entry.kind === "tool-batch") {
 			const toolBatchKind = persistedToolBatchKind(entry);
+			// 渲染按服务端顺序从旧到新遍历：同组批次依次 push，组 key 取该组在全量历史里的首批次。
+			// 补入更早历史必然导致组 key 前移：Virtuoso 靠 firstItemIndex 补偿位置，不靠组 key 稳定。
 			if (
 				previousToolStack &&
 				previousToolStack.stepId === entry.stepId &&
@@ -351,6 +356,8 @@ export function buildPersistedRenderItems(
 				live: false,
 				role: viewModel.role,
 				text: viewModel.text,
+				...(viewModel.fullText ? { fullText: viewModel.fullText, truncated: true } : {}),
+				...(viewModel.contentRef ? { contentRef: viewModel.contentRef, truncated: true } : {}),
 				timestamp: viewModel.timestamp,
 				sentAt: promptSendTimes[item.entryId],
 				attachments: viewModel.attachments,
@@ -475,7 +482,12 @@ export function appendLiveRenderItems(
 	liveTurnId: number,
 	liveSteps: WorkbenchState["liveSteps"] = {},
 ): ConversationContentRenderItem[] {
-	const next = [...rendered];
+	// 渲染计算不修改输入：复制顶层数组与可能被追加的步骤对象，调用方传入的历史对象保持不变。
+	const next = rendered.map((entry) => {
+		if (entry.kind === "compaction") return { ...entry };
+		if (entry.kind === "agent-step") return { ...entry, items: entry.items.map((item) => item.kind === "compaction" ? { ...item } : item) };
+		return entry;
+	});
 	const stepIdByToolCallId = new Map<string, string>();
 	for (const entry of next) {
 		if (entry.kind !== "agent-step") continue;
@@ -618,6 +630,7 @@ function markCompletedTurnResult(
 	turn: ConversationContentRenderItem[],
 	completed: boolean,
 	observedElapsed?: (sentAt: number) => number | undefined,
+	settledOutcome?: "completed" | "failed" | "aborted",
 ): ConversationRenderItem[] {
 	const hooks = turn.filter(
 		(entry): entry is TranscriptItemRenderItem =>
@@ -646,6 +659,8 @@ function markCompletedTurnResult(
 			...(hookGroup ? [hookGroup] : []),
 		];
 	}
+	// 已确认失败或取消的回合不再按“末条文本”折叠：保留实际终态，避免把中断位置误判为正常结果。
+	if (settledOutcome === "failed" || settledOutcome === "aborted") return hookGroup ? [...content, hookGroup] : content;
 	let finalMessageIndex = -1;
 	for (let index = content.length - 1; index >= 0; index--) {
 		const entry = content[index];
@@ -690,6 +705,7 @@ function markCompletedTurnResults(
 	rendered: ConversationContentRenderItem[],
 	responseActive: boolean,
 	observedElapsed?: (sentAt: number) => number | undefined,
+	settledOutcome?: "completed" | "failed" | "aborted",
 ): ConversationRenderItem[] {
 	const next: ConversationRenderItem[] = [];
 	let turn: ConversationContentRenderItem[] = [];
@@ -701,8 +717,41 @@ function markCompletedTurnResults(
 			turn.push(entry);
 		}
 	}
-	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive, observedElapsed));
+	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive, observedElapsed, settledOutcome));
 	return next;
+}
+
+export function preserveConversationToolStackKeys(
+	items: ConversationRenderItem[],
+	previous: readonly ConversationRenderItem[],
+): ConversationRenderItem[] {
+	const keysByTool = new Map<string, string>();
+	const collect = (entries: readonly ConversationRenderItem[]) => {
+		for (const entry of entries) {
+			if (entry.kind === "tool-stack") {
+				for (const batch of entry.batches) for (const tool of batch.tools) keysByTool.set(tool.id, entry.key);
+			} else if (entry.kind === "agent-step" || entry.kind === "work-process") collect(entry.items);
+		}
+	};
+	collect(previous);
+	const used = new Set<string>();
+	const stack = (entry: TranscriptToolStackRenderItem): TranscriptToolStackRenderItem => {
+		for (const batch of entry.batches) for (const tool of batch.tools) {
+			const key = keysByTool.get(tool.id);
+			if (!key || used.has(key)) continue;
+			used.add(key);
+			return key === entry.key ? entry : { ...entry, key };
+		}
+		used.add(entry.key);
+		return entry;
+	};
+	const content = (entry: ConversationContentRenderItem): ConversationContentRenderItem => {
+		if (entry.kind === "tool-stack") return stack(entry);
+		if (entry.kind === "agent-step") return { ...entry, items: entry.items.map((child) => child.kind === "tool-stack" ? stack(child) : child) };
+		return entry;
+	};
+	return items.map((entry) => entry.kind === "work-process" ? { ...entry, items: entry.items.map(content) } :
+		entry.kind === "live-elapsed" || entry.kind === "result-boundary" ? entry : content(entry));
 }
 
 export function buildConversationRenderItems(
@@ -717,6 +766,7 @@ export function buildConversationRenderItems(
 	liveSteps: WorkbenchState["liveSteps"] = {},
 	observedElapsed?: (sentAt: number) => number | undefined,
 	editingEntryId?: string,
+	settledOutcome?: "completed" | "failed" | "aborted",
 ): ConversationRenderItem[] {
 	const withLive = appendLiveRenderItems(
 		persistedItems,
@@ -742,5 +792,5 @@ export function buildConversationRenderItems(
 			break;
 		}
 	}
-	return markCompletedTurnResults(withLive, responseActive, observedElapsed);
+	return markCompletedTurnResults(withLive, responseActive, observedElapsed, settledOutcome);
 }

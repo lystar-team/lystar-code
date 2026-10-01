@@ -19,6 +19,7 @@ import {
 	appendLiveRenderItems,
 	buildConversationRenderItems,
 	buildPersistedRenderItems,
+	preserveConversationToolStackKeys,
 	type AgentStepChildRenderItem,
 	type AgentStepRenderItem,
 	type CompactionRenderItem,
@@ -76,6 +77,7 @@ export type ConversationState = {
 	liveTurnItems: WorkbenchState["liveTurnItems"];
 	liveCompaction?: WorkbenchState["liveCompaction"];
 	liveTurnId: number;
+	settledTurns?: WorkbenchState["settledTurns"];
 };
 
 export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queueAction" | "showToast" | "loadEarlier"> & {
@@ -101,6 +103,7 @@ type ConversationRenderCacheEntry = {
 	responseActive: boolean;
 	canEditPrompts: boolean;
 	editingEntryId?: string;
+	settledTurns?: WorkbenchState["settledTurns"];
 	toolIndex: ToolIndex;
 	renderItems: ConversationRenderItem[];
 };
@@ -264,6 +267,8 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			previous.entryId === next.entryId &&
 			previous.role === next.role &&
 			previous.text === next.text &&
+			previous.fullText === next.fullText &&
+			previous.contentRef === next.contentRef &&
 			previous.durationLabel === next.durationLabel &&
 			previous.statusLabel === next.statusLabel &&
 			previous.queueId === next.queueId &&
@@ -396,7 +401,8 @@ export function ConversationView({
 			cached.liveSteps === liveSteps &&
 			cached.responseActive === responseActive &&
 			cached.canEditPrompts === canEditPrompts &&
-			cached.editingEntryId === editingEntryId
+			cached.editingEntryId === editingEntryId &&
+			cached.settledTurns === state.settledTurns
 		) {
 			renderCacheRef.current.delete(cacheKey);
 			renderCacheRef.current.set(cacheKey, cached);
@@ -445,7 +451,7 @@ export function ConversationView({
 			liveSteps,
 			state.liveTools,
 		);
-		const renderItems = buildConversationRenderItems(
+		const computedRenderItems = buildConversationRenderItems(
 			persistedRenderItems,
 			state.liveTurnItems,
 			state.liveTools,
@@ -457,7 +463,9 @@ export function ConversationView({
 			liveSteps,
 			resolveObservedElapsed,
 			editingEntryId,
+			state.settledTurns?.[state.liveTurnId],
 		);
+		const renderItems = preserveConversationToolStackKeys(computedRenderItems, cached?.renderItems ?? []);
 		const entry: ConversationRenderCacheEntry = {
 			transcript: state.transcript,
 			agentSteps: state.agentSteps,
@@ -471,6 +479,7 @@ export function ConversationView({
 			responseActive,
 			canEditPrompts,
 			editingEntryId,
+			settledTurns: state.settledTurns,
 			toolIndex,
 			renderItems,
 		};
@@ -671,6 +680,10 @@ function ConversationBody({
 				<TranscriptMessageView
 					role={entry.role}
 					text={entry.text}
+					fullText={entry.fullText}
+					contentRef={entry.contentRef}
+					onExpansionIntent={pauseFollowOutput}
+					truncated={entry.truncated}
 					durationLabel={entry.durationLabel}
 					statusLabel={entry.statusLabel}
 					attachments={entry.attachments}
@@ -710,6 +723,7 @@ function ConversationBody({
 			onEditComplete,
 			onEditPrompt,
 			openResource,
+			pauseFollowOutput,
 		],
 	);
 	const renderCompaction = useCallback(
@@ -725,9 +739,9 @@ function ConversationBody({
 	);
 	const renderAgentStepItem = useCallback(
 		(entry: AgentStepChildRenderItem) => {
-			if (entry.kind === "message") return renderMessage(entry);
-			if (entry.kind === "tool-stack") return renderToolStack(entry);
-			return renderCompaction(entry);
+			return <div className="min-w-0" data-transcript-anchor-key={entry.key}>
+				{entry.kind === "message" ? renderMessage(entry) : entry.kind === "tool-stack" ? renderToolStack(entry) : renderCompaction(entry)}
+			</div>;
 		},
 		[renderCompaction, renderMessage, renderToolStack],
 	);

@@ -375,3 +375,9 @@ export {
 	type WebSessionHandoffCommand,
 	type WebSessionHandoffServerMessage,
 } from "./web-companion.ts";
+export {
+	getWebConversationStream,
+	type WebConversationBlock,
+	type WebConversationBlockMapping,
+	type WebConversationMessage,
+} from "./web-conversation-stream.ts";

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import type { ToolActivitySnapshot } from "./tool-activity.ts";
+import type { WebConversationBlockMapping, WebConversationMessage } from "./web-conversation-stream.ts";
 
 export interface WebCompanionImage {
 	data: string;
@@ -95,7 +96,7 @@ export interface WebCompanionSnapshot {
 	toolActivityEpoch: string;
 	toolActivityRevision: number;
 	toolActivities: ToolActivitySnapshot[];
-	liveMessage?: { text: string; thinking: string };
+	liveMessage?: WebConversationMessage;
 	capabilities: WebCompanionCapability[];
 }
 
@@ -179,11 +180,12 @@ export type WebCompanionServerMessage =
 	| { type: "response"; requestId: string; ok: false; error: string }
 	| { type: "bash_chunk"; requestId: string; chunk: string }
 	| { type: "snapshot"; snapshot: WebCompanionSnapshotWire }
-	| { type: "agent_event"; event: AgentSessionEvent }
+	| { type: "agent_event"; event: AgentSessionEvent & { blockId?: string } }
 	| { type: "subagent_updated"; snapshot: unknown; event?: unknown }
 	| {
 			type: "entry_committed";
 			items: unknown[];
+			blockMappings?: WebConversationBlockMapping[];
 			transcriptGeneration: string;
 			fromRevision: number;
 			transcriptRevision: number;

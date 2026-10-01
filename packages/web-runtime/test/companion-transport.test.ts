@@ -37,7 +37,8 @@ it("大历史工具结果不重复广播，连续文本增量保持完整", asyn
 		summary: "运行中",
 		updatedAt: 1,
 	});
-	const streamingMessage = { role: "assistant", content: [{ type: "text", text: "断线前" }] };
+	const prefix = "x".repeat(2 * 1024 * 1024);
+	const streamingMessage = { role: "assistant", content: [{ type: "text", text: prefix }] };
 	const session = {
 		agent: { state: { streamingMessage } },
 		sessionFile: sessionPath,
@@ -86,21 +87,25 @@ it("大历史工具结果不重复广播，连续文本增量保持完整", asyn
 			)
 				text += event.payload.text;
 		});
-		const message = { role: "assistant", content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }] };
 		for (let index = 0; index < 200; index++) {
+			streamingMessage.content[0].text += "中";
 			listener?.({
 				type: "message_update",
-				message,
-				assistantMessageEvent: { type: "text_delta", delta: "中", contentIndex: 0, partial: message },
+				message: streamingMessage,
+				assistantMessageEvent: { type: "text_delta", delta: "中", contentIndex: 0, partial: streamingMessage },
 			} as AgentSessionEvent);
 		}
 		await new Promise((resolve) => setTimeout(resolve, 600));
 		expect(text).toBe("中".repeat(200));
 		expect(snapshots).toBe(1);
 		expect(runtime.isConnected()).toBe(true);
-		expect(runtime.getLiveMessage()?.text).toBe(`断线前${"中".repeat(200)}`);
+		expect(runtime.getLiveMessage()?.text).toBe(`${prefix}${"中".repeat(200)}`);
 		streamingMessage.content[0].text = "恢复时的完整文字";
-		expect(await runtime.readLiveMessage()).toEqual({ text: "恢复时的完整文字", thinking: "" });
+		expect(await runtime.readLiveMessage()).toEqual({
+			text: "恢复时的完整文字",
+			thinking: "",
+			blocks: [{ blockId: expect.any(String), kind: "text", text: "恢复时的完整文字" }],
+		});
 	} finally {
 		await runtime?.dispose();
 		await server.dispose();

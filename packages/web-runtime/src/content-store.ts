@@ -84,6 +84,28 @@ export class ContentStore {
 		return { ...item, payload: isToolResult(item) ? this.compactValue(sessionPath, payload) : payload };
 	}
 
+	compactAssistantTranscriptItem(sessionPath: string, item: TranscriptItem): TranscriptItem {
+		const view = item.view;
+		const source = item.payload;
+		const message = source && typeof source === "object" && !Array.isArray(source) ? source.message : undefined;
+		const assistant =
+			message && typeof message === "object" && !Array.isArray(message) && message.role === "assistant";
+		const payload = assistant ? this.compactValue(sessionPath, source) : source;
+		if (view?.type !== "assistant") return assistant ? { ...item, payload } : item;
+		if (view.text.length <= 16 * 1024) return { ...item, payload };
+		const reference = this.createReference(
+			sessionPath,
+			Buffer.from(view.text),
+			"text/plain; charset=utf-8",
+			view.text,
+		);
+		return {
+			...item,
+			payload,
+			view: { ...view, text: `${view.text.slice(0, 16 * 1024 - 1)}…`, contentRef: reference.contentRef },
+		};
+	}
+
 	read(sessionPath: string, contentRef: string, offset: number, limit: number): ContentChunk {
 		const entry = this.entry(sessionPath, contentRef);
 		if (offset > entry.bytes.length) {

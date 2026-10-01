@@ -1173,7 +1173,7 @@ export class WebRuntimeService {
 			) {
 				const sessionPath = canonicalSessionPath(message.request.sessionPath);
 				const liveMessage = this.runtimes.get(sessionPath)?.getLiveMessage?.();
-				if (liveMessage) result.liveMessage = liveMessage;
+				if (liveMessage) result.liveMessage = JSON.parse(JSON.stringify(liveMessage));
 				// 快照基线之前的增量先入发送队列，之后的增量只能排在响应之后。
 				this.flushSessionProgress(sessionPath);
 			}
@@ -2964,7 +2964,9 @@ export class WebRuntimeService {
 		contextCalls: readonly TranscriptItem[] = [],
 	): TranscriptItem[] {
 		const compactItems = items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item));
-		return projectTranscriptBatch(compactItems, agentSteps, contextCalls);
+		return projectTranscriptBatch(compactItems, agentSteps, contextCalls).map((item) =>
+			this.contentStore.compactAssistantTranscriptItem(sessionPath, item),
+		);
 	}
 
 	private sessionTranscriptFact(
@@ -3533,7 +3535,20 @@ export class WebRuntimeService {
 						fromRevision: number;
 						transcriptRevision: number;
 						agentSteps?: AgentStep[];
+						blockMappings?: Array<{ blockId: string; entryId: string; contentIndex: number }>;
 					};
+					const items = this.projectTranscriptItems(sessionPath, payload.items, payload.agentSteps);
+					const blockMappings = (payload.blockMappings ?? []).flatMap((mapping) => {
+						const item = items.find(
+							(candidate) =>
+								candidate.entryId === mapping.entryId &&
+								(candidate.view?.type === "assistant" || candidate.view?.type === "thinking") &&
+								candidate.view.contentIndices?.includes(mapping.contentIndex),
+						);
+						return item
+							? [{ blockId: mapping.blockId, entryId: mapping.entryId, viewIndex: item.viewIndex ?? 0 }]
+							: [];
+					});
 					this.rememberRuntimeTranscriptFact(runtime, payload.transcriptRevision);
 					void this.broadcast({
 						type: "transcript_committed",
@@ -3542,7 +3557,8 @@ export class WebRuntimeService {
 						fromRevision: payload.fromRevision,
 						toRevision: payload.transcriptRevision,
 						agentSteps: payload.agentSteps,
-						items: this.projectTranscriptItems(sessionPath, payload.items, payload.agentSteps),
+						...(blockMappings.length ? { blockMappings } : {}),
+						items,
 					});
 				} else if (event.type === "turn_settled") {
 					this.flushSessionProgress(sessionPath);

@@ -1,11 +1,23 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, AssistantImages, ImagesApi, ImagesModel, Model } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type AssistantImages,
+	type ImagesApi,
+	type ImagesModel,
+	InMemoryModelsStore,
+	type Model,
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import imageGenExtension, { createImageGenToolDefinition } from "../src/extensions/image-gen/index.ts";
 import { builtInExtensions } from "../src/extensions/index.ts";
 
@@ -215,6 +227,82 @@ describe("image_gen extension tool", () => {
 			},
 		);
 		expect(result.details).toMatchObject({ provider: "image-provider", model: "gpt-image-2.5-flare" });
+	});
+
+	it("generates through a custom OpenAI-compatible upstream configured in imageModelProviders", async () => {
+		const requests: Array<{ url: string | undefined; authorization: string | undefined; model: string | undefined }> =
+			[];
+		const server = createServer((request, response) => {
+			let raw = "";
+			request.on("data", (chunk) => {
+				raw += chunk;
+			});
+			request.on("end", () => {
+				const body = JSON.parse(raw) as { model?: string };
+				requests.push({ url: request.url, authorization: request.headers.authorization, model: body.model });
+				response.writeHead(200, { "content-type": "application/json" });
+				response.end(JSON.stringify({ data: [{ b64_json: pngData }] }));
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+		try {
+			const modelsPath = join(tempRoot, "models.json");
+			writeFileSync(
+				modelsPath,
+				JSON.stringify({
+					providers: {
+						upstream: {
+							name: "upstream",
+							baseUrl,
+							api: "openai-responses",
+							apiKey: "sk-upstream",
+							authHeader: true,
+							models: [
+								{
+									id: "gpt-6.1-sol",
+									name: "GPT 6.1 Sol",
+									api: "openai-responses",
+									baseUrl,
+									reasoning: true,
+									input: ["text", "image"],
+									contextWindow: 272000,
+									maxTokens: 128000,
+								},
+							],
+						},
+					},
+					imageModelProviders: { "gpt-image-2.5-sunburst": "upstream" },
+				}),
+			);
+			const runtime = await ModelRuntime.create({
+				credentials: AuthStorage.inMemory(),
+				modelsStore: new InMemoryModelsStore(),
+				modelsPath,
+				allowModelNetwork: false,
+			});
+			const ctx = {
+				cwd: tempRoot,
+				model: runtime.getModel("upstream", "gpt-6.1-sol"),
+				modelRegistry: new ModelRegistry(runtime),
+				sessionManager: { getSessionId: () => "session-upstream", getBranch: () => [] },
+			} as unknown as ExtensionToolContext;
+
+			const result = await createImageGenToolDefinition().execute(
+				"call-upstream",
+				{ prompt: "a red circle", model: "gpt-image-2.5-sunburst" },
+				undefined,
+				undefined,
+				ctx,
+			);
+
+			expect(result.details).toMatchObject({ provider: "upstream", model: "gpt-image-2.5-sunburst" });
+			expect(requests).toEqual([
+				{ url: "/v1/images/generations", authorization: "Bearer sk-upstream", model: "gpt-image-2.5-sunburst" },
+			]);
+		} finally {
+			server.close();
+		}
 	});
 
 	it("uses Sunburst for automatic precision work", async () => {

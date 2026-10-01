@@ -30,6 +30,7 @@ import type {
 	SettingSummary,
 	SubagentConfig,
 	SubagentSnapshot,
+	TranscriptBlockMapping,
 	TranscriptItem,
 	TranscriptPage,
 	ToolDiff,
@@ -310,7 +311,7 @@ export interface UiRequestEvent {
 }
 
 export type GatewayEvent =
-	| { type: "session_stream"; sessionId: string; text: string; thinking: string; stepId?: string; seq?: number }
+	| { type: "session_stream"; sessionId: string; text: string; thinking: string; blocks: Array<{ blockId: string; kind: "text" | "thinking"; text: string } | { blockId: string; kind: "tool"; toolCallId: string }>; stepId?: string; seq?: number }
 	| { type: "bootstrap"; data: BootstrapResponse }
 	| { type: "connection_state"; connected: boolean; message?: string }
 	| { type: "session_lease"; sessionId: string; lease: WebLease }
@@ -350,6 +351,7 @@ export type GatewayEvent =
 			toRevision: number;
 			items: WebTranscriptItem[];
 			agentSteps?: AgentStep[];
+			blockMappings?: TranscriptBlockMapping[];
 			seq?: number;
 	  }
 	| { type: "session_progress"; sessionId: string; progress: SessionProgress; seq?: number }
@@ -361,6 +363,14 @@ export type GatewayEvent =
 			seq?: number;
 	  }
 	| { type: "operation_updated"; operation: WebOperation; seq?: number }
+	| {
+			type: "turn_settled";
+			sessionId: string;
+			turnId: string;
+			outcome: "completed" | "failed" | "aborted";
+			text: string;
+			seq?: number;
+	  }
 	| UiRequestEvent;
 
 export interface ModelsResponse {

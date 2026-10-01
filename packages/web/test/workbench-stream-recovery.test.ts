@@ -15,7 +15,20 @@ vi.mock("react", () => ({
 function createRecovery(overrides: Partial<WorkbenchState> = {}) {
 	vi.stubGlobal("localStorage", { getItem: () => null });
 	const initial = initialState();
-	vi.stubGlobal("window", globalThis);
+	const frames = new Map<number, FrameRequestCallback>();
+	let frameId = 0;
+	vi.stubGlobal("window", {
+		...globalThis,
+		requestAnimationFrame: (callback: FrameRequestCallback) => {
+			frameId += 1;
+			frames.set(frameId, callback);
+			return frameId;
+		},
+		cancelAnimationFrame: (id: number) => {
+			frames.delete(id);
+		},
+	});
+	vi.stubGlobal("document", { visibilityState: "visible" });
 	vi.stubGlobal("WebSocket", { OPEN: 1, CONNECTING: 0 });
 	vi.spyOn(webApi, "subscribeSession").mockImplementation(() => {});
 	const stateRef = { current: { ...initial, sessionId: "session-1", ...overrides } as WorkbenchState };
@@ -76,6 +89,41 @@ describe("会话断线恢复", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
+	});
+
+	it("提交先到时丢弃同会话文本缓存，已落盘内容不再被 RAF 加回", () => {
+		const context = createRecovery({
+			session: { id: "session-1", transcriptGeneration: "gen-1" } as WorkbenchState["session"],
+			transcriptPageLoaded: true,
+			transcriptGeneration: "gen-1",
+			transcriptRevision: 1,
+		});
+		// 文本 delta 进入 RAF 缓存后尚未应用，此时提交先到：提交分支必须先清缓存。
+		context.actions.handleEvent({
+			type: "session_progress",
+			sessionId: "session-1",
+			progress: { type: "assistant_delta", text: "已完成" },
+		});
+		expect(context.stateRef.current.liveTurnItems).toEqual([]);
+		context.actions.handleEvent({
+			type: "transcript_committed",
+			sessionId: "session-1",
+			transcriptGeneration: "gen-1",
+			fromRevision: 1,
+			toRevision: 2,
+			items: [
+				{
+					entryId: "assistant-1",
+					parentId: null,
+					timestamp: "2026-10-01T00:00:00Z",
+					kind: "message",
+					view: { type: "assistant", text: "已完成" },
+				},
+			],
+		});
+		expect(context.stateRef.current.transcript.map((item) => item.entryId)).toEqual(["assistant-1"]);
+		// 缓存已被提交分支清空：后续 RAF 即使执行，也不会把同一文本加回实时状态。
+		expect(context.stateRef.current.liveTurnItems).toEqual([]);
 	});
 
 	it("Runtime 重连时校准已加载的项目文件树", async () => {

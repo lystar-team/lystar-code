@@ -559,20 +559,24 @@ function assistantViews(
 	const views: TranscriptViewItem[] = [];
 	const citations = webSearchCitations(content);
 	let thinkingParts: string[] = [];
+	let thinkingIndices: number[] = [];
 	let textParts: string[] = [];
+	let textIndices: number[] = [];
 	let toolCalls: JsonRecord[] = [];
 	let projectedToolCallCount = 0;
 
 	const flushThinking = () => {
 		if (thinkingParts.length > 0) {
-			views.push({ type: "thinking", text: bounded(thinkingParts.join("\n\n")) });
+			views.push({ type: "thinking", text: bounded(thinkingParts.join("\n\n")), contentIndices: thinkingIndices });
 			thinkingParts = [];
+			thinkingIndices = [];
 		}
 	};
 	const flushText = () => {
 		if (textParts.length > 0) {
-			views.push({ type: "assistant", text: bounded(textParts.join("\n")) });
+			views.push({ type: "assistant", text: textParts.join("\n"), contentIndices: textIndices });
 			textParts = [];
+			textIndices = [];
 		}
 	};
 	const flushToolCalls = () => {
@@ -590,19 +594,25 @@ function assistantViews(
 		}
 	};
 
-	for (const part of content) {
+	for (const [contentIndex, part] of content.entries()) {
 		const item = record(part);
 		if (!item) continue;
 		if (item.type === "thinking" && typeof item.thinking === "string") {
 			flushText();
 			flushToolCalls();
-			if (item.thinking.trim()) thinkingParts.push(item.thinking);
+			if (item.thinking.trim()) {
+				thinkingParts.push(item.thinking);
+				thinkingIndices.push(contentIndex);
+			}
 			continue;
 		}
 		if (item.type === "text" && typeof item.text === "string") {
 			flushThinking();
 			flushToolCalls();
-			if (item.text.trim()) textParts.push(item.text);
+			if (item.text.trim()) {
+				textParts.push(item.text);
+				textIndices.push(contentIndex);
+			}
 			continue;
 		}
 		if (item.type === "toolCall" && typeof item.id === "string") {
@@ -944,7 +954,12 @@ export function projectTranscriptItems(
 	item: TranscriptItem,
 	toolCalls: TranscriptToolCallIndex = new Map(),
 ): TranscriptItem[] {
-	return projectTranscriptViews(item, toolCalls).map((view) => ({ ...item, view }));
+	const views = projectTranscriptViews(item, toolCalls);
+	return views.map((view, viewIndex) => ({
+		...item,
+		...(views.length > 1 ? { viewIndex } : {}),
+		view,
+	}));
 }
 
 export function projectTranscriptBatch(
@@ -983,8 +998,10 @@ export function projectTranscriptBatch(
 		const activityView = extensionActivities.views.get(item.entryId);
 		if (activityView) return [{ ...item, view: activityView }];
 		if (extensionActivities.hiddenEntryIds.has(item.entryId)) return [];
-		return projectTranscriptViews(item, toolCalls, stepByToolCall, latestStepEntryIds).map((view) => ({
+		const views = projectTranscriptViews(item, toolCalls, stepByToolCall, latestStepEntryIds);
+		return views.map((view, viewIndex) => ({
 			...item,
+			...(views.length > 1 ? { viewIndex } : {}),
 			view,
 		}));
 	});

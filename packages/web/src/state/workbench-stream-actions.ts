@@ -30,7 +30,7 @@ import {
 } from "./session-sync.ts";
 import { agentStepIndexChanged, mergeAgentStepIndex } from "./session-timeline.ts";
 import {
-	appendLiveTextBlock,
+	restoreLiveMessage,
 	applySubagentProgress,
 	createSubagentConversationState,
 	mergeSubagentSnapshots,
@@ -55,6 +55,7 @@ import {
 import type { CachedSessionDetail } from "./workbench-session-cache.ts";
 import {
 	mergeTranscriptEntries,
+	mergeTranscriptPage,
 	transcriptRenderIdOverrides,
 } from "./transcript-state.ts";
 import type {
@@ -357,36 +358,8 @@ export function useWorkbenchStreamActions({
 			}
 			if (event.type === "session_stream") {
 				if (event.sessionId !== stateRef.current.sessionId) return;
-				updateState((current) => {
-					const retained = current.liveTurnItems.filter(
-						(item) => item.kind === "tools" || item.kind === "user" || item.kind === "compaction",
-					);
-					const tools = retained.filter((item) => item.kind === "tools");
-					let items: LiveTurnItem[] = retained;
-					if (event.thinking)
-						items = appendLiveTextBlock(
-							items,
-							"thinking",
-							event.thinking,
-							`restored-thinking:${liveTurnItemRef.current++}`,
-							current.liveTurnId,
-							event.stepId,
-						);
-					if (event.text)
-						items = appendLiveTextBlock(
-							items,
-							"text",
-							event.text,
-							`restored-text:${liveTurnItemRef.current++}`,
-							current.liveTurnId,
-							event.stepId,
-						);
-					return {
-						...current,
-						liveTurnItems: items,
-						liveTurnActive: Boolean(event.text || event.thinking || tools.length),
-					};
-				});
+				flushPendingTextProgress();
+				updateState((current) => restoreLiveMessage(current, event.blocks, event.stepId));
 				return;
 			}
 			if (event.type === "bootstrap") {
@@ -624,6 +597,8 @@ export function useWorkbenchStreamActions({
 						},
 						event,
 					);
+				// 提交前应用缓存，再按块映射交接；未属于本次提交的 delta 不能被丢弃。
+				flushPendingTextProgress();
 				updateState((current) => {
 					if (current.sessionId !== event.sessionId) return current;
 					const sameHistory =
@@ -634,11 +609,21 @@ export function useWorkbenchStreamActions({
 						current.liveTurnItems,
 						current.liveCompaction ? `live-compaction:${current.liveTurnId}` : undefined,
 						event.items,
+						event.blockMappings,
 					);
-					const next = !stale ? reconcileCommittedTurn(current, event.items, event.toRevision) : current;
-					const transcript = stale
-						? current.transcript
-						: mergeTranscriptEntries(current.transcript, event.items, false, renderIdOverrides);
+				const next = !stale ? reconcileCommittedTurn(current, event.items, event.toRevision, event.blockMappings) : current;
+				const transcript = stale
+					? current.transcript
+					: mergeTranscriptPage(
+							current,
+							{
+								items: event.items,
+								hasMorePrevious: current.hasMorePrevious,
+							},
+							false,
+							sameHistory,
+							renderIdOverrides,
+						).transcript;
 					const updated = {
 						...next,
 						agentSteps: mergeAgentStepIndex(current.agentSteps, event.agentSteps),
@@ -744,8 +729,7 @@ export function useWorkbenchStreamActions({
 				}
 				return;
 			}
-			if (event.type === "operation_updated") {
-				const operationSessionId = event.operation.sessionId;
+			if (event.type === "operation_updated") {				const operationSessionId = event.operation.sessionId;
 				const operationIsActive = ACTIVE_OPERATION_STATUSES.has(event.operation.status);
 				const operationIsTerminal = TERMINAL_OPERATION_STATUSES.has(event.operation.status);
 				if (operationIsTerminal && operationSessionId === stateRef.current.sessionId) flushPendingTextProgress();
@@ -824,6 +808,19 @@ export function useWorkbenchStreamActions({
 					if (operationIsTerminal && shouldRefreshCompletedTurn(stateRef.current))
 						scheduleTranscriptRefresh(operationSessionId ?? stateRef.current.sessionId);
 				}
+				return;
+			}
+			if (event.type === "turn_settled") {
+				if (event.sessionId !== stateRef.current.sessionId) return;
+				// 回合结束关系来自 Runtime：记录终态 outcome，后续渲染按该终态折叠，不再由窗口末条文本推断。
+				updateState((current) =>
+					current.sessionId === event.sessionId
+						? {
+								...current,
+								settledTurns: { ...current.settledTurns, [event.turnId]: event.outcome },
+							}
+						: current,
+				);
 				return;
 			}
 			if (event.type === "ui_request") {

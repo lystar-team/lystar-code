@@ -1489,7 +1489,7 @@ describe("conversation render items", () => {
 		).toBe(999);
 	});
 
-	it("追加工具调用时保留已有工具组的 key", () => {
+	it("更早工具并入已有组时批次顺序不变，组 key 取自服务端首批次", () => {
 		const result = {
 			entryId: "current-result",
 			renderId: "current-result",
@@ -1514,25 +1514,32 @@ describe("conversation render items", () => {
 			view: { type: "tool_call" as const, calls: [{ id, name: "read", summary: "读取文件" }] },
 		});
 		const firstCall = call("current-call", "current-tool", null);
-		const nextCall = call("next-call", "next-tool", result.entryId);
-		const nextResult = {
+		const olderCall = call("older-call", "older-tool", null);
+		const olderResult = {
 			...result,
-			entryId: "next-result",
-			renderId: "next-result",
-			parentId: nextCall.entryId,
-			view: { ...result.view, callId: "next-tool" },
+			entryId: "older-result",
+			renderId: "older-result",
+			parentId: olderCall.entryId,
+			view: { ...result.view, callId: "older-tool" },
 		};
 		const oldPage = buildPersistedRenderItems([firstCall, result], {
 			...emptyToolIndex,
 			callIds: new Set(["current-tool"]),
 		});
-		const fullPage = buildPersistedRenderItems([firstCall, result, nextCall, nextResult], {
+		// 向上补入更早工具：已有组 key 不变，更早批次向前扩展，不因新 key 重挂载。
+		const fullPage = buildPersistedRenderItems([olderCall, olderResult, firstCall, result], {
 			...emptyToolIndex,
-			callIds: new Set(["current-tool", "next-tool"]),
+			callIds: new Set(["older-tool", "current-tool"]),
 		});
 
 		expect(oldPage[0]).toMatchObject({ kind: "tool-stack", key: "tool-stack:tool-batch:current-call:current-tool" });
-		expect(fullPage[0]).toMatchObject({ kind: "tool-stack", key: oldPage[0]?.key });
+		// 组 key 取自完整窗口内的首批次：旧窗口的组 key 在补入更早历史后自然前移。
+		// 旧批次 key 与组内顺序保持不变；阅读位置恢复不依赖组 key，P4 用稳定内容块 key。
+		expect(fullPage[0]).toMatchObject({ kind: "tool-stack", key: "tool-stack:tool-batch:older-call:older-tool" });
+		expect(fullPage[0]).toMatchObject({
+			kind: "tool-stack",
+			batches: [{ key: expect.stringContaining("older-call") }, { key: expect.stringContaining("current-call") }],
+		});
 	});
 
 	it("显示转录中的模型请求错误而不是空行", () => {
@@ -1552,5 +1559,71 @@ describe("conversation render items", () => {
 		const rendered = buildConversationRenderItems(persisted, [], {}, new Set(), undefined, 1, false);
 
 		expect(rendered).toEqual([expect.objectContaining({ kind: "message", role: "system", text: errorText })]);
+	});
+
+	it("失败或取消的回合不按末条文本折叠为正常结果", () => {
+		const user = {
+			kind: "message",
+			key: "user-1",
+			live: false,
+			role: "user",
+			text: "检查项目",
+			attachments: [],
+			sources: [],
+			copyVisible: false,
+			editable: false,
+		} as const;
+		const toolStack = {
+			kind: "tool-stack",
+			key: "tool-stack:batch-1",
+			live: false,
+			collapseForResult: false,
+			batches: [],
+		} as const;
+		const finalText = {
+			kind: "message",
+			key: "assistant-1",
+			live: false,
+			role: "assistant",
+			text: "已中断前的部分输出",
+			attachments: [],
+			sources: [],
+			copyVisible: false,
+			editable: false,
+		} as const;
+		const persisted = [user, toolStack, finalText] as unknown as Parameters<typeof buildConversationRenderItems>[0];
+		const aborted = buildConversationRenderItems(
+			persisted,
+			[],
+			{},
+			new Set(),
+			undefined,
+			1,
+			false,
+			false,
+			{},
+			undefined,
+			undefined,
+			"aborted",
+		);
+		const completed = buildConversationRenderItems(
+			persisted,
+			[],
+			{},
+			new Set(),
+			undefined,
+			1,
+			false,
+			false,
+			{},
+			undefined,
+			undefined,
+			"completed",
+		);
+
+		// 中断回合保留实际内容，不折叠为正常工作过程；完成回合仍按工作过程折叠。
+		expect(aborted.some((item) => item.kind === "work-process")).toBe(false);
+		expect(aborted.map((item) => item.kind)).toEqual(["message", "tool-stack", "message"]);
+		expect(completed.some((item) => item.kind === "work-process")).toBe(true);
 	});
 });

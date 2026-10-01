@@ -71,6 +71,7 @@ packages/coding-agent
 ## 6. Web 文档入口
 
 - 本文：当前代码结构、入口、调用链和测试位置。
+- [设计规范](../../packages/web/DESIGN.md)：页面结构、组件与 token、状态文案、响应式和可访问性决定。
 - [Web 编写规范](web-architecture.md)：职责边界、拆分和行为保持要求。
 - [测试与验证](verification.md)：仓库验证流程。
 - [项目验证记录](../../AGENT_VERIFICATION.md)：已记录的实际命令、结果和限制。

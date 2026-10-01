@@ -387,8 +387,18 @@ export const SessionProgressSchema = Type.Union([
 		text: ProgressTextSchema,
 		queueId: Type.Optional(Id),
 	}),
-	StrictObject({ type: Type.Literal("assistant_delta"), text: ProgressTextSchema, stepId: Type.Optional(Id) }),
-	StrictObject({ type: Type.Literal("thinking_delta"), text: ProgressTextSchema, stepId: Type.Optional(Id) }),
+	StrictObject({
+		type: Type.Literal("assistant_delta"),
+		text: ProgressTextSchema,
+		blockId: Type.Optional(Id),
+		stepId: Type.Optional(Id),
+	}),
+	StrictObject({
+		type: Type.Literal("thinking_delta"),
+		text: ProgressTextSchema,
+		blockId: Type.Optional(Id),
+		stepId: Type.Optional(Id),
+	}),
 	StrictObject({ type: Type.Literal("agent_step"), step: AgentStepSchema }),
 	StrictObject({ type: Type.Literal("tool_state"), activity: ToolActivitySchema }),
 	StrictObject({
@@ -621,10 +631,16 @@ export const TranscriptViewItemSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("assistant"),
 		text: TranscriptViewTextSchema,
+		contentRef: Type.Optional(Id),
+		contentIndices: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
 		files: Type.Optional(Type.Array(TranscriptFileSchema, { maxItems: 32 })),
 	}),
-	StrictObject({ type: Type.Literal("thinking"), text: TranscriptViewTextSchema }),
+	StrictObject({
+		type: Type.Literal("thinking"),
+		text: TranscriptViewTextSchema,
+		contentIndices: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
+	}),
 	TranscriptWebSearchSchema,
 	StrictObject({ type: Type.Literal("agent_step"), step: AgentStepSchema }),
 	StrictObject({ type: Type.Literal("tool_call"), calls: Type.Array(TranscriptToolCallSchema, { maxItems: 32 }) }),
@@ -687,6 +703,13 @@ export const TranscriptRequestContextSchema = StrictObject({
 });
 export type TranscriptRequestContext = Static<typeof TranscriptRequestContextSchema>;
 
+const TranscriptBlockMappingSchema = StrictObject({
+	blockId: Id,
+	entryId: Id,
+	viewIndex: Type.Integer({ minimum: 0 }),
+});
+export type TranscriptBlockMapping = Static<typeof TranscriptBlockMappingSchema>;
+
 export const TranscriptItemSchema = StrictObject({
 	entryId: Id,
 	parentId: Type.Union([Id, Type.Null()]),
@@ -694,6 +717,8 @@ export const TranscriptItemSchema = StrictObject({
 	kind: Type.String({ minLength: 1 }),
 	payload: JsonValueSchema,
 	view: Type.Optional(TranscriptViewItemSchema),
+	/** 文本与思考片段在条目内的顺序位置；同一条目拆成多个视图时用于保留交错顺序。 */
+	viewIndex: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 export type TranscriptItem = Static<typeof TranscriptItemSchema>;
 
@@ -2402,6 +2427,8 @@ export const ServerEventSchema = Type.Union([
 		toRevision: Type.Integer({ minimum: 0 }),
 		items: Type.Array(TranscriptItemSchema),
 		agentSteps: Type.Optional(Type.Array(AgentStepSchema, { maxItems: 512 })),
+		/** 实时块到落盘条目的映射；前端按映射交接身份，不按正文匹配。 */
+		blockMappings: Type.Optional(Type.Array(TranscriptBlockMappingSchema, { maxItems: 512 })),
 	}),
 	StrictObject({ type: Type.Literal("operation_updated"), operation: OperationSnapshotSchema }),
 	StrictObject({

@@ -54,6 +54,17 @@ describe("transcript virtualization", () => {
 		expect(resolveTranscriptFirstItemIndex(previous, ["current-1", "current-2"])).toBe(1_001);
 	});
 
+	it("组内补入更早内容时顶层 key 不变，组 key 变化时旧 key 不再作为锚点", () => {
+		// 步骤组内部补入更早内容：顶层 key 不变，阅读位置靠组内偏移恢复，不能只看 firstItemIndex。
+		const stepKeys = ["agent-step:step-1"];
+		expect(resolveTranscriptFirstItemIndex({ firstItemIndex: 1_000, itemKeys: stepKeys }, stepKeys)).toBe(1_000);
+		// 更早工具并入已有工具组：旧组 key 消失，新 key 取自更早工具，旧锚点必须失效。
+		const previous = { firstItemIndex: 1_000, itemKeys: ["tool-stack:tool-batch:current:call-2"] };
+		const next = ["tool-stack:tool-batch:older:call-1"];
+		expect(resolveTranscriptFirstItemIndex(previous, next)).toBe(1_000);
+		expect(next.includes(previous.itemKeys[0])).toBe(false);
+	});
+
 	it("uses a stable placeholder key while Virtuoso replaces session data", () => {
 		expect(safeTranscriptItemKey(3, undefined, (item: Item) => item.key)).toBe("virtual-placeholder:3");
 		expect(safeTranscriptItemKey(3, { key: "message-3", height: 20, kind: "message" }, (item) => item.key)).toBe(

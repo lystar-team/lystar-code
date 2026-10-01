@@ -528,6 +528,7 @@ export function VirtualizedConversationTranscript<T>({
 		(index: number, item: T | undefined) => renderer.itemContent(transcriptDataIndex(index, firstItemIndex), item),
 		[firstItemIndex, renderer.itemContent],
 	);
+	// Virtuoso 已通过 firstItemIndex 补偿 prepend 高度，这里不再手动补 scrollTop，避免双重补偿把内容顶下去。
 	const initialTopMostItemIndex = useMemo<IndexLocationWithAlign>(() => {
 		if (!scrollState || scrollState.atBottom) return { align: "end", index: "LAST" };
 		const anchorIndex = items.findIndex((item, index) => getKey(item, index) === scrollState.anchorKey);

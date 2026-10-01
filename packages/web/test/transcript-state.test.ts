@@ -72,6 +72,7 @@ describe("transcript pagination window", () => {
 
 	it("takes pagination from the first page even when websocket entries arrived first", () => {
 		const current = { ...empty(), transcript: decorateTranscriptItems([item("m5")]) };
+		// 首屏调用方传 prepend=true：历史页是更早内容，放前面，已存在的实时条目跟在后面。
 		const page = mergeTranscriptPage(
 			current,
 			{
@@ -79,11 +80,13 @@ describe("transcript pagination window", () => {
 				previousCursor: "before-m3",
 				hasMorePrevious: true,
 			},
-			false,
+			true,
 			true,
 		);
 		expect(page.hasMorePrevious).toBe(true);
 		expect(page.previousCursor).toBe("before-m3");
+		// 无重叠的首屏历史页不能把已存在的实时条目挤到旧页之后：顺序错误会直接显示错位。
+		expect(page.transcript.map((entry) => entry.entryId)).toEqual(["m3", "m4", "m5"]);
 	});
 
 	it("resets both content and pagination for a different history", () => {
@@ -209,6 +212,21 @@ describe("transcript state", () => {
 		const merged = mergeTranscriptEntries([], incoming, false, overrides);
 
 		expect(merged.map((entry) => entry.renderId)).toEqual(["live-text:1", "live-tools:1", "live-text:2"]);
+	});
+
+	it("显式块映射优先于正文匹配，长回复截断后仍能交接身份", () => {
+		const incoming: WebTranscriptItem[] = [
+			{ ...item("a1"), view: { type: "assistant", text: "长回复摘要…" }, viewIndex: 0 },
+		];
+		const overrides = transcriptRenderIdOverrides(
+			[{ kind: "text", id: "live-answer", parts: ["长".repeat(17_000)], blockId: "assistant:0" }],
+			undefined,
+			incoming,
+			[{ blockId: "assistant:0", entryId: "a1", viewIndex: 0 }],
+		);
+		const merged = mergeTranscriptEntries([], incoming, false, overrides);
+
+		expect(merged[0]?.renderId).toBe("live-answer");
 	});
 
 	it("preserves loaded earlier entries when the tail page refreshes", () => {

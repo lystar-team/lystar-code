@@ -12,6 +12,7 @@ import {
 	type WebCompanionServerMessage,
 	type WebCompanionSnapshot,
 	type WebCompanionSnapshotWire,
+	type WebConversationMessage,
 } from "@earendil-works/pi-coding-agent/core";
 import type {
 	CompletionResult,
@@ -136,13 +137,14 @@ export function projectAgentEvent(value: unknown): SessionProgress[] {
 	}
 	if (event.type === "message_update") {
 		const stream = record(event.assistantMessageEvent);
+		const message = record(event.message);
+		const blockId = typeof event.blockId === "string" ? event.blockId : undefined;
 		const updates: SessionProgress[] = [];
 		if (stream?.type === "text_delta" && typeof stream.delta === "string") {
-			updates.push({ type: "assistant_delta", text: stream.delta });
+			updates.push({ type: "assistant_delta", text: stream.delta, ...(blockId ? { blockId } : {}) });
 		} else if (stream?.type === "thinking_delta" && typeof stream.delta === "string") {
-			updates.push({ type: "thinking_delta", text: stream.delta });
+			updates.push({ type: "thinking_delta", text: stream.delta, ...(blockId ? { blockId } : {}) });
 		}
-		const message = record(event.message);
 		if (
 			(stream?.type === "websearch_start" ||
 				stream?.type === "websearch_update" ||
@@ -385,7 +387,7 @@ export class WebCompanionRuntime implements RuntimeSession {
 	private observed = false;
 	private heartbeat?: ReturnType<typeof setInterval>;
 	private snapshotValue: WebCompanionSnapshot;
-	private liveMessage?: { text: string; thinking: string };
+	private liveMessage?: WebConversationMessage;
 	private readonly outputSpeed = new OutputSpeedTracker();
 	private revision = 0;
 	private disposed = false;
@@ -463,11 +465,11 @@ export class WebCompanionRuntime implements RuntimeSession {
 		});
 	}
 
-	getLiveMessage(): { text: string; thinking: string } | undefined {
+	getLiveMessage(): WebConversationMessage | undefined {
 		return this.liveMessage ? { ...this.liveMessage } : undefined;
 	}
 
-	async readLiveMessage(): Promise<{ text: string; thinking: string } | undefined> {
+	async readLiveMessage(): Promise<WebConversationMessage | undefined> {
 		await this.request("snapshot");
 		return this.liveMessage ? { ...this.liveMessage } : undefined;
 	}
@@ -772,7 +774,7 @@ export class WebCompanionRuntime implements RuntimeSession {
 				throw new Error("TUI 生成内容快照无效");
 			this.liveMessage = { ...next.liveMessage };
 		}
-		if (next.phase === "idle" && this.liveMessage) this.liveMessage = { text: "", thinking: "" };
+		if (next.phase === "idle" && this.liveMessage) this.liveMessage = { text: "", thinking: "", blocks: [] };
 		this.capabilities = [...this.snapshotValue.capabilities];
 		this.revision++;
 		this.emit({ type: "state_changed", payload: this.getSnapshot("owned") as unknown as JsonValue });
@@ -817,11 +819,49 @@ export class WebCompanionRuntime implements RuntimeSession {
 			)
 				this.outputSpeed.outputDelta();
 			for (const progress of projectAgentEvent(message.event)) {
+				this.liveMessage ??= { text: "", thinking: "", blocks: [] };
 				if (this.liveMessage) {
-					if (progress.type === "assistant_delta") this.liveMessage.text += progress.text;
-					if (progress.type === "thinking_delta") this.liveMessage.thinking += progress.text;
+					if (progress.type === "assistant_delta") {
+						this.liveMessage.text += progress.text;
+						const blocks = this.liveMessage.blocks ?? [];
+						const last = blocks.at(-1);
+						if (last?.kind === "text" && progress.blockId && last.blockId === progress.blockId)
+							last.text += progress.text;
+						else
+							blocks.push({
+								blockId: progress.blockId ?? `assistant:${blocks.length}`,
+								kind: "text",
+								text: progress.text,
+							});
+						this.liveMessage.blocks = blocks;
+					}
+					if (progress.type === "thinking_delta") {
+						this.liveMessage.thinking += progress.text;
+						const blocks = this.liveMessage.blocks ?? [];
+						const last = blocks.at(-1);
+						if (last?.kind === "thinking" && progress.blockId && last.blockId === progress.blockId)
+							last.text += progress.text;
+						else
+							blocks.push({
+								blockId: progress.blockId ?? `assistant:${blocks.length}`,
+								kind: "thinking",
+								text: progress.text,
+							});
+						this.liveMessage.blocks = blocks;
+					}
+					if (
+						(progress.type === "tool_start" || progress.type === "tool_update" || progress.type === "tool_end") &&
+						!this.liveMessage.blocks.some(
+							(block) => block.kind === "tool" && block.toolCallId === progress.toolCallId,
+						)
+					)
+						this.liveMessage.blocks.push({
+							blockId: progress.toolCallId,
+							kind: "tool",
+							toolCallId: progress.toolCallId,
+						});
 					if (progress.type === "phase" && (progress.phase === "turn" || progress.phase === "idle"))
-						this.liveMessage = { text: "", thinking: "" };
+						this.liveMessage = { text: "", thinking: "", blocks: [] };
 				}
 				this.emit({ type: "progress", payload: progress });
 			}
@@ -861,6 +901,7 @@ export class WebCompanionRuntime implements RuntimeSession {
 				type: "entry_committed",
 				payload: {
 					items,
+					...(message.blockMappings?.length ? { blockMappings: message.blockMappings } : {}),
 					transcriptGeneration: message.transcriptGeneration,
 					fromRevision: message.fromRevision,
 					transcriptRevision: message.transcriptRevision,

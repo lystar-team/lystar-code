@@ -4814,6 +4814,11 @@
               "type": "string",
               "maxLength": 16384
             },
+            "blockId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
             "stepId": {
               "type": "string",
               "minLength": 1,
@@ -4836,6 +4841,11 @@
             "text": {
               "type": "string",
               "maxLength": 16384
+            },
+            "blockId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "stepId": {
               "type": "string",
@@ -7123,6 +7133,18 @@
                                     "type": "string",
                                     "maxLength": 16384
                                   },
+                                  "contentRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                  },
+                                  "contentIndices": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    }
+                                  },
                                   "images": {
                                     "type": "array",
                                     "items": {
@@ -7197,6 +7219,13 @@
                                   "text": {
                                     "type": "string",
                                     "maxLength": 16384
+                                  },
+                                  "contentIndices": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    }
                                   }
                                 },
                                 "additionalProperties": false
@@ -7860,6 +7889,10 @@
                                 "additionalProperties": false
                               }
                             ]
+                          },
+                          "viewIndex": {
+                            "type": "integer",
+                            "minimum": 0
                           }
                         },
                         "additionalProperties": false
@@ -7936,6 +7969,35 @@
                           "summary": {
                             "type": "string",
                             "maxLength": 4096
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "maxItems": 512
+                    },
+                    "blockMappings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "blockId",
+                          "entryId",
+                          "viewIndex"
+                        ],
+                        "properties": {
+                          "blockId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "entryId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "viewIndex": {
+                            "type": "integer",
+                            "minimum": 0
                           }
                         },
                         "additionalProperties": false

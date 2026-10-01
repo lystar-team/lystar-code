@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { TranscriptItem } from "@lystar/code-web-protocol";
 import { describe, expect, it } from "vitest";
 import { ContentStore } from "../src/content-store.ts";
-import { projectTranscriptItem } from "../src/transcript-projection.ts";
+import { projectTranscriptBatch, projectTranscriptItem } from "../src/transcript-projection.ts";
 
 function imageItem(data: string): TranscriptItem {
 	return {
@@ -55,6 +55,38 @@ function textReference(item: TranscriptItem): { contentRef: string } {
 }
 
 describe("ContentStore", () => {
+	it("长 Assistant 投影保留可读取全文，拆分视图不重复携带大正文", () => {
+		const store = new ContentStore();
+		const sessionPath = "/tmp/assistant-session.jsonl";
+		const text = `${"长正文中文".repeat(30000)}末尾标记`;
+		const source: TranscriptItem = {
+			...toolResultItem(text),
+			payload: {
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text },
+						{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
+					],
+				},
+			},
+		};
+		const views = projectTranscriptBatch([store.compactTranscriptItem(sessionPath, source)]).map((item) =>
+			store.compactAssistantTranscriptItem(sessionPath, item),
+		);
+		const assistant = views[0]?.view;
+		expect(assistant?.type).toBe("assistant");
+		if (assistant?.type !== "assistant" || !assistant.contentRef) throw new Error("缺少全文引用");
+		expect(assistant.text.length).toBe(16384);
+		expect(
+			Buffer.from(
+				store.read(sessionPath, assistant.contentRef, 0, Buffer.byteLength(text)).data,
+				"base64",
+			).toString(),
+		).toBe(text);
+		expect(JSON.stringify(views).length).toBeLessThan(100000);
+	});
+
 	it("moves transcript image bytes behind a Session-bound content reference", () => {
 		const store = new ContentStore();
 		const bytes = Buffer.from("real-image-bytes");

@@ -65,8 +65,8 @@ export interface LiveTool {
 }
 
 export type LiveTurnItem =
-	| { id: string; kind: "text"; parts: readonly string[]; turnId: number; stepId?: string }
-	| { id: string; kind: "thinking"; parts: readonly string[]; turnId: number; stepId?: string }
+	| { id: string; kind: "text"; parts: readonly string[]; turnId: number; stepId?: string; blockId?: string }
+	| { id: string; kind: "thinking"; parts: readonly string[]; turnId: number; stepId?: string; blockId?: string }
 	| { id: string; kind: "tools"; turnId: number; batchId: string; toolIds: string[] }
 	| { id: string; kind: "compaction"; turnId: number; stepId?: string }
 	| {
@@ -133,6 +133,8 @@ export interface WorkbenchState {
 	liveTurnActive?: boolean;
 	lastOutputSpeed?: { outputTokens: number; elapsedMs: number };
 	liveCompaction?: LiveCompactionState;
+	/** Runtime 确认的回合终态：turnId → completed/failed/aborted，用于折叠已结束回合。 */
+	settledTurns: Record<string, "completed" | "failed" | "aborted">;
 	promptScrollRequest?: number;
 	unreadSessionIds: Record<string, true>;
 	statusText: string;

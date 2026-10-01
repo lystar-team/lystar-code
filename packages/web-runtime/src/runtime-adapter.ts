@@ -67,6 +67,7 @@ import {
 	getSupportedThinkingLevels,
 	getToolRecoveryDoctorReport,
 	getToolRecoveryMode,
+	getWebConversationStream,
 	hasTrustRequiringProjectResources,
 	importHarnessResources,
 	isNewerPackageVersion,
@@ -1509,7 +1510,7 @@ function bashOutput(value: unknown): string | undefined {
 	return `${output}\n${BASH_TRUNCATION_MARKER}`;
 }
 
-export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgress[] {
+export function projectRuntimeProgress(event: AgentSessionEvent, blockId?: string): SessionProgress[] {
 	if ("toolName" in event && AGENT_STEP_TOOL_NAMES.has(event.toolName)) return [];
 	switch (event.type) {
 		case "message_start":
@@ -1527,8 +1528,10 @@ export function projectRuntimeProgress(event: AgentSessionEvent): SessionProgres
 		case "message_update": {
 			const updates: SessionProgress[] = [];
 			const stream = event.assistantMessageEvent;
-			if (stream.type === "text_delta") updates.push({ type: "assistant_delta", text: stream.delta });
-			else if (stream.type === "thinking_delta") updates.push({ type: "thinking_delta", text: stream.delta });
+			if (stream.type === "text_delta")
+				updates.push({ type: "assistant_delta", text: stream.delta, ...(blockId ? { blockId } : {}) });
+			else if (stream.type === "thinking_delta")
+				updates.push({ type: "thinking_delta", text: stream.delta, ...(blockId ? { blockId } : {}) });
 			else if (
 				(stream.type === "websearch_start" ||
 					stream.type === "websearch_update" ||
@@ -1864,15 +1867,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		return path;
 	}
 
-	getLiveMessage(): { text: string; thinking: string; stepId?: string } {
-		const result: { text: string; thinking: string; stepId?: string } = { text: "", thinking: "" };
-		const message = this.runtime.session.agent.state.streamingMessage;
-		if (message?.role === "assistant") {
-			for (const part of message.content) {
-				if (part.type === "text") result.text += part.text;
-				if (part.type === "thinking") result.thinking += part.thinking;
-			}
-		}
+	getLiveMessage() {
+		const result = getWebConversationStream(this.runtime.session).getLiveMessage();
 		const stepId = this.stepController.activeStep?.id;
 		return stepId ? { ...result, stepId } : result;
 	}
@@ -2594,7 +2590,9 @@ class CoreRuntimeSession implements RuntimeSession {
 			queueMicrotask(() => this.emitCommittedEntries());
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});
+		const conversationStream = getWebConversationStream(session);
 		this.unsubscribe = session.subscribe((event) => {
+			conversationStream.apply(event);
 			this.stateRevision++;
 			if (event.type === "agent_start") this.turnAssistantText = undefined;
 			if (
@@ -2677,7 +2675,14 @@ class CoreRuntimeSession implements RuntimeSession {
 			if (event.type === "message_end" || event.type === "entry_appended") {
 				queueMicrotask(() => this.emitCommittedEntries());
 			}
-			for (const progress of projectRuntimeProgress(event)) {
+			const contentIndex =
+				event.type === "message_update" && "contentIndex" in event.assistantMessageEvent
+					? event.assistantMessageEvent.contentIndex
+					: undefined;
+			for (const progress of projectRuntimeProgress(
+				event,
+				contentIndex === undefined ? undefined : conversationStream.blockId(contentIndex),
+			)) {
 				this.emit({ type: "progress", payload: progressWithAgentStep(progress, this.stepController) });
 			}
 			if (event.type === "message_end" && event.message.role === "assistant") {
@@ -2798,6 +2803,8 @@ class CoreRuntimeSession implements RuntimeSession {
 		}
 		const emittedEntries = entries.filter((entry) => includedEntryIds.has(entry.id));
 		const agentSteps = this.stepController.stepsForEntries(transcriptEntries);
+		// 落盘条目按 entryId+viewIndex 映射回实时块：前端不再按正文猜测身份。
+		const blockMappings = getWebConversationStream(session).mappingsForEntries(emittedEntries);
 		this.committedEntryCount = entries.length;
 		const storage = sessionGeneration(this.sessionPath, session.sessionId);
 		const fromRevision = this.lastTranscriptGeneration === storage.generation ? this.lastTranscriptRevision : 0;
@@ -2808,6 +2815,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			payload: jsonValue({
 				items: emittedEntries.map(entryItem),
 				...(agentSteps.length > 0 ? { agentSteps } : {}),
+				...(blockMappings.length > 0 ? { blockMappings } : {}),
 				transcriptGeneration: storage.generation,
 				fromRevision,
 				transcriptRevision: storage.revision,

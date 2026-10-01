@@ -498,10 +498,19 @@ export class ModelRuntime implements Models {
 				? ({ ...imageModel, headers: { ...imageModel.headers, ...attributionHeaders } } as ImageModel<ImageApi>)
 				: imageModel;
 			const prepared = await this.prepareRequest(preparedModel, options as ModelsImagesOptions | undefined);
-			if (!prepared.provider.generateImages) {
-				throw new ModelsError("provider", `Provider ${imageModel.provider} does not support image generation`);
+			if (prepared.provider.generateImages) {
+				return await prepared.provider.generateImages(prepared.model, context, prepared.options as ImagesOptions);
 			}
-			return await prepared.provider.generateImages(prepared.model, context, prepared.options as ImagesOptions);
+			// Built-in OpenAI and OpenAI Codex image providers exist only in the image registry,
+			// while the chat provider of the same id has no image implementation.
+			if (this.imageModels.getProvider(imageModel.provider)) {
+				return await this.imageModels.generateImages(
+					prepared.model as ImagesModel<ImagesApi>,
+					context,
+					prepared.options as ImagesOptions,
+				);
+			}
+			throw new ModelsError("provider", `Provider ${imageModel.provider} does not support image generation`);
 		} catch (error) {
 			return imageErrorResult(imageModel, error, options?.signal?.aborted);
 		}

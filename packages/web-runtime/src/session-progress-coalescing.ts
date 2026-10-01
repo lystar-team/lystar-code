@@ -5,7 +5,7 @@ export function sessionProgressKey(progress: SessionProgress): string | undefine
 	switch (progress.type) {
 		case "assistant_delta":
 		case "thinking_delta":
-			return `${progress.type}:${progress.stepId ?? ""}`;
+			return `${progress.type}:${progress.stepId ?? ""}:${progress.blockId ?? ""}`;
 		case "phase":
 		case "queue_update":
 		case "status":
@@ -52,17 +52,27 @@ export function mergeSessionProgress(left: SessionProgress, right: SessionProgre
 			...(right.name === "web_search" && webSearch ? { summary: webSearchProgressSummary(webSearch) } : {}),
 		};
 	}
-	if (left.type === "assistant_delta" && right.type === "assistant_delta")
+	if (
+		left.type === "assistant_delta" &&
+		right.type === "assistant_delta" &&
+		(left.blockId ?? "") === (right.blockId ?? "")
+	)
 		return {
 			type: "assistant_delta",
 			text: left.text + right.text,
 			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+			...((right.blockId ?? left.blockId) ? { blockId: right.blockId ?? left.blockId } : {}),
 		};
-	if (left.type === "thinking_delta" && right.type === "thinking_delta")
+	if (
+		left.type === "thinking_delta" &&
+		right.type === "thinking_delta" &&
+		(left.blockId ?? "") === (right.blockId ?? "")
+	)
 		return {
 			type: "thinking_delta",
 			text: left.text + right.text,
 			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+			...((right.blockId ?? left.blockId) ? { blockId: right.blockId ?? left.blockId } : {}),
 		};
 	return right;
 }

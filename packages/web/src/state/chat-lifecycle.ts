@@ -254,7 +254,9 @@ export function reconcileCommittedTurn(
 	current: WorkbenchState,
 	items: readonly WebTranscriptItem[],
 	revision: number,
+	blockMappings?: ReadonlyArray<{ blockId: string }>,
 ): WorkbenchState {
+	const committedBlocks = new Set(blockMappings?.map((mapping) => mapping.blockId));
 	const assistantCommitted =
 		revision > (current.liveTurnStartRevision ?? -1) &&
 		items.some((item) => ["assistant", "thinking", "tool_call"].includes(item.view?.type ?? ""));
@@ -264,6 +266,9 @@ export function reconcileCommittedTurn(
 		...(assistantCommitted ? { liveTurnStartRevision: revision } : {}),
 		liveTurnItems: current.liveTurnItems.flatMap((item): LiveTurnItem[] => {
 			if (item.kind === "user") return [item];
+			if (item.kind === "text" || item.kind === "thinking") {
+				return item.blockId ? (committedBlocks.has(item.blockId) ? [] : [item]) : assistantCommitted ? [] : [item];
+			}
 			if (item.kind !== "tools") return assistantCommitted ? [] : [item];
 			const toolIds = item.toolIds.filter((id) => !callIds.has(id));
 			return toolIds.length ? [{ ...item, toolIds }] : [];

@@ -72,6 +72,7 @@ export function useWorkbenchProgressActions({
 								`live-turn:${liveTurnItemRef.current++}`,
 								current.liveTurnId,
 								progress.stepId,
+								progress.blockId,
 							),
 							statusText: "正在生成回复",
 						};
@@ -86,6 +87,7 @@ export function useWorkbenchProgressActions({
 								`live-thinking:${liveTurnItemRef.current++}`,
 								current.liveTurnId,
 								progress.stepId,
+								progress.blockId,
 							),
 							statusText: "正在思考",
 						};
@@ -304,6 +306,7 @@ export function useWorkbenchProgressActions({
 							...(progress.phase === "turn"
 								? {
 										liveTurnStartRevision: current.transcriptRevision,
+										settledTurns: {},
 										lastOutputSpeed: undefined,
 										liveTurnActive: true,
 										liveTurnItems,
@@ -396,7 +399,7 @@ export function useWorkbenchProgressActions({
 		for (const entry of pending) {
 			if (entry.selection !== selection || entry.sessionId !== sessionId) continue;
 			const progress = entry.progress;
-			if (batch && batch.type === progress.type && batch.stepId === progress.stepId) {
+			if (batch && batch.type === progress.type && batch.stepId === progress.stepId && batch.blockId === progress.blockId) {
 				batch = { ...batch, text: batch.text + progress.text };
 				continue;
 			}
@@ -416,7 +419,8 @@ export function useWorkbenchProgressActions({
 					previous?.selection === selection &&
 					previous.sessionId === sessionId &&
 					previous.progress.type === progress.type &&
-					previous.progress.stepId === progress.stepId
+					previous.progress.stepId === progress.stepId &&
+					previous.progress.blockId === progress.blockId
 				) {
 					pending[pending.length - 1] = {
 						selection,

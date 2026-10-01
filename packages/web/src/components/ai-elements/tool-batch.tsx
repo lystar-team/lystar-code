@@ -625,7 +625,7 @@ function ToolActivityRow({
 	const outcomeUncertain = tool.name === "bash" && tool.state === "output-available" && commandPresentation(toolTitle(tool)).resultUncertain;
 	const status = outcomeUncertain ? "已执行" : activityStatusLabel(tool.state, tool.preparing && tool.name !== "edit");
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
+		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0" data-transcript-anchor-key={`tool:${tool.id}`}>
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
 					aria-label={`${title}，${status}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
@@ -1221,7 +1221,7 @@ function ToolBatchRow({
 	}, [active, autoCollapseWhenComplete, tool.name]);
 
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
+		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)} data-transcript-anchor-key={`tool:${tool.id}`}>
 			<CollapsibleTrigger asChild>
 				<button
 					data-transcript-resize-anchor

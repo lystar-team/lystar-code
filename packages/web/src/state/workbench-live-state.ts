@@ -36,12 +36,42 @@ export function appendLiveTextBlock(
 	id: string,
 	turnId: number,
 	stepId?: string,
+	blockId?: string,
 ): LiveTurnItem[] {
 	if (!text) return items;
 	const last = items.at(-1);
-	if (last?.kind === kind && last.turnId === turnId && last.stepId === stepId)
+	if (last?.kind === kind && last.turnId === turnId && last.stepId === stepId && last.blockId === blockId)
 		return [...items.slice(0, -1), { ...last, parts: [...last.parts, text] }];
-	return [...items, { id, kind, parts: [text], turnId, ...(stepId ? { stepId } : {}) }];
+	return [...items, { id, kind, parts: [text], turnId, ...(stepId ? { stepId } : {}), ...(blockId ? { blockId } : {}) }];
+}
+
+export function restoreLiveMessage(
+	current: WorkbenchState,
+	blocks: ReadonlyArray<{ blockId: string; kind: "text" | "thinking"; text: string } | { blockId: string; kind: "tool"; toolCallId: string }>,
+	stepId?: string,
+): WorkbenchState {
+	const items: LiveTurnItem[] = current.liveTurnItems.filter((item) => item.kind === "user" || item.kind === "compaction");
+	const persistedTools = committedToolCallIds(current.transcript);
+	for (const block of blocks) {
+		if (block.kind === "tool") {
+			if (persistedTools.has(block.toolCallId)) continue;
+			const existing = current.liveTurnItems.find((item) => item.kind === "tools" && item.toolIds.includes(block.toolCallId));
+			const tool = current.liveTools[block.toolCallId];
+			if (existing?.kind === "tools") items.push({ ...existing, toolIds: [block.toolCallId] });
+			else items.push({ id: `restored-tool:${block.toolCallId}`, kind: "tools", turnId: current.liveTurnId, batchId: tool?.batchId ?? `restored-tool:${block.toolCallId}`, toolIds: [block.toolCallId] });
+			continue;
+		}
+		const existing = current.liveTurnItems.find((item) => (item.kind === "text" || item.kind === "thinking") && item.blockId === block.blockId);
+		items.push({ id: existing?.id ?? `restored:${block.blockId}`, kind: block.kind, blockId: block.blockId, parts: [block.text], turnId: current.liveTurnId, ...(stepId ? { stepId } : {}) });
+	}
+	const recoveredTools = new Set(items.flatMap((item) => item.kind === "tools" ? item.toolIds : []));
+	for (const item of current.liveTurnItems) {
+		if (item.kind === "tools") {
+			const toolIds = item.toolIds.filter((id) => !persistedTools.has(id) && !recoveredTools.has(id));
+			if (toolIds.length) items.push({ ...item, toolIds });
+		}
+	}
+	return { ...current, liveTurnItems: items, liveTurnActive: items.some((item) => item.kind !== "user") };
 }
 
 export function appendLiveToolBlock(
@@ -90,7 +120,7 @@ export function detachFinalTextFromCompletedStep(
 		const item = items[index];
 		if (item?.kind !== "text") continue;
 		if (item.stepId !== lastCompletedStep.id) return items;
-		const detached: LiveTurnItem = { id: item.id, kind: "text", parts: item.parts, turnId: item.turnId };
+		const { stepId: _stepId, ...detached } = item;
 		return [...items.slice(0, index), detached, ...items.slice(index + 1)];
 	}
 	return items;
@@ -355,14 +385,40 @@ export function restoreToolActivities(current: WorkbenchState, snapshot: WebSess
 	) {
 		return current;
 	}
+	// 快照恢复只更新工具状态，不重排已有块：保留文本与工具的相对顺序，只补快照新增的工具。
+	const incoming = new Map((snapshot.toolActivities ?? []).map((activity) => [activity.toolCallId, activity]));
+	const liveTools: WorkbenchState["liveTools"] = {};
+	for (const [toolCallId, tool] of Object.entries(current.liveTools)) {
+		if (incoming.has(toolCallId)) liveTools[toolCallId] = tool;
+	}
 	let next: WorkbenchState = {
 		...current,
 		toolActivityEpoch: snapshot.toolActivityEpoch,
 		toolActivityRevision: snapshot.toolActivityRevision,
-		liveTools: {},
-		liveTurnItems: current.liveTurnItems.filter((item) => item.kind !== "tools"),
+		liveTools,
+		liveTurnItems: current.liveTurnItems.flatMap((item): LiveTurnItem[] => {
+			if (item.kind !== "tools") return [item];
+			const toolIds = item.toolIds.filter((id) => incoming.has(id));
+			return toolIds.length ? [{ ...item, toolIds }] : [];
+		}),
 	};
 	for (const activity of snapshot.toolActivities ?? []) {
+		// 已有工具块保留位置，只更新状态；快照新增的工具才追加到末尾。
+		if (next.liveTools[activity.toolCallId]) {
+			next = {
+				...next,
+				liveTools: {
+					...next.liveTools,
+					[activity.toolCallId]: liveToolFromActivity(
+						activity,
+						next.liveTools[activity.toolCallId],
+						next.liveTools[activity.toolCallId]?.batchId ??
+							`live-tool-batch:${activity.activityEpoch}:${activity.toolCallId}`,
+					),
+				},
+			};
+			continue;
+		}
 		const batchId = nextLiveToolBatchId(
 			next,
 			activity.name,
@@ -525,6 +581,7 @@ export function applySubagentProgress(
 					nextLiveItemId(),
 					current.liveTurnId,
 					progress.stepId,
+					progress.blockId,
 				),
 				statusText: "正在生成回复",
 			};
@@ -539,9 +596,10 @@ export function applySubagentProgress(
 					nextLiveItemId(),
 					current.liveTurnId,
 					progress.stepId,
-				),
+					progress.blockId,
+					),
 				statusText: "正在思考",
-			};
+				};
 		case "user_message": {
 				if (current.liveTurnItems.some((item) => item.kind === "user" && item.text === progress.text)) return current;
 				const id = nextLiveItemId();

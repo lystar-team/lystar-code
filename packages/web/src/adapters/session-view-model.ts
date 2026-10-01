@@ -3,6 +3,13 @@ import type { WebTranscriptItem } from "../types.ts";
 
 export type ToolVisualState = "input-available" | "output-available" | "output-error";
 
+export const ASSISTANT_TEXT_DISPLAY_LIMIT = 16_384;
+
+export function splitAssistantDisplayText(text: string): { text: string; fullText?: string; truncated?: boolean } {
+	if (text.length <= ASSISTANT_TEXT_DISPLAY_LIMIT) return { text };
+	return { text: `${text.slice(0, ASSISTANT_TEXT_DISPLAY_LIMIT - 1)}…`, fullText: text, truncated: true };
+}
+
 export interface TranscriptAttachmentViewModel {
 	id: string;
 	filename: string;
@@ -47,6 +54,9 @@ export type SessionItemViewModel =
 			kind: "message";
 			role: "user" | "assistant" | "system";
 			text: string;
+			fullText?: string;
+			contentRef?: string;
+			truncated?: boolean;
 			timestamp: string;
 			attachments: TranscriptAttachmentViewModel[];
 			sources: string[];
@@ -92,10 +102,14 @@ export function toSessionItemViewModel(
 	}
 
 	if (view.type === "user" || view.type === "assistant" || view.type === "custom_message") {
+		// 长回复默认显示截断，消息内展开读全文：复制走全文，不走截断摘要。
+		const assistantText = view.type === "assistant" ? splitAssistantDisplayText(view.text) : { text: view.text };
 		return {
 			kind: "message",
 			role: view.type === "custom_message" ? "system" : view.type,
-			text: view.text,
+			text: assistantText.text,
+			...(assistantText.fullText ? { fullText: assistantText.fullText, truncated: true } : {}),
+			...(view.type === "assistant" && view.contentRef ? { contentRef: view.contentRef, truncated: true } : {}),
 			timestamp: item.timestamp,
 			attachments: [
 				...(view.images ?? []).map((image, index) => ({

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复内置 OpenAI 与 Codex 生图模型在 `imageModelProviders` 指定自定义 Provider 后报“Provider openai does not support image generation”的问题：聊天 Provider 缺少生图实现时改走图片专用注册表，沿用自定义 Provider 的地址与鉴权。
+
 ## [0.99.2-lystar.1] - 2026-10-01
 
 ### Added

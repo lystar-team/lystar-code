@@ -1,5 +1,6 @@
 import { Check, Clipboard, Pencil, Trash2 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { readTranscriptText } from "../../adapters/transcript-content.ts";
 import { cn } from "../../lib/utils";
 import { Attachment, AttachmentInfo, AttachmentPreview, Attachments } from "../ai-elements/attachments";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse, PromptResponse } from "../ai-elements/message";
@@ -12,6 +13,10 @@ import type { WorkbenchActions } from "./types";
 export const TranscriptMessageView = memo(function TranscriptMessageView({
 	role,
 	text,
+	fullText,
+	contentRef,
+	truncated,
+	onExpansionIntent,
 	durationLabel,
 	statusLabel,
 	attachments = [],
@@ -26,6 +31,10 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 }: {
 	role: "user" | "assistant" | "system";
 	text: string;
+	fullText?: string;
+	contentRef?: string;
+	truncated?: boolean;
+	onExpansionIntent?: () => void;
 	durationLabel?: string;
 	statusLabel?: string;
 	attachments?: Array<{ id: string; filename: string; mediaType: string; url: string }>;
@@ -38,6 +47,18 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 	onRemove?: () => void;
 	mode?: "static" | "streaming";
 }) {
+	const fullTextRequest = useRef<{ key: string; promise: Promise<string> }>();
+	const readFullText = useCallback(() => {
+		if (fullText !== undefined) return Promise.resolve(fullText);
+		if (!contentRef) return Promise.resolve(text);
+		if (!sessionId) return Promise.reject(new Error("缺少全文所属会话"));
+		const key = `${sessionId}:${contentRef}`;
+		if (fullTextRequest.current?.key === key) return fullTextRequest.current.promise;
+		const promise = readTranscriptText(sessionId, contentRef);
+		fullTextRequest.current = { key, promise };
+		void promise.catch(() => { if (fullTextRequest.current?.promise === promise) fullTextRequest.current = undefined; });
+		return promise;
+	}, [contentRef, fullText, sessionId, text]);
 	return (
 		<Message
 			from={role}
@@ -61,16 +82,16 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 					) : role === "user" ? (
 						<PromptResponse>{text || " "}</PromptResponse>
 					) : (
-						<MessageResponse
+						<ExpandableAssistantText
+							text={text}
+							fullText={fullText}
+							readFullText={readFullText}
+							onExpansionIntent={onExpansionIntent}
+							truncated={truncated}
 							mode={mode}
-							parseIncompleteMarkdown
-							linkSafety={{ enabled: true }}
-							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
-							onOpenPath={(path) => void onOpenPath(path)}
+							onOpenPath={onOpenPath}
 							projectId={projectId}
-						>
-							{text || " "}
-						</MessageResponse>
+						/>
 					)}
 				</StabilityBoundary>
 				<TranscriptAttachments attachments={attachments} sessionId={sessionId} />
@@ -87,7 +108,8 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 			</MessageContent>
 			{((role === "user" && (text || attachments.length > 0)) || (role === "assistant" && text)) ? (
 				<MessageActionBar
-					text={text}
+					text={fullText ?? text}
+					readText={readFullText}
 					role={role}
 					visible={role === "user" || showCopy}
 					onEdit={role === "user" ? onEdit : undefined}
@@ -97,6 +119,68 @@ export const TranscriptMessageView = memo(function TranscriptMessageView({
 		</Message>
 	);
 });
+
+function ExpandableAssistantText({
+	text,
+	fullText,
+	readFullText,
+	onExpansionIntent,
+	truncated,
+	mode,
+	onOpenPath,
+	projectId,
+}: {
+	text: string;
+	fullText?: string;
+	readFullText: () => Promise<string>;
+	onExpansionIntent?: () => void;
+	truncated?: boolean;
+	mode: "static" | "streaming";
+	onOpenPath: WorkbenchActions["openResource"];
+	projectId?: string;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const [loadedText, setLoadedText] = useState(fullText);
+	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string>();
+	const displayText = expanded ? loadedText ?? text : text;
+	return (
+		<div className="min-w-0">
+			<MessageResponse
+				mode={mode}
+				parseIncompleteMarkdown
+				linkSafety={{ enabled: true }}
+				controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+				onOpenPath={(path) => void onOpenPath(path)}
+				projectId={projectId}
+			>
+				{displayText || " "}
+			</MessageResponse>
+			{truncated ? (
+				<button
+					type="button"
+					className="mt-1 text-xs text-muted-foreground underline-offset-4 hover:underline"
+					disabled={loading}
+					onClick={() => {
+						onExpansionIntent?.();
+						if (expanded) { setExpanded(false); return; }
+						setLoading(true);
+						setError(undefined);
+						void readFullText().then((value) => {
+							onExpansionIntent?.();
+							setLoadedText(value);
+							setExpanded(true);
+						}).catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)))
+							.finally(() => setLoading(false));
+					}}
+				>
+					{loading ? "正在读取全文" : expanded ? "收起全文" : "展开全文"}
+				</button>
+			) : null}
+			{error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+		</div>
+	);
+}
 
 function TranscriptSources({ urls }: { urls: string[] }) {
 	if (!urls.length) return null;
@@ -199,18 +283,21 @@ function copyTextWithSelection(text: string): void {
 
 function MessageActionBar({
 	text,
+	readText,
 	role,
 	visible,
 	onEdit,
 	onRemove,
 }: {
 	text: string;
+	readText: () => Promise<string>;
 	role: "user" | "assistant";
 	visible: boolean;
 	onEdit?: () => void;
 	onRemove?: () => void;
 }) {
 	const [copied, setCopied] = useState(false);
+	const [copyError, setCopyError] = useState<string>();
 	const [tooltipOpen, setTooltipOpen] = useState(false);
 	const timeoutRef = useRef(0);
 	const label = role === "user" ? "复制" : "复制回复";
@@ -224,12 +311,14 @@ function MessageActionBar({
 
 	const copy = async () => {
 		try {
-			await copyTextToClipboard(text);
+			setCopyError(undefined);
+			await copyTextToClipboard(await readText());
 			setCopied(true);
 			window.clearTimeout(timeoutRef.current);
 			timeoutRef.current = window.setTimeout(() => setCopied(false), 1600);
-		} catch {
+		} catch (error) {
 			setCopied(false);
+			setCopyError(error instanceof Error ? error.message : String(error));
 		}
 	};
 	return (
@@ -259,6 +348,7 @@ function MessageActionBar({
 			>
 				{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}
 			</MessageAction> : null}
+			{copyError ? <span className="text-xs text-destructive" role="alert">{copyError}</span> : null}
 		</MessageActions>
 	);
 }

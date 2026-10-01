@@ -3618,6 +3618,7 @@ export class WebGatewayServer {
 								sessionId,
 								text: live.text,
 								thinking: live.thinking,
+								blocks: live.blocks,
 								...(typeof live.stepId === "string" ? { stepId: live.stepId } : {}),
 							});
 						},
@@ -3756,6 +3757,20 @@ export class WebGatewayServer {
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			});
 			sendJson(response, 200, result);
+			return;
+		}
+		if (parts.length === 5 && parts[3] === "content" && request.method === "GET") {
+			const offset = Number(url.searchParams.get("offset") ?? 0);
+			if (!Number.isSafeInteger(offset) || offset < 0)
+				throw new HttpError(400, "content_offset_invalid", "内容偏移无效");
+			const content = await client.request<JsonValue>({
+				command: "read_content",
+				sessionPath: session.path,
+				contentRef: parts[4],
+				offset,
+				limit: 256 * 1024,
+			});
+			sendJson(response, 200, content);
 			return;
 		}
 		if (parts.length === 6 && parts[3] === "content" && parts[5] === "image" && request.method === "GET") {
@@ -4753,6 +4768,9 @@ export class WebGatewayServer {
 		if (event.type === "turn_settled") {
 			if (context === this.pushContext && event.outcome !== "aborted")
 				void this.sendTurnPush(event).catch((error: unknown) => console.warn("回合推送失败", error));
+			// turn_settled 同时是页面事件：广播给订阅该会话的页面，用于确认回合结束关系。
+			const projected = this.projectEvent(event);
+			if (projected && context.sockets.size > 0) this.broadcast(context, projected);
 			return;
 		}
 		if (event.type === "model_catalog_changed") {
@@ -4936,6 +4954,7 @@ export class WebGatewayServer {
 						toRevision: event.toRevision,
 						items: event.items.map(publicTranscriptItem),
 						...(event.agentSteps?.length ? { agentSteps: event.agentSteps } : {}),
+						...(event.blockMappings?.length ? { blockMappings: event.blockMappings } : {}),
 					}
 				: undefined;
 		}
@@ -4960,6 +4979,18 @@ export class WebGatewayServer {
 				type: "operation_updated",
 				operation: publicOperation(event.operation, sessionId),
 			};
+		}
+		if (event.type === "turn_settled") {
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
+			return sessionId
+				? {
+						type: "turn_settled",
+						sessionId,
+						turnId: event.turnId,
+						outcome: event.outcome,
+						text: event.text,
+					}
+				: undefined;
 		}
 		if (event.type === "ui_request")
 			return {

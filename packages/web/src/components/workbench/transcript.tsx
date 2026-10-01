@@ -61,6 +61,9 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 			<TranscriptMessageView
 				role={viewModel.role}
 				text={viewModel.text}
+				fullText={viewModel.fullText}
+				contentRef={viewModel.contentRef}
+				truncated={viewModel.truncated}
 				attachments={viewModel.attachments}
 				sources={viewModel.sources}
 				showCopy={showCopy}

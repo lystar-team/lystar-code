@@ -67,6 +67,16 @@ export function useConversationScroll({
 	const [followOutput, setFollowOutput] = useState<false | "auto">(false);
 	const promptScrollRequestRef = useRef(promptScrollRequest);
 	const promptFollowRef = useRef(false);
+	const scrollOperationRef = useRef(0);
+	const cancelScrollOperation = useCallback(() => {
+		scrollOperationRef.current += 1;
+		scrollToBottomTweenRef.current?.kill();
+		scrollToBottomTweenRef.current = null;
+		if (scrollToBottomSettleTimerRef.current !== undefined) {
+			window.clearTimeout(scrollToBottomSettleTimerRef.current);
+			scrollToBottomSettleTimerRef.current = undefined;
+		}
+	}, []);
 	const handleVirtuosoRef = useCallback((handle: VirtuosoHandle | null) => {
 		virtuosoRef.current = handle;
 	}, []);
@@ -77,13 +87,9 @@ export function useConversationScroll({
 		virtuosoRef.current?.scrollToIndex({ align: "end", behavior: "auto", index: "LAST" });
 	}, []);
 	const animateScrollToBottom = useCallback(() => {
+		cancelScrollOperation();
+		const operation = scrollOperationRef.current;
 		const scroller = transcriptScrollerRef.current;
-		scrollToBottomTweenRef.current?.kill();
-		scrollToBottomTweenRef.current = null;
-		if (scrollToBottomSettleTimerRef.current !== undefined) {
-			window.clearTimeout(scrollToBottomSettleTimerRef.current);
-			scrollToBottomSettleTimerRef.current = undefined;
-		}
 		if (!scroller) {
 			setFollowOutput("auto");
 			scrollToBottom();
@@ -92,6 +98,7 @@ export function useConversationScroll({
 		let stableFrames = 0;
 		let previousMaxScrollTop = -1;
 		const settleAtBottom = () => {
+			if (scrollOperationRef.current !== operation) return;
 			const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
 			const heightStable = Math.abs(maxScrollTop - previousMaxScrollTop) < 0.5;
 			const alreadyAtBottom = Math.abs(maxScrollTop - scroller.scrollTop) < 0.5;
@@ -124,6 +131,7 @@ export function useConversationScroll({
 			overwrite: "auto",
 			value: 1,
 			onUpdate: () => {
+				if (scrollOperationRef.current !== operation) return;
 				const currentMaxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
 				scroller.scrollTop = startScrollTop + (currentMaxScrollTop - startScrollTop) * progress.value;
 			},
@@ -133,7 +141,7 @@ export function useConversationScroll({
 		});
 		scrollToBottomTweenRef.current = tween;
 		scrollToBottomSettleTimerRef.current = window.setTimeout(settleAtBottom, 500);
-	}, [scrollToBottom]);
+	}, [scrollToBottom, cancelScrollOperation]);
 	const handleScrollStateCapture = useCallback(
 		(sessionId: string, scrollState: ConversationTranscriptScrollState) => {
 			if (sessionId !== activeSessionIdRef.current) return;
@@ -150,9 +158,13 @@ export function useConversationScroll({
 	);
 	const handleAtBottomStateChange = useCallback(
 		(atBottom: boolean) => {
+			// 历史补入期间的底部状态不可信：等加载结束后的下一次状态再决定是否跟随。
 			if (readingEarlierRef.current) {
-				setIsAtBottom(false);
-				return;
+				if (!loadingEarlier) readingEarlierRef.current = false;
+				else {
+					setIsAtBottom(false);
+					return;
+				}
 			}
 			setIsAtBottom(atBottom);
 			if (atBottom) {
@@ -160,23 +172,19 @@ export function useConversationScroll({
 				setFollowOutput("auto");
 			}
 		},
-		[],
+		[loadingEarlier],
 	);
 	const pauseFollowOutput = useCallback(() => {
+		cancelScrollOperation();
 		promptFollowRef.current = false;
 		setFollowOutput(false);
-	}, []);
+	}, [cancelScrollOperation]);
 	const handleUserScrollAway = useCallback(() => {
-		scrollToBottomTweenRef.current?.kill();
-		scrollToBottomTweenRef.current = null;
-		if (scrollToBottomSettleTimerRef.current !== undefined) {
-			window.clearTimeout(scrollToBottomSettleTimerRef.current);
-			scrollToBottomSettleTimerRef.current = undefined;
-		}
+		cancelScrollOperation();
 		promptFollowRef.current = false;
 		setFollowOutput(false);
 		setIsAtBottom(false);
-	}, []);
+	}, [cancelScrollOperation]);
 	const requestEarlierHistory = useCallback(
 		(retry = false) => {
 			if (
@@ -241,8 +249,9 @@ export function useConversationScroll({
 		[tryLoadEarlierAtTop],
 	);
 	const handleUserScrollDown = useCallback(() => {
+		cancelScrollOperation();
 		upwardScrollIntentRef.current = false;
-	}, []);
+	}, [cancelScrollOperation]);
 
 	useLayoutEffect(() => {
 		if (promptScrollRequestRef.current === promptScrollRequest) return;
@@ -254,10 +263,6 @@ export function useConversationScroll({
 		scrollToBottom();
 	}, [scrollToBottom, promptScrollRequest]);
 
-	useLayoutEffect(() => {
-		if (!loadingEarlier) readingEarlierRef.current = false;
-	}, [loadingEarlier]);
-
 	useEffect(() => {
 		if (!promptFollowRef.current || responseActive) return;
 		const frame = window.requestAnimationFrame(() => {
@@ -268,16 +273,11 @@ export function useConversationScroll({
 	}, [responseActive]);
 
 	useLayoutEffect(() => {
+		cancelScrollOperation();
 		historyLoadRequestedCursorRef.current = undefined;
 		historyLoadInFlightRef.current = undefined;
 		readingEarlierRef.current = false;
 		upwardScrollIntentRef.current = false;
-		scrollToBottomTweenRef.current?.kill();
-		scrollToBottomTweenRef.current = null;
-		if (scrollToBottomSettleTimerRef.current !== undefined) {
-			window.clearTimeout(scrollToBottomSettleTimerRef.current);
-			scrollToBottomSettleTimerRef.current = undefined;
-		}
 		const savedScroll = sessionId ? sessionScrollStatesRef.current.get(sessionId) : undefined;
 		const atBottom = savedScroll?.atBottom ?? true;
 		resetExpandedState();
@@ -290,14 +290,9 @@ export function useConversationScroll({
 		});
 		return () => {
 			window.cancelAnimationFrame(frame);
-			scrollToBottomTweenRef.current?.kill();
-			scrollToBottomTweenRef.current = null;
-			if (scrollToBottomSettleTimerRef.current !== undefined) {
-				window.clearTimeout(scrollToBottomSettleTimerRef.current);
-				scrollToBottomSettleTimerRef.current = undefined;
-			}
+			cancelScrollOperation();
 		};
-	}, [scrollToBottom, sessionId, resetExpandedState]);
+	}, [scrollToBottom, sessionId, resetExpandedState, cancelScrollOperation]);
 
 	const handleReturnToBottom = useCallback(() => {
 		readingEarlierRef.current = false;

@@ -10,8 +10,8 @@ export interface TranscriptWindow {
 }
 
 export type LiveRenderSource =
-	| { kind: "text"; id: string; parts: readonly string[] }
-	| { kind: "thinking"; id: string }
+	| { kind: "text"; id: string; parts: readonly string[]; blockId?: string }
+	| { kind: "thinking"; id: string; blockId?: string }
 	| { kind: "tools"; id: string; toolIds: readonly string[] }
 	| { kind: "compaction"; id: string }
 	| { kind: "user"; id: string };
@@ -27,10 +27,13 @@ export function mergeTranscriptPage(
 ): TranscriptWindow {
 	// 游标属于窗口最早一页；尾页刷新不能覆盖它，包括“历史已读完”的空游标。
 	const preserveBoundary = sameHistory && !prepend && current.transcriptPageLoaded && current.transcript.length > 0;
+	// 无重叠页的顺序由调用方通过 prepend 明确：prepend=true 补更早历史放前面，
+	// prepend=false 是尾页更新放后面。首屏历史页与实时条目无重叠时，调用方应传 prepend=true。
+	const transcript = sameHistory
+		? mergeTranscriptEntries(current.transcript, page.items, prepend, renderIdOverrides)
+		: decorateTranscriptItems(page.items, [], renderIdOverrides);
 	return {
-		transcript: sameHistory
-			? mergeTranscriptEntries(current.transcript, page.items, prepend, renderIdOverrides)
-			: decorateTranscriptItems(page.items, [], renderIdOverrides),
+		transcript,
 		previousCursor: preserveBoundary ? current.previousCursor : page.previousCursor,
 		hasMorePrevious: preserveBoundary ? current.hasMorePrevious : page.hasMorePrevious,
 		transcriptPageLoaded: true,
@@ -64,9 +67,29 @@ export function transcriptRenderIdOverrides(
 	liveItems: readonly LiveRenderSource[],
 	liveCompactionKey: string | undefined,
 	items: readonly WebTranscriptItem[],
+	blockMappings?: ReadonlyArray<{ blockId: string; entryId: string; viewIndex?: number }>,
 ): TranscriptRenderIdOverrides {
 	const overrides = new Map<string, string>();
 	const renderKeys = transcriptRenderKeys(items);
+	// blockMappings 优先：Runtime 明确给出实时块到落盘条目的映射，不按正文猜测。
+	if (blockMappings?.length) {
+		const liveIdByBlockId = new Map<string, string>();
+		for (const item of liveItems) {
+			if ((item.kind === "text" || item.kind === "thinking") && item.blockId && !liveIdByBlockId.has(item.blockId))
+				liveIdByBlockId.set(item.blockId, item.id);
+		}
+		const keyByEntryView = new Map<string, string>();
+		for (let index = 0; index < items.length; index++) {
+			const item = items[index];
+			if (!item) continue;
+			keyByEntryView.set(`${item.entryId}:${item.viewIndex ?? 0}`, renderKeys[index]!);
+		}
+		for (const mapping of blockMappings) {
+			const liveId = liveIdByBlockId.get(mapping.blockId);
+			const renderKey = keyByEntryView.get(`${mapping.entryId}:${mapping.viewIndex ?? 0}`);
+			if (liveId && renderKey && !overrides.has(renderKey)) overrides.set(renderKey, liveId);
+		}
+	}
 	const textIdsByContent = new Map<string, string[]>();
 	const liveToolIdByCallId = new Map<string, string>();
 
@@ -74,6 +97,8 @@ export function transcriptRenderIdOverrides(
 		if (item.kind === "text") {
 			const content = item.parts.join("");
 			if (!content) continue;
+			// 已有显式映射的块不再参与正文匹配，避免相同正文误认领。
+			if (item.blockId) continue;
 			const ids = textIdsByContent.get(content) ?? [];
 			ids.push(item.id);
 			textIdsByContent.set(content, ids);
@@ -84,7 +109,7 @@ export function transcriptRenderIdOverrides(
 		}
 	}
 
-	// 恢复流可能先于整页 Transcript 返回，只允许与相同正文的 Assistant 投影一对一交接身份。
+	// 旧数据兜底：没有 blockMappings 的历史页仍允许相同正文一对一交接，新提交必须带映射。
 	for (let index = items.length - 1; index >= 0; index--) {
 		const view = items[index]?.view;
 		if (view?.type !== "assistant") continue;
@@ -191,7 +216,17 @@ export function mergeTranscriptEntries(
 			merged.push(item);
 		}
 	}
-	return prepend && !next.some((item) => currentIds.has(item.entryId))
-		? [...pending, ...merged]
-		: [...merged, ...pending];
+	if (!next.some((item) => currentIds.has(item.entryId))) {
+		const incomingIds = new Set(next.map((item) => item.entryId));
+		const childIndex = merged.findIndex((item) => item.parentId !== null && incomingIds.has(item.parentId));
+		if (childIndex >= 0) return [...merged.slice(0, childIndex), ...pending, ...merged.slice(childIndex)];
+		const parentId = next[0]?.parentId;
+		if (parentId && currentIds.has(parentId)) {
+			let index = merged.length;
+			while (index > 0 && merged[index - 1]?.entryId !== parentId) index--;
+			return [...merged.slice(0, index), ...pending, ...merged.slice(index)];
+		}
+		if (prepend) return [...pending, ...merged];
+	}
+	return [...merged, ...pending];
 }

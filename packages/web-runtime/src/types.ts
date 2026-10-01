@@ -7,6 +7,7 @@ import type {
 	SessionCollaborationTask,
 	SessionCoordinator,
 	SessionWorkspaceSnapshot,
+	WebConversationBlock,
 } from "@earendil-works/pi-coding-agent/core";
 import type {
 	AuthType,
@@ -84,12 +85,19 @@ export interface RichTextRenderRequest {
 	isStreaming: boolean;
 }
 
+export interface LiveMessageBlocks {
+	text: string;
+	thinking: string;
+	stepId?: string;
+	blocks?: WebConversationBlock[];
+}
+
 export interface RuntimeSessionAsyncControls {
 	isConnected?(): boolean;
 	ownsSessionWriter?(): boolean;
 	hasExternalClients?(): boolean;
-	getLiveMessage?(): { text: string; thinking: string; stepId?: string } | undefined;
-	readLiveMessage?(): Promise<{ text: string; thinking: string; stepId?: string } | undefined>;
+	getLiveMessage?(): LiveMessageBlocks | undefined;
+	readLiveMessage?(): Promise<LiveMessageBlocks | undefined>;
 	getCapabilities?(): readonly string[];
 	listSettingsAsync?(): Promise<SettingSummary[]>;
 	getSessionTreeAsync?(): Promise<SessionTreeNode[]>;

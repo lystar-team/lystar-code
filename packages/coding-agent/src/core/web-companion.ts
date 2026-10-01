@@ -30,6 +30,7 @@ import {
 	type WebSessionHandoffServerMessage,
 } from "./web-companion-contract.ts";
 import { companionProgressEvent } from "./web-companion-events.ts";
+import { getWebConversationStream } from "./web-conversation-stream.ts";
 
 export {
 	getWebCompanionEndpoint,
@@ -475,9 +476,22 @@ export class WebCompanionServer {
 		});
 		try {
 			if (process.platform !== "win32") chmodSync(endpoint, 0o600);
+			const conversationStream = getWebConversationStream(this.session);
 			this.unsubscribe = this.session.subscribe((event) => {
+				conversationStream.apply(event);
 				const progress = companionProgressEvent(event);
-				if (progress) this.broadcast({ type: "agent_event", event: progress });
+				const contentIndex =
+					event.type === "message_update" && "contentIndex" in event.assistantMessageEvent
+						? event.assistantMessageEvent.contentIndex
+						: undefined;
+				if (progress)
+					this.broadcast({
+						type: "agent_event",
+						event: {
+							...progress,
+							...(contentIndex === undefined ? {} : { blockId: conversationStream.blockId(contentIndex) }),
+						},
+					});
 				if (event.type === "message_end" || event.type === "entry_appended") {
 					this.scheduleCommittedEntriesBroadcast();
 				}
@@ -923,14 +937,7 @@ export class WebCompanionServer {
 				? this.session.getToolActivitySnapshot({ activeOnly: true })
 				: [];
 		const hasActiveToolActivity = toolActivities.length > 0;
-		const streaming = this.session.agent?.state.streamingMessage;
-		const liveMessage = { text: "", thinking: "" };
-		if (includeLiveMessage && streaming?.role === "assistant") {
-			for (const part of streaming.content) {
-				if (part.type === "text") liveMessage.text += part.text;
-				if (part.type === "thinking") liveMessage.thinking += part.thinking;
-			}
-		}
+		const liveMessage = includeLiveMessage ? getWebConversationStream(this.session).getLiveMessage() : undefined;
 		const hasQueueDetails =
 			typeof this.session.getSteeringQueueItems === "function" &&
 			typeof this.session.getFollowUpQueueItems === "function";
@@ -1015,6 +1022,7 @@ export class WebCompanionServer {
 		this.broadcast({
 			type: "entry_committed",
 			items: committed,
+			blockMappings: getWebConversationStream(this.session).mappingsForEntries(committed),
 			transcriptGeneration: this.session.sessionManager.getSessionId(),
 			fromRevision,
 			transcriptRevision: stat.size,

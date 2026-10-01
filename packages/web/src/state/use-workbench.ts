@@ -20,7 +20,7 @@ import {
 	replaceSessionOperationSnapshots,
 } from "./session-sync.ts";
 import { agentStepIndexChanged, mergeAgentStepIndex } from "./session-timeline.ts";
-import { mergeTranscriptPage, transcriptRenderIdOverrides } from "./transcript-state.ts";
+import { mergeTranscriptEntries, mergeTranscriptPage, transcriptRenderIdOverrides } from "./transcript-state.ts";
 import {
 	applySubagentProgress,
 	createSubagentConversationState,
@@ -158,7 +158,10 @@ export function useWorkbench() {
 	const refreshModelSettingsRef = useRef<() => Promise<void>>(async () => {});
 
 	const updateState = useCallback((update: WorkbenchState | ((current: WorkbenchState) => WorkbenchState)) => {
-		const next = typeof update === "function" ? update(stateRef.current) : update;
+		const current = stateRef.current;
+		let next = typeof update === "function" ? update(current) : update;
+		if (next.sessionId !== current.sessionId && next.settledTurns === current.settledTurns)
+			next = { ...next, settledTurns: {} };
 		stateRef.current = next;
 		setState(next);
 		return next;
@@ -457,7 +460,8 @@ export function useWorkbench() {
 					const transcriptWindow = mergeTranscriptPage(
 						current,
 						result,
-						Boolean(cursor),
+						// 有游标的是补更早历史，放前面；无游标的首屏在未加载过时放前面，已加载过是尾页更新放后面。
+						Boolean(cursor) || !current.transcriptPageLoaded,
 						sameHistory,
 						renderIdOverrides,
 					);

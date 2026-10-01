@@ -67,8 +67,8 @@ describe("assistant transcript projection", () => {
 		).map((item) => item.view);
 
 		expect(views).toEqual([
-			{ type: "thinking", text: "plan" },
-			{ type: "assistant", text: "answer" },
+			{ type: "thinking", text: "plan", contentIndices: [0] },
+			{ type: "assistant", text: "answer", contentIndices: [1] },
 			{
 				type: "tool_call",
 				calls: [{ id: "call-1", name: "edit", summary: "src/a.ts", href: "file://src/a.ts" }],
@@ -87,14 +87,14 @@ describe("assistant transcript projection", () => {
 
 		expect(items.map((item) => item.view?.type)).toEqual(["assistant", "tool_call", "assistant"]);
 		expect(items.map((item) => item.entryId)).toEqual(["assistant-entry", "assistant-entry", "assistant-entry"]);
-		expect(items[2]?.view).toEqual({ type: "assistant", text: "after" });
+		expect(items[2]?.view).toEqual({ type: "assistant", text: "after", contentIndices: [2] });
 	});
 
 	it("projects a thinking-only assistant block as thinking text", () => {
 		const items = projectTranscriptItems(assistant([{ type: "thinking", thinking: "private plan" }]));
 
 		expect(items).toHaveLength(1);
-		expect(items[0]?.view).toEqual({ type: "thinking", text: "private plan" });
+		expect(items[0]?.view).toEqual({ type: "thinking", text: "private plan", contentIndices: [0] });
 	});
 
 	it("把快速模式状态记录投影为用户可读文案", () => {
@@ -134,7 +134,7 @@ describe("assistant transcript projection", () => {
 		);
 
 		expect(projected.map((item) => item.view)).toEqual([
-			{ type: "assistant", text: "partial answer" },
+			{ type: "assistant", text: "partial answer", contentIndices: [0] },
 			{ type: "system", text: "请求失败：连接中断" },
 		]);
 	});
@@ -148,7 +148,7 @@ describe("assistant transcript projection", () => {
 		expect(projectTranscriptItems(technical)).toEqual([]);
 		expect(
 			projectTranscriptBatch([technical, assistant([{ type: "text", text: "visible" }])]).map((item) => item.view),
-		).toEqual([{ type: "assistant", text: "visible" }]);
+		).toEqual([{ type: "assistant", text: "visible", contentIndices: [0] }]);
 	});
 
 	it("does not render session control entries as chat content", () => {
@@ -169,7 +169,28 @@ describe("assistant transcript projection", () => {
 		expect(projectTranscriptItems(technical)).toEqual([]);
 		expect(
 			projectTranscriptBatch([technical, assistant([{ type: "text", text: "visible" }])]).map((item) => item.view),
-		).toEqual([{ type: "assistant", text: "visible" }]);
+		).toEqual([{ type: "assistant", text: "visible", contentIndices: [0] }]);
+	});
+
+	it("合并同类片段时保留源索引，空片段和工具不占用文本视图索引", () => {
+		const items = projectTranscriptItems(
+			assistant([
+				{ type: "text", text: " " },
+				{ type: "thinking", thinking: "计划" },
+				{ type: "text", text: "正文一" },
+				{ type: "text", text: "正文二" },
+				{ type: "toolCall", id: "read-source", name: "read", arguments: { path: "README.md" } },
+				{ type: "text", text: "结论" },
+			]),
+		);
+		expect(items.map((item) => [item.viewIndex, item.view?.type])).toEqual([
+			[0, "thinking"],
+			[1, "assistant"],
+			[2, "tool_call"],
+			[3, "assistant"],
+		]);
+		expect(items[1]?.view).toEqual({ type: "assistant", text: "正文一\n正文二", contentIndices: [2, 3] });
+		expect(items[3]?.view).toEqual({ type: "assistant", text: "结论", contentIndices: [5] });
 	});
 
 	it("隐藏步骤控制工具，并把真实工具投影到步骤", () => {

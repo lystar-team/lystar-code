@@ -235,6 +235,36 @@ describe("ModelRuntime image generation", () => {
 		expect(calls[0].options?.apiKey).toBe("sk-pixels");
 	});
 
+	it("routes built-in OpenAI image models through the image registry with caller auth and base URL", async () => {
+		const runtime = await createRuntime();
+		expect(runtime.getProvider("openai")?.generateImages).toBeUndefined();
+		const model = runtime.getImageModel("openai", "gpt-image-2.5-sunburst")!;
+
+		let requestUrl = "";
+		let requestHeaders = new Headers();
+		let requestBody: Record<string, unknown> = {};
+		const result = await runtime.generateImages({ ...model, baseUrl: "https://upstream.example/v1" }, context, {
+			apiKey: "upstream-key",
+			headers: { "x-upstream": "yes" },
+			fetch: async (input, init) => {
+				requestUrl = String(input);
+				requestHeaders = new Headers(init?.headers);
+				requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				return new Response(JSON.stringify({ data: [{ b64_json: "aGk=" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			},
+		});
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.output).toEqual([{ type: "image", data: "aGk=", mimeType: "image/png" }]);
+		expect(requestUrl).toBe("https://upstream.example/v1/images/generations");
+		expect(requestHeaders.get("authorization")).toBe("Bearer upstream-key");
+		expect(requestHeaders.get("x-upstream")).toBe("yes");
+		expect(requestBody).toMatchObject({ model: "gpt-image-2.5-sunburst", prompt: "a red circle" });
+	});
+
 	it("rejects image models at every chat entry point before provider dispatch", async () => {
 		const runtime = await createRuntime();
 		let chatDispatches = 0;

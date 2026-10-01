@@ -476,6 +476,59 @@ describe("chat lifecycle", () => {
 		]);
 	});
 
+	it("恢复工具快照保留文本与工具的相对顺序，只补新增工具", () => {
+		const activity = (toolCallId: string, summary: string) => ({
+			activityEpoch: "epoch-1",
+			revision: 4,
+			toolCallId,
+			name: "read",
+			state: "running" as const,
+			summary,
+			updatedAt: 4,
+		});
+		const current = {
+			...liveState(),
+			toolActivityEpoch: "epoch-1",
+			toolActivityRevision: 3,
+			liveTools: {
+				"tool-1": {
+					id: "tool-1",
+					name: "read",
+					summary: "旧调用",
+					batchId: "batch-1",
+					state: "running",
+					status: "running",
+				},
+			},
+			liveTurnItems: [
+				{ id: "text-before", kind: "text", parts: ["工具前"], turnId: 1 },
+				{ id: "tools-1", kind: "tools", toolIds: ["tool-1"], batchId: "batch-1", turnId: 1 },
+				{ id: "text-after", kind: "text", parts: ["工具后"], turnId: 1 },
+			],
+		} as WorkbenchState;
+		const snapshot = {
+			id: "session-1",
+			activity: "running",
+			phase: "turn",
+			queuedFollowUpCount: 0,
+			toolActivityEpoch: "epoch-1",
+			toolActivityRevision: 4,
+			toolActivities: [activity("tool-1", "旧调用"), activity("tool-2", "新调用")],
+		} as WorkbenchState["session"];
+
+		const restored = restoreRuntimeActivities(current, snapshot!);
+
+		// 工具块留在两段文本之间，不被搬到末尾；快照新增的工具跟在后面。
+		expect(restored.liveTurnItems.map((item) => item.kind)).toEqual(["text", "tools", "text", "tools"]);
+		expect(restored.liveTurnItems.map((item) => item.id)).toEqual([
+			"text-before",
+			"tools-1",
+			"text-after",
+			"live-tools:epoch-1:tool-2",
+		]);
+		expect(Object.keys(restored.liveTools)).toEqual(["tool-1", "tool-2"]);
+	});
+
 	it("removes a queued prompt by ID without touching duplicate text", () => {
 		const pending = [
 			{ id: "queue-1", text: "重复任务", displayText: "重复任务", delivery: "follow-up" as const, attachments: [] },
