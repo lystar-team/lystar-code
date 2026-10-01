@@ -5,7 +5,7 @@ import type { Api, AssistantImages, ImagesApi, ImagesModel, Model } from "@earen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
 import imageGenExtension, { createImageGenToolDefinition } from "../src/extensions/image-gen/index.ts";
 import { builtInExtensions } from "../src/extensions/index.ts";
 
@@ -93,7 +93,7 @@ describe("image_gen extension tool", () => {
 		const discover = extension.handlers.get("resources_discover")?.[0];
 		const resources = (await discover?.(
 			{ type: "resources_discover", cwd: tempRoot, reason: "startup" },
-			{} as ExtensionContext,
+			{} as ExtensionToolContext,
 		)) as { skillPaths?: string[] } | undefined;
 		const skillPath = resources?.skillPaths?.[0];
 		expect(skillPath).toMatch(/skills[/\\]imagegen[/\\]SKILL\.md$/);
@@ -123,7 +123,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session:1", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		const result = await createImageGenToolDefinition().execute(
 			"call/1",
@@ -191,7 +191,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-configured-image", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		const result = await createImageGenToolDefinition().execute(
 			"call-configured-image",
@@ -231,7 +231,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-precision", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		const result = await createImageGenToolDefinition().execute(
 			"call-precision",
@@ -284,7 +284,7 @@ describe("image_gen extension tool", () => {
 					},
 				],
 			},
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		await createImageGenToolDefinition().execute(
 			"call-2",
@@ -321,7 +321,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-fallback", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		const result = await createImageGenToolDefinition().execute(
 			"call-fallback",
@@ -357,7 +357,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-3", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		const result = await createImageGenToolDefinition().execute(
 			"call-3",
@@ -390,7 +390,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-openrouter", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		const result = await createImageGenToolDefinition().execute(
 			"call-openrouter",
@@ -425,7 +425,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-explicit", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		await expect(
 			createImageGenToolDefinition().execute(
@@ -459,7 +459,7 @@ describe("image_gen extension tool", () => {
 				generateImages,
 			},
 			sessionManager: { getSessionId: () => "session-4", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		await expect(
 			createImageGenToolDefinition().execute(
@@ -483,7 +483,7 @@ describe("image_gen extension tool", () => {
 			cwd: tempRoot,
 			modelRegistry: { findImage },
 			sessionManager: { getSessionId: () => "session-3", getBranch: () => [] },
-		} as unknown as ExtensionContext;
+		} as unknown as ExtensionToolContext;
 
 		await expect(
 			createImageGenToolDefinition().execute(

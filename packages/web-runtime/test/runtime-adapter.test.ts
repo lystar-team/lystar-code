@@ -1971,7 +1971,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(automaticRouter?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 		expect(loggedIn.find((model) => model.provider === "openai")).toMatchObject({
 			authenticated: true,
-			authMethods: ["api_key"],
+			authMethods: ["api_key", "oauth"],
 			authSource: "stored",
 		});
 		expect(existsSync(join(tempDir, "auth.json"))).toBe(true);
@@ -1979,11 +1979,11 @@ describe("CodingAgentRuntimeAdapter", () => {
 		const loggedOut = await adapter.logoutModelProvider("openai");
 		expect(loggedOut.find((model) => model.provider === "openai")).toMatchObject({
 			authenticated: false,
-			authMethods: ["api_key"],
+			authMethods: ["api_key", "oauth"],
 		});
 		expect((await adapter.listModelProviders()).find((provider) => provider.id === "openai")).toMatchObject({
 			authenticated: false,
-			authMethods: ["api_key"],
+			authMethods: ["api_key", "oauth"],
 			builtIn: true,
 		});
 		const listedModels = await adapter.listModels();

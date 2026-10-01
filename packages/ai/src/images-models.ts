@@ -270,6 +270,7 @@ export function createImagesProvider(input: CreateImagesProviderOptions): Images
 					return inflightRefresh;
 				}
 			: undefined,
-		generateImages: (model, context, options) => input.api.generateImages(model, context, options),
+		generateImages: (model, context, options) =>
+			input.api.generateImages({ ...model, type: "image" }, context, options),
 	};
 }

@@ -1,8 +1,8 @@
 import { openrouterImagesApi } from "../api/openrouter-images.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadOpenRouterOAuth } from "../auth/oauth/load.ts";
-import { IMAGE_MODELS } from "../image-models.generated.ts";
 import { createImagesProvider, type ImagesProvider } from "../images-models.ts";
+import { IMAGE_MODELS } from "../models.generated.ts";
 
 export function openrouterImagesProvider(): ImagesProvider {
 	return createImagesProvider({

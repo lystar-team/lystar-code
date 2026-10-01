@@ -688,6 +688,27 @@ function writeAtomic(path: string, content: string, mode = 0o600): void {
 	}
 }
 
+function systemdUnitMatchesSpec(path: string, spec: WebServiceSpec): boolean {
+	try {
+		const lines = readFileSync(path, "utf8").split("\n");
+		const workingDirectory = lines.find((line) => line.startsWith("WorkingDirectory="));
+		if (workingDirectory && workingDirectory !== `WorkingDirectory=${spec.invocation.cwd.replaceAll("%", "%%")}`) {
+			return false;
+		}
+		const environment = serviceEnvironment(spec);
+		for (const key of ["PI_CODING_AGENT_DIR", "PI_WEB_RUNTIME_ENDPOINT", "PI_WEB_SERVICE_PROFILE"]) {
+			const configured = lines.find((line) => line.startsWith(`Environment="${key}=`));
+			const value = environment[key];
+			if (configured && value !== undefined && configured !== `Environment=${systemdEscape(`${key}=${value}`)}`) {
+				return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function parsePid(value: string): number | undefined {
 	const pid = Number.parseInt(value, 10);
 	return Number.isInteger(pid) && pid > 0 ? pid : undefined;
@@ -730,26 +751,24 @@ export function getWebServiceStatus(spec: WebServiceSpec): WebServiceStatus {
 			: webServiceUnitName(spec.kind, spec.profile);
 	if (process.platform === "linux") {
 		const path = systemdUnitPath(spec);
-		const active = run("systemctl", [
-			"--user",
-			"is-active",
-			"--quiet",
-			webServiceUnitName(spec.kind, spec.profile),
-		]).ok;
+		const installed = existsSync(path) && systemdUnitMatchesSpec(path, spec);
+		const active =
+			installed &&
+			run("systemctl", ["--user", "is-active", "--quiet", webServiceUnitName(spec.kind, spec.profile)]).ok;
 		const user = process.env.USER ?? process.env.LOGNAME ?? "";
 		const lingerEnabled = user !== "" && existsSync(join("/var/lib/systemd/linger", user));
-		const pid = servicePid(spec);
+		const pid = installed ? servicePid(spec) : undefined;
 		return {
 			kind: spec.kind,
 			...(spec.profile ? { profile: spec.profile } : {}),
 			serviceName,
-			installed: existsSync(path),
+			installed,
 			running: active,
 			persistent: active && lingerEnabled,
-			manager: existsSync(path) ? "systemd-user" : "detached",
+			manager: installed ? "systemd-user" : "detached",
 			...(pid !== undefined ? { pid } : {}),
 			servicePath: path,
-			...(existsSync(path) && !lingerEnabled && user
+			...(installed && !lingerEnabled && user
 				? {
 						message: "用户 lingering 尚未启用，退出登录后服务可能停止",
 						remedy: `sudo loginctl enable-linger ${user}`,

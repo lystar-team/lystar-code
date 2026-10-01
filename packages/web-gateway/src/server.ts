@@ -5015,7 +5015,7 @@ export class WebGatewayServer {
 	}
 
 	private invalidateSessionDetails(context: BrowserContext): void {
-		for (const state of context.sessionDetailState.values()) {
+		for (const state of context.sessionDetailState?.values() ?? []) {
 			state.nextSeq += 1;
 			state.events.length = 0;
 			state.bytes = 0;

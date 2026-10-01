@@ -1,10 +1,11 @@
 import OpenAI, { toFile } from "openai";
 import type {
 	AssistantImages,
+	ImageApi,
 	ImageContent,
+	ImageModel,
 	ImagesContext,
 	ImagesFunction,
-	ImagesModel,
 	ImagesOptions,
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
@@ -21,8 +22,8 @@ interface ImageResponse {
 	};
 }
 
-export const generateImages: ImagesFunction<"openai-images", ImagesOptions> = async (
-	model: ImagesModel<"openai-images">,
+export const generateImages: ImagesFunction<ImagesOptions> = async (
+	model: ImageModel<ImageApi>,
 	context: ImagesContext,
 	options?: ImagesOptions,
 ) => {
@@ -56,7 +57,7 @@ export const generateImages: ImagesFunction<"openai-images", ImagesOptions> = as
 };
 
 async function requestOpenAIImages(
-	model: ImagesModel<"openai-images">,
+	model: ImageModel<ImageApi>,
 	context: ImagesContext,
 	apiKey: string,
 	options: ImagesOptions,
@@ -110,7 +111,7 @@ async function requestOpenAIImages(
 }
 
 async function requestCodexImages(
-	model: ImagesModel<"openai-images">,
+	model: ImageModel<ImageApi>,
 	context: ImagesContext,
 	apiKey: string,
 	options: ImagesOptions,

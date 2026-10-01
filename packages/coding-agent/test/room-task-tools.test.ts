@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
 import { createRoomClaimTool } from "../src/core/room-claim-tool.ts";
 import type { SessionCoordinator } from "../src/core/session-coordinator.ts";
 import { createRoomTasksTool } from "../src/core/session-tool.ts";
@@ -10,7 +10,7 @@ const context = {
 		getSessionId: () => "agent-a",
 		getHeader: () => ({}),
 	},
-} as unknown as ExtensionContext;
+} as unknown as ExtensionToolContext;
 
 describe("Room 任务工具", () => {
 	it("候选 Agent 通过专用工具认领，身份由当前会话提供", async () => {

@@ -14,7 +14,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.ts";
-import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import type { Theme } from "../theme/theme.ts";
 import { theme } from "../theme/theme.ts";
@@ -92,6 +92,7 @@ export class ToolExecutionComponent extends Container {
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
 	private cancelled = false;
+	private preserveExpandedEditCall = false;
 	private renderVersion = 0;
 	private lastRenderedWidth = 0;
 	private lastRenderedLineCount = 0;
@@ -148,7 +149,7 @@ export class ToolExecutionComponent extends Container {
 		return this.toolDefinition?.renderShell ?? "default";
 	}
 
-	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
+	private getRenderContext(lastComponent: Component | undefined, preserveCallRenderer = false): ToolRenderContext {
 		return {
 			args: this.args,
 			argsRevision: this.argsRevision,
@@ -164,6 +165,7 @@ export class ToolExecutionComponent extends Container {
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
 			expanded: this.expanded,
+			preserveCallRenderer,
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 			resultDetails: this.result?.details,
@@ -178,6 +180,10 @@ export class ToolExecutionComponent extends Container {
 				: args && typeof args.file_path === "string"
 					? args.file_path
 					: undefined;
+		if (!["write", "edit", "apply_patch"].includes(this.toolName)) {
+			return new Text(formatToolCallWithArgs(this.toolName, this.args, theme, this.expanded), 0, 0);
+		}
+
 		const fallback =
 			this.toolName === "write"
 				? {
@@ -290,7 +296,10 @@ export class ToolExecutionComponent extends Container {
 		this.result = result;
 		this.isPartial = isPartial;
 		const visibleChanged = !isPartial || this.expanded || !this.toolDefinition;
-		if (visibleChanged) this.updateDisplay();
+		this.preserveExpandedEditCall = !isPartial && !result.isError && this.toolName === "edit" && this.expanded;
+		if (visibleChanged) {
+			this.updateDisplay(!this.preserveExpandedEditCall);
+		}
 		this.maybeConvertImagesForKitty();
 		if (!isPartial) this.releaseCompletedEditArgs();
 		return visibleChanged;
@@ -327,6 +336,7 @@ export class ToolExecutionComponent extends Container {
 
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
+		if (!expanded) this.preserveExpandedEditCall = false;
 		this.updateDisplay();
 	}
 
@@ -460,7 +470,7 @@ export class ToolExecutionComponent extends Container {
 		});
 	}
 
-	private updateDisplay(): void {
+	private updateDisplay(updateCall = !this.preserveExpandedEditCall): void {
 		this.renderVersion++;
 
 		let hasContent = false;
@@ -472,6 +482,9 @@ export class ToolExecutionComponent extends Container {
 			const callRenderer = this.getCallRenderer();
 			if (!callRenderer) {
 				renderContainer.addChild(this.createResultRegion(this.createCallFallback()));
+				hasContent = true;
+			} else if (!updateCall && this.callRendererComponent) {
+				renderContainer.addChild(this.createResultRegion(this.callRendererComponent));
 				hasContent = true;
 			} else {
 				try {
@@ -506,7 +519,7 @@ export class ToolExecutionComponent extends Container {
 								{ content: this.result.content as any, details: this.result.details },
 								{ expanded: this.expanded, isPartial: this.isPartial },
 								theme,
-								this.getRenderContext(this.resultRendererComponent),
+								this.getRenderContext(this.resultRendererComponent, !updateCall),
 							);
 							this.resultRendererComponent = component;
 							renderContainer.addChild(this.createResultRegion(component));

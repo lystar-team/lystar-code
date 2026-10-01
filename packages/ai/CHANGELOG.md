@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.99.2-lystar.1] - 2026-10-01
+
+### Added
+
+- 增加 Typesafe System One、分类模型目录和统一图像模型目录支持。
+
+### Fixed
+
+- 统一图像模型类型、OpenAI 图像模型注册和 OpenRouter 图像模型目录入口，修复合并后的类型与运行时加载问题。
+
 ## [0.87.1] - 2026-09-22
 
 ### Added

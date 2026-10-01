@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
 import type { SessionCoordinator, SessionCoordinatorCreateInput } from "../src/core/session-coordinator.ts";
 import { createSessionsTool } from "../src/core/session-tool.ts";
 
-function context(workspace?: { projectCwd: string }): ExtensionContext {
+function context(workspace?: { projectCwd: string }): ExtensionToolContext {
 	return {
 		cwd: workspace ? "/project/worktree" : "/project",
 		sessionManager: {
@@ -11,7 +11,7 @@ function context(workspace?: { projectCwd: string }): ExtensionContext {
 			getSessionFile: () => "/sessions/parent.jsonl",
 			getHeader: () => (workspace ? { collaborationWorkspace: { projectCwd: workspace.projectCwd } } : {}),
 		},
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionToolContext;
 }
 
 describe("sessions Tool", () => {

@@ -845,7 +845,8 @@ export function createEditToolDefinition(
 				previewInput?.path &&
 				!component.previewFinalized &&
 				component.preflightRevision !== argsRevision &&
-				!component.preflightPending
+				!component.preflightPending &&
+				!context.expanded
 			) {
 				component.preflightPending = true;
 				component.preflightRevision = argsRevision;
@@ -876,7 +877,7 @@ export function createEditToolDefinition(
 			const typedResult = result as EditToolResultLike;
 			const resultDiff = !context.isError ? typedResult.details?.diff : undefined;
 			let changed = false;
-			if (callComponent) {
+			if (callComponent && !context.preserveCallRenderer) {
 				callComponent.preflightPending = false;
 				callComponent.previewFinalized = true;
 				if (typeof resultDiff === "string") {

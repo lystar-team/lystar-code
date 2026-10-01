@@ -353,17 +353,17 @@ describe("Web Runtime 到 TUI 的会话交接", () => {
 		const prompt = vi.spyOn(tuiRuntime.session, "prompt").mockImplementation(async (text, options) => {
 			if (streaming) {
 				await tuiRuntime.session.followUp(text, options?.images, options?.queueId);
-				options?.preflightResult?.(true);
+				options?.preflightResult?.("handled");
 				return;
 			}
-			options?.preflightResult?.(true);
+			options?.preflightResult?.("handled");
 			streaming = true;
 			await new Promise<void>((resolve) => {
 				releasePrompt = resolve;
 			});
 			streaming = false;
 		});
-		const followUp = vi.spyOn(tuiRuntime.session, "followUp").mockResolvedValue(undefined);
+		const followUp = vi.spyOn(tuiRuntime.session, "followUp").mockResolvedValue("queued");
 		const companion = new WebCompanionServer(tuiRuntime.session, agentDir);
 		await companion.start();
 		cleanups.push(() => companion.dispose());

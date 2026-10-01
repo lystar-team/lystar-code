@@ -83,6 +83,7 @@ type _AiModelFieldsAccountedFor = Assert<
 		| "samplingParams"
 		| "headers"
 		| "compat"
+		| "type"
 	>
 >;
 type _AiModelCostFieldsAccountedFor = Assert<
@@ -100,6 +101,7 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 		| "responseModel"
 		| "responseId"
 		| "providerThinkingLevel"
+		| "thinkingLevel"
 		| "diagnostics"
 		| "usage"
 		| "stopReason"
@@ -113,7 +115,7 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 type _AiToolResultMessageFieldsAccountedFor = Assert<
 	ExactKeys<
 		ToolResultMessage,
-		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "isError" | "timestamp"
+		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "nestedCalls" | "isError" | "timestamp"
 	>
 >;
 

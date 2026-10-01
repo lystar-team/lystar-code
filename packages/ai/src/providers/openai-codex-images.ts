@@ -2,9 +2,10 @@ import { openAIImagesApi } from "../api/openai-images.lazy.ts";
 import { lazyOAuth } from "../auth/helpers.ts";
 import { loadOpenAICodexOAuth } from "../auth/oauth/load.ts";
 import { createImagesProvider, type ImagesProvider } from "../images-models.ts";
-import type { ImagesModel } from "../types.ts";
+import type { ImageModel } from "../types.ts";
 
-export const OPENAI_CODEX_GPT_IMAGE_2: ImagesModel<"openai-images"> = {
+export const OPENAI_CODEX_GPT_IMAGE_2: ImageModel<"openai-images"> = {
+	type: "image",
 	id: "gpt-image-2",
 	name: "GPT Image 2",
 	api: "openai-images",

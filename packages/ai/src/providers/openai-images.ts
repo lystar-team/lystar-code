@@ -1,10 +1,11 @@
 import { openAIImagesApi } from "../api/openai-images.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createImagesProvider, type ImagesProvider } from "../images-models.ts";
-import type { ImagesModel } from "../types.ts";
+import type { ImageModel } from "../types.ts";
 
-function openAIImageModel(id: string, name: string): ImagesModel<"openai-images"> {
+function openAIImageModel(id: string, name: string): ImageModel<"openai-images"> {
 	return {
+		type: "image",
 		id,
 		name,
 		api: "openai-images",

@@ -122,6 +122,7 @@ export const WebSearchCallContentSchema = StrictObject({
 		Type.Literal("in_progress"),
 		Type.Literal("searching"),
 		Type.Literal("completed"),
+		Type.Literal("incomplete"),
 		Type.Literal("failed"),
 	]),
 	action: WebSearchActionSchema,

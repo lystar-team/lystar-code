@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,23 +37,34 @@ function run(command, args, options = {}) {
 export function packReleasePackages(packages, tarballDirectory) {
 	mkdirSync(tarballDirectory, { recursive: true });
 	const tarballs = new Map();
+	const manifests = new Map();
 	for (const pkg of packages) {
 		const manifest = JSON.parse(readFileSync(join(pkg.directory, "package.json"), "utf8"));
 		if (manifest.name !== pkg.name) throw new Error(`Unexpected package name in ${pkg.directory}`);
+		manifests.set(pkg.name, manifest);
 		const output = run("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", tarballDirectory], { cwd: pkg.directory });
 		// npm <11.6 returns an array; newer npm can return an object keyed by package name.
 		const parsed = JSON.parse(output);
 		const packed = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
 		tarballs.set(pkg.name, join(tarballDirectory, packed.filename));
 	}
+	Object.defineProperty(tarballs, "packageManifests", { value: manifests });
 	return tarballs;
 }
 
 export function installCodingAgentConsumer(directory, tarballs, packageManager = "npm") {
 	mkdirSync(directory, { recursive: true });
-	const overrides = Object.fromEntries([...tarballs].map(([name, path]) => [
-		name, `file:./${relative(directory, path).replaceAll("\\", "/")}`,
-	]));
+	const codingAgentManifest = tarballs.packageManifests?.get(codingAgentName);
+	const runtimeDependencies = new Set([
+		...Object.keys(codingAgentManifest?.dependencies ?? {}),
+		...Object.keys(codingAgentManifest?.optionalDependencies ?? {}),
+	]);
+	const localOverrideNames = new Set([codingAgentName, ...runtimeDependencies]);
+	const overrides = Object.fromEntries(
+		[...tarballs]
+			.filter(([name]) => localOverrideNames.has(name))
+			.map(([name, path]) => [name, `file:./${relative(directory, path).replaceAll("\\", "/")}`]),
+	);
 	if (!overrides[codingAgentName]) throw new Error("Missing coding-agent tarball");
 	// Only coding-agent is a direct dependency. Overrides select local artifacts
 	// for declared transitive dependencies without installing undeclared packages.
@@ -83,8 +104,12 @@ export function smokeTestCodingAgentConsumer(directory, runtime = process.execPa
 	for (const path of ["dist/client", "dist/experimental", "dist/cli/experimental", "dist/bundle/client.js", "dist/bundle/coordinator.js"]) {
 		if (existsSync(join(packageDir, path))) throw new Error(`Published package contains development-only code: ${path}`);
 	}
-	const home = mkdtempSync(join(directory, "smoke-home-"));
-	const entry = join(directory, "smoke-sdk.mjs");
+	const smokeParent = process.platform === "win32" || !existsSync("/var/tmp") ? tmpdir() : "/var/tmp";
+	const smokeRoot = mkdtempSync(join(smokeParent, "pi-consumer-smoke-"));
+	cpSync(join(directory, "node_modules"), join(smokeRoot, "node_modules"), { recursive: true });
+	const smokePackageDir = join(smokeRoot, "node_modules", codingAgentName);
+	const home = mkdtempSync(join(smokeRoot, "smoke-home-"));
+	const entry = join(smokeRoot, "smoke-sdk.mjs");
 	const env = {
 		PATH: process.env.PATH,
 		HOME: home,
@@ -103,26 +128,33 @@ export function smokeTestCodingAgentConsumer(directory, runtime = process.execPa
 	try {
 		writeFileSync(entry, `import assert from "node:assert/strict";
 import { createAgentSession, SessionManager, ModelRuntime } from "${codingAgentName}";
+const consumerNodeModules = new URL("./node_modules/", import.meta.url).href;
+function resolveConsumerPackage(name) {
+  const resolved = import.meta.resolve(name);
+  if (!resolved.startsWith(consumerNodeModules)) throw new Error("Cannot find package '" + name + "'");
+  return resolved;
+}
 assert.equal(typeof createAgentSession, "function");
 assert.equal(typeof SessionManager.inMemory, "function");
 assert.equal(typeof ModelRuntime.create, "function");
 for (const name of ["pi-client", "pi-protocol", "pi-server"]) {
-  assert.throws(() => import.meta.resolve("@earendil-works/" + name), /Cannot find|cannot find/, name + " must not be installed");
+  assert.throws(() => resolveConsumerPackage("@earendil-works/" + name), /Cannot find|cannot find/, name + " must not be installed");
 }
 for (const subpath of ["/client", "/experimental/plugin"]) {
   assert.throws(() => import.meta.resolve("${codingAgentName}" + subpath), /not exported|not defined|Cannot find|cannot find/);
 }
 `);
-		run(runtime, [entry], { cwd: directory, env, timeout: 30_000 });
+		run(runtime, [entry], { cwd: smokeRoot, env, timeout: 30_000 });
 		const declaredCliPaths =
 			typeof manifest.bin === "string" ? [manifest.bin] : Object.values(manifest.bin ?? {});
 		for (const cli of new Set([...declaredCliPaths, "dist/cli.js"])) {
-			const output = run(runtime, [join(packageDir, cli), "--version"], { cwd: directory, env, timeout: 30_000 });
+			const output = run(runtime, [join(smokePackageDir, cli), "--version"], { cwd: smokeRoot, env, timeout: 30_000 });
 			if (output.trim() !== expectedVersion) throw new Error(`Unexpected version from ${cli}: ${output}`);
 		}
 	} finally {
 		rmSync(entry, { force: true });
 		rmSync(home, { recursive: true, force: true });
+		rmSync(smokeRoot, { recursive: true, force: true });
 	}
 	console.log(`Coding-agent SDK and CLI consumer smoke tests passed (${runtime}).`);
 }

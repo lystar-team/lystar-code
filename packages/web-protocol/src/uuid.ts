@@ -1,4 +1,4 @@
-function fillRandomBytes(bytes: Uint8Array): void {
+function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
 	const webCrypto = globalThis.crypto;
 	if (webCrypto && typeof webCrypto.getRandomValues === "function") {
 		webCrypto.getRandomValues(bytes);
@@ -12,7 +12,7 @@ export function createUuid(): string {
 	const webCrypto = globalThis.crypto;
 	if (webCrypto && typeof webCrypto.randomUUID === "function") return webCrypto.randomUUID();
 
-	const bytes = new Uint8Array(16);
+	const bytes = new Uint8Array(new ArrayBuffer(16));
 	fillRandomBytes(bytes);
 	bytes[6] = (bytes[6] & 0x0f) | 0x40;
 	bytes[8] = (bytes[8] & 0x3f) | 0x80;

@@ -67,8 +67,9 @@ test("installs only coding-agent directly and uses overrides only for declared r
 	const directory = createFixture(t);
 	const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
 	assert.deepEqual(Object.keys(manifest.dependencies), [codingAgentName]);
+	assert.deepEqual(Object.keys(manifest.overrides).sort(), ["@earendil-works/chord", codingAgentName].sort());
 	for (const name of devPackages) {
-		assert.ok(manifest.overrides[name]);
+		assert.equal(manifest.overrides[name], undefined);
 		assert.equal(existsSync(join(directory, "node_modules", name)), false);
 	}
 	smokeTestCodingAgentConsumer(directory);
