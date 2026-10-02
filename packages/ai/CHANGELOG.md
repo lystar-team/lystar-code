@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.0.0-lystar.1] - 2026-10-01
+
+### Added
+
+- Anthropic OAuth 增加复制授权码登录，支持浏览器位于另一台机器的环境（[#10194](https://github.com/earendil-works/pi/pull/10194) by [@lucasmeijer](https://github.com/lucasmeijer)）。
+
+### Changed
+
+- OAuth 浏览器页面采用彩色 Pi 标识。
+
+### Fixed
+
+- 修复跨 Provider 或 Radius 网关回放 Codemode 等 grammar 工具调用时，OpenAI Responses 因不匹配的 item ID 报错的问题。
+
 ## [0.99.2-lystar.1] - 2026-10-01
 
 ### Added

@@ -30,6 +30,7 @@ import type {
 	DefaultProjectTrust,
 	FullscreenExitOutput,
 	MermaidRenderingMode,
+	QuietStartup,
 	SettingsManager,
 	TuiMode,
 	WarningSettings,
@@ -96,8 +97,8 @@ export interface SettingsConfig {
 	currentTheme: string;
 	terminalTheme: TerminalTheme;
 	availableThemes: string[];
-	tuiMode: "regular" | "fullscreen";
-	fullscreenExitOutput: "transcript" | "resume-hint";
+	tuiMode: TuiMode;
+	fullscreenExitOutput: FullscreenExitOutput;
 	fullscreenScrollbar: ScrollViewScrollbar;
 	fullscreenWheelScrollLines?: WheelScrollLines;
 	fullscreenCopyOnSelect?: boolean;
@@ -113,7 +114,7 @@ export interface SettingsConfig {
 	editorPaddingX?: number;
 	outputPad?: 0 | 1;
 	autocompleteMaxVisible?: number;
-	quietStartup?: boolean;
+	quietStartup?: QuietStartup;
 	defaultProjectTrust?: DefaultProjectTrust;
 	clearOnShrink?: boolean;
 	showTerminalProgress?: boolean;
@@ -147,7 +148,7 @@ export interface SettingsCallbacks {
 	onEditorPaddingXChange?: (padding: number) => void;
 	onOutputPadChange?: (padding: 0 | 1) => void;
 	onAutocompleteMaxVisibleChange?: (maxVisible: number) => void;
-	onQuietStartupChange?: (enabled: boolean) => void;
+	onQuietStartupChange?: (quiet: QuietStartup) => void;
 	onDefaultProjectTrustChange?: (defaultProjectTrust: DefaultProjectTrust) => void;
 	onClearOnShrinkChange?: (enabled: boolean) => void;
 	onShowTerminalProgressChange?: (enabled: boolean) => void;
@@ -157,7 +158,6 @@ export interface SettingsCallbacks {
 	onFullscreenWheelScrollLinesChange?: (lines: WheelScrollLines) => void;
 	onFullscreenCopyOnSelectChange?: (enabled: boolean) => void;
 	onWarningsChange?: (warnings: WarningSettings) => void;
-
 	onCancel: () => void;
 }
 
@@ -269,7 +269,7 @@ function serializeValue(value: LystarSettingValue): string {
 function parseChoiceValue(setting: LystarSettingDefinition, value: string): LystarSettingValue {
 	if (setting.kind === "boolean") return value === "true";
 	if (setting.kind === "integer") return Number(value);
-	return value;
+	return setting.options?.find((option) => String(option) === value) ?? value;
 }
 
 function themeItems(availableThemes: string[], currentTheme?: string): SelectItem[] {
@@ -654,9 +654,9 @@ export class SettingsSelectorComponent extends Container {
 			{
 				id: "quiet-startup",
 				label: "Quiet startup",
-				description: "Disable verbose printing at startup",
-				currentValue: config.quietStartup ? "true" : "false",
-				values: ["true", "false"],
+				description: "Disable verbose printing at startup (header: keep only the startup header)",
+				currentValue: String(config.quietStartup),
+				values: ["true", "header", "false"],
 			},
 			{
 				id: "install-telemetry",
@@ -805,7 +805,7 @@ export class SettingsSelectorComponent extends Container {
 			{
 				id: "tui-mode",
 				label: "TUI mode",
-				description: "Interface layout; fullscreen mode is experimental",
+				description: "Interface layout; regular mode uses the terminal's normal scrollback",
 				currentValue: config.tuiMode,
 				values: ["regular", "fullscreen"],
 			},
@@ -1034,7 +1034,7 @@ export class SettingsSelectorComponent extends Container {
 						callbacks.onCollapseChangelogChange?.(newValue === "true");
 						break;
 					case "quiet-startup":
-						callbacks.onQuietStartupChange?.(newValue === "true");
+						callbacks.onQuietStartupChange?.(newValue === "header" ? "header" : newValue === "true");
 						break;
 					case "install-telemetry":
 						callbacks.onEnableInstallTelemetryChange?.(newValue === "true");

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.0-lystar.1] - 2026-10-01
+
+### Breaking Changes
+
+- `SessionMetadata` 改由 `pi-server` 导出且只要求 `id`；移除对 `pi-agent-core` 的依赖。测试服务使用内存会话映射，`TestHarness.metadata` 替代 `TestHarness.session`。
+
 ## [0.99.2-lystar.1] - 2026-10-01
 
 ### Changed

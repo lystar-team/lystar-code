@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.0.0-lystar.1] - 2026-10-01
+
+### Added
+
+- 增加 `TuiAltScreen.getScreenLines()`，用于读取最后一帧的屏幕行。
+
+### Fixed
+
+- Markdown Token 使用弱引用，Markdown、Text 与 Box 的渲染缓存释放多余字符串引用，减少长会话的内存占用。
+- 修复全屏选区和搜索高亮边界的 ANSI 顺序与颜色泄漏（[#10169](https://github.com/earendil-works/pi/issues/10169)）。
+- 修复输入以空白开头时无法补全斜杠命令的问题（[#10218](https://github.com/earendil-works/pi/pull/10218) by [@haoqixu](https://github.com/haoqixu)）。
+
 ## [0.99.2-lystar.1] - 2026-10-01
 
 ### Fixed

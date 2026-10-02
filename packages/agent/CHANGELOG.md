@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.0-lystar.1] - 2026-10-01
+
+### Breaking Changes
+
+- 跟随 Pi 1.0.0 移除旧实验性 `AgentHarness`、harness 会话与存储、pico3、harness 工具、压缩和资源加载辅助接口，以及 `./node`、`./harness/*`、`./experimental/pico3` 子路径导出。`pi-agent-core` 保留 `Agent`、agent loop、proxy stream 与相关类型；持久化实验运行时使用 `@earendil-works/pi-durable`。
+
 ## [0.99.2-lystar.1] - 2026-10-01
 
 ### Fixed

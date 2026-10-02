@@ -314,7 +314,7 @@ ${chalk.bold("命令：")}
   ${APP_NAME} <command> --help          查看 install/remove/update/config/auth/lessons/doctor 等命令帮助
 
 ${chalk.bold("选项：")}
-  --provider <name>              Provider 名称（默认 google）
+  --provider <name>              模型所属 Provider（须同时指定 --model）
   --model <pattern>              模型匹配模式或 ID，支持 provider/id 和 :<thinking>
   --api-key <key>                API key，默认读取环境变量
   --system-prompt <text>         系统提示词
@@ -349,7 +349,7 @@ ${chalk.bold("选项：")}
   --export <file>                导出会话为 HTML 后退出
   --list-models [search]         列出可用模型，可附带模糊搜索词
   --verbose                      强制显示详细启动信息
-  --tui-mode <mode>              TUI 模式：regular 或 fullscreen
+  --tui-mode <mode>              TUI 模式：fullscreen（默认）或 regular
   --alt-screen <mode>            兼容选项：auto、always 或 never
   --no-alt-screen                使用 regular 模式，等价于 --alt-screen never
   --mouse / --no-mouse           启用或关闭全屏鼠标操作

@@ -72,7 +72,7 @@ describe("OAuthSelectorComponent", () => {
 		]);
 	});
 
-	it("renders an option without compiled auth status as unconfigured", () => {
+	it("renders an option without compiled auth status as not configured", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",
 			[{ id: "google", name: "Google", authType: "api_key", status: undefined }],
@@ -95,6 +95,23 @@ describe("OAuthSelectorComponent", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("已配置订阅");
+	});
+
+	it("labels non-subscription OAuth providers as accounts", () => {
+		const selector = new OAuthSelectorComponent(
+			"login",
+			[
+				{ id: "radius", name: "Radius", authType: "oauth", subscription: false },
+				{ id: "openai", name: "OpenAI", authType: "api_key" },
+			],
+			() => {},
+			() => {},
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("[账户]");
+		expect(output).toContain("[API key]");
+		expect(output).not.toContain("[订阅]");
 	});
 
 	it("shows environment API key auth as configured", () => {

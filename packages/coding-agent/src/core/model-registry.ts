@@ -10,6 +10,8 @@ import type {
 	ClassifierModel,
 	ClassifierResult,
 	Context,
+	ImageApi,
+	ImageModel,
 	ImagesApi,
 	ImagesContext,
 	ImagesModel,
@@ -17,6 +19,7 @@ import type {
 	Model,
 	ModelsApiStreamOptions,
 	ModelsClassifierOptions,
+	ModelsImagesOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
 	ModelsSimpleStreamOptions,
@@ -141,14 +144,6 @@ export class ModelRegistry {
 		return this.runtime.getImageModelProviders();
 	}
 
-	generateImages(
-		model: ImagesModel<ImagesApi>,
-		context: ImagesContext,
-		options?: ImagesOptions,
-	): Promise<AssistantImages> {
-		return this.runtime.generateImages(model, context, options);
-	}
-
 	/** Stream through the configured provider with request-time authentication. */
 	stream<TApi extends Api>(
 		model: Model<TApi>,
@@ -200,6 +195,15 @@ export class ModelRegistry {
 		options?: ModelsClassifierOptions,
 	): Promise<ClassifierResult> {
 		return this.runtime.classify(model, context, options);
+	}
+
+	/** Generate images with request-time authentication. Never rejects. */
+	generateImages(
+		model: ImageModel<ImageApi> | ImagesModel<ImagesApi>,
+		context: ImagesContext,
+		options?: ModelsImagesOptions | ImagesOptions,
+	): Promise<AssistantImages> {
+		return this.runtime.generateImages(model, context, options);
 	}
 
 	getProviderDisplayName(provider: string): string {

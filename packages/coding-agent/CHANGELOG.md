@@ -2,9 +2,43 @@
 
 ## [Unreleased]
 
+## [1.0.0-lystar.1] - 2026-10-01
+
+### New Features
+
+- **合并 Pi 1.0.0**：同步上游 `7fbbd5f4a`，保留 LYStar 中文界面、`lc`/`lystar` 命令、智能体协作、工具恢复和 Web 工作台。
+- **Web 对话记录**：实时消息保留文本、思考与工具的顺序，支持按需读取长消息全文，改进历史补页、滚动锚点与断线恢复。
+- **Codemode 生图**：脚本可调用 `models.generateImages()`，沿用会话凭据并记录图像用量。参见 [Codemode 生图](docs/codemode.md#generate-images)。
+- **登录入口**：`/login` 增加 Radius 入口及 MCP 配置选择；Anthropic 支持复制授权码登录。参见 [Providers](docs/providers.md)。
+- **安静启动**：`quietStartup: "header"` 保留 LYStar 页头，隐藏模型范围和资源列表。参见 [终端设置](docs/settings.md#terminal-and-display)。
+
+### Breaking Changes
+
+- 上游旧实验性 harness 和 `sqlite-node` 会话后端迁移到 `pi-durable`；实验 client/server、TUI 与 vacation 示例采用新持久化接口。LYStar 正式会话、协作和 Web Runtime 沿用各自现有链路。
+- 指定 `--provider` 时必须同时指定 `--model`，不再忽略 Provider 后使用其他 Provider 的默认模型。
+
+### Added
+
+- Anthropic OAuth 增加复制授权码登录，支持浏览器位于另一台机器的环境（[#10194](https://github.com/earendil-works/pi/pull/10194) by [@lucasmeijer](https://github.com/lucasmeijer)）。
+- MCP 增加 `oauth.authServerMetadataUrl`，支持指定认证服务器元数据地址（[#10172](https://github.com/earendil-works/pi/issues/10172)）。
+- `/arminsayshi` 在全屏模式播放 3D Armin。
+
+### Changed
+
+- 默认 TUI 模式采用全屏；设置 `tuiMode: "regular"` 或传入 `--tui-mode regular` 可使用终端滚动记录。
+- Codemode 精简工具与脚本说明，并为未知成员、参数格式、模型查询和存储上限错误提供恢复提示。
+- `/login` 区分订阅和普通账户，取消登录返回原菜单；Radius 登录后可选择写入全局 MCP 配置并重新加载。
+- MCP OAuth 凭据按服务器名称和 URL 存储，支持相同 URL 的服务器使用不同账户（[#10252](https://github.com/earendil-works/pi/issues/10252)）。
+- Markdown、Text、Box 和用户消息的缓存减少重复字符串引用，降低长会话的内存占用。
+
 ### Fixed
 
 - 修复内置 OpenAI 与 Codex 生图模型在 `imageModelProviders` 指定自定义 Provider 后报“Provider openai does not support image generation”的问题：聊天 Provider 缺少生图实现时改走图片专用注册表，沿用自定义 Provider 的地址与鉴权。
+- 修复 Web 实时消息与持久化记录对账时的内容顺序、长消息全文加载、历史补页和回合终态恢复问题。
+- 修复 MCP 延迟工具在继续会话或 `/reload` 后丢失、追加授权范围未保留旧范围、OAuth 可选字段为空时报错，以及认证响应 `iss` 校验缺失的问题。
+- 修复 `/mcp login` 链接换行后无法点击，以及 OpenAI Responses 跨 Provider 回放 grammar 工具时的 item ID 错误。
+- 修复系统主题放大粉彩颜色饱和度的问题（[#10293](https://github.com/earendil-works/pi/pull/10293) by [@dgtlntv](https://github.com/dgtlntv)）。
+- 修复斜杠命令前含空白时的补全，以及全屏选区和搜索高亮边界的颜色泄漏（[#10218](https://github.com/earendil-works/pi/pull/10218) by [@haoqixu](https://github.com/haoqixu), [#10169](https://github.com/earendil-works/pi/issues/10169)）。
 
 ## [0.99.2-lystar.1] - 2026-10-01
 
