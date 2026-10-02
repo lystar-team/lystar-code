@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyEditsToNormalizedContent as applyHarnessEdits } from "../../agent/src/harness/tools/edit-diff.ts";
+import { applyEditsToNormalizedContent as applyDurableEdits } from "../../durable/src/tools/edit-diff.ts";
 import { applyEditsToNormalizedContent, EditMatchError } from "../src/core/tools/edit-diff.ts";
 import { createEditRecoveryEvidence } from "../src/core/tools/edit-recovery.ts";
 
 for (const [name, apply] of [
 	["coding-agent", applyEditsToNormalizedContent],
-	["harness", applyHarnessEdits],
+	["durable", applyDurableEdits],
 ] as const) {
 	describe(`${name} Unicode matching with indentation`, () => {
 		it.each([

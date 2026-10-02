@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyPatch } from "diff";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyEditsToNormalizedContent as applyHarnessEdits } from "../../agent/src/harness/tools/edit-diff.ts";
+import { applyEditsToNormalizedContent as applyDurableEdits } from "../../durable/src/tools/edit-diff.ts";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import { createEditTool, createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { applyEditsToNormalizedContent, type Edit } from "../src/core/tools/edit-diff.ts";
@@ -11,7 +11,7 @@ import { applyEditsToNormalizedContent, type Edit } from "../src/core/tools/edit
 type ApplyEdits = typeof applyEditsToNormalizedContent;
 const implementations: Array<[string, ApplyEdits]> = [
 	["coding-agent", applyEditsToNormalizedContent],
-	["harness", applyHarnessEdits],
+	["durable", applyDurableEdits],
 ];
 const directories: string[] = [];
 

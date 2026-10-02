@@ -56,7 +56,7 @@ function booleanSetting(
 	};
 }
 
-function enumSetting<T extends string>(
+function enumSetting<T extends string | boolean>(
 	id: string,
 	label: string,
 	description: string,
@@ -76,7 +76,7 @@ function enumSetting<T extends string>(
 		uiVisible: settings.uiVisible !== false,
 		get,
 		set: (manager, value) => {
-			if (typeof value !== "string" || !options.includes(value as T)) invalidValue(id);
+			if (!options.includes(value as T)) invalidValue(id);
 			set(manager, value as T);
 		},
 		format: (value) => settings.format?.(value as T) ?? String(value),
@@ -408,13 +408,14 @@ export const LYSTAR_SETTINGS_CATALOG: readonly LystarSettingDefinition[] = [
 		(settings) => settings.getCollapseChangelog(),
 		(settings, value) => settings.setCollapseChangelog(value),
 	),
-	booleanSetting(
+	enumSetting(
 		"quiet-startup",
 		"安静启动",
-		"启动时隐藏详细加载信息。",
+		"选择显示完整启动信息、仅显示页头或隐藏启动信息。",
+		[false, "header", true] as const,
 		(settings) => settings.getQuietStartup(),
 		(settings, value) => settings.setQuietStartup(value),
-		{ restartRequired: true },
+		{ restartRequired: true, format: (value) => (value === "header" ? "仅页头" : value ? "隐藏" : "完整") },
 	),
 	enumSetting(
 		"default-project-trust",

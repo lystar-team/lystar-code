@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyEditsToNormalizedContent as applyHarnessEdits } from "../../agent/src/harness/tools/edit-diff.ts";
+import { applyEditsToNormalizedContent as applyDurableEdits } from "../../durable/src/tools/edit-diff.ts";
 import { applyEditsToNormalizedContent as applyCodingEdits } from "../src/core/tools/edit-diff.ts";
 
 for (const [name, apply] of [
 	["coding-agent", applyCodingEdits],
-	["harness", applyHarnessEdits],
+	["durable", applyDurableEdits],
 ] as const) {
 	describe(`${name} explicit indentation matching`, () => {
 		it.each(["", "header\n"])("distinguishes the two installer success lines after %j", (prefix) => {

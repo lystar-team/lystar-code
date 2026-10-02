@@ -91,6 +91,17 @@ describe("SettingsSelectorComponent", () => {
 		expect(onCopyOnSelectChange.mock.calls.flat()).toEqual([false, true]);
 	});
 
+	it("cycles quiet startup through header-only, hidden, and full modes with typed values", () => {
+		const { settingsManager, selector, onSettingChange } = createSelector();
+		const list = selector.getSettingsList();
+		for (const character of "安静启动") list.handleInput(character);
+		for (const value of ["header", true, false]) {
+			list.handleInput("\r");
+			expect(settingsManager.getQuietStartup()).toBe(value);
+			expect(onSettingChange).toHaveBeenLastCalledWith("quiet-startup", value);
+		}
+	});
+
 	it("keeps the configured fixed theme marked while browsing", () => {
 		const config = {
 			settingsManager: SettingsManager.inMemory(),
