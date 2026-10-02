@@ -132,6 +132,7 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.session === next.session &&
 		previous.sessionId === next.sessionId &&
 		previous.sessionReady === next.sessionReady &&
+		previous.stoppingSessionIds === next.stoppingSessionIds &&
 		previous.selectedSubagentId === next.selectedSubagentId &&
 		previous.subagents === next.subagents
 	);
@@ -261,6 +262,7 @@ export const Composer = memo(function Composer({
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
 	const disabled = externallyDisabled || (roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state));
 	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
+	const aborting = !roomMode && Boolean(state.sessionId && state.stoppingSessionIds[state.sessionId]);
 	const getPromptCompletions = useCallback(
 		async (text: string, cursor: number): Promise<WebCompletionResult> => {
 			if (!state.currentProjectId) return { prefixStart: cursor, prefixEnd: cursor, items: [] };
@@ -688,6 +690,7 @@ export const Composer = memo(function Composer({
 											roomMode={roomMode}
 											sending={roomSending}
 											stopping={stopping}
+											aborting={aborting}
 											submitDisabled={
 												disabled ||
 												!state.sessionId ||
@@ -715,10 +718,11 @@ type ComposerSubmitActionsProps = {
 	roomMode: boolean;
 	sending: boolean;
 	stopping: boolean;
+	aborting: boolean;
 	submitDisabled: boolean;
 };
 
-function ComposerSubmitActions({ disabled, onAbort, roomMode, sending, stopping, submitDisabled }: ComposerSubmitActionsProps) {
+function ComposerSubmitActions({ disabled, onAbort, roomMode, sending, stopping, aborting, submitDisabled }: ComposerSubmitActionsProps) {
 	const { textInput } = usePromptInputController();
 	const [modeOpen, setModeOpen] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -726,11 +730,21 @@ function ComposerSubmitActions({ disabled, onAbort, roomMode, sending, stopping,
 	const actionInitializedRef = useRef(false);
 	const popoverOpenedRef = useRef(false);
 	const hasText = Boolean(textInput.value.trim());
-	const mode = roomMode ? (sending ? "sending" : "send") : !stopping ? "send" : hasText ? "choice" : "stop";
+	const mode = roomMode
+		? sending
+			? "sending"
+			: "send"
+		: aborting
+			? "stopping"
+			: !stopping
+				? "send"
+				: hasText
+					? "choice"
+					: "stop";
 
 	useEffect(() => {
-		if (roomMode || !stopping || !hasText || submitDisabled) setModeOpen(false);
-	}, [hasText, roomMode, stopping, submitDisabled]);
+		if (roomMode || aborting || !stopping || !hasText || submitDisabled) setModeOpen(false);
+	}, [aborting, hasText, roomMode, stopping, submitDisabled]);
 
 	const submitActiveMode = useCallback(
 		(mode: "steer" | "follow-up") => {
@@ -870,6 +884,16 @@ function ComposerSubmitActions({ disabled, onAbort, roomMode, sending, stopping,
 			>
 				<ArrowUp className="size-5" />
 			</PromptInputSubmit>
+		) : mode === "stopping" ? (
+			<PromptInputButton
+				className="size-10 rounded-full border border-border"
+				data-active-prompt-anchor
+				disabled
+				tooltip="正在停止"
+				aria-label="正在停止"
+			>
+				<LoaderCircle className="size-4 animate-spin" />
+			</PromptInputButton>
 		) : mode === "stop" ? (
 			<PromptInputButton
 				className="size-10 rounded-full border border-border"

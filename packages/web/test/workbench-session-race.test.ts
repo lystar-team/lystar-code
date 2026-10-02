@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { webApi } from "../src/adapters/host-protocol/api.ts";
 import { useWorkbench } from "../src/state/use-workbench.ts";
 import { initialState } from "../src/state/workbench-state.ts";
@@ -116,6 +116,93 @@ beforeEach(() => {
 	vi.spyOn(webApi, "subagents").mockResolvedValue({ subagents: [] });
 	vi.spyOn(webApi, "operations").mockResolvedValue({ operations: [] });
 	vi.spyOn(webApi, "projectTrust").mockResolvedValue({ cwd: "/tmp/test-project", trusted: true });
+});
+
+describe("会话停止请求", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.stubGlobal("window", { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout });
+		hooks.committed = {
+			...hooks.committed!,
+			session: { ...snapshot, activity: "running" },
+			sessionReady: true,
+			readOnly: false,
+			lease,
+			pendingUserPrompts: [{ id: "pending-a", text: "未提交消息", attachments: [] }],
+			queuedUserPrompts: [
+				{ id: "queued-a", text: "排队消息", displayText: "排队消息", delivery: "follow-up", attachments: [] },
+			],
+		};
+	});
+
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	it("重复停止只发送一次请求，确认后清队列并使用真实空闲快照", async () => {
+		let complete!: (value: Awaited<ReturnType<typeof webApi.abort>>) => void;
+		const request = vi.spyOn(webApi, "abort").mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					complete = resolve;
+				}),
+		);
+		const prompt = vi.spyOn(webApi, "prompt");
+		const actions = renderWorkbench().actions;
+		const stopping = actions.abort();
+		expect(hooks.committed?.stoppingSessionIds[snapshot.id]).toBe(true);
+		await actions.abort();
+		await actions.sendMessage("停止中提交的任务");
+		expect(request).toHaveBeenCalledTimes(1);
+		expect(request).toHaveBeenCalledWith(snapshot.id);
+		expect(prompt).not.toHaveBeenCalled();
+		expect(hooks.committed?.pendingUserPrompts).toHaveLength(1);
+
+		complete({ stopped: true, session: { ...snapshot, revision: 2 } });
+		await stopping;
+		expect(hooks.committed?.stoppingSessionIds[snapshot.id]).toBeUndefined();
+		expect(hooks.committed?.session?.activity).toBe("idle");
+		expect(hooks.committed?.pendingUserPrompts).toEqual([]);
+		expect(hooks.committed?.queuedUserPrompts).toEqual([]);
+	});
+
+	it("停止 A 时切换到 B，A 的迟到响应保留 B 的任务和快照", async () => {
+		let complete!: (value: Awaited<ReturnType<typeof webApi.abort>>) => void;
+		vi.spyOn(webApi, "abort").mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					complete = resolve;
+				}),
+		);
+		const stopping = renderWorkbench().actions.abort();
+		const sessionB = { ...snapshot, id: "session-b", activity: "running" as const };
+		const pendingB = [{ id: "pending-b", text: "B 的未提交消息", attachments: [] }];
+		const next = { ...hooks.committed!, sessionId: sessionB.id, session: sessionB, pendingUserPrompts: pendingB };
+		hooks.refs[0]!.current = next;
+		hooks.committed = next;
+
+		complete({ stopped: true, session: { ...snapshot, revision: 2 } });
+		await stopping;
+		expect(hooks.committed?.session).toEqual(sessionB);
+		expect(hooks.committed?.pendingUserPrompts).toEqual(pendingB);
+		expect(hooks.committed?.stoppingSessionIds[snapshot.id]).toBeUndefined();
+	});
+
+	it("停止失败显示错误并保留消息，用户可以重试", async () => {
+		const request = vi.spyOn(webApi, "abort").mockRejectedValueOnce(new Error("停止请求失败"));
+		const actions = renderWorkbench().actions;
+		await actions.abort();
+		expect(hooks.committed?.toast).toBe("停止请求失败");
+		expect(hooks.committed?.pendingUserPrompts).toHaveLength(1);
+		expect(hooks.committed?.stoppingSessionIds[snapshot.id]).toBeUndefined();
+
+		request.mockResolvedValueOnce({ stopped: true, session: { ...snapshot, revision: 2 } });
+		await actions.abort();
+		expect(request).toHaveBeenCalledTimes(2);
+		expect(hooks.committed?.pendingUserPrompts).toEqual([]);
+	});
 });
 
 describe("会话切换时的记录状态", () => {

@@ -11,6 +11,37 @@ afterEach(() => {
 });
 
 describe("session collaboration metadata", () => {
+	it("lists isolated execution sessions under their owning project after reopening", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lystar-isolated-session-list-"));
+		tempDirs.push(root);
+		const sessionDir = join(root, "sessions");
+		const cwd = join(root, "project");
+		const executionCwd = join(root, "isolated");
+		for (const directory of [sessionDir, cwd, executionCwd]) mkdirSync(directory, { recursive: true });
+		const manager = SessionManager.create(executionCwd, sessionDir, {
+			persistHeader: true,
+			collaborationWorkspace: {
+				id: "workspace",
+				mode: "patch",
+				projectCwd: cwd,
+				cwd: executionCwd,
+				status: "active",
+			},
+			collaborationTask: { id: "task", description: "隔离任务", createdAt: new Date().toISOString() },
+		});
+		const id = manager.getSessionId();
+		manager.appendCollaborationResult({
+			taskId: "task",
+			outcome: "completed",
+			resultText: "文件已交付",
+			completedAt: new Date().toISOString(),
+		});
+		manager.dispose();
+		const listed = await SessionManager.list(cwd, sessionDir);
+		expect(listed).toHaveLength(1);
+		expect(listed[0]).toMatchObject({ id, cwd: executionCwd, collaborationResult: { resultText: "文件已交付" } });
+		expect(await SessionManager.list(join(root, "another-project"), sessionDir)).toEqual([]);
+	});
 	it("persists parent, relation, and profile metadata in a normal session header", async () => {
 		const root = mkdtempSync(join(tmpdir(), "lystar-session-metadata-"));
 		tempDirs.push(root);

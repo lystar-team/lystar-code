@@ -133,6 +133,7 @@ export interface WebRoomMember {
 	nickname?: string;
 	profileId?: string;
 	profileName?: string;
+	profileDescription?: string;
 	profileIcon?: string;
 }
 

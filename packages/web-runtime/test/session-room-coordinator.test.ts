@@ -2,12 +2,23 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionRoomCoordinator, type SessionRoomDeliveryInput } from "../src/session-room-coordinator.ts";
+import {
+	SessionRoomCoordinator as RoomCoordinator,
+	type SessionRoomDeliveryInput,
+} from "../src/session-room-coordinator.ts";
 import { SessionRoomStore } from "../src/session-room-store.ts";
 
 const tempDirs: string[] = [];
+const coordinators: RoomCoordinator[] = [];
+class SessionRoomCoordinator extends RoomCoordinator {
+	constructor(options: ConstructorParameters<typeof RoomCoordinator>[0]) {
+		super(options);
+		coordinators.push(this);
+	}
+}
 
 afterEach(() => {
+	for (const coordinator of coordinators.splice(0)) coordinator.dispose();
 	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -183,7 +194,13 @@ describe("SessionRoomCoordinator", () => {
 		expect(duplicate.deduplicated).toBe(true);
 		await expect.poll(() => deliveries).toHaveLength(2);
 
-		const read = await api.read({ cwd: root, roomId: created.room.id, sessionId: "member-b" });
+		const read = await api.read({
+			cwd: root,
+			roomId: created.room.id,
+			sessionId: "member-b",
+			afterSeq: 0,
+			markRead: false,
+		});
 		expect(read.messages).toHaveLength(1);
 		expect(read.cursor).toEqual({ roomId: created.room.id, sessionId: "member-b", lastReadSeq: 1 });
 	});
@@ -217,7 +234,13 @@ describe("SessionRoomCoordinator", () => {
 		await expect
 			.poll(() => deliveries.map((delivery) => delivery.targetSessionId).sort())
 			.toEqual(["member-a", "member-b", "owner"]);
-		const ownerRead = await api.read({ cwd: root, roomId: created.room.id, sessionId: "owner", markRead: false });
+		const ownerRead = await api.read({
+			cwd: root,
+			roomId: created.room.id,
+			sessionId: "owner",
+			afterSeq: 0,
+			markRead: false,
+		});
 		expect(ownerRead.messages[0]).toMatchObject({ senderSessionId: "owner", senderType: "user", body: "请分别回复" });
 	});
 

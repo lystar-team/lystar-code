@@ -17,6 +17,7 @@ export interface SessionRoomRoutingInput {
 	targetSessionIds?: readonly string[];
 	members: readonly SessionRoomMember[];
 	availability?: ReadonlyMap<string, SessionRoomAvailability>;
+	body?: string;
 }
 
 function routingError(message: string, code: string): Error & { code: string; retryable: boolean } {
@@ -29,6 +30,24 @@ function activeMembers(members: readonly SessionRoomMember[]): SessionRoomMember
 
 function uniqueTargetIds(targetSessionIds: readonly string[] | undefined): string[] {
 	return [...new Set((targetSessionIds ?? []).map((sessionId) => sessionId.trim()).filter(Boolean))];
+}
+
+function responsibilityScore(member: SessionRoomMember, body: string | undefined): number {
+	if (!body?.trim()) return 0;
+	const source = `${member.profileName ?? ""} ${member.profileDescription ?? ""}`.toLocaleLowerCase();
+	if (!source.trim()) return 0;
+	const query = body.toLocaleLowerCase();
+	let score = 0;
+	for (const match of query.matchAll(/[a-z0-9_]+|[\p{Script=Han}]{2,}/gu)) {
+		const token = match[0];
+		if (source.includes(token)) score += token.length >= 4 ? 3 : 1;
+		if (/^[\p{Script=Han}]+$/u.test(token)) {
+			for (let index = 0; index + 1 < token.length; index++) {
+				if (source.includes(token.slice(index, index + 2))) score += 1;
+			}
+		}
+	}
+	return score;
 }
 
 function availabilityRank(availability: SessionRoomAvailability | undefined): number {
@@ -109,6 +128,7 @@ export function resolveSessionRoomTargets(input: SessionRoomRoutingInput): strin
 		const leftMember = memberById.get(left)!;
 		const rightMember = memberById.get(right)!;
 		return (
+			responsibilityScore(rightMember, input.body) - responsibilityScore(leftMember, input.body) ||
 			availabilityRank(input.availability?.get(left)) - availabilityRank(input.availability?.get(right)) ||
 			leftMember.joinedAt.localeCompare(rightMember.joinedAt) ||
 			left.localeCompare(right)

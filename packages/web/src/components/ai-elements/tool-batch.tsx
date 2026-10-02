@@ -41,6 +41,7 @@ import {
 } from "./resource-preview";
 import { ImageGeneration, type ImageGenerationStatus } from "../agents/image-generation";
 import {
+	isSessionTool,
 	sessionToolAgent,
 	sessionToolLabel,
 	sessionToolTask,
@@ -188,8 +189,8 @@ function toolIcon(name: string, className?: string, skill = false, images = fals
 						? FileTextIcon
 						: name === "find" || name === "grep" || name === "web_search"
 							? SearchIcon
-							: name === "sessions"
-								? BotIcon
+								: isSessionTool(name)
+									? BotIcon
 								: name === "ls"
 									? FolderIcon
 									: WrenchIcon;
@@ -294,7 +295,7 @@ function webSearchDetail(summary: string, webSearch?: WebSearchProgress): { labe
 
 function toolTitle(tool: ToolBatchTool): string {
 	if (tool.name === "web_search") return webSearchTitle(tool.summary, tool.webSearch);
-	if (tool.name === "sessions") return sessionToolTask(tool.summary) ?? "智能体协作";
+	if (isSessionTool(tool.name)) return sessionToolTask(tool.summary) ?? "智能体协作";
 	const parsed = parseToolSummary(tool.summary);
 	if (tool.name === "image_gen" && typeof parsed?.prompt === "string") return parsed.prompt;
 	if (typeof parsed?.command === "string") return parsed.command;
@@ -315,6 +316,7 @@ function codeLanguageForPath(path: string): BundledLanguage {
 }
 
 function toolActionLabel(name: string): string {
+	if (isSessionTool(name)) return "进行了智能体协作";
 	const labels: Record<string, string> = {
 		bash: "运行了命令",
 		read: "读取了文件",
@@ -326,7 +328,6 @@ function toolActionLabel(name: string): string {
 		image_gen: "生成了图片",
 		web_search: "搜索了网页",
 		ls: "查看了目录",
-		sessions: "进行了智能体协作",
 	};
 	return labels[name] ?? `调用了 ${name}`;
 }
@@ -349,7 +350,6 @@ const activeToolLabels: Record<string, string> = {
 	image_gen: "正在生成图片",
 	web_search: "正在搜索网页",
 	ls: "正在查看目录",
-	sessions: "正在派发智能体",
 };
 
 function sessionToolPhase(state: ToolBatchState): SessionToolPhase {
@@ -361,8 +361,8 @@ function sessionToolPhase(state: ToolBatchState): SessionToolPhase {
 	return "completed";
 }
 
-function toolRowActionLabel(name: string, state: ToolBatchState, preparing = false, summary = ""): string {
-	if (name === "sessions") return sessionToolLabel(summary, sessionToolPhase(state)) ?? activeToolLabels.sessions;
+function toolRowActionLabel(name: string, state: ToolBatchState, preparing = false): string {
+	if (isSessionTool(name)) return sessionToolLabel(name, sessionToolPhase(state)) ?? "正在处理智能体协作";
 	if (state === "input-available") {
 		if (preparing && name === "write") return "准备写入";
 		return activeToolLabels[name] ?? "运行中";
@@ -420,8 +420,8 @@ export function toolRowTitle(tool: ToolBatchTool): string {
 						: toolRowActionLabel(tool.name, tool.state);
 		return title && title !== tool.name ? `${action} · ${title}` : action;
 	}
-	if (tool.name === "sessions") {
-		const action = toolRowActionLabel(tool.name, tool.state, tool.preparing, tool.summary);
+	if (isSessionTool(tool.name)) {
+		const action = toolRowActionLabel(tool.name, tool.state, tool.preparing);
 		const agent = sessionToolAgent(tool.summary, tool.detail);
 		const task = sessionToolTask(tool.summary);
 		return [action, agent?.nickname, task].filter(Boolean).join(" · ") || action;

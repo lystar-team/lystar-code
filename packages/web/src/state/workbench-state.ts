@@ -445,6 +445,7 @@ export function initialState(): WorkbenchState {
 		liveCompaction: undefined,
 		liveTurnId: 0,
 		settledTurns: {},
+		stoppingSessionIds: {},
 		unreadSessionIds: {},
 		gitFileStats: {},
 		statusText: "",

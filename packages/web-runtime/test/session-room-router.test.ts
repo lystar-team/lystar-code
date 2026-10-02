@@ -102,6 +102,21 @@ describe("session room routing", () => {
 		).toEqual(["second"]);
 	});
 
+	it("prefers the member whose responsibility matches the request", () => {
+		const roleMembers = members.map((member) => ({
+			...member,
+			profileName: member.sessionId === "first" ? "前端开发" : "后端开发",
+			profileDescription: member.sessionId === "first" ? "负责页面布局和交互" : "负责接口、业务逻辑和数据访问",
+		}));
+		expect(
+			resolveSessionRoomTargets({
+				route: "one_of_us",
+				senderSessionId: "owner",
+				members: roleMembers,
+				body: "请检查接口字段和业务逻辑",
+			}),
+		).toEqual(["second"]);
+	});
 	it("rejects direct messages without an active target", () => {
 		expect(() =>
 			resolveSessionRoomTargets({

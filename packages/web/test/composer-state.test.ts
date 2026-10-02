@@ -52,4 +52,9 @@ describe("composer render state", () => {
 			}),
 		).toBe(false);
 	});
+
+	it("停止中状态变化时不会复用旧停止按钮", () => {
+		const current = composerState();
+		expect(composerStateEqual(current, { ...current, stoppingSessionIds: { "session-1": true } })).toBe(false);
+	});
 });

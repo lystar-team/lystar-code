@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import {
@@ -13,6 +14,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
 import type { CacheWarmingAction } from "../cache-warmer.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { AgentTurnContext } from "../input-origin.ts";
@@ -394,6 +396,7 @@ const noOpUIContext: ExtensionUIContext = {
 };
 
 export class ExtensionRunner {
+	private readonly handlerSignals = new AsyncLocalStorage<AbortSignal>();
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
@@ -460,22 +463,40 @@ export class ExtensionRunner {
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
-		this.runtime.sendMessage = actions.sendMessage;
+		this.runtime.sendMessage = (...args) => {
+			this.handlerSignals.getStore()?.throwIfAborted();
+			actions.sendMessage(...args);
+		};
 		this.runtime.getCurrentTurn = () => this.getTurnContextFn();
-		this.runtime.sendUserMessage = actions.sendUserMessage;
-		this.runtime.appendEntry = actions.appendEntry;
+		this.runtime.sendUserMessage = (...args) => {
+			this.handlerSignals.getStore()?.throwIfAborted();
+			actions.sendUserMessage(...args);
+		};
+		this.runtime.appendEntry = (...args) => {
+			this.handlerSignals.getStore()?.throwIfAborted();
+			actions.appendEntry(...args);
+		};
 		this.runtime.setSessionName = actions.setSessionName;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setLabel = actions.setLabel;
 		this.runtime.getActiveTools = actions.getActiveTools;
 		this.runtime.getAllTools = actions.getAllTools;
 		this.runtime.getSettings = actions.getSettings;
-		this.runtime.setActiveTools = actions.setActiveTools;
+		this.runtime.setActiveTools = (...args) => {
+			this.handlerSignals.getStore()?.throwIfAborted();
+			actions.setActiveTools(...args);
+		};
 		this.runtime.refreshTools = actions.refreshTools;
 		this.runtime.getCommands = actions.getCommands;
-		this.runtime.setModel = actions.setModel;
+		this.runtime.setModel = (...args) => {
+			this.handlerSignals.getStore()?.throwIfAborted();
+			return actions.setModel(...args);
+		};
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
-		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.setThinkingLevel = (...args) => {
+			this.handlerSignals.getStore()?.throwIfAborted();
+			actions.setThinkingLevel(...args);
+		};
 		this.runtime.createContext = () => this.createContext();
 
 		// Context actions (required)
@@ -934,6 +955,7 @@ export class ExtensionRunner {
 		const runner = this;
 		const getModel = this.getModel;
 		const getScopedModels = this.getScopedModels;
+		const signal = this.handlerSignals.getStore() ?? this.getSignalFn();
 		return {
 			get ui() {
 				runner.assertActive();
@@ -985,7 +1007,7 @@ export class ExtensionRunner {
 			},
 			get signal() {
 				runner.assertActive();
-				return runner.getSignalFn();
+				return runner.handlerSignals.getStore() ?? signal;
 			},
 			abort: () => {
 				runner.assertActive();
@@ -1041,6 +1063,7 @@ export class ExtensionRunner {
 							isError: true,
 						};
 					}
+					signal?.throwIfAborted();
 					return runner.executeToolFn(toolCallId, name, args, { ...options, signal: options.signal ?? signal });
 				},
 			},
@@ -1086,12 +1109,21 @@ export class ExtensionRunner {
 		return context;
 	}
 
+	/** Keep a callback and its asynchronous continuations bound to their original run. */
+	runWithSignal<T>(signal: AbortSignal | undefined, run: () => T): T {
+		signal?.throwIfAborted();
+		return signal ? this.handlerSignals.run(signal, run) : run();
+	}
+
 	private snapshot(event: ExtensionEvent["type"], turn = this.getTurnContextFn()) {
 		const snapshot = snapshotEventHandlers(this.extensions, event, turn);
-		if (this.activityListeners.size === 0) return snapshot;
+		const currentSignal = this.handlerSignals.getStore() ?? this.getSignalFn();
 		return snapshot.map(({ ext, handlers }) => ({
 			ext,
 			handlers: handlers.map((handler) => async (...args: Parameters<typeof handler>) => {
+				const handlerEvent = args[0] as ExtensionEvent;
+				const signal = "signal" in handlerEvent ? handlerEvent.signal : currentSignal;
+				if (signal?.aborted) return undefined;
 				const activityId = randomUUID();
 				const startedAt = Date.now();
 				this.emitActivity({
@@ -1101,8 +1133,17 @@ export class ExtensionRunner {
 					hook: event,
 					startedAt,
 				});
+				let abortTimer: ReturnType<typeof setImmediate> | undefined;
+				const boundaryController =
+					signal && (event === "turn_end" || event === "agent_before_settle") ? new AbortController() : undefined;
+				// Preserve drafts that settle in the cancellation tick; a suspended handler gets one tick to finish.
+				const cancelBoundary = () => {
+					abortTimer = setImmediate(() => boundaryController?.abort(signal?.reason));
+				};
+				if (boundaryController) signal?.addEventListener("abort", cancelBoundary, { once: true });
 				try {
-					const result = await handler(...args);
+					const operation = this.runWithSignal(signal, () => Promise.resolve(handler(...args)));
+					const result = await raceWithAbortSignal(operation, boundaryController?.signal ?? signal);
 					const endedAt = Date.now();
 					this.emitActivity({
 						phase: "end",
@@ -1128,7 +1169,11 @@ export class ExtensionRunner {
 						status: "failed",
 						error: error instanceof Error ? error.message : String(error),
 					});
+					if (signal?.aborted) return undefined;
 					throw error;
+				} finally {
+					if (boundaryController) signal?.removeEventListener("abort", cancelBoundary);
+					if (abortTimer) clearImmediate(abortTimer);
 				}
 			}),
 		}));
@@ -1144,7 +1189,7 @@ export class ExtensionRunner {
 		let context = await buildContext(entries);
 		let valid = true;
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, baseEvent.type)) {
+		for (const { ext, handlers } of this.snapshot(baseEvent.type)) {
 			for (const handler of handlers) {
 				const event = {
 					...baseEvent,
@@ -1435,7 +1480,7 @@ export class ExtensionRunner {
 			}
 		}
 
-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context_with_system")) {
+		for (const { ext, handlers } of this.snapshot("context_with_system")) {
 			for (const handler of handlers) {
 				try {
 					const hadLeadingSystemMessage = currentMessages[0]?.role === "system";

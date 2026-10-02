@@ -302,6 +302,53 @@ export class CollaborationWorkspaceManager {
 		};
 	}
 
+	async receive(
+		workspace: SessionWorkspaceSnapshot,
+		changedFiles: readonly string[] = [],
+	): Promise<SessionWorkspaceSnapshot> {
+		if (workspace.status === "accepted") return workspace;
+		if (workspace.mode === "shared") return { ...workspace, status: "accepted" };
+		if (workspace.repositoryRoot && workspace.baseCommit && workspace.worktreePath) {
+			const untrackedStatus = await runGit(workspace.cwd, [
+				"status",
+				"--porcelain=v1",
+				"-z",
+				"--untracked-files=all",
+			]);
+			const untracked = parseGitStatusPaths(untrackedStatus).filter((path) =>
+				untrackedStatus.includes(`?? ${path}`),
+			);
+			if (untracked.length > 0) await runGitWrite(workspace.cwd, ["add", "-N", "--", ...untracked]);
+			const patch = await runGit(workspace.cwd, ["diff", "--binary", workspace.baseCommit, "--"]);
+			if (patch.trim()) {
+				const patchPath = join(workspace.worktreePath, "..", "receive.patch");
+				await writeFile(patchPath, patch, "utf8");
+				try {
+					await runGitWrite(workspace.repositoryRoot, ["apply", "--3way", "--binary", patchPath]);
+				} finally {
+					await rm(patchPath, { force: true });
+				}
+			}
+			return { ...workspace, status: "accepted" };
+		}
+		if (workspace.baselinePath && workspace.worktreePath) {
+			const paths =
+				changedFiles.length > 0
+					? changedFiles
+					: await changedCopiedFiles(workspace.baselinePath, workspace.worktreePath);
+			for (const path of paths) {
+				const source = resolve(workspace.worktreePath, path);
+				const target = resolve(workspace.projectCwd, path);
+				if (existsSync(source)) {
+					await mkdir(join(target, ".."), { recursive: true });
+					await cp(source, target, { recursive: true, force: true });
+				} else {
+					await rm(target, { recursive: true, force: true });
+				}
+			}
+		}
+		return { ...workspace, status: "accepted" };
+	}
 	async release(workspace: SessionWorkspaceSnapshot): Promise<SessionWorkspaceSnapshot> {
 		if (workspace.mode !== "shared" && workspace.repositoryRoot && workspace.worktreePath) {
 			try {

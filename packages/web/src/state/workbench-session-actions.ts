@@ -51,6 +51,17 @@ type PromiseMapRef = { current: Map<string, Promise<void>> };
 type StringSetRef = { current: Set<string> };
 type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
 
+function setSessionStopping(current: WorkbenchState, sessionId: string, stopping: boolean): WorkbenchState {
+	if (stopping) {
+		if (current.stoppingSessionIds[sessionId]) return current;
+		return { ...current, stoppingSessionIds: { ...current.stoppingSessionIds, [sessionId]: true } };
+	}
+	if (!current.stoppingSessionIds[sessionId]) return current;
+	const stoppingSessionIds = { ...current.stoppingSessionIds };
+	delete stoppingSessionIds[sessionId];
+	return { ...current, stoppingSessionIds };
+}
+
 export interface WorkbenchSessionActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
@@ -587,7 +598,7 @@ export function useWorkbenchSessionActions({
 			displayText?: string,
 		) => {
 			const current = stateRef.current;
-			if (!current.sessionId || !canSendPrompt(current)) return;
+			if (!current.sessionId || current.stoppingSessionIds[current.sessionId] || !canSendPrompt(current)) return;
 			if (hasActiveSessionWork(current) && mode === "prompt") mode = "follow-up";
 			const value = text.trim();
 			const fallbackDisplayText = attachmentPreviews?.length
@@ -785,11 +796,31 @@ export function useWorkbenchSessionActions({
 	const abort = useCallback(async () => {
 		const current = stateRef.current;
 		const sessionId = current.sessionId;
-		if (!sessionId) return;
-		await webApi.abort(sessionId, current.currentOperation?.operationId);
-		updateState((next) => (next.sessionId === sessionId ? clearUncommittedUserPrompts(next) : next));
-		scheduleTranscriptRefresh(sessionId);
-	}, [scheduleTranscriptRefresh, updateState]);
+		if (!sessionId || current.stoppingSessionIds[sessionId]) return;
+		updateState((next) => setSessionStopping(next, sessionId, true));
+		try {
+			const result = await webApi.abort(sessionId);
+			updateState((next) => {
+				const cleared = setSessionStopping(next, sessionId, false);
+				if (cleared.sessionId !== sessionId) return cleared;
+				const settled = clearUncommittedUserPrompts(cleared);
+				const session = result.session ?? settled.session;
+				if (!session || isOlderSessionSnapshot(settled.session, session)) return settled;
+				return restoreRuntimeActivities(
+					{
+						...settled,
+						session,
+						currentOperation: operationForSessionSnapshot(settled.operations, session),
+					},
+					session,
+				);
+			});
+			scheduleTranscriptRefresh(sessionId);
+		} catch (error) {
+			updateState((next) => setSessionStopping(next, sessionId, false));
+			showToast(errorMessage(error));
+		}
+	}, [scheduleTranscriptRefresh, showToast, updateState]);
 
 	const renameSession = useCallback(
 		async (sessionId: string, name: string) => {

@@ -207,6 +207,7 @@ function InviteAgentDialog({
 		const member: RoomMemberSelection = {
 			profileId: profile.id,
 			profileName: profile.name,
+			profileDescription: profile.description,
 			...(profile.icon ? { profileIcon: profile.icon } : {}),
 		};
 		setSubmitting(true);

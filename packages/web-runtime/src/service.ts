@@ -11,6 +11,7 @@ import {
 	type SessionCoordinatorSummary,
 	type SessionRoomMessage,
 	type SessionRoomSummary,
+	type SessionRoomTask,
 	type SessionSendMode,
 	type SessionWorkspaceMode,
 	type SessionWorkspaceSnapshot,
@@ -51,11 +52,11 @@ import {
 } from "./session-progress-coalescing.ts";
 import { roomAttachmentInput } from "./session-room-attachments.ts";
 import { SessionRoomCoordinator } from "./session-room-coordinator.ts";
-import { SessionRoomStore } from "./session-room-store.ts";
+import { SESSION_ROOM_EXECUTION_RENEW_MS, SessionRoomStore } from "./session-room-store.ts";
 import { readTranscriptPageWithinFrameBudget } from "./transcript-page-budget.ts";
 import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
-import type { RuntimeAdapter, RuntimeSession, UiRequestHandler } from "./types.ts";
+import type { RuntimeAdapter, RuntimeSession, SessionSummaryBase, UiRequestHandler } from "./types.ts";
 
 const BASE_CAPABILITIES: Capability[] = [
 	"session-paging",
@@ -94,13 +95,36 @@ const SESSION_HANDOFF_RECONNECT_INTERVAL_MS = 100;
 const SESSION_HANDOFF_RECONNECT_TIMEOUT_MS = 60_000;
 const SESSION_HANDOFF_LOCAL_FALLBACK_MS = 5_000;
 const ROOM_READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
+const ROOM_DISCUSSION_TOOL_NAMES = [
+	...ROOM_READ_ONLY_TOOL_NAMES,
+	"room_read",
+	"room_send",
+	"room_claim",
+	"room_task_create",
+	"room_task_list",
+	"room_task_update",
+] as const;
+const ROOM_EXECUTION_TOOL_NAMES = [...ROOM_READ_ONLY_TOOL_NAMES, "edit", "write", "bash"] as const;
 const ROOM_ALLOWED_TOOL_NAMES = new Set([
 	...ROOM_READ_ONLY_TOOL_NAMES,
 	"edit",
 	"write",
-	"sessions",
+	"session_create",
+	"session_send",
+	"session_wait",
+	"session_list",
+	"session_profiles",
+	"session_stop",
+	"room_create",
+	"room_join",
+	"room_leave",
+	"room_list",
+	"room_read",
+	"room_send",
 	"room_claim",
-	"room_tasks",
+	"room_task_create",
+	"room_task_list",
+	"room_task_update",
 ]);
 const ROOM_WRITE_TOOL_NAMES = new Set(["edit", "write"]);
 
@@ -392,6 +416,11 @@ export class WebRuntimeService {
 	private readonly activeOperationBySession = new Map<string, string>();
 	private readonly scheduledOperations = new Set<string>();
 	private readonly operationAbortControllers = new Map<string, AbortController>();
+	private readonly operationRunPromises = new Map<string, Promise<void>>();
+	private readonly operationAbortPromises = new Map<string, Promise<OperationSnapshot>>();
+	private readonly runtimeAbortPromises = new Map<string, Promise<void>>();
+	private readonly sessionStopPromises = new Map<string, Promise<{ stopped: boolean }>>();
+	private readonly sessionStopCounts = new Map<string, number>();
 	private readonly journalWritePromises = new Map<string, Promise<JsonValue>>();
 	private readonly writeScopeQueues = new Map<string, Promise<void>>();
 	private readonly snapshotRevisions = new Map<string, number>();
@@ -424,6 +453,8 @@ export class WebRuntimeService {
 	private readonly coordinatorDemand = new Set<string>();
 	private readonly roomDeliveryDemand = new Set<string>();
 	private readonly roomDeliveryQueues = new Map<string, Promise<void>>();
+	private readonly roomModelTurns = new Map<string, Set<Promise<void>>>();
+	private readonly roomStore: SessionRoomStore;
 	private readonly sessionsBeingDeleted = new Set<string>();
 	private modelCatalogRevision = 1;
 	private readonly sessionWatchers = new Map<string, FSWatcher>();
@@ -448,12 +479,17 @@ export class WebRuntimeService {
 		this.agentDir = options.agentDir;
 		this.runtimeSettings = SettingsManager.create(this.agentDir, this.agentDir);
 		this.collaborationWorkspaces = new CollaborationWorkspaceManager(this.agentDir);
+		this.roomStore = new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl"), (change) => {
+			void this.broadcast({ type: "room_updated", ...change });
+		});
 		this.roomCoordinator = new SessionRoomCoordinator({
-			store: new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl"), (change) => {
-				void this.broadcast({ type: "room_updated", ...change });
-			}),
+			store: this.roomStore,
 			getAvailability: (cwd, sessionId) => this.getSessionRoomAvailability(cwd, sessionId),
-			deliver: (input) => this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message),
+			getProfileDescription: (cwd, profileId) =>
+				discoverSessionProfiles(cwd, this.agentDir).find((profile) => profile.id === profileId)?.description,
+			acceptTaskResult: (task, ownerSessionId) => this.acceptRoomTaskResult(task, ownerSessionId),
+			deliver: (input) =>
+				this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message, input.messages),
 		});
 		this.adapter.setSessionCoordinator?.(this.createSessionCoordinator());
 		this.persistent = options.persistent === true;
@@ -532,12 +568,39 @@ export class WebRuntimeService {
 		};
 	}
 
+	private runtimeCoordinatorBase(runtime: RuntimeSession): SessionSummaryBase {
+		const snapshot = runtime.getSnapshot("available");
+		const header = existsSync(runtime.sessionPath) ? readSessionHeader(runtime.sessionPath) : undefined;
+		return {
+			path: runtime.sessionPath,
+			id: snapshot.id,
+			cwd: snapshot.cwd,
+			createdAt: snapshot.createdAt,
+			updatedAt: snapshot.updatedAt,
+			messageCount: 0,
+			firstMessage: "未命名会话",
+			activity: snapshot.activity,
+			...(snapshot.name ? { name: snapshot.name } : {}),
+			...(header?.profile ? { profileId: header.profile.id, profileName: header.profile.name } : {}),
+			...(header?.collaborationWorkspace ? { workspace: header.collaborationWorkspace } : {}),
+			...(header?.collaborationTask
+				? {
+						taskId: header.collaborationTask.id,
+						taskDescription: header.collaborationTask.description,
+						parentId: header.collaborationTask.parentSessionId,
+					}
+				: {}),
+		};
+	}
+
 	private async findCoordinatorSession(
 		cwd: string,
 		sessionId: string,
 	): Promise<{ base: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>[number]; path: string }> {
 		const sessions = await this.adapter.listSessions(cwd);
-		const session = sessions.find((item) => item.id === sessionId);
+		const live = [...this.runtimes.values()].find((runtime) => runtime.getSnapshot("available").id === sessionId);
+		const session =
+			sessions.find((item) => item.id === sessionId) ?? (live ? this.runtimeCoordinatorBase(live) : undefined);
 		if (!session) throw Object.assign(new Error(`未找到会话：${sessionId}`), { code: "session_not_found" });
 		return { base: session, path: canonicalSessionPath(session.path) };
 	}
@@ -557,12 +620,36 @@ export class WebRuntimeService {
 		taskId: string,
 		text: string,
 		workspace?: SessionWorkspaceSnapshot,
+		roomMessage?: SessionRoomMessage,
 	): Promise<SessionCoordinatorResult> {
 		const snapshot = runtime.getSnapshot("available");
 		let promptSucceeded = false;
 		let errorMessage: string | undefined;
 		try {
-			await runtime.prompt(text);
+			if (roomMessage) {
+				if (!runtime.promptWithOrigin) throw new Error("任务执行会话不支持结构化输入");
+				await this.runRoomModelTurn(runtime, () =>
+					runtime.promptWithOrigin!(text, undefined, {
+						inputId: roomMessage.id,
+						origin: {
+							type: "room",
+							roomId: roomMessage.roomId,
+							messageId: roomMessage.id,
+							seq: roomMessage.seq,
+							kind: "task",
+							senderSessionId: roomMessage.senderSessionId,
+							taskId: roomMessage.taskId,
+						},
+						activeToolNames: ROOM_EXECUTION_TOOL_NAMES,
+						capabilities: {
+							allowedTools: ROOM_EXECUTION_TOOL_NAMES,
+							readRoots: [snapshot.cwd],
+							writeRoots: [snapshot.cwd],
+							shell: "sandboxed",
+						},
+					}),
+				);
+			} else await runtime.prompt(text);
 			promptSucceeded = true;
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
@@ -681,6 +768,7 @@ export class WebRuntimeService {
 
 	private async createCoordinatorSession(
 		input: Parameters<SessionCoordinator["create"]>[0],
+		options: { deferTask?: boolean; workspace?: SessionWorkspaceSnapshot } = {},
 	): Promise<Awaited<ReturnType<SessionCoordinator["create"]>>> {
 		const profileId = input.profileId;
 		const taskText = input.task?.trim();
@@ -701,9 +789,23 @@ export class WebRuntimeService {
 		const workspaceMode: SessionWorkspaceMode | undefined = collaborationTask
 			? (input.workspaceMode ?? "worktree")
 			: undefined;
-		const workspace = workspaceMode
-			? await this.collaborationWorkspaces.create(input.cwd, workspaceMode, randomUUID())
-			: undefined;
+		let workspace: SessionWorkspaceSnapshot | undefined;
+		if (options.workspace) {
+			workspace = options.workspace;
+		} else if (workspaceMode) {
+			try {
+				workspace = await this.collaborationWorkspaces.create(input.cwd, workspaceMode, randomUUID());
+			} catch (error) {
+				if (
+					!options.deferTask ||
+					!(error instanceof Error) ||
+					!("code" in error) ||
+					error.code !== "workspace_git_required"
+				)
+					throw error;
+				workspace = await this.collaborationWorkspaces.create(input.cwd, "patch", randomUUID());
+			}
+		}
 		let runtime: RuntimeSession;
 		try {
 			runtime = await this.adapter.createSession(workspace?.cwd ?? input.cwd, this.coordinatorUiHandler(), {
@@ -721,15 +823,16 @@ export class WebRuntimeService {
 		const sessionPath = canonicalSessionPath(runtime.sessionPath);
 		this.attachRuntime(runtime);
 		await this.ensureSessionHandoffServer(runtime);
-		if (collaborationTask) {
+		if (collaborationTask && !options.deferTask) {
 			this.trackCoordinatorTask(
 				sessionPath,
 				this.runCoordinatorPrompt(runtime, collaborationTask.id, collaborationTask.description, workspace),
 			);
 		}
 		const sessions = await this.adapter.listSessions(input.cwd);
-		const base = sessions.find((item) => canonicalSessionPath(item.path) === sessionPath);
-		if (!base) throw new Error("新建会话未出现在会话列表中");
+		const base =
+			sessions.find((item) => canonicalSessionPath(item.path) === sessionPath) ??
+			this.runtimeCoordinatorBase(runtime);
 		await this.broadcast({ type: "sessions_changed", cwd: input.cwd });
 		return {
 			session: this.coordinatorSummary(base, runtime),
@@ -746,12 +849,222 @@ export class WebRuntimeService {
 		return undefined;
 	}
 
+	private async runRoomModelTurn<T>(runtime: RuntimeSession, run: () => Promise<T>): Promise<T> {
+		const provider = runtime.getSnapshot("available").model?.provider ?? "default";
+		const turns = this.roomModelTurns.get(provider) ?? new Set<Promise<void>>();
+		this.roomModelTurns.set(provider, turns);
+		while (turns.size >= 2) await Promise.race(turns);
+		if (this.disposed) throw new Error("Web Runtime 已关闭");
+		let release!: () => void;
+		const turn = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		turns.add(turn);
+		try {
+			return await run();
+		} finally {
+			turns.delete(turn);
+			release();
+		}
+	}
+
+	private async acceptRoomTaskResult(
+		task: SessionRoomTask,
+		_ownerSessionId: string,
+	): Promise<SessionCollaborationResult> {
+		const result = task.execution?.result;
+		if (!result || result.outcome !== "completed" || result.error)
+			throw Object.assign(new Error("任务没有可接收的成功结果"), {
+				code: "room_task_result_invalid",
+				retryable: false,
+			});
+		if (!result.workspace || result.workspace.status === "accepted") return result;
+		const delivery = await this.collaborationWorkspaces.receive(result.workspace, result.changedFiles);
+		const accepted: SessionCollaborationResult = { ...result, workspace: delivery };
+		if (task.execution?.sessionId) {
+			try {
+				const found = await this.findCoordinatorSession(
+					this.roomStore.room(task.roomId).cwd,
+					task.execution.sessionId,
+				);
+				const runtime = await this.ensureRuntime(
+					found.path,
+					this.coordinatorUiHandler(found.path, { suppressInfoNotifications: true }),
+				);
+				await this.persistCoordinatorResult(runtime, accepted);
+			} catch {
+				// 协作 Store 已记录接收状态；子会话不可用时不阻止主工作区接收。
+			}
+		}
+		return accepted;
+	}
+
+	private async executeRoomTask(cwd: string, targetSessionId: string, message: SessionRoomMessage): Promise<number> {
+		const task = this.roomStore.task(message.roomId, message.taskId!);
+		if (
+			task.assigneeSessionId !== targetSessionId ||
+			(task.status !== "doing" && task.execution?.messageId !== message.id)
+		)
+			return message.seq;
+		const context = this.roomCoordinator.contextForSession(message.roomId, targetSessionId);
+		const availability = this.getSessionRoomAvailability(cwd, targetSessionId);
+		let existingExecutionSession: Awaited<ReturnType<WebRuntimeService["findCoordinatorSession"]>> | undefined;
+		if (task.execution?.sessionId) {
+			try {
+				existingExecutionSession = await this.findCoordinatorSession(cwd, task.execution.sessionId);
+			} catch {
+				// 执行会话可能已被清理，过期租约时允许恢复到同一工作区。
+			}
+		}
+		const allowRecovery = existingExecutionSession
+			? !["running", "waiting_for_input"].includes(existingExecutionSession.base.activity)
+			: availability === undefined ||
+				["offline", "failed", "aborted", "interrupted", "completed"].includes(availability);
+		const claimed = this.roomStore.claimTaskExecution(
+			message.roomId,
+			task.id,
+			targetSessionId,
+			message.id,
+			this.serverInstanceId,
+			allowRecovery,
+		);
+		let execution = claimed.execution;
+		if (!execution) throw new Error("任务执行租约没有建立");
+		let executionSessionPath: string | undefined;
+		if (execution.sessionId) {
+			try {
+				const found = await this.findCoordinatorSession(cwd, execution.sessionId);
+				executionSessionPath = found.path;
+			} catch {
+				// 旧执行会话已不可见，下面复用原工作区创建新的执行会话。
+			}
+		}
+		if (!executionSessionPath) {
+			const member = this.roomStore.member(message.roomId, targetSessionId);
+			const parent = await this.findCoordinatorSession(cwd, targetSessionId);
+			const attachment = await roomAttachmentInput(message);
+			const description = `${context.text}\n\n${attachment.text}\n\n提交任务产物和验证结果，未完成时说明阻塞。不要创建下级会话。`;
+			const created = await this.createCoordinatorSession(
+				{
+					cwd,
+					parentSessionFile: parent.path,
+					parentSessionId: targetSessionId,
+					profileId: member.profileId,
+					task: description,
+					...(execution.workspace ? {} : { workspaceMode: "worktree" as const }),
+				},
+				{ deferTask: true, ...(execution.workspace ? { workspace: execution.workspace } : {}) },
+			);
+			const bound = {
+				...execution,
+				sessionId: created.session.id,
+				taskId: created.taskId!,
+				messageId: message.id,
+				...(created.session.workspace ? { workspace: created.session.workspace } : {}),
+			};
+			const updated = this.roomStore.bindTaskExecution(
+				message.roomId,
+				task.id,
+				targetSessionId,
+				bound,
+				this.serverInstanceId,
+			);
+			execution = updated.execution!;
+			const child = await this.findCoordinatorSession(cwd, created.session.id);
+			executionSessionPath = child.path;
+			const runtime = this.runtimes.get(executionSessionPath);
+			if (!runtime) throw new Error("任务执行会话运行时未建立");
+			this.trackCoordinatorTask(
+				executionSessionPath,
+				this.runCoordinatorPrompt(runtime, execution.taskId!, description, execution.workspace, message),
+			);
+		}
+		let leaseLost = false;
+		const leaseHeartbeat =
+			execution.sessionId && execution.ownerId && execution.leaseId
+				? setInterval(() => {
+						if (
+							!this.roomStore.renewTaskExecution(
+								message.roomId,
+								task.id,
+								execution.sessionId!,
+								execution.ownerId!,
+								execution.leaseId!,
+							)
+						)
+							leaseLost = true;
+					}, SESSION_ROOM_EXECUTION_RENEW_MS)
+				: undefined;
+		leaseHeartbeat?.unref?.();
+		try {
+			const result =
+				execution.result ??
+				(await this.waitForCoordinatorSessions({ cwd, sessionIds: [execution.sessionId!] }))[0]?.result;
+			if (!result) throw new Error("任务执行会话没有提交结果");
+			if (leaseLost)
+				throw Object.assign(new Error("任务执行租约已被其他 Runtime 接管"), {
+					code: "room_task_execution_claimed",
+					retryable: true,
+				});
+			if (
+				!execution.result &&
+				!this.roomStore.recordTaskExecution(
+					message.roomId,
+					task.id,
+					execution.sessionId!,
+					result,
+					execution.ownerId,
+					execution.leaseId,
+				)
+			)
+				throw Object.assign(new Error("任务执行结果已被其他 Runtime 接管"), {
+					code: "room_task_execution_claimed",
+					retryable: true,
+				});
+			const text = [
+				result.resultText?.trim(),
+				result.error ? `执行失败：${result.error}` : undefined,
+				result.changedFiles?.length ? `变更文件：${result.changedFiles.join("、")}` : undefined,
+				result.deliveryCommit ? `交付提交：${result.deliveryCommit}` : undefined,
+				result.patchPath ? `交付补丁：${result.patchPath}` : undefined,
+				result.outcome === "completed" && !result.error
+					? "结果已提交，等待验收。"
+					: `任务未完成（${result.outcome}）。`,
+			]
+				.filter(Boolean)
+				.join("\n");
+			await this.roomCoordinator.api().send({
+				cwd,
+				roomId: message.roomId,
+				senderSessionId: targetSessionId,
+				route: "direct",
+				targetSessionIds: [this.roomStore.room(message.roomId).ownerSessionId],
+				kind: "result",
+				body: text,
+				taskId: task.id,
+				replyToMessageId: message.id,
+				idempotencyKey: `room-task-result:${message.id}:${execution.sessionId}`,
+			});
+			return message.seq;
+		} finally {
+			if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+		}
+	}
+
 	private async deliverSessionRoomMessage(
 		cwd: string,
 		targetSessionId: string,
-		message: SessionRoomMessage,
-	): Promise<void> {
-		if (!["task", "message", "question"].includes(message.kind)) return;
+		envelope: SessionRoomMessage,
+		messages: readonly SessionRoomMessage[] = [envelope],
+	): Promise<number> {
+		const message = messages.findLast((input) => input.kind !== "system" && input.kind !== "status");
+		const member = this.roomStore.member(envelope.roomId, targetSessionId);
+		if (member.leftAt || !message) return envelope.seq;
+		const request = messages.findLast(
+			(input) => input.kind === "task" || input.kind === "message" || input.kind === "question",
+		);
+		if (message.kind === "task" && message.taskId && message.capabilities?.allowedTools.includes("room_task_update"))
+			return this.executeRoomTask(cwd, targetSessionId, message);
 		const found = await this.findCoordinatorSession(cwd, targetSessionId);
 		const sessionPath = canonicalSessionPath(found.path);
 		const previousDelivery = this.roomDeliveryQueues.get(sessionPath);
@@ -768,97 +1081,93 @@ export class WebRuntimeService {
 				this.coordinatorUiHandler(sessionPath, { suppressInfoNotifications: true }),
 				{ deferExtensionLifecycle: true },
 			);
-			if (!runtime.promptWithOrigin) {
+			if (!runtime.promptWithOrigin)
 				throw Object.assign(new Error("当前智能体协作成员的运行时不支持结构化输入"), {
 					code: "room_structured_input_unsupported",
+					retryable: false,
 				});
-			}
-			const origin = {
-				type: "room" as const,
-				roomId: message.roomId,
-				messageId: message.id,
-				seq: message.seq,
-				kind: message.kind,
-				senderSessionId: message.senderSessionId,
-				...(message.taskId ? { taskId: message.taskId } : {}),
-			};
 			const runtimeCwd = runtime.getSnapshot("available").cwd;
-			const capabilities =
-				message.kind === "task"
-					? (message.capabilities ?? {
-							allowedTools: ROOM_READ_ONLY_TOOL_NAMES,
-							readRoots: [runtimeCwd],
-							shell: "disabled" as const,
-						})
-					: {
-							allowedTools: [] as const,
-							readRoots: [] as const,
-							writeRoots: [] as const,
-							shell: "disabled" as const,
-						};
-			if (
-				message.kind === "task" &&
-				[...capabilities.allowedTools].some((tool) => !ROOM_ALLOWED_TOOL_NAMES.has(tool))
-			) {
+			const capabilities = message.capabilities ?? {
+				allowedTools: ROOM_DISCUSSION_TOOL_NAMES,
+				readRoots: [runtimeCwd],
+				writeRoots: [],
+				shell: "disabled" as const,
+			};
+			if (capabilities.allowedTools.some((tool) => !ROOM_ALLOWED_TOOL_NAMES.has(tool)))
 				throw Object.assign(new Error("智能体协作任务只能使用受控文件工具"), {
 					code: "room_tool_not_allowed",
+					retryable: false,
 				});
-			}
-			const readRoots = capabilities.readRoots ?? [];
-			if (readRoots.some((root) => !isPathWithin(runtimeCwd, resolve(runtimeCwd, root)))) {
+			if (capabilities.readRoots?.some((root) => !isPathWithin(runtimeCwd, resolve(runtimeCwd, root))))
 				throw Object.assign(new Error("智能体协作任务的读取根目录超出成员会话工作区"), {
 					code: "room_read_capability_requires_workspace",
+					retryable: false,
 				});
-			}
 			if (
-				message.kind === "task" &&
-				[...capabilities.allowedTools].some((tool) => ROOM_WRITE_TOOL_NAMES.has(tool))
-			) {
-				const workspaceCwd = found.base.workspace?.cwd;
-				if (
-					!workspaceCwd ||
+				capabilities.allowedTools.some((tool) => ROOM_WRITE_TOOL_NAMES.has(tool)) &&
+				(!found.base.workspace?.cwd ||
 					!capabilities.writeRoots?.length ||
-					!capabilities.writeRoots.every((root) => isPathWithin(workspaceCwd, resolve(workspaceCwd, root)))
-				) {
-					throw Object.assign(new Error("智能体协作任务的写能力必须绑定隔离工作区和写入根目录"), {
-						code: "room_write_capability_requires_workspace",
-					});
-				}
-			}
-			const promptOptions = {
+					!capabilities.writeRoots.every((root) =>
+						isPathWithin(found.base.workspace!.cwd, resolve(found.base.workspace!.cwd, root)),
+					))
+			)
+				throw Object.assign(new Error("智能体协作任务的写能力必须绑定隔离工作区和写入根目录"), {
+					code: "room_write_capability_requires_workspace",
+					retryable: false,
+				});
+			const options = {
 				inputId: message.id,
-				origin,
+				origin: {
+					type: "room" as const,
+					roomId: message.roomId,
+					messageId: message.id,
+					seq: message.seq,
+					kind: message.kind,
+					senderSessionId: message.senderSessionId,
+					...(message.taskId ? { taskId: message.taskId } : {}),
+				},
 				activeToolNames: capabilities.allowedTools,
 				capabilities,
 			};
-			const reservation = runtime.reservePromptWithOrigin?.(promptOptions);
+			const reservation = runtime.reservePromptWithOrigin?.(options);
 			try {
-				const attachmentInput = await roomAttachmentInput(message);
-				const turn = reservation
-					? await reservation.submit(attachmentInput.text, attachmentInput.images)
-					: await runtime.promptWithOrigin(attachmentInput.text, attachmentInput.images, promptOptions);
-				if (!turn) return;
-				await this.waitForRuntimeIdle(runtime, 10 * 60 * 1000);
-				await this.sendSessionSnapshots(runtime);
-				const result = runtime.getTurnResultAsync ? await runtime.getTurnResultAsync(turn.turnId) : undefined;
-				if (!result || result.inputId !== message.id || result.turnId !== turn.turnId) {
-					throw Object.assign(new Error("智能体协作回复没有绑定到当前输入 Turn"), {
-						code: "room_turn_result_mismatch",
-					});
-				}
-				if (!result.finalText?.trim()) return;
-				await this.roomCoordinator.api().send({
-					cwd,
-					roomId: message.roomId,
-					senderSessionId: targetSessionId,
-					route: "direct",
-					targetSessionIds: [message.senderSessionId],
-					kind: "answer",
-					body: result.finalText.trim(),
-					...(message.taskId ? { taskId: message.taskId } : {}),
-					replyToMessageId: message.id,
-					basedOnSeq: message.seq,
-					idempotencyKey: `room-answer:${message.id}:${targetSessionId}`,
+				return await this.runRoomModelTurn(runtime, async () => {
+					const context = this.roomCoordinator.contextForSession(message.roomId, targetSessionId);
+					const attachments = await Promise.all(messages.map((input) => roomAttachmentInput(input)));
+					const text = `${context.text}\n\n本轮输入：\n${attachments.map((input) => input.text).join("\n\n")}\n${request ? "处理本轮输入；涉及执行工作时创建或认领任务卡。" : "这是团队结果通知；检查产物并更新任务，不需要回复收到，也不重复原结论。"}`;
+					const images = attachments.flatMap((input) => input.images ?? []);
+					const turn = reservation
+						? await reservation.submit(text, images)
+						: await runtime.promptWithOrigin!(text, images, options);
+					if (!turn) throw new Error("协作输入没有开始执行");
+					await this.waitForRuntimeIdle(runtime, 10 * 60 * 1000);
+					await this.sendSessionSnapshots(runtime);
+					const result = runtime.getTurnResultAsync ? await runtime.getTurnResultAsync(turn.turnId) : undefined;
+					if (!result || result.inputId !== message.id || result.turnId !== turn.turnId)
+						throw Object.assign(new Error("智能体协作回复没有绑定到当前输入 Turn"), {
+							code: "room_turn_result_mismatch",
+						});
+					if (result.outcome !== "completed")
+						throw Object.assign(new Error(`协作输入执行${result.outcome}`), {
+							code: "room_turn_failed",
+							retryable: result.outcome !== "aborted",
+						});
+					if (result.finalText?.trim() && request) {
+						await this.roomCoordinator.api().send({
+							cwd,
+							roomId: message.roomId,
+							senderSessionId: targetSessionId,
+							route: "direct",
+							targetSessionIds: [request.senderSessionId],
+							kind: "answer",
+							body: result.finalText.trim(),
+							...(request.taskId ? { taskId: request.taskId } : {}),
+							replyToMessageId: request.id,
+							basedOnSeq: context.seq,
+							idempotencyKey: `room-answer:${request.id}:${targetSessionId}`,
+						});
+					}
+					return context.seq;
 				});
 			} finally {
 				reservation?.cancel();
@@ -868,7 +1177,14 @@ export class WebRuntimeService {
 			if (this.roomDeliveryQueues.get(sessionPath) === delivery) {
 				this.roomDeliveryQueues.delete(sessionPath);
 				this.roomDeliveryDemand.delete(sessionPath);
-				await this.disposeRuntimeIfUnused(sessionPath);
+				const nextDelivery = this.roomStore
+					.pending()
+					.some(
+						(pending) =>
+							pending.targetSessionId === targetSessionId &&
+							!messages.some((input) => input.id === pending.message.id),
+					);
+				if (!nextDelivery) await this.disposeRuntimeIfUnused(sessionPath);
 			}
 		}
 	}
@@ -1052,6 +1368,7 @@ export class WebRuntimeService {
 
 	async dispose(): Promise<void> {
 		this.disposed = true;
+		this.roomCoordinator.dispose();
 		const coordinatorTasks = [...this.coordinatorTasks.values()];
 		this.roomDeliveryDemand.clear();
 		await Promise.allSettled(
@@ -1598,7 +1915,7 @@ export class WebRuntimeService {
 					connection,
 					request,
 					{ commandText: request.commandText, excludeFromContext: request.excludeFromContext },
-					async (runtime, operation) => {
+					async (runtime, operation, signal) => {
 						let output = "";
 						let truncated = false;
 						let dirty = false;
@@ -1606,7 +1923,8 @@ export class WebRuntimeService {
 						const flush = () => {
 							if (flushTimer) clearTimeout(flushTimer);
 							flushTimer = undefined;
-							if (!dirty || this.journal.get(operation.operationId)?.status !== "running") return;
+							if (signal.aborted || !dirty || this.journal.get(operation.operationId)?.status !== "running")
+								return;
 							dirty = false;
 							this.updateOperation(operation.operationId, "running", {
 								progress: {
@@ -1622,6 +1940,7 @@ export class WebRuntimeService {
 						});
 						try {
 							return await runtime.runBash(request.commandText, request.excludeFromContext, (chunk) => {
+								if (signal.aborted) return;
 								output += chunk;
 								if (output.length > 16 * 1024) {
 									output = output.slice(-16 * 1024);
@@ -1651,17 +1970,7 @@ export class WebRuntimeService {
 					this.leases.assert(operation.sessionPath, request.leaseId, connection.clientInstanceId);
 				}
 				if (TERMINAL_OPERATION_STATUSES.has(operation.status)) return operation;
-				if (this.activeOperationBySession.get(operation.sessionPath) !== operation.operationId) {
-					throw Object.assign(new Error("任务当前未在执行"), {
-						code: "operation_not_active",
-						retryable: false,
-					});
-				}
-				this.updateOperation(operation.operationId, "aborted");
-				this.cancelPendingUi(operation.operationId);
-				this.operationAbortControllers.get(operation.operationId)?.abort();
-				if (operation.type !== "share_session") await this.runtimes.get(operation.sessionPath)?.abort();
-				return this.journal.get(operation.operationId) ?? operation;
+				return this.abortOperation(operation);
 			}
 			case "stop_session": {
 				const matches = [...this.runtimes.values()].filter(
@@ -1672,28 +1981,7 @@ export class WebRuntimeService {
 						code: "session_not_running",
 					});
 				if (matches.length > 1) throw new Error(`会话 ID 不唯一：${request.sessionId}`);
-				const runtime = matches[0];
-				const sessionPath = canonicalSessionPath(runtime.sessionPath);
-				const operationId = this.activeOperationBySession.get(sessionPath);
-				const operation = operationId ? this.journal.get(operationId) : undefined;
-				const activeOperation = operation !== undefined && ACTIVE_OPERATION_STATUSES.has(operation.status);
-				if (!this.isRuntimeActive(runtime) && !this.coordinatorTasks.has(sessionPath) && !activeOperation) {
-					return { stopped: false };
-				}
-				if (activeOperation && operationId) {
-					const reserved = !this.scheduledOperations.has(operationId);
-					this.updateOperation(operationId, "aborted");
-					this.cancelPendingUi(operationId);
-					this.operationAbortControllers.get(operationId)?.abort();
-					if (reserved) this.activeOperationBySession.delete(sessionPath);
-				}
-				this.cancelPendingUi(`session-coordinator:${sessionPath}`);
-				await runtime.clearQueue();
-				await runtime.abort();
-				const task = this.coordinatorTasks.get(sessionPath);
-				if (task) await task.catch(() => {});
-				await this.sendSessionSnapshots(runtime);
-				return { stopped: true };
+				return this.stopSession(matches[0]!);
 			}
 			case "get_operation": {
 				const operation = this.journal.get(request.operationId);
@@ -3301,20 +3589,37 @@ export class WebRuntimeService {
 		return execution;
 	}
 
-	private async runQueueOperation(
+	private runQueueOperation(
 		runtime: RuntimeSession,
 		operation: OperationSnapshot,
 		run: (runtime: RuntimeSession) => Promise<JsonValue>,
 	): Promise<OperationSnapshot> {
-		try {
-			this.updateOperation(operation.operationId, "running");
-			const result = await run(runtime);
-			return this.updateOperation(operation.operationId, "completed", { result });
-		} catch (error) {
-			return this.updateOperation(operation.operationId, "failed", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		const execution = (async () => {
+			try {
+				this.updateOperation(operation.operationId, "running");
+				const result = await run(runtime);
+				if (this.isSessionStopping(operation.sessionPath))
+					return this.journal.get(operation.operationId) ?? operation;
+				return this.updateOperation(operation.operationId, "completed", { result });
+			} catch (error) {
+				const current = this.journal.get(operation.operationId);
+				if (current && TERMINAL_OPERATION_STATUSES.has(current.status)) return current;
+				if (this.isSessionStopping(operation.sessionPath)) return current ?? operation;
+				return this.updateOperation(operation.operationId, "failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		})();
+		const tracked = execution.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.operationRunPromises.set(operation.operationId, tracked);
+		return execution.finally(() => {
+			if (this.operationRunPromises.get(operation.operationId) === tracked) {
+				this.operationRunPromises.delete(operation.operationId);
+			}
+		});
 	}
 
 	private async acceptQueueOperation(
@@ -3333,6 +3638,9 @@ export class WebRuntimeService {
 		const runtime = this.runtimes.get(sessionPath);
 		if (!runtime) throw Object.assign(new Error("尚未获取会话运行时"), { code: "session_not_acquired" });
 		const payloadHash = hashOperationPayload({ command: request.command, sessionPath, payload });
+		if ((request.command === "steer" || request.command === "follow_up") && this.isSessionStopping(sessionPath)) {
+			throw Object.assign(new Error("会话正在停止"), { code: "session_operation_active", retryable: true });
+		}
 		const existing = this.journal.find(request.clientInstanceId, request.clientRequestId, payloadHash);
 		if (existing) return { operation: existing, duplicate: true };
 		if (request.command !== "clear_queue" && request.command !== "queue_action" && !this.isRuntimeActive(runtime)) {
@@ -3391,6 +3699,9 @@ export class WebRuntimeService {
 		this.journal.assertWritable();
 		const sessionPath = canonicalSessionPath(request.sessionPath);
 		this.leases.assert(sessionPath, request.leaseId, request.clientInstanceId);
+		if (this.isSessionStopping(sessionPath)) {
+			throw Object.assign(new Error("会话正在停止"), { code: "session_operation_active", retryable: true });
+		}
 		const payloadHash = hashOperationPayload({
 			command: request.command,
 			sessionPath,
@@ -3452,18 +3763,167 @@ export class WebRuntimeService {
 		return { operation: acceptedOperation, duplicate: false };
 	}
 
+	private isSessionStopping(sessionPath: string): boolean {
+		return (this.sessionStopCounts.get(sessionPath) ?? 0) > 0;
+	}
+
+	private beginSessionStop(sessionPath: string): () => void {
+		this.sessionStopCounts.set(sessionPath, (this.sessionStopCounts.get(sessionPath) ?? 0) + 1);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const count = this.sessionStopCounts.get(sessionPath) ?? 0;
+			if (count <= 1) this.sessionStopCounts.delete(sessionPath);
+			else this.sessionStopCounts.set(sessionPath, count - 1);
+		};
+	}
+
+	private abortRuntime(sessionPath: string, runtime: RuntimeSession): Promise<void> {
+		const existing = this.runtimeAbortPromises.get(sessionPath);
+		if (existing) return existing;
+		let aborting!: Promise<void>;
+		aborting = Promise.resolve()
+			.then(() => runtime.abort())
+			.finally(() => {
+				if (this.runtimeAbortPromises.get(sessionPath) === aborting) this.runtimeAbortPromises.delete(sessionPath);
+			});
+		this.runtimeAbortPromises.set(sessionPath, aborting);
+		return aborting;
+	}
+
+	private abortOperation(operation: OperationSnapshot): Promise<OperationSnapshot> {
+		const stopping = this.sessionStopPromises.get(operation.sessionPath);
+		if (stopping) return stopping.then(() => this.journal.get(operation.operationId) ?? operation);
+		const existing = this.operationAbortPromises.get(operation.operationId);
+		if (existing) return existing;
+		const current = this.journal.get(operation.operationId) ?? operation;
+		if (TERMINAL_OPERATION_STATUSES.has(current.status)) return Promise.resolve(current);
+		if (this.activeOperationBySession.get(operation.sessionPath) !== operation.operationId) {
+			return Promise.reject(
+				Object.assign(new Error("任务当前未在执行"), { code: "operation_not_active", retryable: false }),
+			);
+		}
+
+		const release = this.beginSessionStop(operation.sessionPath);
+		const operationIds = this.journal
+			.list(operation.sessionPath)
+			.filter((candidate) => ACTIVE_OPERATION_STATUSES.has(candidate.status))
+			.map((candidate) => candidate.operationId);
+		for (const operationId of operationIds) {
+			this.cancelPendingUi(operationId);
+			this.operationAbortControllers.get(operationId)?.abort();
+		}
+		const runtime = this.runtimes.get(operation.sessionPath);
+		const abort =
+			operation.type === "share_session" || !runtime
+				? Promise.resolve()
+				: this.abortRuntime(operation.sessionPath, runtime);
+		const executions = operationIds
+			.map((operationId) => this.operationRunPromises.get(operationId))
+			.filter((execution): execution is Promise<void> => execution !== undefined);
+		let cancellation!: Promise<OperationSnapshot>;
+		cancellation = Promise.resolve()
+			.then(async () => {
+				const [abortResult] = await Promise.allSettled([abort]);
+				await Promise.allSettled(executions);
+				for (const operationId of operationIds) {
+					const latest = this.journal.get(operationId);
+					if (latest && ACTIVE_OPERATION_STATUSES.has(latest.status)) this.updateOperation(operationId, "aborted");
+					if (this.activeOperationBySession.get(operation.sessionPath) === operationId) {
+						this.activeOperationBySession.delete(operation.sessionPath);
+					}
+				}
+				if (abortResult.status === "rejected") throw abortResult.reason;
+				return this.journal.get(operation.operationId) ?? operation;
+			})
+			.finally(() => {
+				if (this.operationAbortPromises.get(operation.operationId) === cancellation) {
+					this.operationAbortPromises.delete(operation.operationId);
+				}
+				release();
+				void this.disposeRuntimeIfUnused(operation.sessionPath).catch(() => {});
+			});
+		this.operationAbortPromises.set(operation.operationId, cancellation);
+		return cancellation;
+	}
+
+	private stopSession(runtime: RuntimeSession): Promise<{ stopped: boolean }> {
+		const sessionPath = canonicalSessionPath(runtime.sessionPath);
+		const existing = this.sessionStopPromises.get(sessionPath);
+		if (existing) return existing;
+		const operationIds = this.journal
+			.list(sessionPath)
+			.filter((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
+			.map((operation) => operation.operationId);
+		const task = this.coordinatorTasks.get(sessionPath);
+		if (!this.isRuntimeActive(runtime) && !task && operationIds.length === 0) {
+			return Promise.resolve({ stopped: false });
+		}
+
+		const release = this.beginSessionStop(sessionPath);
+		let stopping!: Promise<{ stopped: boolean }>;
+		stopping = Promise.resolve()
+			.then(async () => {
+				for (const operationId of operationIds) {
+					this.cancelPendingUi(operationId);
+					this.operationAbortControllers.get(operationId)?.abort();
+				}
+				this.cancelPendingUi(`session-coordinator:${sessionPath}`);
+				const clearQueue = Promise.resolve().then(() => runtime.clearQueue());
+				const abort = this.abortRuntime(sessionPath, runtime);
+				const [clearResult, abortResult] = await Promise.allSettled([clearQueue, abort]);
+				const executions = operationIds
+					.map((operationId) => this.operationRunPromises.get(operationId))
+					.filter((execution): execution is Promise<void> => execution !== undefined);
+				await Promise.allSettled(executions);
+				await task?.catch(() => {});
+				for (const operationId of operationIds) {
+					const latest = this.journal.get(operationId);
+					if (latest && ACTIVE_OPERATION_STATUSES.has(latest.status)) this.updateOperation(operationId, "aborted");
+					if (this.activeOperationBySession.get(sessionPath) === operationId) {
+						this.activeOperationBySession.delete(sessionPath);
+					}
+				}
+				await this.sendSessionSnapshots(runtime);
+				if (clearResult.status === "rejected") throw clearResult.reason;
+				if (abortResult.status === "rejected") throw abortResult.reason;
+				return { stopped: true };
+			})
+			.finally(() => {
+				if (this.sessionStopPromises.get(sessionPath) === stopping) this.sessionStopPromises.delete(sessionPath);
+				release();
+				void this.disposeRuntimeIfUnused(sessionPath).catch(() => {});
+			});
+		this.sessionStopPromises.set(sessionPath, stopping);
+		return stopping;
+	}
+
 	private scheduleOperation(
 		runtime: RuntimeSession,
 		operation: OperationSnapshot,
 		run: (runtime: RuntimeSession, operation: OperationSnapshot, signal: AbortSignal) => Promise<JsonValue>,
 	): void {
-		if (operation.status !== "accepted" || this.scheduledOperations.has(operation.operationId)) return;
+		const current = this.journal.get(operation.operationId);
+		if (
+			operation.status !== "accepted" ||
+			current?.status !== "accepted" ||
+			this.isSessionStopping(operation.sessionPath) ||
+			this.scheduledOperations.has(operation.operationId)
+		) {
+			return;
+		}
 		this.scheduledOperations.add(operation.operationId);
 		const controller = new AbortController();
 		this.operationAbortControllers.set(operation.operationId, controller);
-		void this.runOperation(runtime, operation, run, controller.signal)
+		const execution = this.runOperation(runtime, current, run, controller.signal);
+		this.operationRunPromises.set(operation.operationId, execution);
+		void execution
 			.catch(() => {})
 			.finally(() => {
+				if (this.operationRunPromises.get(operation.operationId) === execution) {
+					this.operationRunPromises.delete(operation.operationId);
+				}
 				this.operationAbortControllers.delete(operation.operationId);
 				this.scheduledOperations.delete(operation.operationId);
 			});
@@ -3479,12 +3939,12 @@ export class WebRuntimeService {
 			this.updateOperation(operation.operationId, "running");
 			const result = await run(runtime, operation, signal);
 			const current = this.journal.get(operation.operationId);
-			if (current && !TERMINAL_OPERATION_STATUSES.has(current.status)) {
+			if (!signal.aborted && current && !TERMINAL_OPERATION_STATUSES.has(current.status)) {
 				this.updateOperation(operation.operationId, "completed", { result });
 			}
 		} catch (error) {
 			const current = this.journal.get(operation.operationId);
-			if (current && !TERMINAL_OPERATION_STATUSES.has(current.status)) {
+			if (!signal.aborted && current && !TERMINAL_OPERATION_STATUSES.has(current.status)) {
 				this.updateOperation(operation.operationId, "failed", {
 					error: error instanceof Error ? error.message : String(error),
 				});
@@ -3982,6 +4442,7 @@ export class WebRuntimeService {
 
 	private runtimeHasDemand(sessionPath: string, runtime: RuntimeSession | undefined): boolean {
 		return (
+			this.isSessionStopping(sessionPath) ||
 			this.coordinatorDemand.has(sessionPath) ||
 			this.roomDeliveryDemand.has(sessionPath) ||
 			this.leases.has(sessionPath) ||

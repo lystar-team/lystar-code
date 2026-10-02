@@ -135,7 +135,8 @@ describe("subagent config adapter", () => {
 		expect(options).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ name: "read", description: expect.any(String) }),
-				expect.objectContaining({ name: "sessions", description: expect.any(String) }),
+				expect.objectContaining({ name: "session_create", description: expect.any(String) }),
+				expect.objectContaining({ name: "room_task_update", description: expect.any(String) }),
 				expect.objectContaining({ name: "image_gen", description: expect.any(String) }),
 				expect.objectContaining({ name: "create_agent", description: expect.any(String) }),
 			]),

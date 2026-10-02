@@ -700,11 +700,11 @@ export class WebApi {
 		if (result.operation?.status === "failed") throw new Error(result.operation.error ?? "排队消息操作失败");
 	}
 
-	async abort(sessionId: string, operationId?: string): Promise<void> {
-		await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, {
-			method: "POST",
-			body: JSON.stringify({ operationId }),
-		});
+	async abort(sessionId: string): Promise<{ stopped: boolean; session?: WebSessionSnapshot }> {
+		return this.request<{ stopped: boolean; session?: WebSessionSnapshot }>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/abort`,
+			{ method: "POST", body: JSON.stringify({}) },
+		);
 	}
 
 	async reloadResources(sessionId: string): Promise<{ session: WebSessionSnapshot }> {

@@ -1,4 +1,5 @@
 import type { AgentCapabilityLease } from "./input-origin.ts";
+import type { SessionCollaborationResult, SessionWorkspaceSnapshot } from "./session-manager.ts";
 
 export type SessionRoomMode = "direct" | "group";
 export type SessionRoomRoute = "direct" | "broadcast" | "one_of_us";
@@ -26,6 +27,7 @@ export interface SessionRoomMember {
 	nickname?: string;
 	profileId?: string;
 	profileName?: string;
+	profileDescription?: string;
 	profileIcon?: string;
 }
 
@@ -61,6 +63,7 @@ export interface SessionRoomMessage {
 }
 
 export type SessionRoomTaskStatus = "todo" | "doing" | "blocked" | "done";
+export type SessionRoomExecutionState = "starting" | "running" | "completed" | "failed" | "interrupted";
 
 export interface SessionRoomTaskUpdate {
 	actorSessionId: string;
@@ -80,6 +83,18 @@ export interface SessionRoomTask {
 	assigneeSessionId?: string;
 	resultMessageId?: string;
 	resultText?: string;
+	execution?: {
+		leaseId?: string;
+		ownerId?: string;
+		state?: SessionRoomExecutionState;
+		leaseExpiresAt?: number;
+		attempt?: number;
+		sessionId?: string;
+		taskId?: string;
+		messageId: string;
+		workspace?: SessionWorkspaceSnapshot;
+		result?: SessionCollaborationResult;
+	};
 	updates: readonly SessionRoomTaskUpdate[];
 	createdAt: string;
 	updatedAt: string;
@@ -124,6 +139,7 @@ export interface SessionRoomApi {
 		nickname?: string;
 		profileId?: string;
 		profileName?: string;
+		profileDescription?: string;
 		profileIcon?: string;
 	}): Promise<SessionRoomSummary>;
 	leave(input: { cwd: string; roomId: string; sessionId: string }): Promise<SessionRoomSummary>;

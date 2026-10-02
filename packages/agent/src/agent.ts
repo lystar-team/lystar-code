@@ -11,6 +11,7 @@ import {
 	type Transport,
 	toToolDeclaration,
 } from "@earendil-works/pi-ai";
+import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type { ToolRecoveryController } from "./tool-recovery/controller.ts";
@@ -645,7 +646,11 @@ export class Agent {
 			throw new Error("Agent listener invoked outside active run");
 		}
 		for (const listener of this.listeners) {
-			await listener(event, signal);
+			try {
+				await raceWithAbortSignal(Promise.resolve(listener(event, signal)), signal);
+			} catch (error) {
+				if (!signal.aborted) throw error;
+			}
 		}
 	}
 }

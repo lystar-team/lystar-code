@@ -121,6 +121,7 @@ export function RoomRail({
 		const member = {
 			profileId: profile.id,
 			profileName: profile.name,
+			profileDescription: profile.description,
 			...(profile.icon ? { profileIcon: profile.icon } : {}),
 		};
 		setCreating(true);

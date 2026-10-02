@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { raceWithAbortSignal } from "../utils/abort.ts";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations } from "./tools/bash.ts";
@@ -76,6 +77,7 @@ export async function executeBashWithOperations(
 	const decoder = new TextDecoder();
 
 	const onData = (data: Buffer) => {
+		if (options?.signal?.aborted) return;
 		totalBytes += data.length;
 
 		// Sanitize: strip ANSI, replace binary garbage, normalize newlines
@@ -105,10 +107,14 @@ export async function executeBashWithOperations(
 	};
 
 	try {
-		const result = await operations.exec(command, cwd, {
-			onData,
-			signal: options?.signal,
-		});
+		options?.signal?.throwIfAborted();
+		const result = await raceWithAbortSignal(
+			operations.exec(command, cwd, {
+				onData,
+				signal: options?.signal,
+			}),
+			options?.signal,
+		);
 
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);

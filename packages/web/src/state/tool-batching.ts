@@ -19,113 +19,55 @@ function parseToolSummary(summary: string): Record<string, unknown> | undefined 
 
 export type SessionToolPhase = "running" | "queued" | "completed" | "error" | "cancelled" | "interrupted";
 
-const sessionToolLabels: Record<string, Record<SessionToolPhase, string>> = {
-	create: {
-		running: "正在派发智能体",
-		queued: "准备派发智能体",
-		completed: "已派发智能体",
-		error: "派发智能体失败",
-		cancelled: "派发智能体已取消",
-		interrupted: "派发智能体已中断",
-	},
-	send: {
-		running: "正在联系智能体",
-		queued: "准备联系智能体",
-		completed: "已联系智能体",
-		error: "联系智能体失败",
-		cancelled: "联系智能体已取消",
-		interrupted: "联系智能体已中断",
-	},
-	wait: {
-		running: "正在等待智能体返回",
-		queued: "准备等待智能体返回",
-		completed: "已完成等待智能体",
-		error: "等待智能体失败",
-		cancelled: "等待智能体已取消",
-		interrupted: "等待智能体已中断",
-	},
-	list: {
-		running: "正在查看智能体会话",
-		queued: "准备查看智能体会话",
-		completed: "已查看智能体会话",
-		error: "查看智能体会话失败",
-		cancelled: "查看智能体会话已取消",
-		interrupted: "查看智能体会话已中断",
-	},
-	profiles: {
-		running: "正在查看智能体配置",
-		queued: "准备查看智能体配置",
-		completed: "已查看智能体配置",
-		error: "查看智能体配置失败",
-		cancelled: "查看智能体配置已取消",
-		interrupted: "查看智能体配置已中断",
-	},
-	stop: {
-		running: "正在停止智能体",
-		queued: "准备停止智能体",
-		completed: "已停止智能体",
-		error: "停止智能体失败",
-		cancelled: "停止智能体已取消",
-		interrupted: "停止智能体已中断",
-	},
-	room_create: {
-		running: "正在创建协作空间",
-		queued: "准备创建协作空间",
-		completed: "已创建协作空间",
-		error: "创建协作空间失败",
-		cancelled: "创建协作空间已取消",
-		interrupted: "创建协作空间已中断",
-	},
-	room_join: {
-		running: "正在加入协作空间",
-		queued: "准备加入协作空间",
-		completed: "已加入协作空间",
-		error: "加入协作空间失败",
-		cancelled: "加入协作空间已取消",
-		interrupted: "加入协作空间已中断",
-	},
-	room_leave: {
-		running: "正在退出协作空间",
-		queued: "准备退出协作空间",
-		completed: "已退出协作空间",
-		error: "退出协作空间失败",
-		cancelled: "退出协作空间已取消",
-		interrupted: "退出协作空间已中断",
-	},
-	room_list: {
-		running: "正在查看协作空间",
-		queued: "准备查看协作空间",
-		completed: "已查看协作空间",
-		error: "查看协作空间失败",
-		cancelled: "查看协作空间已取消",
-		interrupted: "查看协作空间已中断",
-	},
-	room_send: {
-		running: "正在发送协作消息",
-		queued: "准备发送协作消息",
-		completed: "已发送协作消息",
-		error: "发送协作消息失败",
-		cancelled: "发送协作消息已取消",
-		interrupted: "发送协作消息已中断",
-	},
-	room_read: {
-		running: "正在读取协作消息",
-		queued: "准备读取协作消息",
-		completed: "已读取协作消息",
-		error: "读取协作消息失败",
-		cancelled: "读取协作消息已取消",
-		interrupted: "读取协作消息已中断",
-	},
+/** 每个协作工具的动作短语；阶段文案由短语拼出。 */
+const sessionToolActions: Record<string, string> = {
+	session_create: "派发智能体",
+	session_send: "联系智能体",
+	session_wait: "等待智能体返回",
+	session_list: "查看智能体会话",
+	session_profiles: "查看智能体配置",
+	session_stop: "停止智能体",
+	room_create: "创建协作空间",
+	room_join: "加入协作空间",
+	room_leave: "退出协作空间",
+	room_list: "查看协作空间",
+	room_send: "发送协作消息",
+	room_read: "读取协作消息",
+	room_claim: "领取协作任务",
+	room_task_list: "查看协作任务",
+	room_task_create: "创建协作任务",
+	room_task_update: "更新协作任务",
 };
 
-export function sessionToolLabel(summary: string, phase: SessionToolPhase): string | undefined {
-	const action = parseToolSummary(summary)?.action;
-	return typeof action === "string" ? sessionToolLabels[action]?.[phase] : undefined;
+export function isSessionTool(name: string): boolean {
+	return Object.hasOwn(sessionToolActions, name);
+}
+
+export function sessionToolLabel(name: string, phase: SessionToolPhase): string | undefined {
+	const action = sessionToolActions[name];
+	if (!action) return undefined;
+	switch (phase) {
+		case "running":
+			return `正在${action}`;
+		case "queued":
+			return `准备${action}`;
+		case "completed":
+			return `已${action}`;
+		case "error":
+			return `${action}失败`;
+		case "cancelled":
+			return `${action}已取消`;
+		case "interrupted":
+			return `${action}已中断`;
+	}
 }
 
 export function sessionToolTask(summary: string): string | undefined {
-	const task = parseToolSummary(summary)?.task;
-	return typeof task === "string" && task.trim() ? task.trim() : undefined;
+	const parsed = parseToolSummary(summary);
+	const task = [parsed?.task, parsed?.title].find(
+		(value): value is string => typeof value === "string" && value.trim().length > 0,
+	);
+	return task?.trim();
 }
 
 export interface SessionToolAgentIdentity {

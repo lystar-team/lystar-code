@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type Api, type AuthResult, contentText, type Model } from "@earendil-works/pi-ai";
+import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 
 import {
 	type AgentCapabilityLease,
@@ -46,9 +47,7 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createRoomClaimTool,
-	createRoomTasksTool,
-	createSessionsTool,
+	createCollaborationTools,
 	DefaultPackageManager,
 	discoverAgentDefinitions,
 	discoverHarnessImports,
@@ -378,7 +377,18 @@ function sessionProfileSnapshot(profile: SessionProfile): SessionProfileSnapshot
 	};
 }
 
-const READ_ONLY_SESSION_TOOLS = ["read", "sessions"] as const;
+const READ_ONLY_SESSION_TOOLS = [
+	"read",
+	"session_send",
+	"session_wait",
+	"session_list",
+	"session_profiles",
+	"session_stop",
+	"room_read",
+	"room_send",
+	"room_task_list",
+	"room_task_update",
+] as const;
 
 function validSubagentId(value: string): string {
 	const name = value.trim();
@@ -1840,12 +1850,18 @@ class CoreRuntimeSession implements RuntimeSession {
 	private lastTranscriptGeneration?: string;
 	private lastTranscriptRevision = 0;
 	private disposed = false;
+	private stopping = false;
+	private abortPromise?: Promise<void>;
 	private readonly agentDir: string;
 	private companion?: WebCompanionServer;
 	private externalClientCount = 0;
 	private pendingTurnInputs = 0;
 	private turnInputQueue: Promise<void> = Promise.resolve();
+	private readonly promptReservations = new Set<RuntimePromptReservation>();
+	private readonly activePromptControllers = new Set<AbortController>();
 	private readonly activePromptOperations = new Set<Promise<AgentTurnContext | undefined>>();
+	private readonly activeBashControllers = new Set<AbortController>();
+	private readonly activeBashOperations = new Set<Promise<JsonValue>>();
 	private readonly outputSpeed = new OutputSpeedTracker();
 	private turnAssistantText?: string;
 
@@ -1919,6 +1935,14 @@ class CoreRuntimeSession implements RuntimeSession {
 					})
 				: undefined;
 		const hasActiveToolActivity = Boolean(toolActivities?.length);
+		const sessionIsActive =
+			this.stopping ||
+			this.pendingTurnInputs > 0 ||
+			this.activePromptOperations.size > 0 ||
+			this.activeBashOperations.size > 0 ||
+			!session.isIdle ||
+			session.isStreaming ||
+			hasActiveToolActivity;
 		const queuedSteerMessages = session.getSteeringQueueItems();
 		const queuedFollowUpMessages = session.getFollowUpQueueItems();
 		return {
@@ -1932,10 +1956,10 @@ class CoreRuntimeSession implements RuntimeSession {
 				? "compaction"
 				: session.retryAttempt > 0
 					? "retry"
-					: session.isStreaming || hasActiveToolActivity
+					: sessionIsActive
 						? "turn"
 						: "idle",
-			activity: session.isStreaming || hasActiveToolActivity ? "running" : "idle",
+			activity: sessionIsActive ? "running" : "idle",
 			model: session.model ? { provider: session.model.provider, id: session.model.id } : undefined,
 			thinkingLevel: session.thinkingLevel,
 			fastMode: session.fastMode,
@@ -2102,6 +2126,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			capabilities?: AgentCapabilityLease;
 		},
 	): Promise<AgentTurnContext | undefined> {
+		if (this.stopping) throw Object.assign(new Error("会话正在停止"), { code: "operation_aborted" });
 		const currentTurn = this.runtime.session.extensionRunner.createContext().currentTurn;
 		if (
 			this.pendingTurnInputs > 0 ||
@@ -2109,7 +2134,7 @@ class CoreRuntimeSession implements RuntimeSession {
 		) {
 			return this.enqueuePromptWithOrigin(text, images, options);
 		}
-		return this.trackPromptOperation(this.executePromptWithOrigin(text, images, options));
+		return this.trackPromptOperation((signal) => this.executePromptWithOrigin(text, images, options, signal));
 	}
 
 	private enqueuePromptWithOrigin(
@@ -2131,6 +2156,7 @@ class CoreRuntimeSession implements RuntimeSession {
 		activeToolNames?: readonly string[];
 		capabilities?: AgentCapabilityLease;
 	}): RuntimePromptReservation {
+		if (this.stopping) throw Object.assign(new Error("会话正在停止"), { code: "operation_aborted" });
 		this.pendingTurnInputs++;
 		let resolveInput!: (
 			input: { text: string; images?: Array<{ data: string; mimeType: string }> } | undefined,
@@ -2140,46 +2166,75 @@ class CoreRuntimeSession implements RuntimeSession {
 				resolveInput = resolve;
 			},
 		);
+		const controller = new AbortController();
+		let cancelled = false;
+		let inputSettled = false;
 		const execution = this.turnInputQueue
 			.catch(() => {})
 			.then(async () => {
 				const input = await inputReady;
-				if (!input) return undefined;
-				await Promise.allSettled([...this.activePromptOperations]);
-				await this.runtime.session.waitForIdle();
-				return this.trackPromptOperation(this.executePromptWithOrigin(input.text, input.images, options));
+				if (!input || cancelled || this.stopping) return undefined;
+				await raceWithAbortSignal(Promise.allSettled([...this.activePromptOperations]), controller.signal);
+				if (cancelled || this.stopping) return undefined;
+				await raceWithAbortSignal(this.runtime.session.waitForIdle(), controller.signal);
+				if (cancelled || this.stopping) return undefined;
+				return this.trackPromptOperation((signal) =>
+					this.executePromptWithOrigin(input.text, input.images, options, signal),
+				);
+			})
+			.catch((error: unknown) => {
+				if (controller.signal.aborted) return undefined;
+				throw error;
 			});
 		this.turnInputQueue = execution.then(
 			() => undefined,
 			() => undefined,
 		);
-		void execution
-			.finally(() => {
-				this.pendingTurnInputs--;
-			})
-			.catch(() => {});
-		let settled = false;
-		return {
+		let reservation!: RuntimePromptReservation;
+		reservation = {
 			submit: (text, images) => {
-				if (settled) return Promise.reject(new Error("Turn 输入预约已结束"));
-				settled = true;
+				if (cancelled) return execution;
+				if (inputSettled) return Promise.reject(new Error("Turn 输入预约已结束"));
+				inputSettled = true;
 				resolveInput({ text, ...(images ? { images } : {}) });
 				return execution;
 			},
 			cancel: () => {
-				if (settled) return;
-				settled = true;
+				if (cancelled) return;
+				cancelled = true;
+				controller.abort();
+				if (inputSettled) return;
+				inputSettled = true;
 				resolveInput(undefined);
 			},
 		};
+		this.promptReservations.add(reservation);
+		void execution
+			.finally(() => {
+				this.pendingTurnInputs--;
+				this.promptReservations.delete(reservation);
+				this.emitStateChanged();
+			})
+			.catch(() => {});
+		return reservation;
 	}
 
-	private trackPromptOperation(promise: Promise<AgentTurnContext | undefined>): Promise<AgentTurnContext | undefined> {
-		this.activePromptOperations.add(promise);
-		void promise.then(
-			() => this.activePromptOperations.delete(promise),
-			() => this.activePromptOperations.delete(promise),
+	private trackPromptOperation(
+		run: (signal: AbortSignal) => Promise<AgentTurnContext | undefined>,
+	): Promise<AgentTurnContext | undefined> {
+		const controller = new AbortController();
+		this.activePromptControllers.add(controller);
+		const promise = this.runtime.session.extensionRunner.runWithSignal(controller.signal, () =>
+			run(controller.signal),
 		);
+		this.activePromptOperations.add(promise);
+		void promise
+			.finally(() => {
+				this.activePromptControllers.delete(controller);
+				this.activePromptOperations.delete(promise);
+				this.emitStateChanged();
+			})
+			.catch(() => {});
 		return promise;
 	}
 
@@ -2192,11 +2247,15 @@ class CoreRuntimeSession implements RuntimeSession {
 			activeToolNames?: readonly string[];
 			capabilities?: AgentCapabilityLease;
 		},
+		signal: AbortSignal,
 	): Promise<AgentTurnContext | undefined> {
+		if (this.stopping) return undefined;
 		if (this.runtime.session.fastMode) {
 			const provider = this.runtime.session.model?.provider;
-			if (provider) await this.refreshModelProvider(provider);
+			if (provider) await this.refreshModelProvider(provider, signal);
 		}
+		signal.throwIfAborted();
+		if (this.stopping) return undefined;
 		const entryCount = this.runtime.session.sessionManager.getEntries().length;
 		const previousToolNames = this.runtime.session.getActiveToolNames();
 		if (options.activeToolNames) this.runtime.session.setActiveToolsByName([...options.activeToolNames]);
@@ -2211,6 +2270,7 @@ class CoreRuntimeSession implements RuntimeSession {
 				...(options.capabilities ? { capabilities: options.capabilities } : {}),
 			});
 			await this.runtime.session.waitForIdle();
+			if (this.stopping) return turn;
 			const turnResult = turn ? this.runtime.session.getTurnResult(turn.turnId) : undefined;
 			if (turnResult?.outcome === "failed") {
 				const error = promptFailure(this.runtime.session.sessionManager.getEntries().slice(entryCount));
@@ -2343,20 +2403,51 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async runBash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<JsonValue> {
-		const extensionResult = await this.runtime.session.extensionRunner.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.runtime.cwd,
+		if (this.stopping) throw Object.assign(new Error("会话正在停止"), { code: "operation_aborted" });
+		const controller = new AbortController();
+		this.activeBashControllers.add(controller);
+		let execution!: Promise<JsonValue>;
+		execution = this.executeUserBash(command, excludeFromContext, onChunk, controller.signal).finally(() => {
+			this.activeBashControllers.delete(controller);
+			this.activeBashOperations.delete(execution);
+			this.emitStateChanged();
 		});
+		this.activeBashOperations.add(execution);
+		return execution;
+	}
+
+	private async executeUserBash(
+		command: string,
+		excludeFromContext: boolean,
+		onChunk: (chunk: string) => void,
+		signal: AbortSignal,
+	): Promise<JsonValue> {
+		const extensionRunner = this.runtime.session.extensionRunner;
+		const extensionResult = await extensionRunner.runWithSignal(signal, () =>
+			extensionRunner.emitUserBash({
+				type: "user_bash",
+				command,
+				excludeFromContext,
+				cwd: this.runtime.cwd,
+			}),
+		);
+		signal.throwIfAborted();
 		const result = extensionResult?.result
 			? extensionResult.result
-			: await this.runtime.session.executeBash(command, onChunk, {
-					excludeFromContext,
-					operations: extensionResult?.operations,
-				});
+			: await this.runtime.session.executeBash(
+					command,
+					(chunk) => {
+						if (!signal.aborted) onChunk(chunk);
+					},
+					{
+						excludeFromContext,
+						operations: extensionResult?.operations,
+					},
+				);
+		signal.throwIfAborted();
 		if (extensionResult?.result) {
 			if (result.output) onChunk(result.output);
+			signal.throwIfAborted();
 			this.runtime.session.recordBashResult(command, result, { excludeFromContext });
 		}
 		this.emitCommittedEntries();
@@ -2368,9 +2459,11 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.emitStateChanged();
 	}
 
-	private async refreshModelProvider(provider: string): Promise<void> {
+	private async refreshModelProvider(provider: string, signal?: AbortSignal): Promise<void> {
 		const modelRuntime = this.runtime.services.modelRuntime;
-		const result = await modelRuntime.refresh({ allowNetwork: false, providers: [provider] });
+		const refresh = modelRuntime.refresh({ allowNetwork: false, providers: [provider] });
+		const result = signal ? await raceWithAbortSignal(refresh, signal) : await refresh;
+		signal?.throwIfAborted();
 		const error = result.errors.get(provider);
 		if (error) throw error;
 		const currentModel = this.runtime.session.model;
@@ -2438,9 +2531,32 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	async abort(): Promise<void> {
+		if (this.abortPromise) return this.abortPromise;
+		this.stopping = true;
+		for (const reservation of this.promptReservations) reservation.cancel();
+		for (const controller of this.activePromptControllers) controller.abort();
+		for (const controller of this.activeBashControllers) controller.abort();
 		this.stepController.finishActive("interrupted", "任务已取消");
-		this.runtime.session.abortBash();
-		await this.runtime.session.abort();
+		let aborting!: Promise<void>;
+		aborting = Promise.resolve()
+			.then(async () => {
+				const result = await Promise.allSettled([
+					Promise.resolve().then(() => {
+						this.runtime.session.abortBash();
+						return this.runtime.session.abort();
+					}),
+				]);
+				await this.turnInputQueue;
+				await Promise.allSettled([...this.activePromptOperations, ...this.activeBashOperations]);
+				if (result[0]?.status === "rejected") throw result[0].reason;
+			})
+			.finally(() => {
+				this.stopping = false;
+				if (this.abortPromise === aborting) this.abortPromise = undefined;
+				this.emitStateChanged();
+			});
+		this.abortPromise = aborting;
+		return aborting;
 	}
 
 	async reloadResources(): Promise<void> {
@@ -3766,9 +3882,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionManager,
 			customTools: [
 				...createAgentStepTools(stepController),
-				createSessionsTool(() => this.sessionCoordinator),
-				createRoomClaimTool(() => this.sessionCoordinator),
-				createRoomTasksTool(() => this.sessionCoordinator),
+				...createCollaborationTools(() => this.sessionCoordinator),
 				createAgentCreationTool({
 					cwd: projectRoot,
 					agentDir: this.agentDir,
@@ -4680,9 +4794,9 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			const effectiveProfile =
 				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
 			const activeTools = readOnly
-				? [...new Set([...(effectiveProfile?.tools ?? ["read"]), ...READ_ONLY_SESSION_TOOLS])].filter(
+				? READ_ONLY_SESSION_TOOLS.filter(
 						(tool) =>
-							READ_ONLY_SESSION_TOOLS.includes(tool as (typeof READ_ONLY_SESSION_TOOLS)[number]) &&
+							(!effectiveProfile?.tools || effectiveProfile.tools.includes(tool)) &&
 							!effectiveProfile?.excludeTools?.includes(tool),
 					)
 				: effectiveProfile?.tools;
@@ -4759,9 +4873,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				...(effectiveProfile?.excludeTools ? { excludeTools: effectiveProfile.excludeTools } : {}),
 				customTools: [
 					...createAgentStepTools(stepController),
-					createSessionsTool(() => this.sessionCoordinator),
-					createRoomClaimTool(() => this.sessionCoordinator),
-					createRoomTasksTool(() => this.sessionCoordinator),
+					...createCollaborationTools(() => this.sessionCoordinator),
 					...(!readOnly
 						? [
 								createAgentCreationTool({

@@ -135,6 +135,8 @@ export interface WorkbenchState {
 	liveCompaction?: LiveCompactionState;
 	/** Runtime 确认的回合终态：turnId → completed/failed/aborted，用于折叠已结束回合。 */
 	settledTurns: Record<string, "completed" | "failed" | "aborted">;
+	/** 已发起停止、等待 Runtime 确认的会话。 */
+	stoppingSessionIds: Record<string, true>;
 	promptScrollRequest?: number;
 	unreadSessionIds: Record<string, true>;
 	statusText: string;

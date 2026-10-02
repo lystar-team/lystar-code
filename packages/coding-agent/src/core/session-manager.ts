@@ -48,7 +48,7 @@ const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
 
 export type SessionRelation = "collaboration" | "fork";
 export type SessionWorkspaceMode = "shared" | "worktree" | "patch";
-export type SessionWorkspaceStatus = "active" | "delivered" | "failed" | "released";
+export type SessionWorkspaceStatus = "active" | "delivered" | "accepted" | "failed" | "released";
 
 export interface SessionWorkspaceSnapshot {
 	id: string;
@@ -1103,6 +1103,7 @@ function parseSessionWorkspaceSnapshot(value: unknown): SessionWorkspaceSnapshot
 		!candidate.cwd ||
 		(candidate.status !== "active" &&
 			candidate.status !== "delivered" &&
+			candidate.status !== "accepted" &&
 			candidate.status !== "failed" &&
 			candidate.status !== "released")
 	)
@@ -2821,7 +2822,10 @@ export class SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const resolvedCwd = resolvePath(cwd);
-		const includeSession = (session: SessionInfo) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd);
+		const includeSession = (session: SessionInfo) =>
+			!filterCwd ||
+			sessionCwdMatches(session.cwd, resolvedCwd) ||
+			sessionCwdMatches(session.collaborationWorkspace?.projectCwd, resolvedCwd);
 		const progress: SessionListProgress | undefined = onProgress
 			? (loaded, total, partialSessions) => onProgress(loaded, total, partialSessions?.filter(includeSession))
 			: undefined;

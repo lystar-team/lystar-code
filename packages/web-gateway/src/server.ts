@@ -130,7 +130,6 @@ const UPLOAD_CLEANUP_MS = 5 * 60 * 1000;
 const PROGRESS_BATCH_MS = 50;
 const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
 const BROWSER_CONTEXT_IDLE_MS = 60_000;
-const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const MAX_SESSION_DETAIL_EVENTS = 256;
 const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
 const PROJECT_WATCH_DEBOUNCE_MS = 150;
@@ -926,12 +925,6 @@ async function createZipArchive(outputPath: string, entries: readonly ZipSourceE
 		await handle?.close().catch(() => {});
 		await unlink(temporaryPath).catch(() => {});
 	}
-}
-
-function latestOperation(operations: OperationSnapshot[], sessionPath: string): OperationSnapshot | undefined {
-	return operations
-		.filter((operation) => operation.sessionPath === sessionPath)
-		.sort((left, right) => right.updatedAt - left.updatedAt)[0];
 }
 
 async function readChunks(read: (offset: number) => Promise<ContentChunk>, maxBytes: number): Promise<Uint8Array> {
@@ -3831,26 +3824,13 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "abort" && request.method === "POST") {
-			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
-			const operations = await client.request<OperationSnapshot[]>({
-				command: "list_operations",
+			await this.requireLease(context, sessionId);
+			const result = await client.request<{ stopped: boolean }>({ command: "stop_session", sessionId });
+			const snapshot = await client.request<SessionStateSnapshot>({
+				command: "inspect_session",
 				sessionPath: session.path,
 			});
-			const operation = stringValue(body.operationId)
-				? operations.find((candidate) => candidate.operationId === body.operationId)
-				: latestOperation(operations, session.path);
-			if (!operation || !ACTIVE_OPERATION_STATUSES.has(operation.status))
-				throw new HttpError(409, "no_active_operation", "当前会话没有正在运行的任务");
-			sendJson(
-				response,
-				200,
-				await client.request<JsonValue>({
-					command: "abort_operation",
-					operationId: operation.operationId,
-					leaseId: lease.leaseId,
-				}),
-			);
+			sendJson(response, 200, { stopped: result.stopped, session: publicSessionSnapshot(snapshot) });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "reload" && request.method === "POST") {

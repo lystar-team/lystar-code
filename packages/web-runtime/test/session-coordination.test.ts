@@ -36,6 +36,7 @@ function createFakeRuntime(
 	let lastAssistantText: string | undefined;
 	let lastTurnResult: AgentTurnResult | undefined;
 	let aborted = false;
+	let disposed = false;
 	let releasePrompt: (() => void) | undefined;
 	const promptGate = options.blockPromptUntilAbort
 		? new Promise<void>((resolve) => {
@@ -128,13 +129,14 @@ function createFakeRuntime(
 		},
 		getCapabilities: () => [],
 		ownsSessionWriter: () => false,
-		isConnected: () => true,
+		isConnected: () => !disposed,
 		hasExternalClients: () => false,
 		onEvent: (listener: (event: RuntimeEvent) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
 		dispose: async () => {
+			disposed = true;
 			aborted = true;
 			if (options.clearAssistantOnDispose) lastAssistantText = undefined;
 		},
@@ -286,8 +288,13 @@ describe("WebRuntimeService session coordination", () => {
 			},
 			listSessions: async () => [...bases.values()],
 			openSession: async (sessionPath: string) => {
-				const runtime = [...runtimes.values()].find((item) => item.sessionPath === sessionPath);
+				let runtime = [...runtimes.values()].find((item) => item.sessionPath === sessionPath);
 				if (!runtime) throw new Error(`未找到运行时：${sessionPath}`);
+				if (!runtime.isConnected?.()) {
+					const base = [...bases.values()].find((item) => item.path === sessionPath)!;
+					runtime = createFakeRuntime(base, () => {}, { clearAssistantOnDispose: true });
+					runtimes.set(base.id, runtime);
+				}
 				return runtime;
 			},
 			isSessionWriterLocked: () => false,
@@ -355,8 +362,8 @@ describe("WebRuntimeService session coordination", () => {
 			releaseFirst();
 			await expect.poll(() => bases.get("member")?.messageCount).toBe(5);
 			expect(maxActiveMemberCalls).toBe(1);
-			expect(bases.get("member")?.firstMessage).toBe("第二条 Room 消息");
-			expect(bases.get("owner")?.messageCount).toBe(1);
+			expect(bases.get("member")?.firstMessage).toContain("第二条 Room 消息");
+			await expect.poll(() => bases.get("owner")?.messageCount ?? 0).toBeGreaterThan(1);
 			const busySent = await coordinator?.room.send({
 				cwd,
 				roomId: room!.room.id,
@@ -405,6 +412,44 @@ describe("WebRuntimeService session coordination", () => {
 						}),
 					]),
 				);
+			const combined = await coordinator!.room.send({
+				cwd,
+				roomId: room!.room.id,
+				senderSessionId: "owner",
+				senderType: "user",
+				route: "direct",
+				targetSessionIds: ["member"],
+				body: "混合合批用户请求",
+			});
+			for (const kind of ["answer", "status"] as const)
+				await coordinator!.room.send({
+					cwd,
+					roomId: room!.room.id,
+					senderSessionId: "busy",
+					route: "direct",
+					targetSessionIds: ["member"],
+					kind,
+					body: `同批${kind}`,
+				});
+			await expect
+				.poll(async () =>
+					(
+						await coordinator!.room.read({
+							cwd,
+							roomId: room!.room.id,
+							sessionId: "owner",
+							afterSeq: 0,
+							markRead: false,
+						})
+					).messages.some(
+						(message) =>
+							message.kind === "answer" &&
+							message.replyToMessageId === combined.message.id &&
+							message.body.includes("混合合批用户请求") &&
+							message.body.includes("同批answer"),
+					),
+				)
+				.toBe(true);
 		} finally {
 			releaseFirst();
 			await service.dispose();

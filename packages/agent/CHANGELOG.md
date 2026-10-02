@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 让 Agent loop 在请求转换、Provider 流、工具执行、恢复控制器和扩展回调中响应取消信号，停止后不再继续提交流式更新或后续处理。
 ## [1.0.0-lystar.1] - 2026-10-01
 
 ### Breaking Changes

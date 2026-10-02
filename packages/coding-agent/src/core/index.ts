@@ -278,6 +278,7 @@ export type {
 	SessionRoomAttachment,
 	SessionRoomCursor,
 	SessionRoomDeliveryError,
+	SessionRoomExecutionState,
 	SessionRoomMember,
 	SessionRoomMemberRole,
 	SessionRoomMessage,
@@ -297,7 +298,24 @@ export {
 	type SessionShareResult,
 	shareSessionAsPrivateGist,
 } from "./session-share.ts";
-export { createRoomTasksTool, createSessionsTool } from "./session-tool.ts";
+export {
+	createCollaborationTools,
+	createRoomCreateTool,
+	createRoomJoinTool,
+	createRoomLeaveTool,
+	createRoomListTool,
+	createRoomReadTool,
+	createRoomSendTool,
+	createRoomTaskCreateTool,
+	createRoomTaskListTool,
+	createRoomTaskUpdateTool,
+	createSessionCreateTool,
+	createSessionListTool,
+	createSessionProfilesTool,
+	createSessionSendTool,
+	createSessionStopTool,
+	createSessionWaitTool,
+} from "./session-tool.ts";
 export {
 	type DefaultProjectTrust,
 	type Settings,

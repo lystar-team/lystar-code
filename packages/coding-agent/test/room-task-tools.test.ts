@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
 import { createRoomClaimTool } from "../src/core/room-claim-tool.ts";
 import type { SessionCoordinator } from "../src/core/session-coordinator.ts";
-import { createRoomTasksTool } from "../src/core/session-tool.ts";
+import { createRoomTaskUpdateTool } from "../src/core/session-tool.ts";
 
 const context = {
 	cwd: "/project",
@@ -28,10 +28,10 @@ describe("Room 任务工具", () => {
 
 	it("任务更新不接受调用方指定负责人身份", async () => {
 		const taskUpdate = vi.fn(async () => ({ id: "task-a", status: "done" }));
-		const tool = createRoomTasksTool(() => ({ room: { taskUpdate } }) as unknown as SessionCoordinator);
+		const tool = createRoomTaskUpdateTool(() => ({ room: { taskUpdate } }) as unknown as SessionCoordinator);
 		await tool.execute(
 			"update",
-			{ action: "update", roomId: "room-a", taskId: "task-a", status: "done", note: "核对完成" },
+			{ roomId: "room-a", taskId: "task-a", status: "done", note: "核对完成" },
 			undefined,
 			undefined,
 			context,

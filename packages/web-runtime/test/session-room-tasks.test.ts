@@ -3,11 +3,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collaborationAlias } from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionRoomCoordinator, type SessionRoomDeliveryInput } from "../src/session-room-coordinator.ts";
+import {
+	SessionRoomCoordinator as RoomCoordinator,
+	type SessionRoomDeliveryInput,
+} from "../src/session-room-coordinator.ts";
 import { SessionRoomStore } from "../src/session-room-store.ts";
 
 const tempDirs: string[] = [];
+const coordinators: RoomCoordinator[] = [];
+class SessionRoomCoordinator extends RoomCoordinator {
+	constructor(options: ConstructorParameters<typeof RoomCoordinator>[0]) {
+		super(options);
+		coordinators.push(this);
+	}
+}
 afterEach(() => {
+	for (const coordinator of coordinators.splice(0)) coordinator.dispose();
 	vi.restoreAllMocks();
 	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
@@ -249,7 +260,24 @@ describe("Room 看板任务", () => {
 			targetSessionId: claimed.assigneeSessionId,
 			message: {
 				taskId: task.id,
-				capabilities: { allowedTools: ["read", "grep", "find", "ls", "sessions", "room_tasks"] },
+				capabilities: {
+					allowedTools: [
+						"read",
+						"grep",
+						"find",
+						"ls",
+						"session_create",
+						"session_send",
+						"session_wait",
+						"session_list",
+						"session_profiles",
+						"session_stop",
+						"room_read",
+						"room_send",
+						"room_task_list",
+						"room_task_update",
+					],
+				},
 			},
 		});
 		const restored = new SessionRoomStore(path);

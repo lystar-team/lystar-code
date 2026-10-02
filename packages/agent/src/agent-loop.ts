@@ -15,6 +15,7 @@ import {
 	toToolDeclaration,
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
+import { operationSignal, raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type { ToolRecoveryController } from "./tool-recovery/controller.ts";
 import {
@@ -40,6 +41,14 @@ import type {
 } from "./types.ts";
 
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+
+/** 在调用前后检查取消，避免迟到的回调结果触发下一步。 */
+async function abortable<T>(signal: AbortSignal | undefined, run: () => T | Promise<T>): Promise<T> {
+	signal?.throwIfAborted();
+	const result = await raceWithAbortSignal(Promise.resolve(run()), operationSignal(signal));
+	signal?.throwIfAborted();
+	return result;
+}
 
 /**
  * Start an agent loop with a new prompt message.
@@ -131,7 +140,11 @@ export async function runAgentLoop(
 		await emit({ type: "message_end", message });
 	}
 
-	await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn());
+	try {
+		await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn());
+	} catch (error) {
+		await finishAbortedRun(error, newMessages, config, signal, emit);
+	}
 	return newMessages;
 }
 
@@ -156,8 +169,45 @@ export async function runAgentLoopContinue(
 	await emit({ type: "agent_start" });
 	await emit({ type: "turn_start" });
 
-	await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn());
+	try {
+		await runLoop(currentContext, newMessages, config, signal, emit, streamFn ?? getDefaultStreamFn());
+	} catch (error) {
+		await finishAbortedRun(error, newMessages, config, signal, emit);
+	}
 	return newMessages;
+}
+
+async function finishAbortedRun(
+	error: unknown,
+	messages: AgentMessage[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<void> {
+	if (!signal?.aborted) throw error;
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: config.model.api,
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "aborted",
+		errorMessage: "Operation aborted",
+		timestamp: Date.now(),
+	};
+	await emit({ type: "message_start", message });
+	await emit({ type: "message_end", message });
+	messages.push(message);
+	await emit({ type: "turn_end", message, toolResults: [] });
+	await emit({ type: "agent_end", messages });
 }
 
 function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
@@ -193,7 +243,7 @@ async function runLoop(
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			let preparedMessages: AgentMessage[] = [];
 			if (lastCompletedTurn) {
-				const nextTurnSnapshot = await config.prepareNextTurn?.(lastCompletedTurn);
+				const nextTurnSnapshot = await abortable(signal, () => config.prepareNextTurn?.(lastCompletedTurn!));
 				if (nextTurnSnapshot) {
 					currentContext = nextTurnSnapshot.context ?? currentContext;
 					preparedMessages = nextTurnSnapshot.messages ?? [];
@@ -226,13 +276,15 @@ async function runLoop(
 			}
 			pendingMessages = [];
 
-			const requestUpdate = await config.prepareRequest?.(
-				{
-					context: currentContext,
-					model: config.model,
-					thinkingLevel: config.reasoning ?? "off",
-				},
-				signal,
+			const requestUpdate = await abortable(signal, () =>
+				config.prepareRequest?.(
+					{
+						context: currentContext,
+						model: config.model,
+						thinkingLevel: config.reasoning ?? "off",
+					},
+					signal,
+				),
 			);
 			if (requestUpdate) {
 				currentContext = requestUpdate.context ?? currentContext;
@@ -259,7 +311,7 @@ async function runLoop(
 					context: currentContext,
 					newMessages,
 				};
-				await config.finishTurn?.(lastCompletedTurn, signal);
+				if (!signal?.aborted) await abortable(signal, () => config.finishTurn?.(lastCompletedTurn!, signal));
 				await emit({ type: "turn_end", message, toolResults: [] });
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
@@ -293,7 +345,12 @@ async function runLoop(
 				context: currentContext,
 				newMessages,
 			};
-			const decision = await config.finishTurn?.(lastCompletedTurn, signal);
+			if (signal?.aborted) {
+				await emit({ type: "turn_end", message, toolResults });
+				await emit({ type: "agent_end", messages: newMessages });
+				return;
+			}
+			const decision = await abortable(signal, () => config.finishTurn?.(lastCompletedTurn!, signal));
 			await emit({ type: "turn_end", message, toolResults });
 
 			if (decision?.action === "end") {
@@ -398,33 +455,41 @@ async function streamAssistantResponse(
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
-		messages = await config.transformContext(messages, signal);
+		messages = await abortable(signal, () => config.transformContext!(messages, signal));
 	}
 	if (config.validateRequest) {
-		await config.validateRequest({ ...context, messages }, signal);
+		await abortable(signal, () => config.validateRequest!({ ...context, messages }, signal));
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await config.convertToLlm(messages);
+	const llmMessages = await abortable(signal, () => config.convertToLlm(messages));
 
 	const llmContext = normalizeContext({ messages: llmMessages });
 
 	// Resolve API key (important for expiring tokens)
 	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+		(config.getApiKey ? await abortable(signal, () => config.getApiKey!(config.model.provider)) : undefined) ||
+		config.apiKey;
 
-	const response = await streamFunction(config.model, llmContext, {
-		...config,
-		apiKey: resolvedApiKey,
-		signal,
-	});
+	const response = await abortable(signal, () =>
+		streamFunction(config.model, llmContext, {
+			...config,
+			apiKey: resolvedApiKey,
+			signal,
+		}),
+	);
 	// Record the requested level, whichever stream function answered.
-	const result = async () => Object.assign(await response.result(), { thinkingLevel: config.reasoning ?? "off" });
+	const result = async () =>
+		Object.assign(await abortable(signal, () => response.result()), { thinkingLevel: config.reasoning ?? "off" });
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 
-	for await (const event of response) {
+	const iterator = response[Symbol.asyncIterator]();
+	for (;;) {
+		const next = await abortable(signal, () => iterator.next());
+		if (next.done) break;
+		const event = next.value;
 		switch (event.type) {
 			case "start":
 				partialMessage = event.partial;
@@ -882,14 +947,16 @@ async function runBeforeToolCallHook(
 ): Promise<ImmediateToolCallOutcome | undefined> {
 	if (!config.beforeToolCall) return undefined;
 	try {
-		const beforeResult = await config.beforeToolCall(
-			{
-				assistantMessage,
-				toolCall,
-				args,
-				context: currentContext,
-			},
-			signal,
+		const beforeResult = await abortable(signal, () =>
+			config.beforeToolCall!(
+				{
+					assistantMessage,
+					toolCall,
+					args,
+					context: currentContext,
+				},
+				signal,
+			),
 		);
 		if (signal?.aborted) {
 			return {
@@ -907,7 +974,9 @@ async function runBeforeToolCallHook(
 	} catch (error) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createErrorToolResult(
+				signal?.aborted ? "Operation aborted" : error instanceof Error ? error.message : String(error),
+			),
 			isError: true,
 		};
 	}
@@ -952,7 +1021,9 @@ async function prepareToolCall(
 				isError: true,
 			};
 		}
-		const executionKeys = tool.getExecutionKeys ? [...new Set(await tool.getExecutionKeys(validatedArgs))] : [];
+		const executionKeys = tool.getExecutionKeys
+			? [...new Set(await abortable(signal, () => tool.getExecutionKeys!(validatedArgs)))]
+			: [];
 		return {
 			kind: "prepared",
 			toolCall,
@@ -963,7 +1034,9 @@ async function prepareToolCall(
 	} catch (error) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createErrorToolResult(
+				signal?.aborted ? "Operation aborted" : error instanceof Error ? error.message : String(error),
+			),
 			isError: true,
 		};
 	}
@@ -1028,7 +1101,7 @@ async function executePreparedToolCall(
 
 	if (recovery && controller) {
 		try {
-			const preflight = await controller.preflight(recovery, signal);
+			const preflight = await abortable(signal, () => controller.preflight(recovery, signal));
 			if (preflight?.blocked) {
 				const observation: ToolRecoveryObservation = {
 					...recovery,
@@ -1075,12 +1148,9 @@ async function executePreparedToolCall(
 		const updateEvents: Promise<void>[] = [];
 		let acceptingUpdates = true;
 		try {
-			const result = await prepared.tool.execute(
-				prepared.toolCall.id,
-				prepared.args as never,
-				signal,
-				(partialResult) => {
-					if (!acceptingUpdates) return;
+			const result = await abortable(signal, () =>
+				prepared.tool.execute(prepared.toolCall.id, prepared.args as never, signal, (partialResult) => {
+					if (!acceptingUpdates || signal?.aborted) return;
 					updateEvents.push(Promise.resolve(onUpdate(partialResult)));
 					updateEvents.push(
 						Promise.resolve(
@@ -1093,7 +1163,7 @@ async function executePreparedToolCall(
 							}),
 						),
 					);
-				},
+				}),
 			);
 			acceptingUpdates = false;
 			await Promise.all(updateEvents);
@@ -1101,6 +1171,7 @@ async function executePreparedToolCall(
 		} catch (error) {
 			acceptingUpdates = false;
 			await Promise.all(updateEvents);
+			if (signal?.aborted) return cancelledToolCallOutcome(recovery);
 			if (!recovery || !controller?.decideAttempt) {
 				return {
 					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
@@ -1118,7 +1189,7 @@ async function executePreparedToolCall(
 			});
 			let decision: ToolRecoveryAttemptDecision | undefined;
 			try {
-				decision = await controller.decideAttempt(observation, signal, error);
+				decision = await abortable(signal, () => controller.decideAttempt!(observation, signal, error));
 			} catch {
 				decision = undefined;
 			}
@@ -1142,8 +1213,9 @@ async function executePreparedToolCall(
 					recoveryFinalized: true,
 				};
 			}
+			const retryDelay = decision.action.delayMs;
 			const shouldContinue = controller.waitForRetry
-				? await controller.waitForRetry(decision.action.delayMs, signal)
+				? await abortable(signal, () => controller.waitForRetry!(retryDelay, signal))
 				: !signal?.aborted;
 			if (!shouldContinue || signal?.aborted) return cancelledToolCallOutcome(recovery);
 		}
@@ -1173,18 +1245,20 @@ async function finalizeExecutedToolCall(
 	let recoveryError = executed.error;
 	let recoveryPhase: "execution" | "post_hook" = "execution";
 
-	if (config.afterToolCall) {
+	if (config.afterToolCall && !signal?.aborted) {
 		try {
-			const afterResult = await config.afterToolCall(
-				{
-					assistantMessage,
-					toolCall: prepared.toolCall,
-					args: prepared.args,
-					result,
-					isError,
-					context: currentContext,
-				},
-				signal,
+			const afterResult = await abortable(signal, () =>
+				config.afterToolCall!(
+					{
+						assistantMessage,
+						toolCall: prepared.toolCall,
+						args: prepared.args,
+						result,
+						isError,
+						context: currentContext,
+					},
+					signal,
+				),
 			);
 			if (afterResult) {
 				// Structured content not replaced along with the content may no longer match it.
@@ -1251,7 +1325,7 @@ async function observeFinalizedToolCall(
 		now: toolRecoveryController.now ? () => toolRecoveryController.now!() : undefined,
 	});
 	try {
-		await toolRecoveryController.observe(observation, signal, error);
+		await abortable(signal, () => toolRecoveryController.observe(observation, signal, error));
 	} catch {
 		// M3 observe controller 不能改变逻辑 Tool Call。
 	}

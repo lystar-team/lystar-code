@@ -26,6 +26,7 @@ export interface RoomProjectList {
 export interface RoomMemberSelection {
 	profileId: string;
 	profileName: string;
+	profileDescription: string;
 	profileIcon?: string;
 }
 
@@ -229,7 +230,7 @@ export function useRoomWorkspace({
 			setRoomMessagesLoading(true);
 			try {
 				await webApi.joinRoom(projectId, summary.room.id, senderSessionId);
-				const response = await webApi.roomMessages(projectId, summary.room.id, senderSessionId, { limit: 100 });
+				const response = await webApi.roomMessages(projectId, summary.room.id, senderSessionId, { afterSeq: 0, limit: 100, markRead: false });
 				if (requestId !== selectionRequestIdRef.current) return;
 				readyRoomKeyRef.current = key;
 				skipImmediateRoomPollRef.current = key;
@@ -270,6 +271,7 @@ export function useRoomWorkspace({
 				const response = await webApi.roomMessages(projectId, roomId, memberSessionId, {
 					afterSeq: roomMessagesRef.current.at(-1)?.seq ?? 0,
 					limit: 100,
+					markRead: false,
 				});
 				if (disposed || selectedRoomKeyRef.current !== key) return;
 				setRoomMessagesError(undefined);

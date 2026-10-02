@@ -19,7 +19,7 @@ import {
 	nextLiveToolBatchId,
 	runningAgentStepId,
 } from "./workbench-live-state.ts";
-import { mergeImageGenerationSummary, mergeWebSearchToolSummary, sessionToolLabel } from "./tool-batching.ts";
+import { isSessionTool, mergeImageGenerationSummary, mergeWebSearchToolSummary, sessionToolLabel } from "./tool-batching.ts";
 import { gitCredentialAuthorizationMessageFromProgress, sessionActivityFromProgress } from "./workbench-state.ts";
 import type { WorkbenchState } from "./workbench-types.ts";
 
@@ -162,8 +162,8 @@ export function useWorkbenchProgressActions({
 										current.liveTurnId,
 									),
 							statusText:
-								progress.name === "sessions"
-									? sessionToolLabel(summary, "running") ?? "正在处理智能体协作"
+								isSessionTool(progress.name)
+									? sessionToolLabel(progress.name, "running") ?? "正在处理智能体协作"
 									: `正在执行 ${progress.name}`,
 						};
 					}
@@ -254,8 +254,8 @@ export function useWorkbenchProgressActions({
 										current.liveTurnId,
 									),
 							statusText:
-								progress.name === "sessions"
-									? sessionToolLabel(summary ?? "", progress.status === "error" ? "error" : "completed") ??
+								isSessionTool(progress.name)
+									? sessionToolLabel(progress.name, progress.status === "error" ? "error" : "completed") ??
 										"智能体协作已完成"
 									: progress.status === "error" ? `${progress.name} 执行失败` : `${progress.name} 已完成`,
 						};

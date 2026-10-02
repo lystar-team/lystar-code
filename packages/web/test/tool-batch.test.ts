@@ -55,9 +55,9 @@ describe("Skill read tool display", () => {
 
 	it("shows the dispatched agent nickname without exposing the profile ID", () => {
 		const tool: ToolBatchTool = {
-			id: "sessions-create",
-			name: "sessions",
-			summary: JSON.stringify({ action: "create", profileId: "reader", task: "核对工具展示" }),
+			id: "session-create",
+			name: "session_create",
+			summary: JSON.stringify({ profileId: "reader", task: "核对工具展示" }),
 			state: "output-available",
 			detail: JSON.stringify({
 				content: [
@@ -388,9 +388,9 @@ describe("Skill read tool display", () => {
 			["npm run check", "已检查项目代码", "lucide-package"],
 			["node node_modules/vitest/dist/cli.js --run test/command.test.ts", "已运行 Vitest 测试", "lucide-package"],
 		] as const;
-		for (const [command, label, icon] of cases) {
+		for (const [index, [command, label, icon]] of cases.entries()) {
 			const tool: ToolBatchTool = {
-				id: command,
+				id: `bash-display-${index}`,
 				name: "bash",
 				summary: JSON.stringify({ command }),
 				state: "output-available",
@@ -409,8 +409,13 @@ describe("Skill read tool display", () => {
 			["find . -name '*.ts' && echo done", "已查找 *.ts 文件", "lucide-search"],
 			["custom-task --verbose", "已运行 custom-task 命令", "lucide-terminal"],
 		] as const;
-		for (const [command, label, icon] of cases) {
-			const tool: ToolBatchTool = { id: command, name: "bash", summary: command, state: "output-available" };
+		for (const [index, [command, label, icon]] of cases.entries()) {
+			const tool: ToolBatchTool = {
+				id: `bash-compound-${index}`,
+				name: "bash",
+				summary: command,
+				state: "output-available",
+			};
 			expect(toolRowTitle(tool)).toBe(label);
 			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 			expect(markup).toContain(label);

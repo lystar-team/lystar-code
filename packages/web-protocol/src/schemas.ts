@@ -531,6 +531,7 @@ const SessionWorkspaceSchema = StrictObject({
 	status: Type.Union([
 		Type.Literal("active"),
 		Type.Literal("delivered"),
+		Type.Literal("accepted"),
 		Type.Literal("failed"),
 		Type.Literal("released"),
 	]),

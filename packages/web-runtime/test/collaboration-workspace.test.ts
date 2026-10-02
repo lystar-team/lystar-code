@@ -46,7 +46,9 @@ describe("CollaborationWorkspaceManager", () => {
 		const delivery = await manager.collect(workspace, "completed");
 		expect(delivery.changedFiles).toEqual(["main.txt"]);
 		expect(delivery.workspace.status).toBe("delivered");
-		expect(readFileSync(join(projectCwd, "main.txt"), "utf8")).toBe("base\n");
+		const accepted = await manager.receive(delivery.workspace, delivery.changedFiles);
+		expect(accepted.status).toBe("accepted");
+		expect(readFileSync(join(projectCwd, "main.txt"), "utf8")).toBe("child change\n");
 
 		const released = await manager.release(delivery.workspace);
 		expect(released.status).toBe("released");

@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -66,6 +67,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, getToolRecoveryMode, type ToolRecoveryMode } from "../config.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
+import { raceWithAbortSignal } from "../utils/abort.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -489,8 +491,10 @@ export class AgentSession {
 	private readonly _toolActivityTracker = new ToolActivityTracker();
 	private _isAgentRunActive = false;
 	private _agentRunAbortRequested = false;
-	private _idleWaitPromise: Promise<void> | undefined;
-	private _resolveIdleWait: (() => void) | undefined;
+	private _agentRunAbortController?: AbortController;
+	private readonly _inputAbortControllers = new Set<AbortController>();
+	private readonly _idleWaiters = new Set<{ inputSignal?: AbortSignal; resolve: () => void }>();
+	private readonly _commandSignals = new AsyncLocalStorage<AbortSignal>();
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -1062,14 +1066,17 @@ export class AgentSession {
 	private async _prepareRequestContext(
 		context: AgentContext,
 		pendingMessagesAfterCompaction: AgentMessage[] = [],
+		signal?: AbortSignal,
 	): Promise<AgentContext> {
 		context = await this._injectToolRecoveryGuidance(context);
+		signal?.throwIfAborted();
 		const model = this.model;
 		if (!model || model.contextWindow <= 0 || isVirtualModel(model)) return context;
 
 		const settings = this.settingsManager.getCompactionSettings();
 		let estimate = await this._estimateRequestTokens(context);
 		let contentEstimate = await this._estimateRequestContentTokens(context);
+		signal?.throwIfAborted();
 		let compactionAttempted = false;
 		let allowCompactedPrefixOverflow = context.messages.some((message) => message.role === "compactionSummary");
 		if (settings.enabled && shouldCompact(estimate.tokens, model.contextWindow, settings)) {
@@ -1099,7 +1106,7 @@ export class AgentSession {
 		const previousPrepareRequest = this.agent.prepareRequest;
 		this.agent.prepareRequest = async (request, signal) => {
 			const previous = await previousPrepareRequest?.(request, signal);
-			const context = await this._prepareRequestContext(previous?.context ?? request.context);
+			const context = await this._prepareRequestContext(previous?.context ?? request.context, [], signal);
 			return { ...previous, context };
 		};
 	}
@@ -1461,23 +1468,27 @@ export class AgentSession {
 		}
 	}
 
-	private _getIdleWaitPromise(): Promise<void> {
-		if (!this._idleWaitPromise) {
-			this._idleWaitPromise = new Promise((resolve) => {
-				this._resolveIdleWait = resolve;
-			});
-		}
-		return this._idleWaitPromise;
+	private _isIdleForWait(inputSignal?: AbortSignal): boolean {
+		return (
+			!this._isAgentRunActive &&
+			!this.isCompacting &&
+			(!this._isEmittingAgentSettled || inputSignal !== undefined) &&
+			[...this._inputAbortControllers].every((controller) => controller.signal === inputSignal)
+		);
+	}
+
+	private _getIdleWaitPromise(inputSignal?: AbortSignal): Promise<void> {
+		return new Promise((resolve) => {
+			this._idleWaiters.add({ inputSignal, resolve });
+		});
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || !this._resolveIdleWait) {
-			return;
+		for (const waiter of this._idleWaiters) {
+			if (!this._isIdleForWait(waiter.inputSignal)) continue;
+			this._idleWaiters.delete(waiter);
+			waiter.resolve();
 		}
-		const resolve = this._resolveIdleWait;
-		this._idleWaitPromise = undefined;
-		this._resolveIdleWait = undefined;
-		resolve();
 	}
 
 	private async _emitAgentSettled(): Promise<void> {
@@ -1850,6 +1861,8 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		try {
+			for (const controller of this._inputAbortControllers) controller.abort();
+			this._agentRunAbortController?.abort();
 			this.abortRetry();
 			this.abortCompaction();
 			this.abortBranchSummary();
@@ -1949,7 +1962,11 @@ export class AgentSession {
 
 	/** Whether the session has no active agent run, compaction, branch summary, retry, or queued continuation. */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive && !this.isCompacting;
+		return (
+			!this._isAgentRunActive &&
+			(this._inputAbortControllers.size === 0 || this._isEmittingAgentSettled) &&
+			!this.isCompacting
+		);
 	}
 
 	/** Return the completed result for a specific structured turn. */
@@ -2306,7 +2323,22 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private async _withInputCancellation<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		const controller = new AbortController();
+		if (!this._isAgentRunActive && this._inputAbortControllers.size === 0) this._agentRunAbortRequested = false;
+		this._inputAbortControllers.add(controller);
+		try {
+			return await run(controller.signal);
+		} finally {
+			this._inputAbortControllers.delete(controller);
+			this._resolveIdleWaitIfIdle();
+		}
+	}
+
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], inputSignal?: AbortSignal): Promise<void> {
+		inputSignal?.throwIfAborted();
+		const controller = new AbortController();
+		this._agentRunAbortController = controller;
 		this._toolRecoveryController?.beginTask?.();
 		this._agentRunAbortRequested = false;
 		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
@@ -2319,7 +2351,7 @@ export class AgentSession {
 		try {
 			await this.agent.prompt(messages);
 			while (!this._agentRunAbortRequested) {
-				if (await this._handlePostAgentRun()) {
+				if (await raceWithAbortSignal(this._handlePostAgentRun(), controller.signal)) {
 					if (this._agentRunAbortRequested) break;
 					await this.agent.continue();
 					continue;
@@ -2328,13 +2360,19 @@ export class AgentSession {
 				if (this._agentRunAbortRequested) break;
 				await this.agent.continue();
 			}
+		} catch (error) {
+			if (!controller.signal.aborted) throw error;
 		} finally {
 			if (this._agentRunAbortRequested) this._finishCancelledRetry();
 			this._failedResponse = undefined;
 			this._runSystemPromptOptions = undefined;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
-			await this._emitAgentSettled();
+			try {
+				await this._emitAgentSettled();
+			} finally {
+				if (this._agentRunAbortController === controller) this._agentRunAbortController = undefined;
+			}
 		}
 	}
 
@@ -2459,6 +2497,14 @@ export class AgentSession {
 	}
 
 	async promptWithOrigin(text: string, options?: PromptOptions): Promise<AgentTurnContext | undefined> {
+		return this._withInputCancellation((signal) => this._promptWithOrigin(text, options, signal));
+	}
+
+	private async _promptWithOrigin(
+		text: string,
+		options: PromptOptions | undefined,
+		signal: AbortSignal,
+	): Promise<AgentTurnContext | undefined> {
 		const roomInput = options?.origin !== undefined && rootOriginOf(options.origin) === "room";
 		const expandPromptTemplates = !roomInput && (options?.expandPromptTemplates ?? true);
 		if (this._isEmittingAgentSettled) {
@@ -2484,7 +2530,8 @@ export class AgentSession {
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
+				const handled = await raceWithAbortSignal(this._tryExecuteExtensionCommand(text, signal), signal);
+				signal.throwIfAborted();
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.("handled");
@@ -2518,13 +2565,17 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
-			const processedInput = await this._runInputHandlers(
-				text,
-				options?.images,
-				options?.source ?? "interactive",
-				this.isStreaming ? options?.streamingBehavior : undefined,
-				turn,
+			const processedInput = await raceWithAbortSignal(
+				this._runInputHandlers(
+					text,
+					options?.images,
+					options?.source ?? "interactive",
+					this.isStreaming ? options?.streamingBehavior : undefined,
+					turn,
+				),
+				signal,
 			);
+			signal.throwIfAborted();
 			if (!processedInput) {
 				preflightResult?.("handled");
 				if (ownsTurn) {
@@ -2573,7 +2624,7 @@ export class AgentSession {
 
 			const hasConfiguredAuth =
 				this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
-				(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
+				(await raceWithAbortSignal(this._modelRuntime.checkAuth(this.model.provider), signal)) !== undefined;
 			if (!hasConfiguredAuth) {
 				const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
 				if (isOAuth) {
@@ -2590,18 +2641,22 @@ export class AgentSession {
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) {
-				await this._checkCompaction(lastAssistant, false);
+				await raceWithAbortSignal(this._checkCompaction(lastAssistant, false), signal);
 			}
 
 			// Emit before_agent_start before normalizing images so extension-driven model
 			// selection determines the resize profile used for the request and history.
 			const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				expandedText,
-				currentImages,
-				this._baseSystemPromptOptions,
-				turn,
+			const result = await raceWithAbortSignal(
+				this._extensionRunner.emitBeforeAgentStart(
+					expandedText,
+					currentImages,
+					this._baseSystemPromptOptions,
+					turn,
+				),
+				signal,
 			);
+			signal.throwIfAborted();
 			// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
 			// which updates the live loadout instead. An explicit edit wins; otherwise the live
 			// loadout is authoritative, so a setActiveTools() call is not undone here.
@@ -2617,7 +2672,8 @@ export class AgentSession {
 				);
 			}
 
-			const normalized = await this._normalizePromptImages(currentImages);
+			const normalized = await raceWithAbortSignal(this._normalizePromptImages(currentImages), signal);
+			signal.throwIfAborted();
 			const userText =
 				normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
 
@@ -2653,14 +2709,25 @@ export class AgentSession {
 			if (updateMessage) messages.unshift(updateMessage);
 
 			// 最终预算必须包含扩展展开的 Skill 和附加消息。
-			await this._prepareRequestContext(
-				{
-					messages: [...this.agent.state.messages, ...messages],
-					tools: this.agent.state.tools,
-				},
-				messages,
+			await raceWithAbortSignal(
+				this._prepareRequestContext(
+					{
+						messages: [...this.agent.state.messages, ...messages],
+						tools: this.agent.state.tools,
+					},
+					messages,
+					signal,
+				),
+				signal,
 			);
+			signal.throwIfAborted();
 		} catch (error) {
+			if (signal.aborted && ownsTurn) {
+				await this._emitAgentSettled();
+				this._activeTurnContext = undefined;
+				this._activeCapabilityLease = previousCapabilityLease;
+				return turn;
+			}
 			if (ownsTurn) {
 				this._activeTurnContext = undefined;
 				this._activeCapabilityLease = previousCapabilityLease;
@@ -2678,7 +2745,7 @@ export class AgentSession {
 
 		preflightResult?.("started");
 		try {
-			await this._runAgentPrompt(messages);
+			await this._runAgentPrompt(messages, signal);
 			return turn;
 		} finally {
 			if (previousActiveToolNames) this.setActiveToolsByName([...previousActiveToolNames]);
@@ -2692,7 +2759,7 @@ export class AgentSession {
 	/**
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 */
-	private async _tryExecuteExtensionCommand(text: string): Promise<boolean> {
+	private async _tryExecuteExtensionCommand(text: string, signal: AbortSignal): Promise<boolean> {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
@@ -2705,9 +2772,15 @@ export class AgentSession {
 		const ctx = this._extensionRunner.createCommandContext();
 
 		try {
-			await command.handler(args, ctx);
+			await raceWithAbortSignal(
+				this._commandSignals.run(signal, () =>
+					this._extensionRunner.runWithSignal(signal, () => command.handler(args, ctx)),
+				),
+				signal,
+			);
 			return true;
 		} catch (err) {
+			if (signal.aborted) throw err;
 			// Emit error via extension runner
 			this._extensionRunner.emitError({
 				extensionPath: `command:${commandName}`,
@@ -2756,6 +2829,19 @@ export class AgentSession {
 		source: InputSource,
 		requestedQueueId?: string,
 	): Promise<QueuedInputDisposition> {
+		return this._withInputCancellation((signal) =>
+			this._queueUserInputWithSignal(text, images, behavior, source, requestedQueueId, signal),
+		);
+	}
+
+	private async _queueUserInputWithSignal(
+		text: string,
+		images: ImageContent[] | undefined,
+		behavior: "steer" | "followUp",
+		source: InputSource,
+		requestedQueueId: string | undefined,
+		signal: AbortSignal,
+	): Promise<QueuedInputDisposition> {
 		if (this._activeTurnContext?.rootOrigin === "room") {
 			throw new Error("当前会话正在处理智能体协作消息，请稍后重试");
 		}
@@ -2763,18 +2849,22 @@ export class AgentSession {
 			this._throwIfExtensionCommand(text);
 		}
 
-		const processedInput = await this._runInputHandlers(
-			text,
-			images,
-			source,
-			this.isStreaming ? behavior : undefined,
-			this._activeTurnContext ?? {
-				turnId: randomUUID(),
-				inputId: requestedQueueId ?? randomUUID(),
-				origin: { type: "user", channel: source === "rpc" ? "rpc" : "interactive" },
-				rootOrigin: "user",
-			},
+		const processedInput = await raceWithAbortSignal(
+			this._runInputHandlers(
+				text,
+				images,
+				source,
+				this.isStreaming ? behavior : undefined,
+				this._activeTurnContext ?? {
+					turnId: randomUUID(),
+					inputId: requestedQueueId ?? randomUUID(),
+					origin: { type: "user", channel: source === "rpc" ? "rpc" : "interactive" },
+					rootOrigin: "user",
+				},
+			),
+			signal,
 		);
+		signal.throwIfAborted();
 		if (!processedInput) return "handled";
 
 		let expandedText = this._expandSkillCommand(processedInput.text);
@@ -3110,9 +3200,12 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		if (this._isAgentRunActive) {
+		if (this._isAgentRunActive || this._inputAbortControllers.size > 0) {
 			this._agentRunAbortRequested = true;
 		}
+		for (const controller of this._inputAbortControllers) controller.abort();
+		this._agentRunAbortController?.abort();
+		this._deferredSettledActions.length = 0;
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
@@ -3122,10 +3215,9 @@ export class AgentSession {
 	}
 
 	async waitForIdle(): Promise<void> {
-		if (this.isIdle) {
-			return;
-		}
-		await this._getIdleWaitPromise();
+		const inputSignal = this._commandSignals.getStore();
+		if (this._isIdleForWait(inputSignal)) return;
+		await this._getIdleWaitPromise(inputSignal);
 	}
 
 	// =========================================================================
@@ -3414,20 +3506,23 @@ export class AgentSession {
 		reason: "manual" | "threshold" | "overflow",
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
-		const request = await this._getSummarizationRequestAuth(model, signal);
-		return compact(
-			preparation,
-			request.model,
-			request.apiKey,
-			request.headers,
-			customInstructions,
+		const request = await raceWithAbortSignal(this._getSummarizationRequestAuth(model, signal), signal);
+		return raceWithAbortSignal(
+			compact(
+				preparation,
+				request.model,
+				request.apiKey,
+				request.headers,
+				customInstructions,
+				signal,
+				request.thinkingLevel,
+				this.agent.streamFunction,
+				request.env,
+				this.settingsManager.getRetrySettings(),
+				this._summarizationRetryCallbacks({ source: "compaction", reason }),
+				undefined, // sessionId
+			),
 			signal,
-			request.thinkingLevel,
-			this.agent.streamFunction,
-			request.env,
-			this.settingsManager.getRetrySettings(),
-			this._summarizationRetryCallbacks({ source: "compaction", reason }),
-			undefined, // sessionId
 		);
 	}
 
@@ -3490,6 +3585,7 @@ export class AgentSession {
 					signal: this._compactionAbortController.signal,
 				})) as SessionBeforeCompactResult | undefined;
 
+				if (this._compactionAbortController.signal.aborted) throw new Error("Compaction cancelled");
 				if (result?.cancel) {
 					cancelledByExtension = true;
 					throw new Error("Compaction cancelled");
@@ -3597,7 +3693,7 @@ export class AgentSession {
 				willRetry: false,
 				fromExtension,
 			});
-			throw error;
+			throw aborted ? new Error("Compaction cancelled") : error;
 		} finally {
 			this._clearManualCompactionState();
 		}
@@ -4185,7 +4281,13 @@ export class AgentSession {
 				getScopedModels: () => this._scopedModels,
 				isIdle: () => this.isIdle,
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
-				getSignal: () => this.agent.signal,
+				getSignal: () =>
+					this._agentRunAbortController?.signal ??
+					this._inputAbortControllers.values().next().value?.signal ??
+					this._compactionAbortController?.signal ??
+					this._autoCompactionAbortController?.signal ??
+					this._branchSummaryAbortController?.signal ??
+					this.agent.signal,
 				abort: () => {
 					if (this._extensionAbortHandler) {
 						this._extensionAbortHandler();

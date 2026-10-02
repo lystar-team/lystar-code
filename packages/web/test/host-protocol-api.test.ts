@@ -144,6 +144,28 @@ describe("WebApi fast mode", () => {
 	});
 });
 
+describe("WebApi session abort", () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("stops the session without sending an operation ID", async () => {
+		vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined });
+		const fetchMock = vi.fn(
+			async (_input: string | URL | Request, _init?: RequestInit) =>
+				new Response(JSON.stringify({ stopped: true, session: { id: "session/1", phase: "idle" } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await new WebApi().abort("session/1");
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions/session%2F1/abort");
+		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty("operationId");
+		expect(result).toEqual({ stopped: true, session: { id: "session/1", phase: "idle" } });
+	});
+});
+
 describe("WebApi WebSocket subscriptions", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
