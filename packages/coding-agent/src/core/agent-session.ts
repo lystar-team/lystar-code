@@ -1469,11 +1469,14 @@ export class AgentSession {
 	}
 
 	private _isIdleForWait(inputSignal?: AbortSignal): boolean {
+		const activeInputControllers = [...this._inputAbortControllers].filter(
+			(controller) => controller.signal !== inputSignal,
+		);
 		return (
 			!this._isAgentRunActive &&
 			!this.isCompacting &&
 			(!this._isEmittingAgentSettled || inputSignal !== undefined) &&
-			[...this._inputAbortControllers].every((controller) => controller.signal === inputSignal)
+			activeInputControllers.length === 0
 		);
 	}
 
@@ -1861,7 +1864,10 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		try {
-			for (const controller of this._inputAbortControllers) controller.abort();
+			const commandSignal = this._commandSignals.getStore();
+			for (const controller of this._inputAbortControllers) {
+				if (controller.signal !== commandSignal) controller.abort();
+			}
 			this._agentRunAbortController?.abort();
 			this.abortRetry();
 			this.abortCompaction();
@@ -1962,9 +1968,13 @@ export class AgentSession {
 
 	/** Whether the session has no active agent run, compaction, branch summary, retry, or queued continuation. */
 	get isIdle(): boolean {
+		const inputSignal = this._commandSignals.getStore();
+		const activeInputControllers = [...this._inputAbortControllers].filter(
+			(controller) => controller.signal !== inputSignal,
+		);
 		return (
 			!this._isAgentRunActive &&
-			(this._inputAbortControllers.size === 0 || this._isEmittingAgentSettled) &&
+			(activeInputControllers.length === 0 || this._isEmittingAgentSettled) &&
 			!this.isCompacting
 		);
 	}
@@ -3203,7 +3213,10 @@ export class AgentSession {
 		if (this._isAgentRunActive || this._inputAbortControllers.size > 0) {
 			this._agentRunAbortRequested = true;
 		}
-		for (const controller of this._inputAbortControllers) controller.abort();
+		const commandSignal = this._commandSignals.getStore();
+		for (const controller of this._inputAbortControllers) {
+			if (controller.signal !== commandSignal) controller.abort();
+		}
 		this._agentRunAbortController?.abort();
 		this._deferredSettledActions.length = 0;
 		this.abortRetry();

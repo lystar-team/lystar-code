@@ -78,6 +78,15 @@ function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
 	return typeof value === "function" ? value() : value;
 }
 
+function transcriptAnchorKey(tool: ToolBatchTool): string {
+	let hash = 2166136261;
+	for (const character of `${tool.name}:${tool.id}`) {
+		hash ^= character.charCodeAt(0);
+		hash = Math.imul(hash, 16777619);
+	}
+	return `tool:${(hash >>> 0).toString(36)}`;
+}
+
 function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
 	if (event.defaultPrevented) return false;
 	const target = event.target;
@@ -625,7 +634,7 @@ function ToolActivityRow({
 	const outcomeUncertain = tool.name === "bash" && tool.state === "output-available" && commandPresentation(toolTitle(tool)).resultUncertain;
 	const status = outcomeUncertain ? "已执行" : activityStatusLabel(tool.state, tool.preparing && tool.name !== "edit");
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0" data-transcript-anchor-key={`tool:${tool.id}`}>
+		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0" data-transcript-anchor-key={transcriptAnchorKey(tool)}>
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
 					aria-label={`${title}，${status}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
@@ -1221,7 +1230,7 @@ function ToolBatchRow({
 	}, [active, autoCollapseWhenComplete, tool.name]);
 
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)} data-transcript-anchor-key={`tool:${tool.id}`}>
+		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)} data-transcript-anchor-key={transcriptAnchorKey(tool)}>
 			<CollapsibleTrigger asChild>
 				<button
 					data-transcript-resize-anchor

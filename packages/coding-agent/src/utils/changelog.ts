@@ -232,6 +232,8 @@ export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): C
 		...(parseVersion(lastVersion) ?? { major: 0, minor: 0, patch: 0 }),
 		content: "",
 	};
+	const matchingIndex = entries.findIndex((entry) => compareVersions(entry, last) === 0);
+	if (matchingIndex !== -1) return entries.slice(0, matchingIndex);
 
 	return entries.filter((entry) => compareVersions(entry, last) > 0);
 }

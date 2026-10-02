@@ -262,7 +262,7 @@ export const Composer = memo(function Composer({
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
 	const disabled = externallyDisabled || (roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state));
 	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
-	const aborting = !roomMode && Boolean(state.sessionId && state.stoppingSessionIds[state.sessionId]);
+	const aborting = !roomMode && Boolean(state.sessionId && state.stoppingSessionIds?.[state.sessionId]);
 	const getPromptCompletions = useCallback(
 		async (text: string, cursor: number): Promise<WebCompletionResult> => {
 			if (!state.currentProjectId) return { prefixStart: cursor, prefixEnd: cursor, items: [] };
