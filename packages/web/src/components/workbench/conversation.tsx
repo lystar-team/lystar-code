@@ -8,8 +8,6 @@ import {
 	WrenchIcon,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
-import { committedToolCallIds } from "../../state/chat-lifecycle.ts";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { CompactionCard } from "./compaction-card";
 import { Composer } from "./composer";
@@ -19,17 +17,16 @@ import {
 	appendLiveRenderItems,
 	buildConversationRenderItems,
 	buildPersistedRenderItems,
-	preserveConversationToolStackKeys,
 	type AgentStepChildRenderItem,
 	type AgentStepRenderItem,
 	type CompactionRenderItem,
 	type ConversationContentRenderItem,
 	type ConversationRenderItem,
 	type MessageRenderItem,
-	type ToolIndex,
 	type TranscriptToolStackRenderItem,
 } from "./conversation-render-model";
 export { appendLiveRenderItems, buildConversationRenderItems, buildPersistedRenderItems };
+import { ConversationRenderPipeline } from "./conversation-render-pipeline";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
@@ -84,29 +81,12 @@ export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queue
 	selectSession?: WorkbenchActions["selectSession"];
 	loadTranscript?: WorkbenchActions["loadTranscript"];
 	openSubagent?: WorkbenchActions["openSubagent"];
+	/** 主会话提供的 sessionDetail 缓存可用会话，用于在渲染前裁剪渲染缓存。 */
+	retainedSessionDetailIds?: () => ReadonlySet<string>;
 };
 
 
-const CONVERSATION_RENDER_CACHE_LIMIT = 8;
 const EMPTY_LIVE_STEPS = Object.freeze({}) as WorkbenchState["liveSteps"];
-
-type ConversationRenderCacheEntry = {
-	transcript: WorkbenchState["transcript"];
-	pendingUserPrompts: WorkbenchState["pendingUserPrompts"];
-	promptSendTimes: WorkbenchState["promptSendTimes"];
-	agentSteps: WorkbenchState["agentSteps"];
-	liveTools: WorkbenchState["liveTools"];
-	liveTurnItems: WorkbenchState["liveTurnItems"];
-	liveCompaction: WorkbenchState["liveCompaction"];
-	liveTurnId: number;
-	liveSteps: WorkbenchState["liveSteps"];
-	responseActive: boolean;
-	canEditPrompts: boolean;
-	editingEntryId?: string;
-	settledTurns?: WorkbenchState["settledTurns"];
-	toolIndex: ToolIndex;
-	renderItems: ConversationRenderItem[];
-};
 
 function AgentStepContent({
 	entry,
@@ -369,7 +349,11 @@ export function ConversationView({
 		state.queuedUserPrompts.length === 0;
 	const liveSteps = responseActive ? state.liveSteps : EMPTY_LIVE_STEPS;
 	const editingEntryId = editRequest?.sessionId === state.sessionId ? editRequest?.entryId : undefined;
-	const renderCacheRef = useRef(new Map<string, ConversationRenderCacheEntry>());
+	const pipelineRef = useRef<ConversationRenderPipeline | null>(null);
+	if (!pipelineRef.current) pipelineRef.current = new ConversationRenderPipeline();
+	const pipeline = pipelineRef.current;
+	const retainedSessionDetailIds = actions.retainedSessionDetailIds;
+	if (retainedSessionDetailIds) pipeline.prune(retainedSessionDetailIds());
 	// 实时「已处理」每次跳动回报的秒数，按发送时刻归档，回合结束时供下方「本次耗时」复用。
 	const observedElapsedRef = useRef(new Map<number, number>());
 	const recordLiveElapsed = useCallback((sentAt: number, seconds: number) => {
@@ -386,127 +370,44 @@ export function ConversationView({
 	useEffect(() => {
 		observedElapsedRef.current.clear();
 	}, [state.sessionId]);
-	const { toolIndex, renderItems } = useMemo(() => {
-		const cacheKey = state.sessionId ?? "empty";
-		const cached = renderCacheRef.current.get(cacheKey);
-		if (
-			cached?.transcript === state.transcript &&
-			cached.agentSteps === state.agentSteps &&
-			cached.pendingUserPrompts === state.pendingUserPrompts &&
-			cached.promptSendTimes === state.promptSendTimes &&
-			cached.liveTools === state.liveTools &&
-			cached.liveTurnItems === state.liveTurnItems &&
-			cached.liveCompaction === state.liveCompaction &&
-			cached.liveTurnId === state.liveTurnId &&
-			cached.liveSteps === liveSteps &&
-			cached.responseActive === responseActive &&
-			cached.canEditPrompts === canEditPrompts &&
-			cached.editingEntryId === editingEntryId &&
-			cached.settledTurns === state.settledTurns
-		) {
-			renderCacheRef.current.delete(cacheKey);
-			renderCacheRef.current.set(cacheKey, cached);
-			return cached;
-		}
-
-		const callIds = new Set<string>();
-		const results = new Map<string, ToolBatchTool>();
-		const statuses = new Map<string, "success" | "error">();
-		for (const item of state.transcript) {
-			if (item.view?.type === "tool_call") {
-				for (const call of item.view.calls) callIds.add(call.id);
-			}
-			if (item.view?.type === "tool_result") {
-				const tool: ToolBatchTool = {
-					id: item.view.callId,
-					name: item.view.name,
-					summary: item.view.summary,
-					state: item.view.status === "success" ? "output-available" : "output-error",
-					detail: item.view.detail,
-					images: item.view.images,
-					diff: item.view.diff,
-				};
-				results.set(item.view.callId, tool);
-				statuses.set(item.view.callId, item.view.status);
-			}
-		}
-		const persistedToolIndex: ToolIndex = { callIds, results, statuses };
-		let liveResults: Map<string, ToolBatchTool> | undefined;
-		for (const tool of Object.values(state.liveTools)) {
-			if (!persistedToolIndex.callIds.has(tool.id)) continue;
-			const persisted = (liveResults ?? persistedToolIndex.results).get(tool.id);
-			if (!persisted || tool.state === "cancelled" || tool.state === "interrupted") {
-				liveResults ??= new Map(persistedToolIndex.results);
-				const live = toLiveToolViewModel(tool);
-				liveResults.set(tool.id, { ...persisted, ...live, images: persisted?.images });
-			}
-		}
-		const toolIndex = liveResults ? { ...persistedToolIndex, results: liveResults } : persistedToolIndex;
-		const persistedRenderItems = buildPersistedRenderItems(
-			state.transcript,
-			toolIndex,
+	const { toolIndex, renderItems } = useMemo(
+		() =>
+			pipeline.render({
+				sessionId: state.sessionId,
+				transcript: state.transcript,
+				agentSteps: state.agentSteps,
+				pendingUserPrompts: state.pendingUserPrompts,
+				promptSendTimes: state.promptSendTimes,
+				liveTools: state.liveTools,
+				liveSteps,
+				liveTurnItems: state.liveTurnItems,
+				liveCompaction: state.liveCompaction,
+				liveTurnId: state.liveTurnId,
+				responseActive,
+				canEditPrompts,
+				editingEntryId,
+				settledTurns: state.settledTurns,
+				observedElapsed: resolveObservedElapsed,
+			}),
+		[
+			canEditPrompts,
+			editingEntryId,
+			liveSteps,
+			pipeline,
+			resolveObservedElapsed,
+			responseActive,
+			state.agentSteps,
+			state.liveCompaction,
+			state.liveTools,
+			state.liveTurnId,
+			state.liveTurnItems,
 			state.pendingUserPrompts,
 			state.promptSendTimes,
-			state.agentSteps,
-			liveSteps,
-			state.liveTools,
-		);
-		const computedRenderItems = buildConversationRenderItems(
-			persistedRenderItems,
-			state.liveTurnItems,
-			state.liveTools,
-			committedToolCallIds(state.transcript),
-			state.liveCompaction,
-			state.liveTurnId,
-			responseActive,
-			canEditPrompts,
-			liveSteps,
-			resolveObservedElapsed,
-			editingEntryId,
-			state.settledTurns?.[state.liveTurnId],
-		);
-		const renderItems = preserveConversationToolStackKeys(computedRenderItems, cached?.renderItems ?? []);
-		const entry: ConversationRenderCacheEntry = {
-			transcript: state.transcript,
-			agentSteps: state.agentSteps,
-			pendingUserPrompts: state.pendingUserPrompts,
-			promptSendTimes: state.promptSendTimes,
-			liveTools: state.liveTools,
-			liveTurnItems: state.liveTurnItems,
-			liveCompaction: state.liveCompaction,
-			liveTurnId: state.liveTurnId,
-			liveSteps,
-			responseActive,
-			canEditPrompts,
-			editingEntryId,
-			settledTurns: state.settledTurns,
-			toolIndex,
-			renderItems,
-		};
-		renderCacheRef.current.delete(cacheKey);
-		renderCacheRef.current.set(cacheKey, entry);
-		while (renderCacheRef.current.size > CONVERSATION_RENDER_CACHE_LIMIT) {
-			const oldest = renderCacheRef.current.keys().next().value;
-			if (oldest === undefined) break;
-			renderCacheRef.current.delete(oldest);
-		}
-		return entry;
-	}, [
-		canEditPrompts,
-		editingEntryId,
-		liveSteps,
-		resolveObservedElapsed,
-		responseActive,
-		state.liveCompaction,
-		state.liveTools,
-		state.liveTurnId,
-		state.liveTurnItems,
-		state.pendingUserPrompts,
-		state.promptSendTimes,
-		state.sessionId,
-		state.transcript,
-		state.agentSteps,
-	]);
+			state.sessionId,
+			state.settledTurns,
+			state.transcript,
+		],
+	);
 
 	return (
 		<>

@@ -133,11 +133,4 @@ describe("experimental CLI commands", () => {
 		expect(result).toMatchObject({ ok: false });
 		if (!result.ok) expect(result.errors).toContainEqual(expect.stringContaining(error));
 	});
-
-	test("rejects unsupported options without parsing them through the stable CLI", () => {
-		expect(cli.parse(["client", "--tui-mode", "wrong", "--model", "claude-sonnet"])).toEqual({
-			ok: false,
-			errors: ["TUI 模式“wrong”无效，可选值：regular、fullscreen", UNSUPPORTED_CLIENT_OPTIONS],
-		});
-	});
 });

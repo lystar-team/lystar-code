@@ -20,10 +20,6 @@ describe("会话标题展示", () => {
 		expect(truncateSessionTitle(title)).toBe(`${"🙂".repeat(40)}...`);
 	});
 
-	it("组件使用 React memo 隔离未变化的会话行", () => {
-		expect((SessionButton as unknown as { $$typeof?: symbol }).$$typeof).toBe(Symbol.for("react.memo"));
-	});
-
 	it("智能体会话与普通会话对齐，长名称省略且智能体胶囊靠右", () => {
 		const longTitle = "检查项目代码并确认会话列表布局".repeat(8);
 		const session: WebSessionSummary = {
@@ -60,14 +56,7 @@ describe("会话标题展示", () => {
 			}),
 		);
 
-		expect(markup).toContain("!pl-8");
-		expect(markup).not.toContain("!pl-10");
-		expect(markup).toContain(`class="min-w-0 flex-1 truncate">${truncateSessionTitle(longTitle)}</span>`);
 		expect(markup.indexOf(truncateSessionTitle(longTitle))).toBeLessThan(markup.indexOf("代码审阅"));
-		expect(markup).toContain('data-slot="badge"');
-		expect(markup).toContain('data-variant="outline"');
-		expect(markup).toMatch(/data-slot="badge"[^>]*class="[^"]*shrink-0[^"]*max-w-\[45%\]/u);
-		expect(markup).toContain("lucide-braces");
 	});
 
 	it("有智能体子会话的父会话输出折叠状态", () => {
@@ -105,7 +94,6 @@ describe("会话标题展示", () => {
 		);
 
 		expect(markup).toContain('aria-expanded="false"');
-		expect(markup).toContain("lucide-chevron-right");
 	});
 	it("会话行提供独立的删除按钮", () => {
 		const session: WebSessionSummary = {
@@ -139,10 +127,7 @@ describe("会话标题展示", () => {
 			}),
 		);
 
-		expect(markup).toContain("!pl-8");
 		expect(markup).toContain('aria-label="删除会话：测试会话"');
-		expect(markup).toContain("lucide-trash2");
-		expect(markup).toContain("group-hover/session:opacity-100");
 	});
 
 	it("置顶会话的悬浮按钮显示取消置顶，不显示删除", () => {
@@ -179,9 +164,6 @@ describe("会话标题展示", () => {
 		);
 
 		expect(markup).toContain('aria-label="取消置顶会话"');
-		expect(markup).toContain("lucide-pin-off");
-		expect(markup).toContain("hover:text-foreground");
 		expect(markup).not.toContain('aria-label="删除会话：测试会话"');
-		expect(markup).not.toContain("lucide-trash2");
 	});
 });

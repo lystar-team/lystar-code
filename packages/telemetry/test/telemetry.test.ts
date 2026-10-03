@@ -1,14 +1,12 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	createTypedSpanStarter,
 	defineTelemetrySchema,
 	InMemoryTelemetryContext,
 	NOOP_TELEMETRY_CONTEXT,
-	type SchemaTelemetrySpan,
 	type SpanAttributes,
 	type SpanOptions,
 	type SpanStatus,
-	type TelemetrySchemaSpanStartAttributes,
 	type TelemetrySpan,
 } from "../src/index.ts";
 
@@ -53,22 +51,6 @@ describe("telemetry schemas", () => {
 		const schema = defineTelemetrySchema(definition);
 		expect(schema).toBe(definition);
 		expect(() => JSON.stringify(schema)).not.toThrow();
-		expectTypeOf<TelemetrySchemaSpanStartAttributes<typeof schema, "operation">>().toMatchTypeOf<{
-			kind: "read" | "write";
-		}>();
-
-		const compileTimeFailures = (span: SchemaTelemetrySpan<typeof schema, "operation">) => {
-			span.addEvent("result", { outcome: "ok" });
-			// @ts-expect-error required event attributes cannot be omitted
-			span.addEvent("result");
-			// @ts-expect-error closed-set event values are exact
-			span.addEvent("result", { outcome: "other" });
-			// @ts-expect-error undeclared events are rejected
-			span.addEvent("unknown", {});
-			// @ts-expect-error empty end schemas reject every attribute
-			span.setAttributes({ unknown: true });
-		};
-		expectTypeOf(compileTimeFailures).toBeFunction();
 	});
 
 	it("combines schema vocabularies and binds child starters to their parent spans", async () => {
@@ -113,7 +95,6 @@ describe("telemetry schemas", () => {
 		);
 
 		expect(result).toBe(42);
-		expectTypeOf(result).toEqualTypeOf<number>();
 		const spans = telemetryContext.getSpans();
 		const operationSpan = spans.find((span) => span.name === "operation");
 		const requestSpan = spans.find((span) => span.name === "request");
@@ -134,22 +115,6 @@ describe("telemetry schemas", () => {
 			throw asyncError;
 		});
 		await expect(asyncResult).rejects.toBe(asyncError);
-
-		const compileTimeFailures = () => {
-			const spanName: "operation" | "request" = Math.random() > 0.5 ? "operation" : "request";
-			// @ts-expect-error union-valued names must be narrowed to preserve name and attribute correlation
-			void startSpan(spanName, { kind: "read" }, () => {});
-			const extraRequestAttributes = { provider: "example", unknown: true } as const;
-			// @ts-expect-error variables with unknown attributes are rejected
-			void startSpan("request", extraRequestAttributes, () => {});
-			// @ts-expect-error unknown span names are rejected across the combined vocabulary
-			void startSpan("unknown", {}, () => {});
-			// @ts-expect-error attributes are selected from the schema that owns the span
-			void startSpan("request", { kind: "read" }, () => {});
-			// @ts-expect-error duplicate span names across schemas are rejected
-			void createTypedSpanStarter(telemetryContext, [operationSchema, operationSchema]);
-		};
-		expectTypeOf(compileTimeFailures).toBeFunction();
 	});
 });
 

@@ -35,6 +35,50 @@ function createSubscriptionSocket(): {
 	};
 }
 
+describe("WebApi read cancellation", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+	});
+
+	it("取消发生在响应体读取期间时返回取消错误，不把响应当成成功", async () => {
+		vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined });
+		const controller = new AbortController();
+		const response = new Response("{}", { status: 200 });
+		let finishBody!: (value: { items: [] }) => void;
+		const body = vi.spyOn(response, "json").mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finishBody = resolve;
+				}),
+		);
+		const fetchMock = vi.fn(async (_path: string, _init?: RequestInit) => response);
+		vi.stubGlobal("fetch", fetchMock);
+		const pending = new WebApi().transcript("session", { signal: controller.signal });
+		await vi.waitFor(() => expect(body).toHaveBeenCalledTimes(1));
+		controller.abort();
+		finishBody({ items: [] });
+		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+		expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+	});
+
+	it("已取消的读取不解析响应，写入请求没有共享取消信号", async () => {
+		vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined });
+		const controller = new AbortController();
+		controller.abort();
+		const response = new Response("{}", { status: 200 });
+		const body = vi.spyOn(response, "json");
+		const fetchMock = vi.fn(async (_path: string, _init?: RequestInit) => response);
+		vi.stubGlobal("fetch", fetchMock);
+		const api = new WebApi();
+		await expect(api.operations("session", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+		expect(body).not.toHaveBeenCalled();
+		await api.prompt("session", "任务");
+		expect(fetchMock.mock.calls[1]?.[1]?.signal).toBeUndefined();
+		expect(body).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("WebApi prompt admission", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();

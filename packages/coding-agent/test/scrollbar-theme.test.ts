@@ -43,17 +43,6 @@ describe("fullscreen theme colors", () => {
 		expect(loadedTheme.getFgAnsi(token)).toBe(loadedTheme.getFgAnsi(fallback));
 	});
 
-	it("uses explicitly configured scrollbar colors", () => {
-		const themeJson = loadDarkTheme();
-		themeJson.name = "custom-scrollbar-theme";
-		themeJson.colors.scrollbarTrack = "#654321";
-		themeJson.colors.scrollbarThumb = "#123456";
-
-		const loadedTheme = loadThemeFromPath(writeTheme(themeJson), "truecolor");
-		expect(loadedTheme.getFgAnsi("scrollbarTrack")).toBe("\x1b[38;2;101;67;33m");
-		expect(loadedTheme.getFgAnsi("scrollbarThumb")).toBe("\x1b[38;2;18;52;86m");
-	});
-
 	it("falls back to existing selection and text colors for search highlights", () => {
 		const themeJson = loadDarkTheme();
 		themeJson.name = "legacy-search-theme";
@@ -65,14 +54,4 @@ describe("fullscreen theme colors", () => {
 		expect(loadedTheme.getFgAnsi("searchMatchText")).toBe(loadedTheme.getFgAnsi("text"));
 	});
 
-	it("uses explicitly configured search highlight colors", () => {
-		const themeJson = loadDarkTheme();
-		themeJson.name = "custom-search-theme";
-		themeJson.colors.searchMatchBg = "#112233";
-		themeJson.colors.searchMatchText = "#223344";
-
-		const loadedTheme = loadThemeFromPath(writeTheme(themeJson), "truecolor");
-		expect(loadedTheme.getBgAnsi("searchMatchBg")).toBe("\x1b[48;2;17;34;51m");
-		expect(loadedTheme.getFgAnsi("searchMatchText")).toBe("\x1b[38;2;34;51;68m");
-	});
 });

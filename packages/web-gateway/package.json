@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-web-gateway",
-	"version": "1.0.0-lystar.2",
+	"version": "1.0.0-lystar.3",
 	"private": true,
 	"type": "module",
 	"main": "./dist/index.js",
@@ -22,11 +22,12 @@
 		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
 		"test": "node scripts/run-tests.mjs",
 		"test:vertical": "node --import tsx --test test/vertical-loop.test.ts",
+		"test:integration": "node scripts/run-tests.mjs --integration",
 		"dev": "tsx src/cli.ts"
 	},
 	"dependencies": {
-		"@lystar/code-web-runtime": "1.0.0-lystar.2",
-		"@lystar/code-web-protocol": "1.0.0-lystar.2",
+		"@lystar/code-web-runtime": "1.0.0-lystar.3",
+		"@lystar/code-web-protocol": "1.0.0-lystar.3",
 		"web-push": "3.6.7",
 		"ws": "8.21.3"
 	},

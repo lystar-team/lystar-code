@@ -39,19 +39,19 @@ describe("file tool paths across transcript pages", () => {
 			id: "edit-stream", name: "edit", summary: "edit", state: "input-available", preparing: true,
 		};
 		const pending = renderToStaticMarkup(createElement(ToolBatch, { tools: [preparing] }));
-		expect(pending).toContain("正在编辑文件");
+		expect(pending).toContain("编辑文件");
 		expect(pending).toContain("运行中");
 		expect(pending).not.toContain("文件路径未记录");
 
 		const path = "/workspace/src/app.ts";
 		const withPath = { ...preparing, diff: { files: [{ path }] } };
 		const streaming = renderToStaticMarkup(createElement(ToolBatch, { tools: [withPath] }));
-		expect(toolRowTitle(withPath)).toBe(`正在编辑 ${path}`);
+		expect(toolRowTitle(withPath)).toBe(`编辑 ${path}`);
 		expect(streaming).toContain("/workspace/src/");
 		expect(streaming).toContain("app.ts");
 		expect(streaming).not.toContain("文件路径尚未返回");
 		expect(streaming).toContain("运行中");
-		expect(toolRowTitle({ ...withPath, preparing: false })).toBe(`正在编辑 ${path}`);
+		expect(toolRowTitle({ ...withPath, preparing: false })).toBe(`编辑 ${path}`);
 	});
 
 	it("replaces a live card with the persisted result when only the result is in the page", () => {

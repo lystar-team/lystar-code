@@ -256,6 +256,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 					<div
 						className={cn(
 							"relative min-h-0 flex-1 overflow-auto bg-background p-3 sm:p-4",
+							binaryFormat && "overflow-hidden",
 							markdownPreviewVirtualized && "overflow-hidden p-0",
 						)}
 					>

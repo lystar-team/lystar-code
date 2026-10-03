@@ -24,6 +24,13 @@
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
 - Never modify `packages/ai/src/models.generated.ts` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
+## 测试编写授权
+
+- 未经 Yean 明确同意，禁止新增测试文件、新增测试用例，以及扩展或改写现有测试用例。
+- 功能开发、Bug 修复、重构、验证和发版任务本身不构成测试编写授权。存在覆盖缺口时，只说明缺口，不自行补写测试。
+- 清理已有测试必须先列出具体文件、用例和处理方式，取得 Yean 确认后再执行；清理授权不包含新增替代测试。
+- 本规则不禁止运行已有测试；已有测试的执行范围仍遵循下方命令规则。
+
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.

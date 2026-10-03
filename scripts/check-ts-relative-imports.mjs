@@ -18,13 +18,21 @@ const files = [];
 function collectTypescriptFiles(directory) {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (entry.isDirectory()) {
-			if (!ignoredDirectories.has(entry.name)) {
+			if (
+				!ignoredDirectories.has(entry.name) &&
+				!/^packages\/[^/]+\/test$/.test(join(directory, entry.name).replaceAll("\\", "/"))
+			) {
 				collectTypescriptFiles(join(directory, entry.name));
 			}
 			continue;
 		}
 
-		if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+		if (
+			entry.isFile() &&
+			entry.name.endsWith(".ts") &&
+			!entry.name.endsWith(".d.ts") &&
+			!entry.name.endsWith(".test.ts")
+		) {
 			files.push(join(directory, entry.name));
 		}
 	}

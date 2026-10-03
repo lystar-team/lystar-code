@@ -9,14 +9,12 @@ on:
         default: full
         type: choice
         options: [full, ai-live, coding-live, stress]
-  schedule:
-    - cron: "17 5 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: extended-quality-${{ github.ref }}-${{ github.event_name }}-${{ inputs.suite || 'scheduled' }}
+  group: extended-quality-${{ github.ref }}-${{ inputs.suite }}
   cancel-in-progress: false
 
 env:
@@ -114,7 +112,7 @@ jobs:
           npm --workspace @earendil-works/pi-coding-agent run test:live
 
   stress:
-    if: github.event_name == 'schedule' || inputs.suite == 'stress'
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'stress'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:

@@ -17,8 +17,8 @@ describe("Web search tool card", () => {
 	};
 
 	it("uses the search-specific tool label", () => {
-		expect(toolRowTitle(tool)).toBe("已搜索网页 uni-app Canvas touch event");
-		expect(toolRowTitle({ ...tool, summary: "网页搜索" })).toBe("已搜索网页");
+		expect(toolRowTitle(tool)).toBe("搜索网页 uni-app Canvas touch event");
+		expect(toolRowTitle({ ...tool, summary: "网页搜索" })).toBe("搜索网页");
 	});
 
 	it("hides legacy webSearchCall JSON in the tool title", () => {
@@ -28,7 +28,7 @@ describe("Web search tool card", () => {
 			action: { type: "search", query: "uni-app H5 Canvas touch event" },
 		});
 
-		expect(toolRowTitle({ ...tool, summary })).toBe("已搜索网页 uni-app H5 Canvas touch event");
+		expect(toolRowTitle({ ...tool, summary })).toBe("搜索网页 uni-app H5 Canvas touch event");
 	});
 
 	it("keeps the final query when the search starts with a generic summary", () => {
@@ -57,10 +57,10 @@ describe("Web search tool card", () => {
 			}),
 		);
 
-		expect(markup).toContain("正在搜索网页 uni-app H5 Canvas touch event");
+		expect(markup).toContain("搜索网页 uni-app H5 Canvas touch event");
 		expect(markup).toContain("uni-app Canvas 文档");
 		expect(markup).toContain('href="https://uniapp.dcloud.net.cn/api/canvas"');
-		expect(markup).toContain("来源 · 1");
+		expect(markup).toContain("1 个来源");
 	});
 
 	it("keeps a search row expandable before sources return", () => {
@@ -70,7 +70,7 @@ describe("Web search tool card", () => {
 			}),
 		);
 
-		expect(markup).toContain("正在搜索网页 uni-app Canvas touch event");
+		expect(markup).toContain("搜索网页 uni-app Canvas touch event");
 		expect(markup).toContain("展开详情");
 	});
 
@@ -82,7 +82,7 @@ describe("Web search tool card", () => {
 			}),
 		);
 
-		expect(markup).toContain("已搜索网页");
+		expect(markup).toContain("搜索网页");
 		expect(markup).toContain("本次搜索未返回搜索词");
 		expect(markup).toContain("本次搜索未返回网页来源");
 	});
@@ -90,11 +90,11 @@ describe("Web search tool card", () => {
 	it("renders clickable sources with site favicons", () => {
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 
-		expect(markup).toContain("已搜索网页 uni-app Canvas touch event");
+		expect(markup).toContain("搜索网页 uni-app Canvas touch event");
 		expect(markup).toContain("uni-app Canvas 文档");
 		expect(markup).toContain("MDN TouchEvent");
-		expect(markup.match(/来源 · 2/gu)).toHaveLength(1);
-		expect(markup.indexOf("来源 · 2")).toBeGreaterThan(markup.indexOf("已搜索网页 uni-app Canvas touch event"));
+		expect(markup.match(/2 个来源/gu)).toHaveLength(1);
+		expect(markup.indexOf("2 个来源")).toBeGreaterThan(markup.indexOf("搜索网页 uni-app Canvas touch event"));
 		expect(markup).toContain('href="https://uniapp.dcloud.net.cn/api/canvas"');
 		expect(markup).toContain('target="_blank"');
 		expect(markup).toContain("https://www.google.com/s2/favicons?domain=uniapp.dcloud.net.cn&amp;sz=32");

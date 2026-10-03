@@ -12,7 +12,7 @@ import {
 	XIcon,
 	ZoomInIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type PointerEvent, type TouchEvent, type WheelEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { cn } from "@/lib/utils";
 import { isAbsoluteResourcePath } from "@/lib/resource-path";
 import { webApi } from "../../adapters/host-protocol/api.ts";
@@ -200,36 +200,42 @@ function resourceFileName(item: ResourceImageItem, index: number): string {
 	return name.includes(".") ? name : `${name}.png`;
 }
 
-function touchDistance(touches: { length: number; [index: number]: { clientX: number; clientY: number } }): number | undefined {
-	if (touches.length < 2) return undefined;
-	const first = touches[0];
-	const second = touches[1];
-	return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
-}
+type ImagePoint = { x: number; y: number };
+type ImageTransform = { zoom: number; pan: ImagePoint };
+type ImageGesture =
+	| { kind: "pan"; start: ImagePoint; pan: ImagePoint }
+	| { kind: "pinch"; distance: number; center: ImagePoint; transform: ImageTransform };
 
 export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChange }: ResourceImageViewerProps) {
 	const [index, setIndex] = useState(initialIndex);
-	const [zoom, setZoom] = useState(1);
-	const [pan, setPan] = useState({ x: 0, y: 0 });
+	const [transform, setTransform] = useState<ImageTransform>({ zoom: 1, pan: { x: 0, y: 0 } });
+	const { zoom, pan } = transform;
 	const [dragging, setDragging] = useState(false);
 	const [source, setSource] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
 	const [failed, setFailed] = useState(false);
 	const [copiedPrompt, setCopiedPrompt] = useState(false);
-	const pinchStartDistanceRef = useRef<number>();
-	const pinchStartZoomRef = useRef(1);
-	const dragStartRef = useRef<{ x: number; y: number }>();
-	const dragOriginRef = useRef({ x: 0, y: 0 });
-	const dragPointerIdRef = useRef<number>();
+	const transformRef = useRef(transform);
+	const pointersRef = useRef(new Map<number, ImagePoint>());
+	const gestureRef = useRef<ImageGesture>();
 	const current = items[index];
+	const resetView = useCallback(() => {
+		const nextTransform = { zoom: 1, pan: { x: 0, y: 0 } };
+		transformRef.current = nextTransform;
+		setTransform(nextTransform);
+		pointersRef.current.clear();
+		gestureRef.current = undefined;
+		setDragging(false);
+	}, []);
 
 	useEffect(() => {
-		if (!open || !items.length) return;
-		setIndex(Math.min(Math.max(initialIndex, 0), items.length - 1));
-		setZoom(1);
-		setPan({ x: 0, y: 0 });
-		setDragging(false);
-	}, [initialIndex, items.length, open]);
+		if (open && items.length) setIndex(Math.min(Math.max(initialIndex, 0), items.length - 1));
+		resetView();
+	}, [initialIndex, items.length, open, resetView]);
+
+	useEffect(() => {
+		resetView();
+	}, [current?.id, current?.src, resetView]);
 
 	useEffect(() => {
 		if (!open || !current) return;
@@ -263,85 +269,101 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 			if (event.key === "ArrowLeft") {
 				event.preventDefault();
 				setIndex((value) => (value - 1 + items.length) % items.length);
-				setZoom(1);
-				setPan({ x: 0, y: 0 });
+				resetView();
 			} else if (event.key === "ArrowRight") {
 				event.preventDefault();
 				setIndex((value) => (value + 1) % items.length);
-				setZoom(1);
-				setPan({ x: 0, y: 0 });
+				resetView();
 			}
 		};
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [items.length, open]);
+	}, [items.length, open, resetView]);
 
 	if (!current) return null;
 
-	const applyZoom = (value: number) => {
-		const nextZoom = Math.min(3, Math.max(0.5, value));
-		setZoom(nextZoom);
-		if (nextZoom <= 1) setPan({ x: 0, y: 0 });
+	const updateTransform = (nextTransform: ImageTransform) => {
+		transformRef.current = nextTransform;
+		setTransform(nextTransform);
 	};
-	const changeZoom = (delta: number) => applyZoom(zoom + delta);
+	const changeZoom = (delta: number) => {
+		const nextZoom = Math.min(3, Math.max(0.5, transformRef.current.zoom + delta));
+		updateTransform({ zoom: nextZoom, pan: nextZoom <= 1 ? { x: 0, y: 0 } : transformRef.current.pan });
+	};
 	const move = (delta: number) => {
 		setIndex((value) => (value + delta + items.length) % items.length);
-		setZoom(1);
-		setPan({ x: 0, y: 0 });
+		resetView();
 	};
 	const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
-		event.preventDefault();
 		changeZoom(event.deltaY < 0 ? 0.1 : -0.1);
 	};
-	const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
-		const distance = touchDistance(event.touches);
-		if (distance === undefined) return;
-		event.preventDefault();
-		pinchStartDistanceRef.current = distance;
-		pinchStartZoomRef.current = zoom;
-	};
-	const handleTouchMove = (event: TouchEvent<HTMLDivElement>) => {
-		const startDistance = pinchStartDistanceRef.current;
-		const distance = touchDistance(event.touches);
-		if (startDistance === undefined || distance === undefined) return;
-		event.preventDefault();
-		const nextZoom = pinchStartZoomRef.current * (distance / startDistance);
-		applyZoom(nextZoom);
-	};
-	const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
-		if (event.touches.length < 2) pinchStartDistanceRef.current = undefined;
-	};
-	const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-		if (
-			event.pointerType !== "mouse" ||
-			event.button !== 0 ||
-			!source ||
-			zoom <= 1 ||
-			!(event.target instanceof HTMLImageElement)
-		) {
+	const beginGesture = (viewport: HTMLDivElement) => {
+		const [first, second] = pointersRef.current.values();
+		if (!first) {
+			gestureRef.current = undefined;
+			setDragging(false);
 			return;
 		}
-		event.preventDefault();
-		dragPointerIdRef.current = event.pointerId;
-		dragStartRef.current = { x: event.clientX, y: event.clientY };
-		dragOriginRef.current = pan;
+		if (second) {
+			const bounds = viewport.getBoundingClientRect();
+			gestureRef.current = {
+				kind: "pinch",
+				distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+				center: {
+					x: (first.x + second.x) / 2 - bounds.left - bounds.width / 2,
+					y: (first.y + second.y) / 2 - bounds.top - bounds.height / 2,
+				},
+				transform: transformRef.current,
+			};
+		} else {
+			gestureRef.current = { kind: "pan", start: first, pan: transformRef.current.pan };
+		}
 		setDragging(true);
+	};
+	const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+		if (!source || (event.pointerType !== "touch" && event.button !== 0)) return;
+		if (event.target instanceof Element && event.target.closest("button")) return;
+		event.preventDefault();
+		pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		event.currentTarget.setPointerCapture(event.pointerId);
+		beginGesture(event.currentTarget);
 	};
 	const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-		if (dragPointerIdRef.current !== event.pointerId || !dragStartRef.current) return;
-		event.preventDefault();
-		setPan({
-			x: dragOriginRef.current.x + event.clientX - dragStartRef.current.x,
-			y: dragOriginRef.current.y + event.clientY - dragStartRef.current.y,
-		});
+		const gesture = gestureRef.current;
+		if (!gesture || !pointersRef.current.has(event.pointerId)) return;
+		pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+		const [first, second] = pointersRef.current.values();
+		if (gesture.kind === "pan") {
+			updateTransform({
+				zoom: transformRef.current.zoom,
+				pan: { x: gesture.pan.x + first.x - gesture.start.x, y: gesture.pan.y + first.y - gesture.start.y },
+			});
+		} else if (second) {
+			const nextZoom = Math.min(
+				3,
+				Math.max(0.5, (gesture.transform.zoom * Math.hypot(second.x - first.x, second.y - first.y)) / gesture.distance),
+			);
+			const ratio = nextZoom / gesture.transform.zoom;
+			const bounds = event.currentTarget.getBoundingClientRect();
+			const center = {
+				x: (first.x + second.x) / 2 - bounds.left - bounds.width / 2,
+				y: (first.y + second.y) / 2 - bounds.top - bounds.height / 2,
+			};
+			// 以两指中心缩放；两指一起移动时，同步平移图片。
+			updateTransform({
+				zoom: nextZoom,
+				pan: nextZoom <= 1 ? { x: 0, y: 0 } : {
+					x: center.x - (gesture.center.x - gesture.transform.pan.x) * ratio,
+					y: center.y - (gesture.center.y - gesture.transform.pan.y) * ratio,
+				},
+			});
+		}
 	};
 	const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
-		if (dragPointerIdRef.current !== event.pointerId) return;
+		if (!pointersRef.current.delete(event.pointerId)) return;
+		// 双指变单指时，从当前位置继续拖拽，不沿用捏合前的起点。
+		beginGesture(event.currentTarget);
 		if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-		dragPointerIdRef.current = undefined;
-		dragStartRef.current = undefined;
-		setDragging(false);
 	};
 	const download = () => {
 		if (!source) return;
@@ -402,14 +424,11 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 								dragging && "cursor-grabbing",
 							)}
 							onWheel={handleWheel}
-							onTouchStart={handleTouchStart}
-							onTouchMove={handleTouchMove}
-							onTouchEnd={handleTouchEnd}
-							onTouchCancel={handleTouchEnd}
 							onPointerDown={handlePointerDown}
 							onPointerMove={handlePointerMove}
 							onPointerUp={handlePointerEnd}
 							onPointerCancel={handlePointerEnd}
+							onLostPointerCapture={handlePointerEnd}
 						>
 							{items.length > 1 ? (
 								<Button
@@ -538,14 +557,11 @@ export function ResourceImageViewer({ items, open, initialIndex = 0, onOpenChang
 						dragging && "cursor-grabbing",
 					)}
 					onWheel={handleWheel}
-					onTouchStart={handleTouchStart}
-					onTouchMove={handleTouchMove}
-					onTouchEnd={handleTouchEnd}
-					onTouchCancel={handleTouchEnd}
 					onPointerDown={handlePointerDown}
 					onPointerMove={handlePointerMove}
 					onPointerUp={handlePointerEnd}
 					onPointerCancel={handlePointerEnd}
+					onLostPointerCapture={handlePointerEnd}
 				>
 					{items.length > 1 ? (
 						<button

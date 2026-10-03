@@ -296,9 +296,11 @@ export function liveToolFromUpdate(
 		name: progress.name,
 		batchId,
 		summary:
-			progress.name === "image_gen"
-				? mergeImageGenerationSummary(previous?.summary, summary)
-				: stableFileToolSummary(progress.name, summary, previous?.summary),
+			previous?.state === "running" && previous.name === progress.name && progress.name !== "web_search"
+				? previous.summary
+				: progress.name === "image_gen"
+					? mergeImageGenerationSummary(previous?.summary, summary)
+					: stableFileToolSummary(progress.name, summary, previous?.summary),
 		state: previous?.state ?? (progress.name === "web_search" ? "running" : "preparing"),
 		status: "running",
 		result: progress.summary,

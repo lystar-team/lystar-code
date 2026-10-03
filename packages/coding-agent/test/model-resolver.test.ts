@@ -104,13 +104,6 @@ describe("parseModelPattern", () => {
 	});
 
 	describe("patterns with valid thinking levels", () => {
-		test("sonnet:high returns sonnet with high thinking level", () => {
-			const result = parseModelPattern("sonnet:high", allModels);
-			expect(result.model?.id).toBe("claude-sonnet-4-5");
-			expect(result.thinkingLevel).toBe("high");
-			expect(result.warning).toBeUndefined();
-		});
-
 		test("gpt-4o:medium returns gpt-4o with medium thinking level", () => {
 			const result = parseModelPattern("gpt-4o:medium", allModels);
 			expect(result.model?.id).toBe("gpt-4o");

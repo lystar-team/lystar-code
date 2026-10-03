@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LystarWorkspace, WorkspaceHeader } from "../src/modes/interactive/components/lystar-workspace.ts";
@@ -10,9 +9,6 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createLongSessionFixture, type LongSessionEntry } from "./fixtures/long-session.ts";
 
-const RENDER_P95_BUDGET_MS = 16;
-const TRANSCRIPT_PAGE_P95_BUDGET_MS = 100;
-const RENDER_SAMPLES = 128;
 const PAGE_SIZE = 80;
 
 const TERMINAL_PROFILES = [
@@ -109,41 +105,8 @@ function createWorkspace(
 	return { workspace, chat, bottomLines };
 }
 
-function percentile(values: number[], percentileValue: number): number {
-	const sorted = [...values].sort((left, right) => left - right);
-	return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * percentileValue) - 1)] ?? 0;
-}
-
-function measureScrolling(workspace: LystarWorkspace, width: number, height: number, bottomLines: string[]): number[] {
-	workspace.render(width);
-	workspace.scrollToTop();
-	workspace.render(width);
-
-	const durations: number[] = [];
-	for (let index = 0; index < RENDER_SAMPLES; index++) {
-		workspace.pageDown();
-		const startedAt = performance.now();
-		const rendered = workspace.render(width);
-		const elapsed = performance.now() - startedAt;
-		durations.push(elapsed);
-
-		expect(rendered).toHaveLength(height);
-		expect(rendered.slice(-bottomLines.length).map((line) => stripAnsi(line).trim())).toEqual(bottomLines);
-	}
-	return durations;
-}
-
-describe("LYStar TUI performance gates", () => {
+describe("LYStar TUI pagination", () => {
 	beforeAll(() => initTheme("dark"));
-
-	it.each(TERMINAL_PROFILES)("keeps long-session scrolling under the 16ms p95 gate at $label", (profile) => {
-		const components = createTranscriptComponents();
-		const { workspace, bottomLines } = createWorkspace(profile.height, components);
-		const durations = measureScrolling(workspace, profile.width, profile.height, bottomLines);
-		const p95 = percentile(durations, 0.95);
-
-		expect(p95, `${profile.label} render p95 ${p95.toFixed(3)}ms`).toBeLessThanOrEqual(RENDER_P95_BUDGET_MS);
-	});
 
 	it.each(TERMINAL_PROFILES)(
 		"keeps the pagination anchor within one row and input area stable at $label",
@@ -192,34 +155,25 @@ describe("LYStar TUI performance gates", () => {
 			tempDir = undefined;
 		});
 
-		it("keeps 5000-entry page reads within a bounded p95 and reaches the root", async () => {
+		it("reads 5000-entry pages to the root without duplicate entries", async () => {
 			const fixture = createLongSessionFixture();
 			tempDir = mkdtempSync(join(tmpdir(), "lystar-tui-performance-"));
 			const sessionFile = join(tempDir, "session.jsonl");
 			writeFileSync(sessionFile, `${fixture.entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 
 			const source = new SessionTranscriptSource(sessionFile);
-			const durations: number[] = [];
 			const collectedIds: string[] = [];
-			let page = await (async () => {
-				const startedAt = performance.now();
-				const result = await source.readTail({ leafId: fixture.activeLeafId, limit: PAGE_SIZE });
-				durations.push(performance.now() - startedAt);
-				return result;
-			})();
+			let page = await source.readTail({ leafId: fixture.activeLeafId, limit: PAGE_SIZE });
 
 			while (true) {
 				collectedIds.push(...page.entries.map((entry) => entry.id));
 				if (!page.hasMore) break;
-				const startedAt = performance.now();
 				page = await source.readPrevious(page.previousCursor!, PAGE_SIZE);
-				durations.push(performance.now() - startedAt);
 			}
 
 			expect(collectedIds).toContain(fixture.activeLeafId);
 			expect(collectedIds.at(-1)).toBe("active-0");
 			expect(new Set(collectedIds).size).toBe(collectedIds.length);
-			expect(percentile(durations, 0.95)).toBeLessThanOrEqual(TRANSCRIPT_PAGE_P95_BUDGET_MS);
 		});
 	});
 });

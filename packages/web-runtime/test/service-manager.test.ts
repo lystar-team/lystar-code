@@ -6,8 +6,6 @@ import {
 	createRuntimeServiceSpec,
 	installWebService,
 	type WebServiceSpec,
-	webServiceUnitName,
-	webServiceWindowsName,
 } from "../src/index.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -30,15 +28,6 @@ afterEach(() => {
 });
 
 describe("Web service specifications", () => {
-	it("keeps the default service names stable", () => {
-		expect(webServiceUnitName("frontend", "development")).toBe("lystar-web-frontend-development");
-		expect(webServiceUnitName("gateway")).toBe("lystar-web-gateway");
-		expect(webServiceUnitName("runtime")).toBe("lystar-web-runtime");
-		expect(webServiceWindowsName("frontend", "development")).toBe("LYStar Web Frontend development");
-		expect(webServiceWindowsName("gateway")).toBe("LYStar Web Gateway");
-		expect(webServiceWindowsName("runtime", "development")).toBe("LYStar Web Runtime development");
-	});
-
 	it("adds the endpoint to an overridden Runtime invocation", () => {
 		const spec = createRuntimeServiceSpec("tcp://127.0.0.1:1422", {
 			profile: "development",

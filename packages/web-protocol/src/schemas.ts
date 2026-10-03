@@ -601,6 +601,7 @@ const TranscriptWebSearchSchema = StrictObject({
 	id: Id,
 	status: TranscriptWebSearchStatusSchema,
 	query: Type.Optional(TranscriptViewTextSchema),
+	webSearch: Type.Optional(WebSearchProgressSchema),
 	sources: Type.Array(TranscriptWebSearchSourceSchema, { maxItems: 32 }),
 });
 const TranscriptSubagentRefSchema = StrictObject({

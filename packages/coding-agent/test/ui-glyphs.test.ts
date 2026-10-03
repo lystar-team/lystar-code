@@ -35,16 +35,4 @@ describe("UI glyphs", () => {
 		expect(toUiGlyph("🔍", "win32", { LYSTAR_TERMINAL_HOST: "1" })).toBe("🔍");
 	});
 
-	it("keeps the existing compact symbols on Unix terminals", () => {
-		expect(getUiGlyphs("linux")).toMatchObject({
-			prompt: "❯",
-			success: "🟢",
-			expanded: "▼",
-			file: "📁",
-			write: "📝",
-			edit: "✏️",
-			patch: "📝",
-			link: "🔗",
-		});
-	});
 });

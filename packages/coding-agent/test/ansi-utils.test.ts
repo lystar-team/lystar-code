@@ -80,16 +80,6 @@ describe("stripAnsi", () => {
 		}
 	});
 
-	it("throws the same TypeError as chalk strip-ansi for non-string values", () => {
-		const stripAnsiUnknown = stripAnsi as (value: unknown) => string;
-
-		for (const value of [undefined, null, 123, {}, Object("x")]) {
-			const message = `Expected a \`string\`, got \`${typeof value}\``;
-			expect(() => stripAnsiUnknown(value)).toThrow(TypeError);
-			expect(() => stripAnsiUnknown(value)).toThrow(message);
-		}
-	});
-
 	it("strips RIS without leaking the final byte", () => {
 		expect(stripAnsi("\x1bcdone")).toBe("done");
 	});

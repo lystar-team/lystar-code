@@ -80,9 +80,11 @@ function jsonHeaders(): HeadersInit {
 	};
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
+async function parseResponse<T>(response: Response, signal?: AbortSignal): Promise<T> {
+	signal?.throwIfAborted();
 	if (response.status === 401) throw new UnauthorizedError();
 	const value = (await response.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
+	signal?.throwIfAborted();
 	if (!response.ok) {
 		const error = new Error(value.error?.message || `请求失败（${response.status}）`) as Error & { code?: string };
 		error.code = value.error?.code;
@@ -119,7 +121,7 @@ export class WebApi {
 			...init,
 			headers: { ...jsonHeaders(), ...(init.headers ?? {}) },
 		});
-		return parseResponse<T>(response);
+		return parseResponse<T>(response, init.signal ?? undefined);
 	}
 
 	async bootstrap(): Promise<BootstrapResponse> {
@@ -557,8 +559,8 @@ export class WebApi {
 		});
 	}
 
-	async session(sessionId: string): Promise<{ session: WebSessionSnapshot }> {
-		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}`);
+	async session(sessionId: string, signal?: AbortSignal): Promise<{ session: WebSessionSnapshot }> {
+		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
 	}
 
 	async sessionUsage(sessionId: string): Promise<Pick<SessionInfoResult, "tokens">> {
@@ -578,30 +580,33 @@ export class WebApi {
 
 	async transcript(
 		sessionId: string,
-		options: { cursor?: string; limit?: number; search?: string } = {},
+		options: { cursor?: string; limit?: number; search?: string; signal?: AbortSignal } = {},
 	): Promise<TranscriptResponse> {
 		const params = new URLSearchParams();
 		if (options.cursor) params.set("cursor", options.cursor);
 		if (options.limit) params.set("limit", String(options.limit));
 		if (options.search) params.set("search", options.search);
 		const query = params.toString() ? `?${params}` : "";
-		return this.request<TranscriptResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/transcript${query}`);
+		return this.request<TranscriptResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/transcript${query}`, {
+			signal: options.signal,
+		});
 	}
 
-	async subagents(sessionId: string): Promise<SubagentsResponse> {
-		return this.request<SubagentsResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/subagents`);
+	async subagents(sessionId: string, signal?: AbortSignal): Promise<SubagentsResponse> {
+		return this.request<SubagentsResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/subagents`, { signal });
 	}
 
-	async subagent(sessionId: string, agentId: string): Promise<SubagentDetailsResponse> {
+	async subagent(sessionId: string, agentId: string, signal?: AbortSignal): Promise<SubagentDetailsResponse> {
 		return this.request<SubagentDetailsResponse>(
 			`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}`,
+			{ signal },
 		);
 	}
 
 	async subagentTranscript(
 		sessionId: string,
 		agentId: string,
-		options: { cursor?: string; limit?: number } = {},
+		options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
 	): Promise<TranscriptResponse> {
 		const params = new URLSearchParams();
 		if (options.cursor) params.set("cursor", options.cursor);
@@ -609,6 +614,7 @@ export class WebApi {
 		const query = params.toString() ? `?${params}` : "";
 		return this.request<TranscriptResponse>(
 			`/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/transcript${query}`,
+			{ signal: options.signal },
 		);
 	}
 
@@ -780,8 +786,8 @@ export class WebApi {
 		});
 	}
 
-	async operations(sessionId: string): Promise<{ operations: WebOperation[] }> {
-		return this.request<{ operations: WebOperation[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/operations`);
+	async operations(sessionId: string, signal?: AbortSignal): Promise<{ operations: WebOperation[] }> {
+		return this.request<{ operations: WebOperation[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/operations`, { signal });
 	}
 
 	async operation(operationId: string): Promise<{ operation: WebOperation }> {

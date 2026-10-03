@@ -11,6 +11,8 @@ const hooks = vi.hoisted(() => ({
 	refIndex: 0,
 	priority: "normal" as "normal" | "transition",
 	pendingTransitions: [] as WorkbenchState[],
+	effects: [] as Array<() => undefined | (() => void)>,
+	publishes: 0,
 }));
 
 vi.mock("react", () => ({
@@ -20,6 +22,7 @@ vi.mock("react", () => ({
 		return [
 			hooks.committed as T,
 			(value) => {
+				hooks.publishes++;
 				if (hooks.priority === "transition") hooks.pendingTransitions.push(value as WorkbenchState);
 				else hooks.committed = value as WorkbenchState;
 			},
@@ -32,7 +35,9 @@ vi.mock("react", () => ({
 	},
 	useCallback: <T>(callback: T): T => callback,
 	useMemo: <T>(calculate: () => T): T => calculate(),
-	useEffect: () => {},
+	useEffect: (effect: () => undefined | (() => void)) => {
+		hooks.effects.push(effect);
+	},
 	startTransition: (callback: () => void) => {
 		hooks.priority = "transition";
 		try {
@@ -89,6 +94,8 @@ beforeEach(() => {
 	hooks.refIndex = 0;
 	hooks.priority = "normal";
 	hooks.pendingTransitions = [];
+	hooks.effects = [];
+	hooks.publishes = 0;
 	hooks.committed = {
 		...initialState(),
 		currentProjectId: "project",
@@ -116,6 +123,168 @@ beforeEach(() => {
 	vi.spyOn(webApi, "subagents").mockResolvedValue({ subagents: [] });
 	vi.spyOn(webApi, "operations").mockResolvedValue({ operations: [] });
 	vi.spyOn(webApi, "projectTrust").mockResolvedValue({ cwd: "/tmp/test-project", trusted: true });
+});
+
+describe("后台展示与读取生命周期", () => {
+	let cleanups: Array<() => void>;
+	let visibility: {
+		visibilityState: string;
+		addEventListener: ReturnType<typeof vi.fn>;
+		removeEventListener: ReturnType<typeof vi.fn>;
+		documentElement: { dataset: Record<string, string> };
+	};
+
+	beforeEach(() => {
+		cleanups = [];
+		vi.useFakeTimers();
+		visibility = {
+			visibilityState: "hidden",
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			documentElement: { dataset: {} },
+		};
+		vi.stubGlobal("document", visibility);
+		vi.stubGlobal("BroadcastChannel", undefined);
+		vi.stubGlobal("navigator", { onLine: true });
+		vi.stubGlobal("window", {
+			setTimeout: globalThis.setTimeout,
+			clearTimeout: globalThis.clearTimeout,
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			cancelAnimationFrame: vi.fn(),
+			matchMedia: () => ({ matches: false }),
+			localStorage: { getItem: () => null, setItem: vi.fn() },
+		});
+		vi.spyOn(webApi, "branding").mockResolvedValue({ name: "LYStar Code" });
+	});
+
+	afterEach(() => {
+		for (const cleanup of cleanups) cleanup();
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	it("后台更新保留完整记录，返回前台一次提交最新状态", async () => {
+		vi.spyOn(webApi, "transcript").mockResolvedValue(page);
+		const workbench = renderWorkbench();
+		for (const effect of hooks.effects) {
+			const cleanup = effect();
+			if (cleanup) cleanups.push(cleanup);
+		}
+		await Promise.resolve();
+		hooks.publishes = 0;
+		const before = hooks.committed;
+		await workbench.actions.loadTranscript(snapshot.id);
+		expect(hooks.publishes).toBe(0);
+		expect(hooks.committed).toBe(before);
+		expect((hooks.refs[0]!.current as WorkbenchState).transcript.map((entry) => entry.entryId)).toEqual([
+			item.entryId,
+		]);
+
+		visibility.visibilityState = "visible";
+		const listener = visibility.addEventListener.mock.calls.find(
+			([name]) => name === "visibilitychange",
+		)?.[1] as () => void;
+		listener();
+		expect(hooks.publishes).toBe(1);
+		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([item.entryId]);
+	});
+
+	it("切换会话取消旧历史和子任务读取，保留控制权请求", async () => {
+		visibility.visibilityState = "visible";
+		const signals: AbortSignal[] = [];
+		let finishOldHistory!: (value: TranscriptResponse) => void;
+		let finishOldControl!: (value: { owned: boolean; lease: WebLease; snapshot: WebSessionSnapshot }) => void;
+		let finishOldSubagents!: (value: { subagents: [] }) => void;
+		const sessionB = { ...snapshot, id: "session-b", name: "会话 B" };
+		vi.spyOn(webApi, "transcript").mockImplementation((sessionId, options) => {
+			if (sessionId !== snapshot.id) return Promise.resolve({ ...page, items: [], leafId: null });
+			signals.push(options!.signal!);
+			return new Promise((resolve) => {
+				finishOldHistory = resolve;
+			});
+		});
+		vi.spyOn(webApi, "subagents").mockImplementation((sessionId, signal) => {
+			if (sessionId !== snapshot.id) return Promise.resolve({ subagents: [] });
+			signals.push(signal!);
+			return new Promise((resolve) => {
+				finishOldSubagents = resolve;
+			});
+		});
+		const control = vi.spyOn(webApi, "control").mockImplementation((sessionId) =>
+			sessionId === snapshot.id
+				? new Promise((resolve) => {
+						finishOldControl = resolve;
+					})
+				: Promise.resolve({ owned: true, lease, snapshot: sessionB }),
+		);
+		vi.spyOn(webApi, "release").mockResolvedValue(undefined);
+		const actions = renderWorkbench().actions;
+		const openingA = actions.selectSession(snapshot.id);
+		await actions.selectSession(sessionB.id);
+		expect(signals).toHaveLength(2);
+		expect(signals.every((signal) => signal.aborted)).toBe(true);
+		expect(control.mock.calls).toEqual([[snapshot.id], [sessionB.id]]);
+		finishOldHistory(page);
+		finishOldSubagents({ subagents: [] });
+		finishOldControl({ owned: true, lease, snapshot });
+		await openingA;
+		expect((hooks.refs[0]!.current as WorkbenchState).sessionId).toBe(sessionB.id);
+		expect((hooks.refs[0]!.current as WorkbenchState).transcript).toEqual([]);
+		expect((hooks.refs[0]!.current as WorkbenchState).transcriptError).toBeUndefined();
+	});
+
+	it("退出时取消只读回退，不阻止再次打开同一会话", async () => {
+		visibility.visibilityState = "visible";
+		vi.spyOn(webApi, "transcript").mockResolvedValue(page);
+		vi.spyOn(webApi, "subagents").mockResolvedValue({ subagents: [] });
+		const control = vi.spyOn(webApi, "control").mockRejectedValue(new Error("控制权获取失败"));
+		vi.spyOn(webApi, "clearToken").mockImplementation(() => {});
+		let readSignal!: AbortSignal;
+		let finishSnapshot!: (value: { session: WebSessionSnapshot }) => void;
+		vi.spyOn(webApi, "session").mockImplementation((_sessionId, signal) => {
+			readSignal = signal!;
+			return new Promise((resolve) => {
+				finishSnapshot = resolve;
+			});
+		});
+		const actions = renderWorkbench().actions;
+		const opening = actions.selectSession(snapshot.id);
+		await vi.waitFor(() => expect(readSignal).toBeDefined());
+		actions.signOut();
+		expect(readSignal.aborted).toBe(true);
+		finishSnapshot({ session: snapshot });
+		await opening;
+		control.mockResolvedValue({ owned: true, lease, snapshot });
+		await actions.selectSession(snapshot.id);
+		expect(control).toHaveBeenCalledTimes(2);
+		expect((hooks.refs[0]!.current as WorkbenchState).sessionId).toBe(snapshot.id);
+	});
+
+	it("尾页刷新不取消并行历史分页；退出时取消仍在读取的响应", async () => {
+		visibility.visibilityState = "visible";
+		let finishOlder!: (value: TranscriptResponse) => void;
+		let olderSignal!: AbortSignal;
+		vi.spyOn(webApi, "transcript").mockImplementation((_sessionId, options) => {
+			if (!options?.cursor) return Promise.resolve(page);
+			olderSignal = options.signal!;
+			return new Promise((resolve) => {
+				finishOlder = resolve;
+			});
+		});
+		const actions = renderWorkbench().actions;
+		const older = actions.loadTranscript(snapshot.id, "older");
+		await actions.loadTranscript(snapshot.id);
+		expect(olderSignal.aborted).toBe(false);
+		vi.spyOn(webApi, "clearToken").mockImplementation(() => {});
+		actions.signOut();
+		expect(olderSignal.aborted).toBe(true);
+		finishOlder(page);
+		await older;
+		expect(hooks.committed?.sessionId).toBeUndefined();
+		expect(hooks.committed?.transcript).toEqual([]);
+	});
 });
 
 describe("会话停止请求", () => {

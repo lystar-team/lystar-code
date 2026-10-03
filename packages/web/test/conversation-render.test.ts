@@ -192,7 +192,7 @@ describe("conversation render items", () => {
 		);
 
 		expect(html).toContain('data-testid="extension-entry-card"');
-		expect(html).toContain("已调用 context-preheat-metrics");
+		expect(html).toContain("调用 context-preheat-metrics，已完成，展开详情");
 		expect(html).toContain('data-state="closed"');
 		expect(html).toContain("flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5");
 		expect(html).not.toContain("扩展记录");

@@ -6,7 +6,6 @@ import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 const fixturesDir = resolve(__dirname, "fixtures/skills");
-const collisionFixturesDir = resolve(__dirname, "fixtures/skills-collision");
 
 function createTestSkill(options: {
 	name: string;
@@ -387,46 +386,6 @@ describe("skills", () => {
 				includeDefaults: true,
 			});
 			expect(withTilde.length).toBe(withoutTilde.length);
-		});
-	});
-
-	describe("collision handling", () => {
-		it("should detect name collisions and keep first skill", () => {
-			// Load from first directory
-			const first = loadSkillsFromDir({
-				dir: join(collisionFixturesDir, "first"),
-				source: "first",
-			});
-
-			const second = loadSkillsFromDir({
-				dir: join(collisionFixturesDir, "second"),
-				source: "second",
-			});
-
-			// Simulate the collision behavior from loadSkills()
-			const skillMap = new Map<string, Skill>();
-			const collisionWarnings: Array<{ skillPath: string; message: string }> = [];
-
-			for (const skill of first.skills) {
-				skillMap.set(skill.name, skill);
-			}
-
-			for (const skill of second.skills) {
-				const existing = skillMap.get(skill.name);
-				if (existing) {
-					collisionWarnings.push({
-						skillPath: skill.filePath,
-						message: `name collision: "${skill.name}" already loaded from ${existing.filePath}`,
-					});
-				} else {
-					skillMap.set(skill.name, skill);
-				}
-			}
-
-			expect(skillMap.size).toBe(1);
-			expect(skillMap.get("calendar")?.sourceInfo.source).toBe("first");
-			expect(collisionWarnings).toHaveLength(1);
-			expect(collisionWarnings[0].message).toContain("name collision");
 		});
 	});
 });

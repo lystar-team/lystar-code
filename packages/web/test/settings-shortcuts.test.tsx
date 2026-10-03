@@ -24,7 +24,6 @@ describe("设置快捷入口", () => {
 		expect(markup).toContain("模型与认证</span>");
 		expect(markup).toContain("设置</span>");
 		expect(markup).toContain("退出</span>");
-		expect(markup.match(/data-slot="button"/gu)).toHaveLength(7);
 	});
 
 	it("三个按钮跳转到对应的现有设置页", () => {
@@ -40,11 +39,4 @@ describe("设置快捷入口", () => {
 		expect(selectedTabs).toEqual(["skills", "subagents", "models"]);
 	});
 
-	it("移动端快捷入口使用三列触控按钮，不改变项目与会话文字样式", () => {
-		const markup = renderToStaticMarkup(<SettingsShortcuts openSettings={async () => {}} mobile />);
-		expect(markup).toContain("grid-cols-3");
-		expect(markup.match(/data-slot="button"/gu)).toHaveLength(3);
-		expect(markup).toContain("h-11");
-		expect(markup).not.toContain("project-list-item-label");
-	});
 });

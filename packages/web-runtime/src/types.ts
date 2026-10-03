@@ -289,7 +289,6 @@ export interface RuntimeAdapter {
 			collaborationTask?: SessionCollaborationTask;
 			collaborationWorkspace?: SessionWorkspaceSnapshot;
 			sessionDir?: string;
-			readOnly?: boolean;
 		},
 	): Promise<RuntimeSession>;
 	setSessionCoordinator?(coordinator: SessionCoordinator): void;

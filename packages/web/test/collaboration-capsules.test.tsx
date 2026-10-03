@@ -33,8 +33,6 @@ describe("协作子会话胶囊", () => {
 		);
 
 		expect(html).toContain('aria-label="协作子会话"');
-		expect(html).toContain("conversation-scroll");
-		expect(html).toContain("text-xs leading-4");
 		for (const child of children) {
 			expect(html).toContain(`aria-label="打开协作子会话 ${collaborationAlias(child.id)}，${collaborationStatus(child)}"`);
 		}

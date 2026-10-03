@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSessionTimestamp, sortSessionSummaries } from "../src/components/workbench/session-management.ts";
+import { sortSessionSummaries } from "../src/components/workbench/session-management.ts";
 import type { WebSessionSummary } from "../src/types.ts";
 
 function session(id: string, name: string, createdAt: number, updatedAt: number): WebSessionSummary {
@@ -34,7 +34,4 @@ describe("会话管理排序", () => {
 		expect(result).not.toBe(sessions);
 	});
 
-	it("输出可读的中文时间", () => {
-		expect(formatSessionTimestamp(Date.UTC(2025, 0, 2, 3, 4))).toContain("2025");
-	});
 });

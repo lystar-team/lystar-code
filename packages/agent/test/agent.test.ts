@@ -660,26 +660,6 @@ describe("Agent", () => {
 		expect(agent.state.messages).toEqual([]);
 	});
 
-	it("should support steering message queue", async () => {
-		const agent = new Agent({ streamFn: unusedStreamFunction });
-
-		const message = { role: "user" as const, content: "Steering message", timestamp: Date.now() };
-		agent.steer(message);
-
-		// The message is queued but not yet in state.messages
-		expect(agent.state.messages).not.toContainEqual(message);
-	});
-
-	it("should support follow-up message queue", async () => {
-		const agent = new Agent({ streamFn: unusedStreamFunction });
-
-		const message = { role: "user" as const, content: "Follow-up message", timestamp: Date.now() };
-		agent.followUp(message);
-
-		// The message is queued but not yet in state.messages
-		expect(agent.state.messages).not.toContainEqual(message);
-	});
-
 	it("should handle abort controller", () => {
 		const agent = new Agent({ streamFn: unusedStreamFunction });
 

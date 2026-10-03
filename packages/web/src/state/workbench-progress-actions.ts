@@ -29,6 +29,7 @@ type UpdateState = (update: StateUpdate) => WorkbenchState;
 type Ref<T> = { current: T };
 type LiveTextProgress = Extract<SessionProgress, { type: "assistant_delta" | "thinking_delta" }>;
 type PendingTextProgress = { selection: number; sessionId: string; progress: LiveTextProgress };
+const BACKGROUND_TEXT_FLUSH_MS = 1_000;
 
 export interface WorkbenchProgressActionsContext {
 	stateRef: StateRef;
@@ -432,7 +433,7 @@ export function useWorkbenchProgressActions({
 				}
 				if (pendingTextFrameRef.current === undefined && pendingTextTimeoutRef.current === undefined) {
 					if (document.visibilityState === "hidden") {
-						pendingTextTimeoutRef.current = window.setTimeout(flushPendingTextProgress, 32);
+						pendingTextTimeoutRef.current = window.setTimeout(flushPendingTextProgress, BACKGROUND_TEXT_FLUSH_MS);
 					} else {
 						pendingTextFrameRef.current = window.requestAnimationFrame(flushPendingTextProgress);
 					}

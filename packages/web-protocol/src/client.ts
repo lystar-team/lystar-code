@@ -91,9 +91,9 @@ export class RuntimeProtocolClient {
 	>();
 	private readonly listeners = new Set<() => void>();
 	private readonly eventListeners = new Set<(event: ServerEvent) => void>();
-	private readonly sessions = new Map<string, SessionStateSnapshot>();
-	private readonly operations = new Map<string, OperationSnapshot>();
-	private readonly transcripts = new Map<string, TranscriptHead>();
+	private sessions = new Map<string, SessionStateSnapshot>();
+	private operations = new Map<string, OperationSnapshot>();
+	private transcripts = new Map<string, TranscriptHead>();
 	private snapshot: RuntimeClientSnapshot = {
 		connected: false,
 		sessions: this.sessions,
@@ -304,39 +304,50 @@ export class RuntimeProtocolClient {
 		if (event.type === "session_snapshot") {
 			const current = this.sessions.get(event.snapshot.path);
 			if (current && event.snapshot.revision < current.revision) return;
+			this.sessions = new Map(this.sessions);
 			this.sessions.set(event.snapshot.path, event.snapshot);
 		}
 		if (event.type === "session_removed") {
-			this.sessions.delete(event.sessionPath);
-			this.transcripts.delete(event.sessionPath);
+			if (this.sessions.has(event.sessionPath)) {
+				this.sessions = new Map(this.sessions);
+				this.sessions.delete(event.sessionPath);
+			}
+			if (this.transcripts.has(event.sessionPath)) {
+				this.transcripts = new Map(this.transcripts);
+				this.transcripts.delete(event.sessionPath);
+			}
 		}
 		if (event.type === "transcript_committed") {
 			const current = this.transcripts.get(event.sessionPath);
+			let next: TranscriptHead;
 			if (!current) {
-				this.transcripts.set(event.sessionPath, {
+				next = {
 					generation: event.transcriptGeneration,
 					revision: event.toRevision,
 					stale: event.fromRevision !== 0,
-				});
+				};
 			} else if (event.transcriptGeneration !== current.generation) {
-				this.transcripts.set(event.sessionPath, {
+				next = {
 					generation: event.transcriptGeneration,
 					revision: event.toRevision,
 					stale: true,
-				});
+				};
 			} else if (event.toRevision <= current.revision) {
 				return;
 			} else {
-				this.transcripts.set(event.sessionPath, {
+				next = {
 					generation: current.generation,
 					revision: event.toRevision,
 					stale: current.stale || event.fromRevision !== current.revision,
-				});
+				};
 			}
+			this.transcripts = new Map(this.transcripts);
+			this.transcripts.set(event.sessionPath, next);
 		}
 		if (event.type === "operation_updated") {
 			const current = this.operations.get(event.operation.operationId);
 			if (current && event.operation.updatedAt < current.updatedAt) return;
+			this.operations = new Map(this.operations);
 			this.operations.set(event.operation.operationId, event.operation);
 		}
 		for (const listener of this.eventListeners) listener(event);
@@ -344,6 +355,7 @@ export class RuntimeProtocolClient {
 	}
 
 	private applyTranscriptPage(sessionPath: string, page: TranscriptPage): void {
+		this.transcripts = new Map(this.transcripts);
 		this.transcripts.set(sessionPath, {
 			generation: page.transcriptGeneration,
 			revision: page.transcriptRevision,
@@ -369,9 +381,9 @@ export class RuntimeProtocolClient {
 		this.snapshot = {
 			...this.snapshot,
 			...update,
-			sessions: new Map(this.sessions),
-			operations: new Map(this.operations),
-			transcripts: new Map(this.transcripts),
+			sessions: this.sessions,
+			operations: this.operations,
+			transcripts: this.transcripts,
 		};
 		this.emit();
 	}

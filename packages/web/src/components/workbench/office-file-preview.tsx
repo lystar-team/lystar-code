@@ -1,3 +1,6 @@
+import { DocxScrollViewer } from "@silurus/ooxml/docx";
+import { PptxScrollViewer } from "@silurus/ooxml/pptx";
+import { XlsxViewer } from "@silurus/ooxml/xlsx";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
@@ -52,8 +55,8 @@ function workerMode(): "main" | "worker" {
 
 export function OfficeFilePreview({ path, data, className, onFallbackDownload }: OfficeFilePreviewProps) {
 	const format = officeFormatForPath(path);
-	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const [pageCount, setPageCount] = useState(0);
 	const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
 	const [error, setError] = useState<string>();
 
@@ -64,7 +67,8 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 		let resizeFrame: number | undefined;
 		let fallbackTriggered = false;
 		let viewerFailed = false;
-		const source = base64ToArrayBuffer(data);
+		const container = containerRef.current;
+		setPageCount(0);
 		setStatus("loading");
 		setError(undefined);
 
@@ -93,50 +97,42 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 
 		const load = async () => {
 			if (!format) throw new Error("当前文件格式不支持在线预览");
+			const source = base64ToArrayBuffer(data);
 			if (!isZipContainer(source)) throw new Error("文件不是有效的 Office 文档");
+			if (!container) throw new Error("预览容器尚未准备完成");
 			const mode = workerMode();
 			switch (format) {
 				case "docx": {
-					const { DocxViewer } = await import("@silurus/ooxml/docx");
-					if (disposed) return;
-					if (!canvasRef.current) throw new Error("预览画布尚未准备完成");
-					const nextViewer = new DocxViewer(canvasRef.current, {
+					const nextViewer = new DocxScrollViewer(container, {
 						mode,
 						enableTextSelection: true,
 						onError: handleViewerError,
 					});
 					viewer = nextViewer;
-					observeViewerSize(canvasRef.current.parentElement);
 					await nextViewer.load(source);
+					if (!disposed) setPageCount(nextViewer.pageCount);
 					break;
 				}
 				case "xlsx": {
-					const { XlsxViewer } = await import("@silurus/ooxml/xlsx");
-					if (disposed) return;
-					if (!containerRef.current) throw new Error("预览容器尚未准备完成");
-					const nextViewer = new XlsxViewer(containerRef.current, {
+					const nextViewer = new XlsxViewer(container, {
 						mode,
 						showScrollbars: true,
 						onError: handleViewerError,
 					});
 					viewer = nextViewer;
-					observeViewerSize(containerRef.current);
+					observeViewerSize(container);
 					await nextViewer.load(source);
 					break;
 				}
 				case "pptx": {
-					const { PptxViewer } = await import("@silurus/ooxml/pptx");
-					if (disposed) return;
-					if (!canvasRef.current) throw new Error("预览画布尚未准备完成");
-					const nextViewer = new PptxViewer(canvasRef.current, {
+					const nextViewer = new PptxScrollViewer(container, {
 						mode,
 						enableTextSelection: true,
 						onError: handleViewerError,
 					});
 					viewer = nextViewer;
-					observeViewerSize(canvasRef.current.parentElement);
 					await nextViewer.load(source);
-					await nextViewer.fitPage();
+					if (!disposed) setPageCount(nextViewer.slideCount);
 					break;
 				}
 			}
@@ -155,7 +151,7 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 			resizeObserver?.disconnect();
 			if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
 			viewer?.destroy();
-			if (containerRef.current) containerRef.current.replaceChildren();
+			container?.replaceChildren();
 		};
 	}, [data, format, onFallbackDownload]);
 
@@ -163,7 +159,7 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 
 	return (
 		<div
-			className={cn("relative min-h-full w-full overflow-auto rounded-lg border border-border/60 bg-muted/10", className)}
+			className={cn("relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border/60 bg-muted/10", className)}
 			aria-busy={status === "loading"}
 		>
 			{status === "loading" ? (
@@ -178,13 +174,12 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 					<p className="max-w-md text-xs text-muted-foreground">{error || "浏览器端解析失败，请下载原文件查看。"}</p>
 				</div>
 			) : null}
-			{format === "xlsx" ? (
-				<div ref={containerRef} className="h-full min-h-[min(72vh,720px)] w-full" />
-			) : (
-				<div className="flex min-h-[min(72vh,720px)] min-w-full items-start justify-center p-4 sm:p-6">
-					<canvas ref={canvasRef} className="h-auto max-w-full shadow-sm" aria-label={`${fileName(path)}预览`} />
-				</div>
-			)}
+			<div ref={containerRef} className="min-h-0 min-w-0 flex-1" aria-label={`${fileName(path)}预览`} />
+			{format !== "xlsx" && status === "ready" && pageCount > 0 ? (
+				<p className="shrink-0 border-t border-border/60 px-3 py-2 text-center text-xs tabular-nums text-muted-foreground" role="status">
+					共 {pageCount} {format === "pptx" ? "张幻灯片" : "页"}
+				</p>
+			) : null}
 		</div>
 	);
 }

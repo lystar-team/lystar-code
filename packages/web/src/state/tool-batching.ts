@@ -21,8 +21,8 @@ export type SessionToolPhase = "running" | "queued" | "completed" | "error" | "c
 
 /** 每个协作工具的动作短语；阶段文案由短语拼出。 */
 const sessionToolActions: Record<string, string> = {
-	session_create: "派发智能体",
-	session_send: "联系智能体",
+	session_create: "派发任务给智能体",
+	session_send: "向智能体发送消息",
 	session_wait: "等待智能体返回",
 	session_list: "查看智能体会话",
 	session_profiles: "查看智能体配置",
@@ -41,6 +41,10 @@ const sessionToolActions: Record<string, string> = {
 
 export function isSessionTool(name: string): boolean {
 	return Object.hasOwn(sessionToolActions, name);
+}
+
+export function sessionToolAction(name: string): string | undefined {
+	return sessionToolActions[name];
 }
 
 export function sessionToolLabel(name: string, phase: SessionToolPhase): string | undefined {

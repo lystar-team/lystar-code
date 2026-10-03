@@ -72,6 +72,7 @@ export interface WorkbenchSessionActionsContext {
 	loadTranscript: (sessionId?: string, cursor?: string, deferCommit?: boolean, completeTurn?: boolean) => Promise<void>;
 	loadSubagents: (sessionId?: string) => Promise<void>;
 	loadSessionOperations: (sessionId: string) => Promise<void>;
+	readSelectedSession: <T>(sessionId: string, read: (signal: AbortSignal) => Promise<T>) => Promise<T | undefined>;
 	subscribeSessionAndWait: (sessionId: string) => Promise<SessionSubscriptionResult>;
 	completeSessionSubscription: (sessionId: string, result: SessionSubscriptionResult) => Promise<boolean>;
 	scheduleTranscriptRefresh: (sessionId?: string) => void;
@@ -111,6 +112,7 @@ export function useWorkbenchSessionActions({
 	loadTranscript,
 	loadSubagents,
 	loadSessionOperations,
+	readSelectedSession,
 	subscribeSessionAndWait,
 	completeSessionSubscription,
 	scheduleTranscriptRefresh,
@@ -311,8 +313,15 @@ export function useWorkbenchSessionActions({
 					return restoreRuntimeActivities(next, controlled.snapshot);
 				});
 			} catch (error) {
+				if (request !== selectionRef.current) return;
 				try {
-					const snapshot = (await webApi.session(sessionId)).session;
+					const result = await readSelectedSession(sessionId, (signal) => webApi.session(sessionId, signal));
+					if (!result) {
+						if (request === selectionRef.current && selectionInFlightRef.current === sessionId)
+							selectionInFlightRef.current = undefined;
+						return;
+					}
+					const snapshot = result.session;
 					if (request !== selectionRef.current) {
 						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 						return;
@@ -394,6 +403,7 @@ export function useWorkbenchSessionActions({
 			loadSubagents,
 			loadTranscript,
 			onSessionRead,
+			readSelectedSession,
 			showToast,
 			subscribeSessionAndWait,
 			transitionState,

@@ -814,7 +814,6 @@ export class WebRuntimeService {
 				...(collaborationTask ? { collaborationTask } : {}),
 				...(workspace ? { collaborationWorkspace: workspace } : {}),
 				...(this.adapter.getSessionDirectory ? { sessionDir: this.adapter.getSessionDirectory(input.cwd) } : {}),
-				...(workspace?.mode === "shared" ? { readOnly: true } : {}),
 			});
 		} catch (error) {
 			if (workspace) await this.collaborationWorkspaces.release(workspace).catch(() => {});

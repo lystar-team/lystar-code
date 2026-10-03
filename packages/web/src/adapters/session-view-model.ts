@@ -1,4 +1,4 @@
-import type { TranscriptSubagentRef } from "@lystar/code-web-protocol";
+import type { TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
 import type { WebTranscriptItem } from "../types.ts";
 
 export type ToolVisualState = "input-available" | "output-available" | "output-error";
@@ -36,6 +36,7 @@ export interface TranscriptToolViewModel {
 	state: ToolVisualState;
 	detail?: string;
 	sources?: TranscriptSourceViewModel[];
+	webSearch?: WebSearchProgress;
 	images?: TranscriptImageViewModel[];
 	subagents?: TranscriptSubagentRef[];
 	diff?: {
@@ -176,6 +177,7 @@ export function toSessionItemViewModel(
 					summary: view.query || "网页搜索",
 					state: toWebSearchState(view.status),
 					sources: view.sources,
+					...(view.webSearch ? { webSearch: view.webSearch } : {}),
 				},
 			],
 		};

@@ -39,9 +39,32 @@ describe("web search transcript projection", () => {
 			id: "ws-1",
 			status: "completed",
 			query: "uni-app Canvas touch event",
+			webSearch: {
+				status: "completed",
+				action: "search",
+				query: "uni-app Canvas touch event",
+				sources: [{ url: "https://uniapp.dcloud.net.cn/api/canvas", title: "uniapp.dcloud.net.cn" }],
+			},
 			sources: [{ url: "https://uniapp.dcloud.net.cn/api/canvas", title: "uniapp.dcloud.net.cn" }],
 		});
 		expect(JSON.stringify(projected[0]?.view)).not.toContain('"type":"webSearchCall"');
+	});
+
+	it("preserves page-opening and in-page search actions for historical tool rows", () => {
+		const url = "https://developer.mozilla.org/en-US/docs/Web/API/TouchEvent";
+		const projected = projectTranscriptItems(
+			assistant([
+				{ type: "webSearchCall", id: "open-1", status: "completed", action: { type: "open_page", url } },
+				{
+					type: "webSearchCall",
+					id: "find-1",
+					status: "completed",
+					action: { type: "find_in_page", url, pattern: "touches" },
+				},
+			]),
+		);
+		expect(projected[0]?.view).toMatchObject({ webSearch: { action: "open_page", url } });
+		expect(projected[1]?.view).toMatchObject({ webSearch: { action: "find_in_page", url, pattern: "touches" } });
 	});
 
 	it("uses assistant URL citations when the provider omits search sources", () => {

@@ -31,7 +31,7 @@ describe("streamed tool phase", () => {
 			expect(tool.inputPreview).toBe(true);
 			titles.push(toolRowTitle(toLiveToolViewModel(tool)));
 		}
-		expect(new Set(titles)).toEqual(new Set(["准备写入 src/app.ts"]));
+		expect(new Set(titles)).toEqual(new Set(["写入 src/app.ts"]));
 
 		const queued: ToolActivity = {
 			activityEpoch: "write-stream",
@@ -48,7 +48,7 @@ describe("streamed tool phase", () => {
 
 		const started = { ...tool, state: "running" as const };
 		tool = liveToolFromUpdate(update, started, "batch-1", "src/app.ts");
-		expect(toolRowTitle(toLiveToolViewModel(tool))).toBe("正在写入 src/app.ts");
+		expect(toolRowTitle(toLiveToolViewModel(tool))).toBe("写入 src/app.ts");
 	});
 
 	it("retains a file path when a later edit update only reports the tool name", () => {
@@ -84,10 +84,10 @@ describe("streamed tool phase", () => {
 		const activityView = toLiveToolViewModel(activityUpdated);
 
 		expect(view.summary).toBe("src/app.ts");
-		expect(toolRowTitle(view)).toBe("正在编辑 src/app.ts");
+		expect(toolRowTitle(view)).toBe("编辑 src/app.ts");
 		expect(view.diff).toEqual({ files: [{ path: "src/app.ts", additions: 12, deletions: 14, diff: "+new\n-old" }] });
 		expect(activityView.summary).toBe("src/app.ts");
-		expect(toolRowTitle(activityView)).toBe("正在编辑 src/app.ts");
+		expect(toolRowTitle(activityView)).toBe("编辑 src/app.ts");
 	});
 
 	it("shows the path as soon as edit execution reports it after an unnamed preview", () => {
@@ -97,7 +97,7 @@ describe("streamed tool phase", () => {
 			"batch-1",
 			"edit",
 		);
-		expect(toolRowTitle(toLiveToolViewModel(pending))).toBe("正在编辑文件");
+		expect(toolRowTitle(toLiveToolViewModel(pending))).toBe("编辑文件");
 		const running = liveToolFromActivity(
 			{
 				activityEpoch: "edit-stream",
@@ -111,7 +111,52 @@ describe("streamed tool phase", () => {
 			pending,
 			"batch-1",
 		);
-		expect(toolRowTitle(toLiveToolViewModel(running))).toBe("正在编辑 src/app.ts");
+		expect(toolRowTitle(toLiveToolViewModel(running))).toBe("编辑 src/app.ts");
+	});
+
+	it("retains the command input when execution updates contain output instead of arguments", () => {
+		const command = "rg -n 'bootstrap|subscribeSession' packages/web\nnpm run check";
+		const running = liveToolFromActivity(
+			{
+				activityEpoch: "command-stream",
+				revision: 1,
+				toolCallId: "bash-1",
+				name: "bash",
+				state: "running",
+				summary: command,
+				updatedAt: 1,
+			},
+			undefined,
+			"batch-1",
+		);
+		const output = "Checked 312 files. No fixes applied.";
+		const updated = liveToolFromUpdate(
+			{ type: "tool_update", toolCallId: "bash-1", name: "bash", summary: output },
+			running,
+			"batch-1",
+			output,
+		);
+		expect(updated.summary).toBe(command);
+		expect(updated.result).toBe(output);
+		expect(toolRowTitle(toLiveToolViewModel(updated))).toContain("bootstrap|subscribeSession");
+		expect(toolRowTitle(toLiveToolViewModel(updated))).not.toContain("Checked");
+	});
+
+	it("accepts revised command arguments while the tool is still preparing", () => {
+		const first = liveToolFromUpdate(
+			{ type: "tool_update", toolCallId: "bash-1", name: "bash", summary: "git status" },
+			undefined,
+			"batch-1",
+			"git status",
+		);
+		const command = "git status --short\nnpm run check";
+		const revised = liveToolFromUpdate(
+			{ type: "tool_update", toolCallId: "bash-1", name: "bash", summary: command },
+			first,
+			"batch-1",
+			command,
+		);
+		expect(revised.summary).toBe(command);
 	});
 
 	it("retains the image prompt when progress events report only a status", () => {

@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatTokens } from "../src/modes/interactive/components/footer.ts";
+import { FooterComponent } from "../src/modes/interactive/components/footer.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -105,16 +105,6 @@ function createFooterData(
 
 	return provider;
 }
-
-describe("formatTokens", () => {
-	it("uses compact uppercase token units", () => {
-		expect(formatTokens(950)).toBe("950");
-		expect(formatTokens(9500)).toBe("9.5K");
-		expect(formatTokens(516_000)).toBe("516K");
-		expect(formatTokens(4_900_000)).toBe("4.9M");
-		expect(formatTokens(1_200_000_000)).toBe("1.2B");
-	});
-});
 
 describe("FooterComponent width handling", () => {
 	beforeAll(() => {

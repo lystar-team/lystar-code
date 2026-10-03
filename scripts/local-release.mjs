@@ -31,7 +31,7 @@ Options:
   --out <dir>          Output directory. Defaults to a new directory under ${tmpdir()}
   --force              Remove --out first if it already exists
   --skip-check         Do not run npm run check before building
-  --skip-test          Do not run ./test.sh before building
+  --test               Run ./test.sh after building (off by default)
   --skip-install       Only create tarballs; do not create isolated installs
   --skip-bun-install   Do not create the isolated Bun install
   --help               Show this help
@@ -45,7 +45,7 @@ function parseArgs() {
 		skipBunInstall: false,
 		skipCheck: false,
 		skipInstall: false,
-		skipTest: false,
+		test: false,
 	};
 	const args = process.argv.slice(2);
 
@@ -63,8 +63,8 @@ function parseArgs() {
 			options.skipCheck = true;
 			continue;
 		}
-		if (arg === "--skip-test") {
-			options.skipTest = true;
+		if (arg === "--test") {
+			options.test = true;
 			continue;
 		}
 		if (arg === "--skip-install") {
@@ -248,7 +248,7 @@ for (const directory of ["packages/web-protocol", "packages/web-runtime", "packa
 	run("npm", ["run", "build"], { cwd: directory });
 }
 
-if (!options.skipTest) {
+if (options.test) {
 	run("./test.sh", [], { cwd: repoRoot });
 }
 

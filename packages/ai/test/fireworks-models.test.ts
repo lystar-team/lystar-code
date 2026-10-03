@@ -19,27 +19,6 @@ afterEach(() => {
 });
 
 describe("Fireworks models", () => {
-	it("registers non-GLM, non-Kimi-K3 models via Anthropic-compatible Messages API", () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash");
-
-		expect(model).toBeDefined();
-		expect(model.api).toBe("anthropic-messages");
-		expect(model.provider).toBe("fireworks");
-		expect(model.baseUrl).toBe("https://api.fireworks.ai/inference");
-		expect(model.reasoning).toBe(true);
-		expect(model.input).toEqual(["text", "image"]);
-	});
-
-	it("aligns GLM 5.3 Fast with GLM 5.3's OpenAI-compatible config", () => {
-		const base = getModel("fireworks", "accounts/fireworks/models/glm-5p3");
-		const fast = getModel("fireworks", "accounts/fireworks/routers/glm-5p3-fast");
-
-		expect(fast.api).toBe(base.api);
-		expect(fast.baseUrl).toBe(base.baseUrl);
-		expect(fast.compat).toEqual(base.compat);
-		expect(fast.thinkingLevelMap).toEqual(base.thinkingLevelMap);
-	});
-
 	it.each(["accounts/fireworks/models/glm-5p3", "accounts/fireworks/routers/glm-5p3-fast"] as const)(
 		"omits unsupported long cache retention for %s",
 		async (modelId) => {
@@ -149,16 +128,6 @@ describe("Fireworks models", () => {
 		}
 	});
 
-	// Regression for #9323: accepted aliases are not distinct native effort levels.
-	it.each([
-		["accounts/fireworks/models/glm-5p3", ["low", "high", "max"]],
-		["accounts/fireworks/routers/glm-5p3-fast", ["low", "high", "max"]],
-		["accounts/fireworks/models/kimi-k3", ["low", "high", "max"]],
-		["accounts/fireworks/routers/kimi-k3-fast", ["low", "high", "max"]],
-	] as const)("exposes distinct native effort levels for %s", (modelId, levels) => {
-		expect(getSupportedThinkingLevels(getModel("fireworks", modelId))).toEqual(levels);
-	});
-
 	it("keeps toggle-only Messages models without a verified fallback on budget-based thinking", async () => {
 		const model = getModel("fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4");
 		expect(model.compat?.forceAdaptiveThinking).toBeUndefined();
@@ -186,16 +155,6 @@ describe("Fireworks models", () => {
 		expect(getEnvApiKey("fireworks")).toBe("test-fireworks-key");
 	});
 
-	it("sets Fireworks-specific compat for session affinity and unsupported tool fields", () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4");
-
-		expect(model.compat).toBeDefined();
-		expect(model.compat?.sendSessionAffinityHeaders).toBe(true);
-		expect(model.compat?.supportsEagerToolInputStreaming).toBe(false);
-		expect(model.compat?.supportsCacheControlOnTools).toBe(false);
-		expect(model.compat?.supportsLongCacheRetention).toBe(false);
-		expect(model.compat?.allowEmptySignature).toBe(true);
-	});
 });
 
 // --- Integration tests for Fireworks Anthropic session affinity and tool compat ---

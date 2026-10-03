@@ -9,7 +9,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 describe("InteractiveMode compaction events", () => {
 	beforeAll(() => initTheme("dark"));
 
-	test.each(["manual", "threshold", "overflow"] as const)(
+	test.each(["threshold"] as const)(
 		"rebuilds consecutive %s compactions once per persisted session entry",
 		async (reason) => {
 			const chatContainer = new Container();

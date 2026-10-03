@@ -377,19 +377,6 @@ function sessionProfileSnapshot(profile: SessionProfile): SessionProfileSnapshot
 	};
 }
 
-const READ_ONLY_SESSION_TOOLS = [
-	"read",
-	"session_send",
-	"session_wait",
-	"session_list",
-	"session_profiles",
-	"session_stop",
-	"room_read",
-	"room_send",
-	"room_task_list",
-	"room_task_update",
-] as const;
-
 function validSubagentId(value: string): string {
 	const name = value.trim();
 	if (
@@ -3010,7 +2997,6 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			collaborationTask?: SessionCollaborationTask;
 			collaborationWorkspace?: SessionWorkspaceSnapshot;
 			sessionDir?: string;
-			readOnly?: boolean;
 		},
 	): Promise<RuntimeSession> {
 		const profile = options?.profileId ? findSessionProfile(cwd, options.profileId, this.agentDir) : undefined;
@@ -3031,7 +3017,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				...(options?.collaborationWorkspace ? { collaborationWorkspace: options.collaborationWorkspace } : {}),
 			},
 		);
-		return this.createRuntime(cwd, sessionManager, onUiRequest, profile, options?.readOnly === true);
+		return this.createRuntime(cwd, sessionManager, onUiRequest, profile);
 	}
 
 	async openSession(
@@ -3052,7 +3038,6 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				manager,
 				onUiRequest,
 				sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
-				manager.getCollaborationWorkspace()?.mode === "shared",
 				options.deferExtensionLifecycle === true,
 			);
 		} catch (error) {
@@ -3069,7 +3054,6 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 								manager,
 								onUiRequest,
 								sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
-								manager.getCollaborationWorkspace()?.mode === "shared",
 								options.deferExtensionLifecycle === true,
 							);
 						} catch (takeoverError) {
@@ -4777,7 +4761,6 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		sessionManager: SessionManager,
 		onUiRequest: UiRequestHandler,
 		sessionProfile?: SessionProfile,
-		readOnly = false,
 		deferExtensionLifecycle = false,
 	): Promise<RuntimeSession> {
 		const trustStore = new ProjectTrustStore(this.agentDir);
@@ -4793,13 +4776,6 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		}) => {
 			const effectiveProfile =
 				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
-			const activeTools = readOnly
-				? READ_ONLY_SESSION_TOOLS.filter(
-						(tool) =>
-							(!effectiveProfile?.tools || effectiveProfile.tools.includes(tool)) &&
-							!effectiveProfile?.excludeTools?.includes(tool),
-					)
-				: effectiveProfile?.tools;
 			const hasTrustResources = hasTrustRequiringProjectResources(runtimeCwd);
 			const trusted = !hasTrustResources || trustStore.get(runtimeCwd) === true;
 			const settingsManager = SettingsManager.create(runtimeCwd, agentDir, { projectTrusted: trusted });
@@ -4869,23 +4845,18 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				deferExtensionLifecycle: deferRuntimeExtensionLifecycle,
 				model: resolveProfileModel(effectiveProfile, services.modelRuntime),
 				thinkingLevel: effectiveProfile?.thinkingLevel,
-				...(activeTools ? { tools: activeTools } : {}),
+				...(effectiveProfile?.tools ? { tools: effectiveProfile.tools } : {}),
 				...(effectiveProfile?.excludeTools ? { excludeTools: effectiveProfile.excludeTools } : {}),
 				customTools: [
 					...createAgentStepTools(stepController),
 					...createCollaborationTools(() => this.sessionCoordinator),
-					...(!readOnly
-						? [
-								createAgentCreationTool({
-									cwd: runtimeCwd,
-									agentDir,
-									listSkills: async () => (await this.listSkills(runtimeCwd, onUiRequest)).skills,
-									listTools: () =>
-										runtimeSession.getAllTools().map(({ name, description }) => ({ name, description })),
-									save: (input) => this.saveSubagentConfig(runtimeCwd, input, onUiRequest),
-								}),
-							]
-						: []),
+					createAgentCreationTool({
+						cwd: runtimeCwd,
+						agentDir,
+						listSkills: async () => (await this.listSkills(runtimeCwd, onUiRequest)).skills,
+						listTools: () => runtimeSession.getAllTools().map(({ name, description }) => ({ name, description })),
+						save: (input) => this.saveSubagentConfig(runtimeCwd, input, onUiRequest),
+					}),
 				],
 			});
 			runtimeSession = result.session;

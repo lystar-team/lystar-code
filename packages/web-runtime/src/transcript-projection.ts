@@ -543,6 +543,18 @@ function webSearchView(
 		id: part.id,
 		status,
 		...(query ? { query: bounded(query) } : {}),
+		...(action?.type === "search" || action?.type === "open_page" || action?.type === "find_in_page"
+			? {
+					webSearch: {
+						status,
+						action: action.type,
+						...(query ? { query: bounded(query) } : {}),
+						...(typeof action.url === "string" && action.url ? { url: action.url } : {}),
+						...(typeof action.pattern === "string" && action.pattern ? { pattern: bounded(action.pattern) } : {}),
+						sources: [...sources.values()].slice(0, 32),
+					},
+				}
+			: {}),
 		sources: [...sources.values()].slice(0, 32),
 	};
 }

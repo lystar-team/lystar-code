@@ -220,7 +220,9 @@ describe("WebRuntimeService session coordination", () => {
 					description: "检查子会话结果持久化",
 					parentSessionId: "parent-session",
 				},
+				collaborationWorkspace: { mode: "shared", projectCwd: cwd, cwd },
 			});
+			expect(createdOptions).not.toHaveProperty("readOnly");
 
 			const waited = await coordinator?.wait({ cwd, sessionIds: ["child-session"] });
 			expect(waited).toHaveLength(1);

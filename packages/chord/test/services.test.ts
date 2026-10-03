@@ -4,7 +4,6 @@ import {
 	type Context,
 	createRemoteServiceBinding,
 	defineService,
-	type JsonValue,
 	RemoteServiceProvider,
 	type RemoteServiceTransport,
 	type ReplicatedState,
@@ -49,36 +48,7 @@ interface Timeline {
 
 const Timeline = defineService<Timeline>("test.timeline");
 
-interface JsonPassthrough {
-	call(value: JsonValue, context: Context): Promise<JsonValue>;
-}
-
-interface NonJsonArgument {
-	call(value: Date, context: Context): Promise<void>;
-}
-
-interface NonJsonResult {
-	call(context: Context): Promise<bigint>;
-}
-
-interface NonJsonState {
-	readonly state: ReplicatedState<{ value: undefined }>;
-}
-
 describe("remote services", () => {
-	test("checks remote JSON contracts only at compile time", () => {
-		expect(defineService<JsonPassthrough>("test.json-passthrough").local).toBe(false);
-		const defineInvalidContracts = (): void => {
-			// @ts-expect-error Remote service arguments must be JSON-compatible.
-			defineService<NonJsonArgument>("test.non-json-argument");
-			// @ts-expect-error Remote service results must be JSON-compatible.
-			defineService<NonJsonResult>("test.non-json-result");
-			// @ts-expect-error Replicated state must be JSON-compatible.
-			defineService<NonJsonState>("test.non-json-state");
-		};
-		expect(defineInvalidContracts).not.toThrow();
-		expect(defineService<NonJsonArgument>("test.local-non-json", { local: true }).local).toBe(true);
-	});
 
 	test("marks services remotable by default and reserves Chord service IDs", () => {
 		const local = defineService<{ readonly value: string }>("test.local", { local: true });

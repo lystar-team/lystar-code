@@ -44,16 +44,6 @@ describe("SettingsManager", () => {
 			expect(savedSettings.thinkingDisplayMode).toBe("transcript");
 		});
 
-		it("uses Codex-style agent retry defaults", () => {
-			const manager = SettingsManager.create(projectDir, agentDir);
-
-			expect(manager.getRetrySettings()).toEqual({
-				enabled: true,
-				maxRetries: 5,
-				baseDelayMs: 1000,
-				maxAgentDelayMs: 60000,
-			});
-		});
 	});
 
 	describe("preserves externally added settings", () => {

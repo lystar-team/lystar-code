@@ -138,7 +138,7 @@ export function createSessionCreateTool(
 		name: "session_create",
 		label: "创建下级会话",
 		description:
-			"以当前会话为父会话创建下级会话，可同时派发任务。带任务的会话默认使用独立 Git Worktree；只读分析可使用 shared，非 Git 项目可使用 patch。",
+			"以当前会话为父会话创建下级会话，可同时派发任务。带任务的会话默认使用独立 Git Worktree；shared 共享当前工作目录，非 Git 项目可使用 patch。",
 		promptSnippet: "创建下级会话并派发任务",
 		parameters: SessionCreateParams,
 		executionMode: "sequential",

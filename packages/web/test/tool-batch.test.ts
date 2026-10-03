@@ -71,7 +71,7 @@ describe("Skill read tool display", () => {
 			}),
 		};
 
-		expect(toolRowTitle(tool)).toBe("已派发智能体 · 只读审阅 · 核对工具展示");
+		expect(toolRowTitle(tool)).toBe("派发任务给 只读审阅");
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 		expect(markup).toContain("lucide-bot");
 		expect(markup).toContain("只读审阅");
@@ -84,7 +84,7 @@ describe("Skill read tool display", () => {
 				session: { id: "agent-2", name: "research-specialist", profileName: "research-specialist" },
 			}),
 		};
-		expect(toolRowTitle(configOnlyTool)).toBe("已派发智能体 · 核对工具展示");
+		expect(toolRowTitle(configOnlyTool)).toBe("派发任务给 智能体");
 	});
 
 	it("does not repeat aggregate diff stats inside details", () => {
@@ -127,7 +127,7 @@ describe("Skill read tool display", () => {
 		};
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 
-		expect(markup).toContain("准备写入");
+		expect(markup).toContain("准备中");
 		expect(markup).toContain("展开详情");
 	});
 
@@ -162,7 +162,7 @@ describe("Skill read tool display", () => {
 		];
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools }));
 
-		expect(markup).toContain("正在读取文件");
+		expect(markup).toContain("读取 2 个文件");
 		expect(markup).toContain("lease-service.ts");
 		expect(markup).toContain("src/services/");
 		expect(markup).toContain('data-activity-directory="true"');
@@ -170,7 +170,7 @@ describe("Skill read tool display", () => {
 		expect(markup).toContain("overflow-hidden");
 		expect(markup).toContain("sm:inline");
 		expect(markup).toContain("sm:shrink-0");
-		expect(markup.indexOf("src/services/")).toBeLessThan(markup.indexOf("lease-service.ts"));
+		expect(markup).toMatch(/src\/services\/.*lease-service\.ts/su);
 		expect(markup).toContain("renewal-form.tsx");
 		expect(markup).toContain("运行中");
 		expect(markup.match(/animate-spin text-primary/gu)).toHaveLength(2);
@@ -199,7 +199,7 @@ describe("Skill read tool display", () => {
 				open: false,
 			}),
 		);
-		expect(failedMarkup).toContain("检查项目代码失败");
+		expect(failedMarkup).toContain("检查 check 脚本，出错，展开详情");
 		expect(failedMarkup).not.toContain("max-w-3xl");
 
 		const imageMarkup = renderToStaticMarkup(
@@ -295,11 +295,11 @@ describe("Skill read tool display", () => {
 		};
 		const runningMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [running] }));
 
-		expect(runningMarkup).toContain("正在运行 sleep 命令");
+		expect(runningMarkup).toContain("运行 sleep 210");
 		expect(runningMarkup).toContain("运行中");
 		expect(runningMarkup).toContain("lucide-terminal");
 		expect(runningMarkup).toContain("lucide-loader-circle");
-		expect(runningMarkup).not.toContain("sleep 210");
+		expect(runningMarkup).toContain("sleep 210");
 		expect(runningMarkup).toContain("展开详情");
 
 		const completed: ToolBatchTool = { ...running, id: "bash-completed", state: "output-available" };
@@ -326,12 +326,12 @@ describe("Skill read tool display", () => {
 		const completedMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [completed] }));
 		const activeMarkup = renderToStaticMarkup(createElement(ToolBatch, { tools: [active] }));
 
-		expect(completedMarkup).toContain("已编辑");
+		expect(completedMarkup).toContain("编辑");
 		expect(completedMarkup).toContain("/home/yean/projectWorkspace/liteasy-pi-agent/packages/web/src/components/");
 		expect(completedMarkup).toContain("tool-batch.tsx");
 		expect(completedMarkup).toContain("+4");
 		expect(completedMarkup).toContain("-2");
-		expect(activeMarkup).toContain("正在编辑");
+		expect(activeMarkup).toContain("编辑");
 		expect(activeMarkup).toContain("tool-batch.tsx");
 	});
 
@@ -365,7 +365,7 @@ describe("Skill read tool display", () => {
 			state: "input-available",
 		};
 		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
-		expect(toolRowTitle(tool)).toBe("正在查找 tsconfig* 文件（/home/yean/projectWorkspace/liteasy-pi-agent）");
+		expect(toolRowTitle(tool)).toBe("查找 tsconfig* 文件（/home/yean/projectWorkspace/liteasy-pi-agent）");
 		expect(collapsed).toContain("lucide-search");
 		expect(collapsed).toContain("lucide-loader-circle");
 		expect(collapsed).not.toContain("-maxdepth");
@@ -379,14 +379,14 @@ describe("Skill read tool display", () => {
 
 	it("describes searches, directories and file reads without showing shell syntax", () => {
 		const cases = [
-			["rg -n 'lease status' src", "已搜索 lease status（src）", "lucide-search"],
-			["rg --files -g '*.tsx' packages/web", "已查找 *.tsx 文件（packages/web）", "lucide-search"],
-			["grep -R renewal src", "已搜索 renewal（src）", "lucide-search"],
-			["ls -la packages/web", "已查看 packages/web 目录", "lucide-folder"],
-			["cat src/app.ts", "已读取 src/app.ts 文件", "lucide-file-text"],
-			["git status --short", "已查看代码变更", "lucide-git-branch"],
-			["npm run check", "已检查项目代码", "lucide-package"],
-			["node node_modules/vitest/dist/cli.js --run test/command.test.ts", "已运行 Vitest 测试", "lucide-package"],
+			["rg -n 'lease status' src", "搜索 lease status（src）", "lucide-search"],
+			["rg --files -g '*.tsx' packages/web", "查找 *.tsx 文件（packages/web）", "lucide-search"],
+			["grep -R renewal src", "搜索 renewal（src）", "lucide-search"],
+			["ls -la packages/web", "查看 packages/web 目录", "lucide-folder"],
+			["cat src/app.ts", "读取 src/app.ts 文件", "lucide-file-text"],
+			["git status --short", "查看代码变更", "lucide-git-branch"],
+			["npm run check", "检查 check 脚本", "lucide-package"],
+			["node node_modules/vitest/dist/cli.js --run test/command.test.ts", "运行 Vitest 测试", "lucide-package"],
 		] as const;
 		for (const [index, [command, label, icon]] of cases.entries()) {
 			const tool: ToolBatchTool = {
@@ -398,16 +398,16 @@ describe("Skill read tool display", () => {
 			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 			expect(toolRowTitle(tool)).toBe(label);
 			expect(markup).toContain(icon);
-			expect(markup).not.toContain(command);
+			expect(markup).not.toContain('data-command-preview="true"');
 			expect(markup).toContain("展开详情");
 		}
 	});
 
 	it("names the intent of compound commands and the program of unknown commands", () => {
 		const cases = [
-			["rg secret src | head -20", "已搜索 secret（src）", "lucide-search"],
-			["find . -name '*.ts' && echo done", "已查找 *.ts 文件", "lucide-search"],
-			["custom-task --verbose", "已运行 custom-task 命令", "lucide-terminal"],
+			["rg secret src | head -20", "搜索 secret（src）", "lucide-search"],
+			["find . -name '*.ts' && echo done", "查找 *.ts 文件", "lucide-search"],
+			["custom-task --verbose", "运行 custom-task --verbose", "lucide-terminal"],
 		] as const;
 		for (const [index, [command, label, icon]] of cases.entries()) {
 			const tool: ToolBatchTool = {
@@ -419,7 +419,7 @@ describe("Skill read tool display", () => {
 			expect(toolRowTitle(tool)).toBe(label);
 			const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
 			expect(markup).toContain(label);
-			expect(markup).not.toContain(command);
+			expect(markup).not.toContain('data-command-preview="true"');
 			expect(markup).toContain(icon);
 		}
 	});
@@ -436,8 +436,8 @@ describe("Skill read tool display", () => {
 			{ id: "rg-1", name: "bash", summary: "rg -n renewal src", state: "output-available", detail: "" },
 		];
 		const collapsed = renderToStaticMarkup(createElement(ToolBatch, { tools, initialOpen: true }));
-		expect(collapsed).toContain("已查找 app.ts 文件（src）");
-		expect(collapsed).toContain("已搜索 renewal（src）");
+		expect(collapsed).toContain("查找 app.ts 文件（src）");
+		expect(collapsed).toContain("搜索 renewal（src）");
 		expect(collapsed).not.toContain("find src -name");
 		const expanded = renderToStaticMarkup(
 			createElement(ToolBatch, { tools, initialOpen: true, initialToolOpen: new Map([["rg-1", true]]) }),
@@ -475,9 +475,9 @@ describe("Skill read tool display", () => {
 		];
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools, initialOpen: true }));
 
-		expect(markup).toContain("运行了 2 条命令");
-		expect(markup).toContain("已检查项目代码");
-		expect(markup).toContain("已检查代码差异");
+		expect(markup).toContain("检查 check 脚本、检查代码差异 2 项");
+		expect(markup).toContain("已完成");
+		expect(markup).not.toContain("2 项已完成");
 		expect(markup).not.toContain("npm run check");
 		expect(markup).not.toContain("git diff --check");
 		expect(markup).not.toContain("2 条命令执行完成");
@@ -497,9 +497,9 @@ describe("Skill read tool display", () => {
 			state: "output-available",
 		};
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [compound, single], initialOpen: true }));
-		expect(markup).toContain("已执行推送到远端仓库，已执行，展开详情");
+		expect(markup).toContain("推送到远端仓库，已执行，展开详情");
 		expect(markup).toContain('aria-label="已执行" class="size-1.5 rounded-full bg-muted-foreground/60"');
-		expect(markup).toContain("已查看代码变更，已完成，展开详情");
+		expect(markup).toContain("查看代码变更，已完成，展开详情");
 		expect(markup).toContain("lucide-circle-check");
 		const failed = renderToStaticMarkup(
 			createElement(ToolBatch, {
@@ -507,7 +507,7 @@ describe("Skill read tool display", () => {
 				initialOpen: true,
 			}),
 		);
-		expect(failed).toContain("推送到远端仓库未完成，出错，展开详情");
+		expect(failed).toContain("推送到远端仓库，出错，展开详情");
 		expect(failed).toContain("lucide-circle-x");
 	});
 
@@ -532,8 +532,12 @@ describe("Skill read tool display", () => {
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools, initialOpen: true }));
 
 		expect(markup).toContain('data-command-title="true"');
-		expect(markup).toContain('title="已检查项目代码"');
+		expect(markup).toContain('title="检查 check 脚本"');
 		expect(markup).not.toContain(`title="${command}"`);
+		const expanded = renderToStaticMarkup(
+			createElement(ToolBatch, { tools, initialOpen: true, initialToolOpen: new Map([["bash-long-1", true]]) }),
+		);
+		expect(expanded).toContain("--reporter=verbose");
 	});
 
 	it("renders command syntax and ANSI output at the compact tool size", () => {
@@ -581,10 +585,10 @@ describe("Skill read tool display", () => {
 			}),
 		);
 
-		expect(markup).toContain("已修改 2 个文件");
+		expect(markup).toContain("修改 2 个文件");
 		expect(markup).toContain("app.tsx");
 		expect(markup).toContain("new-file.ts");
-		expect(markup.indexOf("packages/web/src/")).toBeLessThan(markup.indexOf("app.tsx"));
+		expect(markup).toMatch(/packages\/web\/src\/.*app\.tsx/su);
 		expect(markup).toContain('data-activity-filename="true"');
 		expect(markup).toContain("+2");
 		expect(markup).toContain("-1");
@@ -601,7 +605,7 @@ describe("Skill read tool display", () => {
 		};
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool], open: false }));
 
-		expect(markup).toContain("检查项目代码失败");
+		expect(markup).toContain("检查 check 脚本，出错，展开详情");
 		expect(markup).toContain("出错");
 		expect(markup).toContain('data-slot="collapsible" class="min-w-0"');
 		expect(markup).not.toContain("error TS2304");
@@ -822,7 +826,7 @@ describe("Skill read tool display", () => {
 		};
 		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [failed], open: false }));
 
-		expect(markup).toContain("图片生成失败 · blocked image");
+		expect(markup).toContain("生成图片 blocked image");
 		expect(markup).toContain("content_policy_violation");
 		expect(markup).toContain('role="img" aria-label="content_policy_violation"');
 		expect(markup).toContain('aria-live="polite"');
@@ -878,7 +882,7 @@ describe("Skill read tool display", () => {
 		);
 
 		expect(markup).not.toContain("运行了命令并编辑了文件");
-		expect(markup).toContain("正在运行项目测试");
+		expect(markup).toContain("运行 test 脚本");
 		expect(markup).not.toContain("npm test");
 		expect(markup).toContain("/tmp/example.ts");
 	});
@@ -890,7 +894,7 @@ describe("Skill read tool display", () => {
 			state: "input-available",
 		};
 
-		expect(toolRowTitle(tool)).toBe("正在编辑 packages/web/src/app.ts");
+		expect(toolRowTitle(tool)).toBe("编辑 packages/web/src/app.ts");
 	});
 	it("does not relabel ordinary files or nested Skill resources", () => {
 		const ordinaryFile = readTool("/home/yean/project/README.md");
