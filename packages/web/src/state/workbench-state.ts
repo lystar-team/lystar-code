@@ -73,7 +73,14 @@ export function resolveHiddenModelProviders(
 
 export function applyTheme(theme: ThemeMode): void {
 	if (typeof document === "undefined") return;
+	const dark =
+		theme === "dark" ||
+		(theme === "system" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 	document.documentElement.dataset.theme = theme === "system" ? "" : theme;
+	document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#151515" : "#ffffff");
+	document
+		.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
+		?.setAttribute("content", dark ? "black-translucent" : "default");
 	window.localStorage.setItem(THEME_KEY, theme);
 }
 

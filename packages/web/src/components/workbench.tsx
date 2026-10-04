@@ -1,5 +1,5 @@
-import { LoaderCircle, PanelRightOpen } from "lucide-react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import { LoaderCircle, PanelRightClose, PanelRightOpen } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
 import { connectionPresentation, type ConnectionPresentation } from "../state/connection-recovery";
@@ -12,7 +12,17 @@ import { Button } from "./ui/button";
 import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
 import { AgentIdentityIcon, collaborationAlias, collaborationSessionsForSession } from "./workbench/collaboration-session";
-import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, sidebarWidthFromPointer } from "./workbench/constants";
+import {
+	INSPECTOR_DEFAULT_WIDTH,
+	INSPECTOR_MAX_WIDTH,
+	INSPECTOR_MIN_WIDTH,
+	SIDEBAR_DEFAULT_WIDTH,
+	SIDEBAR_MAX_WIDTH,
+	SIDEBAR_MIN_WIDTH,
+	WORKSPACE_MIN_CONTENT_WIDTH,
+	WORKSPACE_NAVIGATION_RAIL_WIDTH,
+	sidebarWidthFromPointer,
+} from "./workbench/constants";
 import { ConversationView } from "./workbench/conversation";
 import {
 	DirectoryDialog,
@@ -22,7 +32,7 @@ import {
 	UiRequestDialog,
 } from "./workbench/dialogs";
 import { FilePreviewDialog } from "./workbench/file-preview-dialog";
-import { InspectorDialog, InspectorPanel } from "./workbench/inspector";
+import { InspectorPanel } from "./workbench/inspector";
 import { MobileProjectRailDialog } from "./workbench/mobile-project-rail-dialog";
 import { ProjectRail } from "./workbench/project-rail";
 import { RoomRail } from "./workbench/room-rail";
@@ -69,17 +79,48 @@ export function Workbench({
 	const [editingProject, setEditingProject] = useState<WebProject>();
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+	const [inspectorWidth, setInspectorWidth] = useState(INSPECTOR_DEFAULT_WIDTH);
+	const [isResizingInspector, setIsResizingInspector] = useState(false);
+	const [workspaceWidth, setWorkspaceWidth] = useState(0);
 	const resizePointerIdRef = useRef<number | null>(null);
+	const inspectorResizePointerIdRef = useRef<number | null>(null);
 	const [panelOpen, setPanelOpen] = useState(() =>
-		typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
+		typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
 	);
 	const expandButtonRef = useRef<HTMLButtonElement>(null);
 	const mainRef = useRef<HTMLElement>(null);
+	const workspaceAreaRef = useRef<HTMLDivElement>(null);
 	const [promptEditRequest, setPromptEditRequest] = useState<PromptEditRequest>();
 	const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("sessions");
 	const [roomSection, setRoomSection] = useState<"chat" | "board">("chat");
 	const desktopLayout = useMediaQuery("(min-width: 768px), (horizontal-viewport-segments: 2)");
-	const wideLayout = useMediaQuery("(min-width: 1280px)");
+	const wideLayout = useMediaQuery("(min-width: 1024px)");
+	const inspectorMaxWidth = Math.max(
+		INSPECTOR_MIN_WIDTH,
+		Math.min(INSPECTOR_MAX_WIDTH, workspaceWidth - WORKSPACE_MIN_CONTENT_WIDTH),
+	);
+	const visibleInspectorWidth = Math.min(inspectorWidth, inspectorMaxWidth);
+	const sidebarMaxWidth =
+		state.inspectorOpen && desktopLayout && wideLayout && panelOpen
+			? Math.max(
+					SIDEBAR_MIN_WIDTH,
+					Math.min(
+						SIDEBAR_MAX_WIDTH,
+						window.innerWidth -
+							WORKSPACE_NAVIGATION_RAIL_WIDTH -
+							INSPECTOR_MIN_WIDTH -
+							WORKSPACE_MIN_CONTENT_WIDTH,
+					),
+				)
+			: SIDEBAR_MAX_WIDTH;
+	const visibleSidebarWidth = Math.min(sidebarWidth, sidebarMaxWidth);
+	const overlaySidebarWidth = Math.max(
+		SIDEBAR_MIN_WIDTH,
+		Math.min(
+			SIDEBAR_DEFAULT_WIDTH,
+			window.innerWidth - WORKSPACE_NAVIGATION_RAIL_WIDTH - (state.inspectorOpen ? visibleInspectorWidth : 0),
+		),
+	);
 	const currentSessions = currentProject?.sessions ?? [];
 	const currentSessionSummary = currentSessions.find((session) => session.id === state.sessionId);
 	const collaborationSessions = useMemo(
@@ -141,7 +182,7 @@ export function Workbench({
 	const resizeSidebar = (event: ReactPointerEvent<HTMLDivElement>) => {
 		if (resizePointerIdRef.current !== event.pointerId) return;
 		const panel = event.currentTarget.parentElement!;
-		setSidebarWidth(sidebarWidthFromPointer(event.clientX, panel.getBoundingClientRect().left));
+		setSidebarWidth(Math.min(sidebarMaxWidth, sidebarWidthFromPointer(event.clientX, panel.getBoundingClientRect().left)));
 	};
 
 	const stopSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -151,8 +192,44 @@ export function Workbench({
 		setIsResizingSidebar(false);
 	};
 
+	const startInspectorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+		if (event.button !== 0 || inspectorResizePointerIdRef.current !== null) return;
+		event.preventDefault();
+		inspectorResizePointerIdRef.current = event.pointerId;
+		event.currentTarget.setPointerCapture(event.pointerId);
+		setIsResizingInspector(true);
+	};
+
+	const resizeInspector = (event: ReactPointerEvent<HTMLDivElement>) => {
+		if (inspectorResizePointerIdRef.current !== event.pointerId) return;
+		const workspace = workspaceAreaRef.current;
+		if (!workspace) return;
+		const maxWidth = Math.max(
+			INSPECTOR_MIN_WIDTH,
+			Math.min(INSPECTOR_MAX_WIDTH, workspace.clientWidth - WORKSPACE_MIN_CONTENT_WIDTH),
+		);
+		const width = workspace.getBoundingClientRect().right - event.clientX;
+		setInspectorWidth(Math.min(maxWidth, Math.max(INSPECTOR_MIN_WIDTH, width)));
+	};
+
+	const resizeInspectorWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+		const delta = event.key === "ArrowLeft" ? 16 : event.key === "ArrowRight" ? -16 : 0;
+		if (delta === 0) return;
+		event.preventDefault();
+		setInspectorWidth((width) =>
+			Math.min(inspectorMaxWidth, Math.max(INSPECTOR_MIN_WIDTH, Math.min(width, inspectorMaxWidth) + delta)),
+		);
+	};
+
+	const stopInspectorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+		if (inspectorResizePointerIdRef.current !== event.pointerId) return;
+		inspectorResizePointerIdRef.current = null;
+		if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+		setIsResizingInspector(false);
+	};
+
 	useEffect(() => {
-		if (!isResizingSidebar) return;
+		if (!isResizingSidebar && !isResizingInspector) return;
 		const previousCursor = document.body.style.cursor;
 		const previousUserSelect = document.body.style.userSelect;
 		document.body.style.cursor = "col-resize";
@@ -161,28 +238,36 @@ export function Workbench({
 			document.body.style.cursor = previousCursor;
 			document.body.style.userSelect = previousUserSelect;
 		};
-	}, [isResizingSidebar]);
+	}, [isResizingInspector, isResizingSidebar]);
 
 	useEffect(() => {
 		setPromptEditRequest(undefined);
 	}, [state.sessionId]);
 
 	useEffect(() => {
-		setPanelOpen(wideLayout);
-		if (!wideLayout) {
-			resizePointerIdRef.current = null;
-			setIsResizingSidebar(false);
-		}
+		if (wideLayout) return;
+		resizePointerIdRef.current = null;
+		setIsResizingSidebar(false);
 	}, [wideLayout]);
+
+	useEffect(() => {
+		const workspace = workspaceAreaRef.current;
+		if (!workspace) return;
+		const observer = new ResizeObserver(([entry]) => {
+			if (entry) setWorkspaceWidth(entry.contentRect.width);
+		});
+		observer.observe(workspace);
+		return () => observer.disconnect();
+	}, []);
 
 	useEffect(() => {
 		const main = mainRef.current;
 		if (!main) return;
-		main.inert = desktopLayout && !wideLayout && panelOpen;
+		main.inert = desktopLayout && !wideLayout && panelOpen && !state.inspectorOpen;
 		return () => {
 			main.inert = false;
 		};
-	}, [desktopLayout, panelOpen, wideLayout]);
+	}, [desktopLayout, panelOpen, state.inspectorOpen, wideLayout]);
 
 	const closeSidebar = useCallback(() => {
 		setPanelOpen(false);
@@ -242,16 +327,24 @@ export function Workbench({
 					/>
 					{panelOpen ? (
 						<>
-							{!wideLayout ? (
+							{!wideLayout && !state.inspectorOpen ? (
 								<button type="button" tabIndex={-1} aria-hidden="true" className="fixed inset-0 z-30 cursor-default bg-black/30" onClick={closeSidebar} />
 							) : null}
 							<aside
 								aria-label={workspaceMode === "rooms" ? "智能体协作导航" : "项目与会话"}
 								className={cn(
 									"workspace-navigation-panel relative flex min-h-0 min-w-0 shrink-0 border-r border-border/60 bg-background",
-									!wideLayout && "absolute inset-y-0 left-16 z-40 w-[min(392px,calc(100vw-4rem))] shadow-lg",
+									!wideLayout && "absolute inset-y-0 left-16 z-40 shadow-lg",
 								)}
-								style={wideLayout ? { width: `${sidebarWidth}px`, minWidth: SIDEBAR_MIN_WIDTH, maxWidth: SIDEBAR_MAX_WIDTH } : undefined}
+								style={
+									wideLayout
+										? {
+												width: `${visibleSidebarWidth}px`,
+												minWidth: SIDEBAR_MIN_WIDTH,
+												maxWidth: SIDEBAR_MAX_WIDTH,
+											}
+										: { width: `${overlaySidebarWidth}px` }
+								}
 							>
 								<StabilityBoundary
 									scope="project-rail"
@@ -306,8 +399,8 @@ export function Workbench({
 										aria-label="调整项目栏宽度"
 										aria-orientation="vertical"
 										aria-valuemin={SIDEBAR_MIN_WIDTH}
-										aria-valuemax={SIDEBAR_MAX_WIDTH}
-										aria-valuenow={sidebarWidth}
+										aria-valuemax={sidebarMaxWidth}
+										aria-valuenow={visibleSidebarWidth}
 										tabIndex={0}
 										className={cn(
 											"absolute top-0 right-0 z-20 block h-full w-1 translate-x-1/2 cursor-col-resize touch-none",
@@ -382,11 +475,18 @@ export function Workbench({
 						<Button
 							className="h-10 gap-1.5 px-2 sm:px-3"
 							variant="ghost"
-							onClick={() => void actions.openInspector()}
-							aria-label="打开审阅工作区"
+							onClick={() => {
+								if (state.inspectorOpen) actions.closeInspector();
+								else void actions.openInspector();
+							}}
+							aria-label={state.inspectorOpen ? "关闭审阅工作区" : "打开审阅工作区"}
 							aria-expanded={state.inspectorOpen}
 						>
-							<PanelRightOpen className="size-4" aria-hidden="true" />
+							{state.inspectorOpen ? (
+								<PanelRightClose className="size-4" aria-hidden="true" />
+							) : (
+								<PanelRightOpen className="size-4" aria-hidden="true" />
+							)}
 							<span className="text-xs sm:hidden">审阅</span>
 							<span className="hidden text-xs sm:inline">审阅工作区</span>
 						</Button>
@@ -394,8 +494,8 @@ export function Workbench({
 					<Toast message={state.toast} />
 				</header>
 
-				<div className="relative flex min-h-0 flex-1 overflow-hidden">
-					<div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+				<div ref={workspaceAreaRef} className="relative flex min-h-0 flex-1 overflow-hidden">
+					<div className={cn("flex min-w-0 flex-1 flex-col overflow-hidden", state.inspectorOpen && !desktopLayout && "hidden")}>
 						<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
 							<StabilityBoundary
 								scope="conversation"
@@ -486,7 +586,36 @@ export function Workbench({
 						</StabilityBoundary>
 					</div>
 					{state.inspectorOpen ? (
-						<aside className="hidden min-h-0 w-[min(420px,34vw)] shrink-0 p-4 pl-0 xl:flex">
+						<aside
+							aria-label="审阅工作区"
+							className={cn(
+								"relative flex min-h-0 shrink-0 border-l border-border/60",
+								desktopLayout ? "min-w-[280px]" : "min-w-0 flex-1",
+							)}
+							style={desktopLayout ? { width: `${visibleInspectorWidth}px`, minWidth: INSPECTOR_MIN_WIDTH } : undefined}
+						>
+							{desktopLayout ? (
+								<div
+									// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
+									role="separator"
+									aria-label="调整审阅工作区宽度"
+									aria-orientation="vertical"
+									aria-valuemin={INSPECTOR_MIN_WIDTH}
+									aria-valuemax={inspectorMaxWidth}
+									aria-valuenow={visibleInspectorWidth}
+									tabIndex={0}
+									className={cn(
+										"absolute inset-y-0 left-0 z-20 block w-1 -translate-x-1/2 cursor-col-resize touch-none",
+										isResizingInspector ? "bg-border" : "hover:bg-border",
+									)}
+									onPointerDown={startInspectorResize}
+									onPointerMove={resizeInspector}
+									onPointerUp={stopInspectorResize}
+									onPointerCancel={stopInspectorResize}
+									onLostPointerCapture={stopInspectorResize}
+									onKeyDown={resizeInspectorWithKeyboard}
+								/>
+							) : null}
 							<StabilityBoundary
 								scope="inspector"
 								resetKeys={[state.currentProjectId, state.inspectorMode]}
@@ -500,14 +629,13 @@ export function Workbench({
 									/>
 								)}
 							>
-								<InspectorPanel state={state} actions={actions} floating />
+								<InspectorPanel state={state} actions={actions} />
 							</StabilityBoundary>
 						</aside>
 					) : null}
 				</div>
 			</main>
 
-			<InspectorDialog state={state} actions={actions} />
 			<StabilityBoundary
 				scope="file-preview"
 				resetKeys={[state.filePath]}

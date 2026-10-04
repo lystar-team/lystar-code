@@ -1,9 +1,7 @@
 import { FolderOpen, GitBranch, GitFork, X, Zap } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { cn } from "../../lib/utils";
+import { useEffect, useRef } from "react";
 import type { InspectorMode, WorkbenchState } from "../../state/use-workbench";
 import { Button } from "../ui/button";
-import { Dialog, DialogContent } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tabs, TabsContent } from "../ui/tabs";
 import { GsapReveal } from "../ui/gsap-reveal";
@@ -15,20 +13,6 @@ import { SubagentPanel } from "./subagent-panel";
 import type { WorkbenchActions } from "./types";
 import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar";
 
-function useMediaQuery(query: string): boolean {
-	const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
-
-	useEffect(() => {
-		const mediaQuery = window.matchMedia(query);
-		const update = () => setMatches(mediaQuery.matches);
-		update();
-		mediaQuery.addEventListener("change", update);
-		return () => mediaQuery.removeEventListener("change", update);
-	}, [query]);
-
-	return matches;
-}
-
 const INSPECTOR_TABS: ReadonlyArray<WorkbenchTabOption<InspectorMode>> = [
 	{ icon: FolderOpen, label: "文件", value: "files" },
 	{ icon: GitBranch, label: "Git", value: "git" },
@@ -36,25 +20,12 @@ const INSPECTOR_TABS: ReadonlyArray<WorkbenchTabOption<InspectorMode>> = [
 	{ icon: GitFork, label: "分支", value: "tree" },
 ];
 
-export function InspectorPanel({
-	state,
-	actions,
-	floating = false,
-}: {
-	state: WorkbenchState;
-	actions: WorkbenchActions;
-	floating?: boolean;
-}) {
+export function InspectorPanel({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const runViewportRef = useRef<HTMLDivElement>(null);
 	const treeViewportRef = useRef<HTMLDivElement>(null);
 
 	return (
-		<div
-			className={cn(
-				"flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background",
-				floating && "inspector-panel rounded-[28px] border border-border/70 shadow-[0_12px_36px_rgb(0_0_0/0.06)]",
-			)}
-		>
+		<div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background">
 			<div className="flex shrink-0 items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
 				<div className="min-w-0">
 					<h2 className="truncate text-base font-semibold">审阅工作区</h2>
@@ -103,24 +74,5 @@ export function InspectorPanel({
 				</TabsContent>
 			</Tabs>
 		</div>
-	);
-}
-
-export function InspectorDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
-	const wideLayout = useMediaQuery("(min-width: 1280px)");
-	return (
-		<Dialog
-			open={state.inspectorOpen && !wideLayout}
-			onOpenChange={(open) => {
-				if (!open) actions.closeInspector();
-			}}
-		>
-			<DialogContent
-				showCloseButton={false}
-				className="left-auto right-0 top-0 h-full max-w-[min(560px,100vw)] translate-x-0 translate-y-0 rounded-none border-y-0 border-r-0 p-0 sm:max-w-[min(560px,100vw)]"
-			>
-				<InspectorPanel state={state} actions={actions} />
-			</DialogContent>
-		</Dialog>
 	);
 }

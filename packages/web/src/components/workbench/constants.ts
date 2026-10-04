@@ -33,6 +33,11 @@ export const ACTIVE_OPERATION_STATUSES = new Set(["accepted", "running", "waitin
 export const SIDEBAR_MIN_WIDTH = 280;
 export const SIDEBAR_MAX_WIDTH = 560;
 export const SIDEBAR_DEFAULT_WIDTH = 392;
+export const INSPECTOR_MIN_WIDTH = 280;
+export const INSPECTOR_MAX_WIDTH = 560;
+export const INSPECTOR_DEFAULT_WIDTH = 420;
+export const WORKSPACE_NAVIGATION_RAIL_WIDTH = 64;
+export const WORKSPACE_MIN_CONTENT_WIDTH = 320;
 
 export function sidebarWidthFromPointer(clientX: number, sidebarLeft: number): number {
 	const width = clientX - sidebarLeft;
