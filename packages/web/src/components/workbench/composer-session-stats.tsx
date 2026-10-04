@@ -1,11 +1,12 @@
 import type { SessionInfoResult } from "@lystar/code-web-protocol";
 import { useEffect, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
+import type { WorkbenchState } from "../../state/workbench-types";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 type Metric = "tps" | "cache" | "input" | "output";
 type Tokens = SessionInfoResult["tokens"];
-type OutputSpeed = { outputTokens: number; elapsedMs: number };
+type OutputSpeed = WorkbenchState["lastOutputSpeed"];
 
 const metrics: Metric[] = ["tps", "cache", "input", "output"];
 const labels: Record<Metric, string> = { tps: "TPS", cache: "缓存命中", input: "输入", output: "输出" };
@@ -46,8 +47,9 @@ function MetricBreakdown({
 		<div className="space-y-2">
 			{metric === "tps" ? (
 				<>
-					<DetailRow label="最近一次可见输出" value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
+					<DetailRow label={lastOutputSpeed?.streaming ? "当前输出（估算）" : "最近一次可见输出"} value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
 					<DetailRow label="输出耗时" value={lastOutputSpeed && speed !== undefined ? `${(lastOutputSpeed.elapsedMs / 1_000).toFixed(1)} 秒` : "—"} />
+					{lastOutputSpeed?.estimated && speed !== undefined ? <p className="pt-1 text-xs text-muted-foreground">流式输出期间为估算值，完成后按模型用量校正。</p> : null}
 				</>
 			) : metric === "cache" ? (
 				<>
@@ -108,11 +110,11 @@ export function ComposerSessionStats({
 
 	const totalInput = tokens ? tokens.input + tokens.cacheRead + tokens.cacheWrite : undefined;
 	const cacheHit = totalInput ? Math.round((tokens?.cacheRead ?? 0) / totalInput * 100) : undefined;
-	const speed = lastOutputSpeed?.elapsedMs && phase !== "turn"
+	const speed = lastOutputSpeed?.elapsedMs && (phase !== "turn" || lastOutputSpeed.streaming !== undefined)
 		? Math.round(lastOutputSpeed.outputTokens * 1_000 / lastOutputSpeed.elapsedMs)
 		: undefined;
 	const values: Record<Metric, string> = {
-		tps: phase === "turn" ? "计算中" : speed === undefined ? "—" : `${speed} tok/s`,
+		tps: speed === undefined ? phase === "turn" ? "计算中" : "—" : `${lastOutputSpeed?.estimated ? "≈" : ""}${speed} tok/s`,
 		cache: cacheHit === undefined ? "—" : `${cacheHit}%`,
 		input: totalInput === undefined ? "—" : compactTokens(totalInput),
 		output: tokens === undefined ? "—" : compactTokens(tokens.output),

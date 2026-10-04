@@ -288,6 +288,17 @@ export const SessionActivitySchema = Type.Union([
 export type SessionActivity = Static<typeof SessionActivitySchema>;
 
 export const UsageProgressSchema = StrictObject({
+	outputSpeed: Type.Optional(
+		Type.Union([
+			StrictObject({
+				outputTokens: Type.Integer({ minimum: 0 }),
+				elapsedMs: Type.Integer({ minimum: 1 }),
+				estimated: Type.Boolean(),
+				streaming: Type.Boolean(),
+			}),
+			Type.Null(),
+		]),
+	),
 	inputTokens: Type.Optional(Type.Integer({ minimum: 0 })),
 	outputTokens: Type.Optional(Type.Integer({ minimum: 0 })),
 	cacheReadTokens: Type.Optional(Type.Integer({ minimum: 0 })),

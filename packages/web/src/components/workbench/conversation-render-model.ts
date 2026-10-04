@@ -473,6 +473,25 @@ function updateLiveCompactionRenderItem(
 	return false;
 }
 
+function collectRenderedToolIds(items: readonly ConversationRenderItem[]): Set<string> {
+	const ids = new Set<string>();
+	const collectContent = (entry: ConversationContentRenderItem): void => {
+		if (entry.kind === "tool-stack") {
+			for (const batch of entry.batches) for (const tool of batch.tools) ids.add(tool.id);
+		} else if (entry.kind === "agent-step") {
+			for (const item of entry.items) collectContent(item);
+		}
+	};
+	for (const entry of items) {
+		if (entry.kind === "work-process") {
+			for (const item of entry.items) collectContent(item);
+		} else if (entry.kind !== "live-elapsed" && entry.kind !== "result-boundary") {
+			collectContent(entry);
+		}
+	}
+	return ids;
+}
+
 export function appendLiveRenderItems(
 	rendered: ConversationContentRenderItem[],
 	liveItems: readonly LiveTurnItem[],
@@ -488,6 +507,7 @@ export function appendLiveRenderItems(
 		if (entry.kind === "agent-step") return { ...entry, items: entry.items.map((item) => item.kind === "compaction" ? { ...item } : item) };
 		return entry;
 	});
+	const renderedToolCallIds = collectRenderedToolIds(next);
 	const stepIdByToolCallId = new Map<string, string>();
 	for (const entry of next) {
 		if (entry.kind !== "agent-step") continue;
@@ -560,7 +580,7 @@ export function appendLiveRenderItems(
 		if (item.kind !== "tools") continue;
 		const tools = item.toolIds.flatMap((toolId) => {
 			const tool = liveTools[toolId];
-			if (!tool || committedToolCallIds.has(toolId)) return [];
+			if (!tool || committedToolCallIds.has(toolId) || renderedToolCallIds.has(toolId)) return [];
 			return [toLiveToolViewModel(tool)];
 		});
 		if (!tools.length) continue;
@@ -586,6 +606,7 @@ export function appendLiveRenderItems(
 			batches: [{ kind: "tool-batch", key: batchKey, tools: toolsWithStep, stepId }],
 		};
 		if (!stepId || !appendStepItem(stepId, stack)) next.push(stack);
+		for (const tool of toolsWithStep) renderedToolCallIds.add(tool.id);
 	}
 	for (const step of Object.values(liveSteps)) {
 		const key = `agent-step:${step.id}`;

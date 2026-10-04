@@ -16,6 +16,7 @@ export function initialToolStackPresentation(tools: readonly ToolBatchTool[]): T
 	const groupableActivity =
 		tools.length > 1 &&
 		(tools.every((tool) => tool.name === "read" && !tool.images?.length) ||
+			tools.every((tool) => tool.name === "read" && Boolean(tool.images?.length)) ||
 			tools.every((tool) => tool.name === "bash" && !tool.images?.length) ||
 			tools.every((tool) => tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch"));
 	return groupableActivity && tools.every(isToolComplete) ? "group" : "rows";

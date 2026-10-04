@@ -2705,14 +2705,12 @@ class CoreRuntimeSession implements RuntimeSession {
 			)
 				this.turnAssistantText = contentText(event.message.content, "");
 			if (event.type === "message_start" && event.message.role === "assistant") this.outputSpeed.start();
-			if (
+			const liveOutputSpeed =
 				event.type === "message_update" &&
 				event.message.role === "assistant" &&
-				(event.assistantMessageEvent.type === "text_delta" ||
-					event.assistantMessageEvent.type === "thinking_delta") &&
-				event.assistantMessageEvent.delta
-			)
-				this.outputSpeed.outputDelta();
+				(event.assistantMessageEvent.type === "text_delta" || event.assistantMessageEvent.type === "toolcall_delta")
+					? this.outputSpeed.update(event.assistantMessageEvent.delta)
+					: undefined;
 			if (
 				event.type === "entry_appended" &&
 				event.entry.type === "custom" &&
@@ -2788,12 +2786,22 @@ class CoreRuntimeSession implements RuntimeSession {
 			)) {
 				this.emit({ type: "progress", payload: progressWithAgentStep(progress, this.stepController) });
 			}
+			if (liveOutputSpeed)
+				this.emit({ type: "progress", payload: { type: "usage", usage: { outputSpeed: liveOutputSpeed } } });
 			if (event.type === "message_end" && event.message.role === "assistant") {
 				const outputSpeed = this.outputSpeed.finish(
 					visibleOutputTokens(event.message.usage.output, event.message.usage.reasoning),
 					event.message.stopReason,
 				);
-				if (outputSpeed) this.emit({ type: "progress", payload: { type: "usage", usage: outputSpeed } });
+				this.emit({
+					type: "progress",
+					payload: {
+						type: "usage",
+						usage: {
+							outputSpeed: outputSpeed ? { ...outputSpeed, estimated: false, streaming: false } : null,
+						},
+					},
+				});
 			}
 			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 		});

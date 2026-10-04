@@ -366,6 +366,9 @@ export function useWorkbenchProgressActions({
 					case "status":
 						return { ...current, statusText: progress.status };
 					case "usage":
+						if (progress.usage.outputSpeed !== undefined) {
+							return { ...current, lastOutputSpeed: progress.usage.outputSpeed ?? undefined };
+						}
 						return {
 							...current,
 							...(progress.usage.elapsedMs && progress.usage.outputTokens

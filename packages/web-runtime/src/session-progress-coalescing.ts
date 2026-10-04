@@ -9,8 +9,9 @@ export function sessionProgressKey(progress: SessionProgress): string | undefine
 		case "phase":
 		case "queue_update":
 		case "status":
-		case "usage":
 			return progress.type;
+		case "usage":
+			return progress.usage.outputSpeed !== undefined ? "output_speed" : progress.type;
 		case "tool_update":
 			return `${progress.type}:${progress.toolCallId}`;
 		case "tool_state":
@@ -21,6 +22,8 @@ export function sessionProgressKey(progress: SessionProgress): string | undefine
 }
 
 export function shouldSendProgressImmediately(progress: SessionProgress): boolean {
+	if (progress.type === "usage" && progress.usage.outputSpeed !== undefined && !progress.usage.outputSpeed?.streaming)
+		return true;
 	if (progress.type === "agent_step" || progress.type === "tool_start" || progress.type === "tool_end") return true;
 	if (
 		progress.type === "tool_update" &&

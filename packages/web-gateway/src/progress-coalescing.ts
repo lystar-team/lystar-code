@@ -14,8 +14,9 @@ export function progressCoalescingKey(event: WebSessionProgressEvent): string | 
 		case "phase":
 		case "queue_update":
 		case "status":
-		case "usage":
 			return `${event.sessionId}:${event.progress.type}`;
+		case "usage":
+			return `${event.sessionId}:${event.progress.usage.outputSpeed !== undefined ? "output_speed" : event.progress.type}`;
 		case "tool_update":
 			return `${event.sessionId}:${event.progress.type}:${event.progress.toolCallId}`;
 		case "tool_state":
@@ -26,6 +27,8 @@ export function progressCoalescingKey(event: WebSessionProgressEvent): string | 
 }
 
 export function shouldSendProgressImmediately(progress: SessionProgress): boolean {
+	if (progress.type === "usage" && progress.usage.outputSpeed !== undefined && !progress.usage.outputSpeed?.streaming)
+		return true;
 	if (progress.type === "tool_start" || progress.type === "tool_end") return true;
 	if (
 		progress.type === "tool_update" &&

@@ -131,7 +131,7 @@ export interface WorkbenchState {
 	liveTurnId: number;
 	liveTurnStartRevision?: number;
 	liveTurnActive?: boolean;
-	lastOutputSpeed?: { outputTokens: number; elapsedMs: number };
+	lastOutputSpeed?: { outputTokens: number; elapsedMs: number; estimated?: boolean; streaming?: boolean };
 	liveCompaction?: LiveCompactionState;
 	/** Runtime 确认的回合终态：turnId → completed/failed/aborted，用于折叠已结束回合。 */
 	settledTurns: Record<string, "completed" | "failed" | "aborted">;

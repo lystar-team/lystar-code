@@ -5813,6 +5813,39 @@
             "usage": {
               "type": "object",
               "properties": {
+                "outputSpeed": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "outputTokens",
+                        "elapsedMs",
+                        "estimated",
+                        "streaming"
+                      ],
+                      "properties": {
+                        "outputTokens": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "elapsedMs": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "estimated": {
+                          "type": "boolean"
+                        },
+                        "streaming": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "inputTokens": {
                   "type": "integer",
                   "minimum": 0
