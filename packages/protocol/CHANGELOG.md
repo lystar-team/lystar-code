@@ -1,5 +1,7 @@
 # Changelog
 
+## [Unreleased]
+
 ## [1.0.0-lystar.2] - 2026-10-02
 
 ## [1.0.0-lystar.1] - 2026-10-01
