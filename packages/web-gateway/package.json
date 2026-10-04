@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-web-gateway",
-	"version": "1.0.0",
+	"version": "1.0.0-lystar.4",
 	"private": true,
 	"type": "module",
 	"main": "./dist/index.js",
@@ -26,8 +26,8 @@
 		"dev": "tsx src/cli.ts"
 	},
 	"dependencies": {
-		"@lystar/code-web-runtime": "1.0.0",
-		"@lystar/code-web-protocol": "1.0.0",
+		"@lystar/code-web-runtime": "1.0.0-lystar.4",
+		"@lystar/code-web-protocol": "1.0.0-lystar.4",
 		"web-push": "3.6.7",
 		"ws": "8.21.3"
 	},
