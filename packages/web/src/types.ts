@@ -31,6 +31,7 @@ import type {
 	SubagentConfig,
 	SubagentSnapshot,
 	TranscriptBlockMapping,
+	TranscriptCodemodeDetails,
 	TranscriptItem,
 	TranscriptPage,
 	ToolDiff,
@@ -72,6 +73,7 @@ export interface ToolBatchTool {
 	webSearch?: WebSearchProgress;
 	sources?: Array<{ url: string; title?: string }>;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
+	codemode?: TranscriptCodemodeDetails;
 	subagents?: TranscriptSubagentRef[];
 	diff?: ToolDiff;
 	inputPreview?: boolean;

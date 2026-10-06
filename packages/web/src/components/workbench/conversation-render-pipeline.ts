@@ -91,6 +91,7 @@ export function buildConversationToolIndex(transcript: WorkbenchState["transcrip
 				summary: item.view.summary,
 				state: item.view.status === "success" ? "output-available" : "output-error",
 				detail: item.view.detail,
+				codemode: item.view.codemode,
 				images: item.view.images,
 				diff: item.view.diff,
 			};

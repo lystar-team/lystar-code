@@ -328,7 +328,7 @@ export const Composer = memo(function Composer({
 				? "w-full min-w-0"
 				: "shrink-0 bg-background px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] sm:px-8"}
 		>
-			<div className="mx-auto w-full max-w-[var(--conversation-width)]">
+			<div className="@container/composer mx-auto w-full max-w-[var(--conversation-width)]">
 				<PromptInputProvider
 					key={`${inputScopeKey ?? "no-session"}:${editRequestKey ?? "draft"}`}
 					initialInput={initialInput}
@@ -545,14 +545,12 @@ export const Composer = memo(function Composer({
 										disabled={disabled}
 									/>
 								</PromptInputBody>
-								<PromptInputFooter className={fastModeSupported && !inline && !roomMode
-									? "flex-wrap items-center gap-y-1 !pb-2 md:flex-nowrap"
-									: "items-center !pb-2"}>
-									<PromptInputTools className={fastModeSupported && !inline && !roomMode ? "order-5 shrink-0 md:order-none" : "shrink-0"}>
+								<PromptInputFooter className="flex-nowrap items-center gap-0.5 px-2 !pb-2 md:gap-1 md:px-3">
+									<PromptInputTools className="shrink-0">
 										<FileUploadButton disabled={disabled || editAttachmentState === "loading" || Boolean(visibleUploadProgress)} />
 									</PromptInputTools>
 									{!inline && !roomMode && state.sessionId ? (
-										<div className={fastModeSupported ? "order-6 md:contents" : "contents"}>
+										<div className="min-w-12 flex-1 [&>div]:w-full">
 										<ComposerSessionStats
 											key={state.sessionId}
 											sessionId={state.sessionId}
@@ -564,9 +562,7 @@ export const Composer = memo(function Composer({
 										/>
 										</div>
 									) : null}
-									<PromptInputTools className={fastModeSupported && !inline && !roomMode
-										? "contents md:flex md:min-w-0 md:flex-1 md:justify-end md:gap-0"
-										: "min-w-0 flex-1 justify-end gap-0.5 md:shrink-0 md:flex-none md:gap-1"}>
+									<PromptInputTools className="min-w-0 flex-[0_1_auto] flex-nowrap justify-end gap-0.5 md:gap-1">
 									{inline ? (
 										<>
 											<Button
@@ -589,19 +585,17 @@ export const Composer = memo(function Composer({
 										</>
 									) : null}
 									{inline ? null : roomMode ? <span className="px-2 text-xs text-muted-foreground">智能体协作</span> : (
-										<div className={fastModeSupported ? "order-7 ml-auto md:order-none md:ml-0" : ""}>
+										<div className="shrink-0">
 											<ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />
 										</div>
 									)}
 									{inline || roomMode ? null : <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
 											<ModelSelectorTrigger asChild>
 												<PromptInputButton
-													className={fastModeSupported
-													? "order-1 px-1.5 has-[>svg]:px-1.5 data-[state=open]:bg-accent md:order-none"
-													: "data-[state=open]:bg-accent"}
+													className="min-w-7 shrink px-1 has-[>svg]:px-1 data-[state=open]:bg-accent md:px-1.5 md:has-[>svg]:px-1.5"
 													disabled={disabled || !state.sessionId}
 												>
-													<span className="max-w-24 truncate md:max-w-40">
+													<span className="min-w-0 max-w-24 truncate md:max-w-40">
 														{formatModelDisplayName(
 															selectedModel ??
 																(state.session?.model ? { id: state.session.model.id } : undefined),
@@ -649,9 +643,7 @@ export const Composer = memo(function Composer({
 												onValueChange={actions.updateThinking}
 											>
 												<PromptInputSelectTrigger
-													className={fastModeSupported
-														? "order-2 flex h-8 w-auto min-w-0 max-w-[7rem] shrink border-0 px-1.5 text-xs shadow-none focus-visible:ring-0 md:order-none sm:max-w-none"
-														: "flex h-8 w-auto min-w-0 max-w-[7rem] shrink border-0 px-2 text-xs shadow-none focus-visible:ring-0 sm:max-w-none"}
+													className="flex h-8 w-auto shrink-0 border-0 px-1.5 text-xs shadow-none focus-visible:ring-0"
 													aria-label="思考强度"
 												>
 													<PromptInputSelectValue>
@@ -672,19 +664,20 @@ export const Composer = memo(function Composer({
 										) : null}
 										{!inline && !roomMode && fastModeSupported ? (
 											<PromptInputButton
-												className="order-3 h-8 shrink-0 gap-1 bg-transparent px-1.5 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground has-[>svg]:px-1.5 md:order-none"
+												className="h-8 shrink-0 gap-1 bg-transparent px-1 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground has-[>svg]:px-1 md:px-1.5 md:has-[>svg]:px-1.5"
 												aria-label={state.session?.fastMode ? "关闭快速模式" : "开启快速模式"}
 												aria-pressed={state.session?.fastMode === true}
 												disabled={disabled || stopping || !state.sessionReady}
 												onClick={() => void actions.updateFastMode(!state.session?.fastMode)}
 												tooltip="快速模式会改变计费模式，消耗更多用量。"
 											>
-												<Zap className="size-3.5" />
-												{state.session?.fastMode ? "快速" : "普通"}
+												<Zap className={state.session?.fastMode ? "size-3.5 fill-current text-foreground" : "size-3.5"} />
+												<span className="hidden @min-[32rem]/composer:inline">
+													{state.session?.fastMode ? "快速" : "普通"}
+												</span>
 											</PromptInputButton>
 										) : null}
-										{fastModeSupported && !inline && !roomMode ? <div aria-hidden="true" className="order-4 basis-full border-t border-border/50 md:hidden" /> : null}
-										{inline ? null : <div className={fastModeSupported && !roomMode ? "order-8 md:order-none md:ml-2.5" : ""}><ComposerSubmitActions
+										{inline ? null : <div className="shrink-0 md:ml-1.5"><ComposerSubmitActions
 											disabled={disabled}
 											onAbort={() => void actions.abort()}
 											roomMode={roomMode}

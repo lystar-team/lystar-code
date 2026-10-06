@@ -21,6 +21,7 @@ import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } fr
 import { time } from "../timings.ts";
 import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
 import type {
+	ContextProvider,
 	EntryRenderer,
 	Extension,
 	ExtensionAPI,
@@ -302,6 +303,32 @@ function createExtensionAPI(
 				sourceInfo: extension.sourceInfo,
 			});
 			runtime.refreshTools();
+		},
+
+		registerContextProvider(provider: ContextProvider): void {
+			assertActive();
+			if (!provider || typeof provider !== "object") {
+				throw new Error(`Context provider registered by extension "${extension.path}" must be an object.`);
+			}
+			const id = typeof provider.id === "string" ? provider.id.trim() : "";
+			if (!id) {
+				throw new Error(`Context provider registered by extension "${extension.path}" must have a non-empty id.`);
+			}
+			if (typeof provider.prepare !== "function" || typeof provider.observeToolResult !== "function") {
+				throw new Error(
+					`Context provider "${id}" registered by extension "${extension.path}" must define prepare() and observeToolResult().`,
+				);
+			}
+			if (extension.contextProviders?.has(id)) {
+				throw new Error(`Context provider "${id}" is already registered by extension "${extension.path}".`);
+			}
+			extension.contextProviders ??= new Map();
+			const normalizedProvider = id === provider.id ? provider : { ...provider, id };
+			extension.contextProviders.set(id, {
+				id,
+				provider: normalizedProvider,
+				extensionPath: extension.path,
+			});
 		},
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
@@ -610,6 +637,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
 		handlers: new Map(),
 		tools: new Map(),
+		contextProviders: new Map(),
 		messageRenderers: new Map(),
 		entryRenderers: new Map(),
 		commands: new Map(),
@@ -712,6 +740,22 @@ async function loadExtensionsInternal(
 
 		if (extension) {
 			extensions.push(extension);
+		}
+	}
+
+	const providerOwners = new Map<string, string>();
+	for (const extension of extensions) {
+		for (const [id, provider] of extension.contextProviders ?? []) {
+			const owner = providerOwners.get(id);
+			if (owner !== undefined) {
+				errors.push({
+					path: extension.path,
+					error: `Context provider "${id}" is already registered by extension "${owner}".`,
+				});
+				extension.contextProviders?.delete(id);
+				continue;
+			}
+			providerOwners.set(id, provider.extensionPath);
 		}
 	}
 

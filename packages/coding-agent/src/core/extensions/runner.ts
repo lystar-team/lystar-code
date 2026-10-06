@@ -42,6 +42,7 @@ import type {
 	CompactOptions,
 	ContextEvent,
 	ContextEventResult,
+	ContextProviderMessage,
 	ContextUsage,
 	ContextWithSystemEvent,
 	EntryRenderer,
@@ -73,6 +74,7 @@ import type {
 	ProjectTrustEventResult,
 	ProviderConfig,
 	RegisteredCommand,
+	RegisteredContextProvider,
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,
@@ -305,6 +307,11 @@ function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["t
 			return true;
 		}),
 	}));
+}
+
+function shouldRunContextProviders(turn: AgentTurnContext | undefined): boolean {
+	if (!turn || turn.rootOrigin !== "room") return true;
+	return turn.origin.type === "room" && turn.origin.kind === "task";
 }
 
 function userTurn(channel: "interactive" | "rpc" = "interactive"): AgentTurnContext {
@@ -701,6 +708,17 @@ export class ExtensionRunner {
 			}
 		}
 		return Array.from(toolsByName.values());
+	}
+
+	/** 获取所有已注册的上下文 provider，按首次注册顺序返回。 */
+	getContextProviders(): RegisteredContextProvider[] {
+		const providers = new Map<string, RegisteredContextProvider>();
+		for (const extension of this.extensions) {
+			for (const provider of extension.contextProviders?.values() ?? []) {
+				if (!providers.has(provider.id)) providers.set(provider.id, provider);
+			}
+		}
+		return Array.from(providers.values());
 	}
 
 	/** Get a tool definition by name. Returns undefined if not found. */
@@ -1391,6 +1409,53 @@ export class ExtensionRunner {
 			isError: currentEvent.isError,
 			usage: currentEvent.usage,
 		};
+	}
+
+	/** 在普通 before_agent_start handler 完成后运行上下文 provider。 */
+	async prepareContextProviders(prompt: string, turn: AgentTurnContext): Promise<ContextProviderMessage[]> {
+		if (!shouldRunContextProviders(turn)) return [];
+		const signal = this.getSignalFn();
+		const ctx = this.createContext();
+		const messages: ContextProviderMessage[] = [];
+		for (const { id, provider, extensionPath } of this.getContextProviders()) {
+			if (signal?.aborted) break;
+			try {
+				const message = await this.runWithSignal(signal, () => provider.prepare({ prompt, turn }, ctx));
+				if (message !== undefined) messages.push(message);
+			} catch (error) {
+				if (signal?.aborted) break;
+				this.emitError({
+					extensionPath,
+					event: "context_provider_prepare",
+					error: `${id}: ${error instanceof Error ? error.message : String(error)}`,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
+			}
+		}
+		return messages;
+	}
+
+	/** 观察最终工具结果；provider 不能修改结果。 */
+	async observeContextProviderToolResult(event: ToolResultEvent): Promise<void> {
+		const turn = this.getTurnContextFn();
+		if (!shouldRunContextProviders(turn)) return;
+		const signal = this.getSignalFn();
+		const ctx = this.createContext();
+		for (const { id, provider, extensionPath } of this.getContextProviders()) {
+			if (signal?.aborted) return;
+			try {
+				const isolatedEvent = structuredClone(event);
+				await this.runWithSignal(signal, () => provider.observeToolResult(isolatedEvent, ctx));
+			} catch (error) {
+				if (signal?.aborted) return;
+				this.emitError({
+					extensionPath,
+					event: "context_provider_tool_result",
+					error: `${id}: ${error instanceof Error ? error.message : String(error)}`,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
+			}
+		}
 	}
 
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {

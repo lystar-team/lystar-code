@@ -6,6 +6,7 @@ import {
 	BotIcon,
 	CheckCircleIcon,
 	ChevronDownIcon,
+	Code2Icon,
 	ExternalLinkIcon,
 	EyeIcon,
 	FileCode2Icon,
@@ -49,6 +50,7 @@ import { languageForPath } from "../../lib/file-language.ts";
 import { commandPresentation } from "./command-presentation";
 import { commandFromToolSummary, toolPresentationContext, toolPresentationTitle } from "./tool-presentation.ts";
 import { Source } from "./sources";
+import { CodemodeToolDetail } from "./codemode-tool";
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
 
@@ -88,7 +90,7 @@ function transcriptAnchorKey(tool: ToolBatchTool): string {
 function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
 	if (event.defaultPrevented) return false;
 	const target = event.target;
-	if (target instanceof Element && target.closest("button, a, input, textarea, select, [role=button]")) return false;
+	if (target instanceof Element && target.closest("button, a, input, textarea, select, summary, details, [role=button], [role=tab]")) return false;
 	const selection = window.getSelection();
 	return !selection || selection.isCollapsed;
 }
@@ -184,7 +186,9 @@ const commandIcons = {
 } as const;
 
 function toolIcon(name: string, className?: string, skill = false, images = false, command?: string): ReactNode {
-	const Icon = images
+	const Icon = name === "codemode"
+		? Code2Icon
+		: images
 		? ImagesIcon
 		: skill
 			? SparklesIcon
@@ -1005,6 +1009,7 @@ function ToolDetail({
 		/>
 	) : null;
 
+	if (tool.name === "codemode") return <CodemodeToolDetail tool={tool} imagePreview={imagePreview} />;
 	if (tool.name === "subagent" && tool.subagents?.length) {
 		return <SubagentToolDetail tool={tool} onOpenSubagent={onOpenSubagent} />;
 	}
@@ -1132,7 +1137,7 @@ function ToolBatchRow({
 	const lineRange = standaloneRead ? readLineRange(tool) : undefined;
 	const stats = diffStats(tool.diff);
 	const hasDetails =
-		tool.name === "image_gen"
+		tool.name === "image_gen" || tool.name === "codemode"
 			? true
 			: tool.name === "web_search"
 				? true
@@ -1214,7 +1219,7 @@ function ToolBatchRow({
 					data-transcript-resize-anchor
 					className={cn(
 						"min-w-0 pb-0.5 pl-6 pr-0 pt-0",
-						tool.name === "image_gen"
+						tool.name === "image_gen" || tool.name === "codemode"
 							? "overflow-visible"
 							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto",
 					)}
@@ -1261,7 +1266,7 @@ export const ToolBatch = memo(function ToolBatch({
 }: ToolBatchProps) {
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
-	const imageGallery = tools.length > 0 && tools.every((tool) => tool.images?.length);
+	const imageGallery = tools.length > 0 && tools.every((tool) => tool.name !== "codemode" && tool.images?.length);
 	const imageGeneration = tools.some((tool) => tool.name === "image_gen");
 	const ordinaryReads =
 		tools.length > 1 &&

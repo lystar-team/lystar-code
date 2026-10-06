@@ -932,6 +932,22 @@ export interface BeforeAgentStartEvent {
 	systemPromptOptions: NormalizedBuildSystemPromptOptions;
 }
 
+/** Context provider 在当前回合返回的自定义消息。 */
+export type ContextProviderMessage = Pick<CustomMessage, "customType" | "content" | "display" | "details">;
+
+/** Context provider 在首个请求前接收的输入。 */
+export interface ContextProviderPrepareEvent {
+	prompt: string;
+	turn: AgentTurnContext;
+}
+
+/** 专用上下文预热 provider；不能修改 system prompt 或工具结果。 */
+export interface ContextProvider {
+	id: string;
+	prepare(event: ContextProviderPrepareEvent, ctx: ExtensionContext): Promise<ContextProviderMessage | undefined>;
+	observeToolResult(event: ToolResultEvent, ctx: ExtensionContext): Promise<void>;
+}
+
 /** Fired when an agent loop starts */
 export interface AgentStartEvent {
 	type: "agent_start";
@@ -1670,6 +1686,13 @@ export interface ExtensionAPI {
 	): void;
 
 	// =========================================================================
+	// 上下文 provider
+	// =========================================================================
+
+	/** 注册专用上下文预热 provider。 */
+	registerContextProvider(provider: ContextProvider): void;
+
+	// =========================================================================
 	// Command, Shortcut, Flag Registration
 	// =========================================================================
 
@@ -2077,6 +2100,12 @@ export interface RegisteredTool {
 	sourceInfo: SourceInfo;
 }
 
+export interface RegisteredContextProvider {
+	id: string;
+	provider: ContextProvider;
+	extensionPath: string;
+}
+
 export interface ExtensionFlag {
 	name: string;
 	description?: string;
@@ -2269,6 +2298,8 @@ export interface Extension {
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
+	/** 专用上下文 provider。可选以兼容手写 fixture。 */
+	contextProviders?: Map<string, RegisteredContextProvider>;
 	messageRenderers: Map<string, MessageRenderer>;
 	markdownTransformer?: MarkdownTransformer;
 	entryRenderers?: Map<string, EntryRenderer>;

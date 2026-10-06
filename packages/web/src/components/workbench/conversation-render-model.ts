@@ -64,11 +64,23 @@ export type HookActivityGroupRenderItem = {
 	key: string;
 	items: TranscriptItemRenderItem[];
 };
-export type AgentStepChildRenderItem = MessageRenderItem | TranscriptToolStackRenderItem | CompactionRenderItem;
+export type ExtensionEntryGroupRenderItem = {
+	kind: "extension-group";
+	key: string;
+	items: TranscriptItemRenderItem[];
+};
+export type AgentStepChildRenderItem =
+	| MessageRenderItem
+	| TranscriptToolStackRenderItem
+	| CompactionRenderItem
+	| TranscriptItemRenderItem
+	| ExtensionEntryGroupRenderItem;
 export type AgentStepRenderItem = {
 	kind: "agent-step";
 	key: string;
 	live: boolean;
+	/** 将服务端步骤时间对齐到本轮客户端发送时间，不改动持久化的起止时间。 */
+	clientClockOffsetMs?: number;
 	step: AgentStep;
 	items: AgentStepChildRenderItem[];
 };
@@ -78,6 +90,7 @@ export type ConversationContentRenderItem =
 	| TranscriptToolStackRenderItem
 	| AgentStepRenderItem
 	| CompactionRenderItem
+	| ExtensionEntryGroupRenderItem
 	| HookActivityGroupRenderItem;
 type WorkProcessRenderItem = {
 	kind: "work-process";
@@ -193,6 +206,32 @@ function groupAgentSteps(
 	for (const item of items) {
 		if (item.kind === "agent-step-anchor") {
 			ensureStep(item.step.id, item.step);
+			continue;
+		}
+		if (item.kind === "item" && item.item.view?.type === "extension_entry") {
+			let stepId = stepIdByMessageEntryId.get(item.item.entryId);
+			// 未写入归属的历史扩展记录，只在时间戳落入唯一已知步骤时恢复；不跨步骤猜测。
+			if (!stepId) {
+				const time = Date.parse(item.item.timestamp);
+				const activeSteps = [...steps.values()].filter(
+					(step) => step.startedAt <= time && time < (step.endedAt ?? Number.POSITIVE_INFINITY),
+				);
+				if (activeSteps.length === 1) stepId = activeSteps[0]?.id;
+			}
+			const target = (stepId ? ensureStep(stepId)?.items : undefined) ?? grouped;
+			// 成功的 Hook 标记不显示，因此不把它作为相邻扩展记录的分组边界。
+			let previousIndex = target.length - 1;
+			while (previousIndex >= 0) {
+				const candidate = target[previousIndex];
+				if (candidate?.kind !== "item" || candidate.item.view?.type !== "extension_activity" ||
+					(candidate.item.view.status !== "completed" && candidate.item.view.status !== "running")) break;
+				previousIndex--;
+			}
+			const previous = target[previousIndex];
+			if (previous?.kind === "extension-group") previous.items.push(item);
+			else if (previous?.kind === "item" && previous.item.view?.type === "extension_entry") {
+				target[previousIndex] = { kind: "extension-group", key: `extension-group:${previous.key}`, items: [previous, item] };
+			} else target.push(item);
 			continue;
 		}
 		if ((item.kind === "message" || item.kind === "compaction") && item.entryId) {
@@ -673,10 +712,16 @@ function markCompletedTurnResult(
 	if (!completed) {
 		const startedAt = userMessage ? messageStartedAt(userMessage) : undefined;
 		if (!userMessage || startedAt === undefined) return hookGroup ? [...content, hookGroup] : content;
+		const serverStartedAt = userMessage.timestamp ? Date.parse(userMessage.timestamp) : Number.NaN;
+		const clientClockOffsetMs = userMessage.sentAt !== undefined && Number.isFinite(serverStartedAt)
+			? userMessage.sentAt - serverStartedAt
+			: 0;
 		return [
 			userMessage,
 			{ kind: "live-elapsed", key: `live-elapsed:${userMessage.key}`, startedAt },
-			...content.slice(1),
+			...content.slice(1).map((entry) => entry.kind === "agent-step" && entry.step.status === "running"
+				? { ...entry, clientClockOffsetMs }
+				: entry),
 			...(hookGroup ? [hookGroup] : []),
 		];
 	}

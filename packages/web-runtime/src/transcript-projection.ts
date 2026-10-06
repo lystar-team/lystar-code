@@ -2,6 +2,7 @@ import type {
 	AgentStep,
 	JsonValue,
 	ToolDiff,
+	TranscriptCodemodeDetails,
 	TranscriptFile,
 	TranscriptItem,
 	TranscriptSubagentRef,
@@ -121,6 +122,50 @@ function subagentReferences(details: JsonValue | undefined): TranscriptSubagentR
 				: undefined;
 		return [{ runId, agentId, agent, task, ...(state ? { state } : {}) }];
 	});
+}
+
+function codemodeDetails(value: JsonValue | undefined): TranscriptCodemodeDetails | undefined {
+	let source = record(value);
+	if (!source && typeof value === "string") {
+		try {
+			source = record(JSON.parse(value) as JsonValue);
+		} catch {
+			// Older transcript entries may store structured details as JSON text.
+		}
+	}
+	if (!source || !Array.isArray(source.calls)) return undefined;
+	const states = new Set(["running", "ok", "error", "cancelled"]);
+	const calls = source.calls.flatMap((candidate) => {
+		const call = record(candidate);
+		if (
+			!call ||
+			typeof call.id !== "string" ||
+			typeof call.name !== "string" ||
+			typeof call.args !== "string" ||
+			typeof call.status !== "string" ||
+			!states.has(call.status)
+		)
+			return [];
+		const status = call.status as TranscriptCodemodeDetails["calls"][number]["status"];
+		return [
+			{
+				id: bounded(call.id),
+				name: bounded(call.name),
+				args: bounded(call.args),
+				status,
+				...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0
+					? { durationMs: call.durationMs }
+					: {}),
+				...(typeof call.error === "string" ? { error: bounded(call.error) } : {}),
+				...(typeof call.cost === "number" && Number.isFinite(call.cost) && call.cost >= 0
+					? { cost: call.cost }
+					: {}),
+			},
+		];
+	});
+	const fullOutputPath = typeof source.fullOutputPath === "string" ? bounded(source.fullOutputPath) : undefined;
+	if (calls.length === 0 && !fullOutputPath) return undefined;
+	return { calls, ...(fullOutputPath ? { fullOutputPath } : {}) };
 }
 
 function projectedAgentStep(payload: JsonRecord | undefined): AgentStep | undefined {
@@ -781,6 +826,7 @@ function projectTranscriptViews(
 		const diff = isError ? resultDiff : mergeToolDiff(call?.diff, resultDiff);
 		const summary = generatedImageSummary(name, call, entryMessage.details);
 		const subagents = name === "subagent" ? subagentReferences(entryMessage.details) : [];
+		const codemode = name === "codemode" ? codemodeDetails(entryMessage.details) : undefined;
 		return [
 			{
 				type: "tool_result",
@@ -794,6 +840,7 @@ function projectTranscriptViews(
 				...(diff ? { diff } : {}),
 				...(images.length > 0 ? { images } : {}),
 				...(subagents.length > 0 ? { subagents } : {}),
+				...(codemode ? { codemode } : {}),
 			},
 		];
 	}

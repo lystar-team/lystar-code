@@ -211,6 +211,12 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export type {
+	ContextProvider,
+	ContextProviderMessage,
+	ContextProviderPrepareEvent,
+	RegisteredContextProvider,
+} from "./core/extensions/types.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export type { RegisteredMcpServer } from "./core/mcp-servers.ts";
@@ -392,6 +398,7 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
+export type { ReadSourceDetails } from "./core/tools/read.ts";
 export {
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,

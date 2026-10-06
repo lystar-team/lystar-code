@@ -1,4 +1,4 @@
-import type { TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
+import type { TranscriptCodemodeDetails, TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
 import type { WebTranscriptItem } from "../types.ts";
 
 export type ToolVisualState = "input-available" | "output-available" | "output-error";
@@ -38,6 +38,7 @@ export interface TranscriptToolViewModel {
 	sources?: TranscriptSourceViewModel[];
 	webSearch?: WebSearchProgress;
 	images?: TranscriptImageViewModel[];
+	codemode?: TranscriptCodemodeDetails;
 	subagents?: TranscriptSubagentRef[];
 	diff?: {
 		files: Array<{
@@ -208,6 +209,7 @@ export function toSessionItemViewModel(
 					state: toToolState(view.status),
 					detail: view.detail,
 					images: view.images,
+					codemode: view.codemode,
 					subagents: view.subagents,
 					diff: view.diff,
 				},

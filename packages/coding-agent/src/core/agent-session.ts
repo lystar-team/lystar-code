@@ -122,6 +122,7 @@ import {
 	type ToolExposure,
 	type ToolInfo,
 	type ToolLoadout,
+	type ToolResultEvent,
 	type TreePreparation,
 	type TurnStartEvent,
 	wrapRegisteredTools,
@@ -965,6 +966,21 @@ export class AgentSession {
 				}
 			}
 		}
+
+		const finalStructuredContent = hookResult ? hookResult.structuredContent : result.structuredContent;
+		const finalToolResultEvent = {
+			type: "tool_result" as const,
+			toolName: toolCall.name,
+			toolCallId: toolCall.id,
+			...(parentToolCallId ? { parentToolCallId } : {}),
+			input: args as Record<string, unknown>,
+			content: finalContent,
+			details: hookResult ? hookResult.details : result.details,
+			...(finalStructuredContent === undefined ? {} : { structuredContent: finalStructuredContent }),
+			isError: finalIsError,
+			usage: hookResult ? hookResult.usage : result.usage,
+		} as ToolResultEvent;
+		await runner.observeContextProviderToolResult(finalToolResultEvent);
 
 		if (!hookResult && finalContent === content) return undefined;
 		return {
@@ -2667,6 +2683,11 @@ export class AgentSession {
 				signal,
 			);
 			signal.throwIfAborted();
+			const providerMessages = await raceWithAbortSignal(
+				this._extensionRunner.prepareContextProviders(expandedText, turn),
+				signal,
+			);
+			signal.throwIfAborted();
 			// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
 			// which updates the live loadout instead. An explicit edit wins; otherwise the live
 			// loadout is authoritative, so a setActiveTools() call is not undone here.
@@ -2703,7 +2724,7 @@ export class AgentSession {
 			}
 			this._pendingNextTurnMessages = [];
 
-			for (const msg of result.messages) {
+			for (const msg of [...result.messages, ...providerMessages]) {
 				messages.push({
 					role: "custom",
 					customType: msg.customType,

@@ -587,16 +587,17 @@ export function useWorkbenchStreamActions({
 					scheduleTranscriptRefresh(event.sessionId);
 					return;
 				}
+				const transcriptRefreshNeeded = needsTranscriptRefreshForCommit(
+					{
+						pageLoaded: stateRef.current.transcriptPageLoaded,
+						revision: stateRef.current.transcriptRevision,
+						runtimeGeneration: stateRef.current.session?.transcriptGeneration,
+					},
+					event,
+				);
 				const refreshNeeded =
-					Boolean(event.agentSteps?.length && agentStepIndexChanged(stateRef.current.agentSteps, event.agentSteps)) ||
-					needsTranscriptRefreshForCommit(
-						{
-							pageLoaded: stateRef.current.transcriptPageLoaded,
-							revision: stateRef.current.transcriptRevision,
-							runtimeGeneration: stateRef.current.session?.transcriptGeneration,
-						},
-						event,
-					);
+					transcriptRefreshNeeded ||
+					Boolean(event.agentSteps?.length && agentStepIndexChanged(stateRef.current.agentSteps, event.agentSteps));
 				// 提交前应用缓存，再按块映射交接；未属于本次提交的 delta 不能被丢弃。
 				flushPendingTextProgress();
 				updateState((current) => {
@@ -635,7 +636,8 @@ export function useWorkbenchStreamActions({
 						promptSendTimes: withPromptSendTimes(current, transcript),
 						liveTurnItems: reconcileLiveUserPrompts(next.liveTurnItems, transcript),
 						transcriptGeneration: current.transcriptGeneration,
-						transcriptRevision: stale ? current.transcriptRevision : event.toRevision,
+						// 断档提交只能补入收到的条目，不能确认缺失区间已同步；补读完成前保留已确认版本。
+						transcriptRevision: stale || transcriptRefreshNeeded ? current.transcriptRevision : event.toRevision,
 					};
 					return {
 						...updated,

@@ -121,12 +121,12 @@ export function ComposerSessionStats({
 	};
 
 	return (
-		<div aria-label="会话统计" className="@container/stats w-14 min-w-0 shrink-0 md:w-auto md:flex-1" role="group">
+		<div aria-label="会话统计" className="@container/stats w-14 min-w-12 shrink-0 md:w-auto md:flex-1" role="group">
 			<Popover>
 				<PopoverTrigger asChild>
 					<button
 						type="button"
-						className="inline-flex h-8 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground @min-[22rem]/stats:hidden"
+						className="inline-flex h-8 min-w-max shrink-0 items-center whitespace-nowrap rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground @min-[22rem]/stats:hidden"
 						aria-label="查看会话统计"
 					>
 						统计

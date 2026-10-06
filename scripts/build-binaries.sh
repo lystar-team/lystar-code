@@ -108,6 +108,7 @@ for platform in "${PLATFORMS[@]}"; do
     # Bun 只有显式收到 worker 入口时，才会把 worker 编入独立可执行文件。
     # 每个平台在对应原生 runner 构建，避免交叉 target 产出不可执行文件。
     # 禁用当前目录 bunfig.toml 自动加载，避免项目 preload 在独立程序启动前执行。
+    # 使用无源码路径别名的配置，避免 dist 入口再次导入 src 并产生两份运行时状态。
     bun_target="bun-$platform"
     if [[ "$platform" == *-x64 ]]; then
         bun_target="${bun_target}-baseline"
@@ -115,7 +116,7 @@ for platform in "${PLATFORMS[@]}"; do
     bun_output="$ROOT_DIR/packages/coding-agent/dist/.lystar-lc-${platform}-$$"
     BUN_STAGING_FILES+=("$bun_output")
     rm -f "$bun_output"
-    run_bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ../../scripts/lystar-bun-cli.mjs ./src/utils/image-resize-worker.ts ./src/extensions/codemode/worker.ts \
+    run_bun build --compile --no-compile-autoload-bunfig --tsconfig-override="$ROOT_DIR/tsconfig.base.json" --target="$bun_target" ../../scripts/lystar-bun-cli.mjs ./src/utils/image-resize-worker.ts ./src/extensions/codemode/worker.ts \
         --outfile "$bun_output"
     cp "$bun_output" "$OUTPUT_DIR/$platform/lc"
     rm -f "$bun_output"

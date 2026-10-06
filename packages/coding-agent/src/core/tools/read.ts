@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { ToolExecutionError, type ToolRecoveryReplacementResult } from "@earendil-works/pi-agent-core";
@@ -34,8 +35,18 @@ export const readToolSystemPromptContribution = {
 
 export type ReadToolInput = Static<typeof readSchema>;
 
+export interface ReadSourceDetails {
+	absolutePath: string;
+	revision: string;
+	startLine: number;
+	endLine: number;
+	totalLines: number;
+	outputHash: string;
+}
+
 export interface ReadToolDetails {
 	truncation?: TruncationResult;
+	source?: ReadSourceDetails;
 }
 
 interface CompactReadClassification {
@@ -108,6 +119,10 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 		end--;
 	}
 	return lines.slice(0, end);
+}
+
+function sha256(value: Buffer | string): string {
+	return createHash("sha256").update(value).digest("hex");
 }
 
 function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
@@ -520,6 +535,18 @@ export function createReadToolDefinition(
 								} else {
 									// No truncation and no remaining user-limited content.
 									outputText = truncation.content;
+								}
+								const sourceOutputLines = truncation.outputLines;
+								if (sourceOutputLines > 0 && !truncation.firstLineExceedsLimit) {
+									const source: ReadSourceDetails = {
+										absolutePath,
+										revision: sha256(buffer),
+										startLine: startLineDisplay,
+										endLine: startLineDisplay + sourceOutputLines - 1,
+										totalLines: totalFileLines,
+										outputHash: sha256(outputText),
+									};
+									details = { ...(details ?? {}), source };
 								}
 								content = [{ type: "text", text: outputText }];
 							}

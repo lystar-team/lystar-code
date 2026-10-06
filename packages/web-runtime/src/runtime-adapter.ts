@@ -2718,6 +2718,12 @@ class CoreRuntimeSession implements RuntimeSession {
 				event.entry.customType !== AGENT_STEP_CUSTOM_TYPE
 			) {
 				this.activeExtensionActivities.at(-1)?.relatedEntryIds.push(event.entry.id);
+				const toolCallId = toolRecord(event.entry.data)?.toolCallId;
+				const stepId =
+					typeof toolCallId === "string"
+						? this.stepController.stepIdForTool(toolCallId)
+						: this.stepController.activeStep?.id;
+				if (stepId) this.stepController.associateMessage(event.entry.id, stepId);
 			}
 			if (event.type === "entry_appended" && event.entry.type === "compaction") {
 				this.stepController.associateMessage(event.entry.id);

@@ -70,6 +70,7 @@ function sessionTitle(tool: ToolBatchTool, input: Record<string, unknown> | unde
 }
 
 export function toolPresentationTitle(tool: ToolBatchTool): string {
+	if (tool.name === "codemode") return "执行 JavaScript 脚本";
 	const input = inputRecord(tool.summary);
 	if (tool.images?.length && tool.name !== "image_gen") return `已查看 ${tool.images.length} 张图像`;
 	if (tool.name === "bash") {

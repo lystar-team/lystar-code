@@ -44,6 +44,7 @@ export { initialToolStackPresentation } from "./use-conversation-expansion";
 import { formatElapsedDuration } from "./conversation-format";
 import { LiveElapsedHeader } from "./live-elapsed-header";
 import { HookActivityGroup } from "./hook-activity-group";
+import { ExtensionEntryGroup } from "./extension-entry-group";
 export { formatElapsedDuration } from "./conversation-format";
 export { LiveElapsedHeader } from "./live-elapsed-header";
 
@@ -106,7 +107,9 @@ function AgentStepContent({
 		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
 		return () => window.clearInterval(timer);
 	}, [entry.step.startedAt, entry.step.status]);
-	const duration = formatElapsedDuration((entry.step.endedAt ?? now) - entry.step.startedAt);
+	const duration = formatElapsedDuration(
+		(entry.step.endedAt ?? now - (entry.clientClockOffsetMs ?? 0)) - entry.step.startedAt,
+	);
 	const StatusIcon =
 		entry.step.status === "running" ? LoaderCircle : entry.step.status === "completed" ? CheckCircle2 : CircleX;
 
@@ -164,7 +167,7 @@ export function initialTranscriptDisplayState(
 }
 
 function isActivityRow(entry: ConversationRenderItem): boolean {
-	if (entry.kind === "tool-stack" || entry.kind === "agent-step" || entry.kind === "compaction") return true;
+	if (entry.kind === "tool-stack" || entry.kind === "agent-step" || entry.kind === "compaction" || entry.kind === "extension-group") return true;
 	if (entry.kind !== "item") return false;
 	switch (entry.item.view?.type) {
 		case "tool_call":
@@ -274,6 +277,7 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 	if (previous.kind === "agent-step" && next.kind === "agent-step") {
 		return (
 			previous.live === next.live &&
+			previous.clientClockOffsetMs === next.clientClockOffsetMs &&
 			previous.step === next.step &&
 			previous.items.length === next.items.length &&
 			previous.items.every((item, index) => {
@@ -282,7 +286,8 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			})
 		);
 	}
-	if (previous.kind === "hook-group" && next.kind === "hook-group") {
+	if ((previous.kind === "hook-group" && next.kind === "hook-group") ||
+		(previous.kind === "extension-group" && next.kind === "extension-group")) {
 		return (
 			previous.items.length === next.items.length &&
 			previous.items.every((item, index) => item.item === next.items[index]?.item)
@@ -638,17 +643,40 @@ function ConversationBody({
 		),
 		[openResource],
 	);
+	const renderTranscriptItem = useCallback(
+		(entry: Extract<ConversationContentRenderItem, { kind: "item" }>) => {
+			const current = renderStateRef.current;
+			return <TranscriptItemView
+				item={entry.item}
+				showCopy={false}
+				toolStatuses={current.toolStatuses}
+				onOpenPath={openResource}
+				sessionId={current.sessionId}
+				projectId={current.projectId}
+			/>;
+		},
+		[openResource],
+	);
+	const renderExtensionGroup = useCallback(
+		(entry: Extract<ConversationContentRenderItem, { kind: "extension-group" }>) => <ExtensionEntryGroup
+			entry={entry}
+			initialOpen={expandedToolBatches.get(entry.key) ?? false}
+			onOpenChange={(open) => updateExpandedToolBatch(entry.key, open)}
+			renderItem={renderTranscriptItem}
+		/>,
+		[expandedToolBatches, renderTranscriptItem, updateExpandedToolBatch],
+	);
 	const renderAgentStepItem = useCallback(
 		(entry: AgentStepChildRenderItem) => {
 			return <div className="min-w-0" data-transcript-anchor-key={entry.key}>
-				{entry.kind === "message" ? renderMessage(entry) : entry.kind === "tool-stack" ? renderToolStack(entry) : renderCompaction(entry)}
+				{entry.kind === "message" ? renderMessage(entry) : entry.kind === "tool-stack" ? renderToolStack(entry) :
+					entry.kind === "compaction" ? renderCompaction(entry) : entry.kind === "extension-group" ? renderExtensionGroup(entry) : renderTranscriptItem(entry)}
 			</div>;
 		},
-		[renderCompaction, renderMessage, renderToolStack],
+		[renderCompaction, renderExtensionGroup, renderMessage, renderToolStack, renderTranscriptItem],
 	);
 	const renderConversationContentItem = useCallback(
 		(entry: ConversationContentRenderItem) => {
-			const current = renderStateRef.current;
 			if (entry.kind === "agent-step") {
 				const open = expandedAgentSteps.get(entry.key) ?? entry.step.status === "running";
 				return (
@@ -661,6 +689,7 @@ function ConversationBody({
 				);
 			}
 			if (entry.kind === "hook-group") return <HookActivityGroup entry={entry} />;
+			if (entry.kind === "extension-group") return renderExtensionGroup(entry);
 			const content =
 				entry.kind === "message" ? (
 					renderMessage(entry)
@@ -669,14 +698,7 @@ function ConversationBody({
 				) : entry.kind === "compaction" ? (
 					renderCompaction(entry)
 				) : (
-					<TranscriptItemView
-						item={entry.item}
-						showCopy={false}
-						toolStatuses={current.toolStatuses}
-						onOpenPath={openResource}
-						sessionId={current.sessionId}
-						projectId={current.projectId}
-					/>
+					renderTranscriptItem(entry)
 				);
 			return (
 				<div className="min-w-0" data-transcript-anchor-key={entry.key}>
@@ -686,12 +708,12 @@ function ConversationBody({
 		},
 		[
 			expandedAgentSteps,
-			liveElapsedChange,
-			openResource,
 			renderAgentStepItem,
 			renderCompaction,
+			renderExtensionGroup,
 			renderMessage,
 			renderToolStack,
+			renderTranscriptItem,
 			updateExpandedAgentStep,
 		],
 	);

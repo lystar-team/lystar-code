@@ -596,6 +596,27 @@ const TranscriptToolCallSchema = StrictObject({
 	summary: TranscriptViewTextSchema,
 	href: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
+const TranscriptCodemodeCallStatusSchema = Type.Union([
+	Type.Literal("running"),
+	Type.Literal("ok"),
+	Type.Literal("error"),
+	Type.Literal("cancelled"),
+]);
+const TranscriptCodemodeCallSchema = StrictObject({
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 256 }),
+	args: TranscriptViewTextSchema,
+	status: TranscriptCodemodeCallStatusSchema,
+	durationMs: Type.Optional(Type.Number({ minimum: 0 })),
+	error: Type.Optional(TranscriptViewTextSchema),
+	cost: Type.Optional(Type.Number({ minimum: 0 })),
+});
+export type TranscriptCodemodeCall = Static<typeof TranscriptCodemodeCallSchema>;
+const TranscriptCodemodeDetailsSchema = StrictObject({
+	calls: Type.Array(TranscriptCodemodeCallSchema, { maxItems: 128 }),
+	fullOutputPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+});
+export type TranscriptCodemodeDetails = Static<typeof TranscriptCodemodeDetailsSchema>;
 const TranscriptWebSearchSourceSchema = StrictObject({
 	url: Type.String({ minLength: 1, maxLength: 4096 }),
 	title: Type.Optional(TranscriptViewTextSchema),
@@ -669,6 +690,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		diff: Type.Optional(ToolDiffSchema),
 		images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
 		subagents: Type.Optional(Type.Array(TranscriptSubagentRefSchema, { maxItems: 32 })),
+		codemode: Type.Optional(TranscriptCodemodeDetailsSchema),
 	}),
 	StrictObject({ type: Type.Literal("bash"), text: TranscriptViewTextSchema }),
 	StrictObject({
