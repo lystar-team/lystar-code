@@ -159,6 +159,8 @@ describe("AgentSession MCP OAuth", () => {
 		const fallback = await setup("follow");
 		await fallback.harness.session.prompt("/mcp login issues");
 		expect(fallback.server.registrations.map((metadata) => metadata.client_name)).toEqual([APP_NAME]);
+		// OpenID Connect servers reject the loopback redirect URI of a `web` client (#10493).
+		expect(fallback.server.registrations.map((metadata) => metadata.application_type)).toEqual(["native"]);
 	});
 
 	it("adds the listening port to a callback URL without one", async () => {

@@ -81,6 +81,7 @@ type _AiModelFieldsAccountedFor = Assert<
 		| "contextWindow"
 		| "maxTokens"
 		| "samplingParams"
+		| "samplingParamsByThinkingLevel"
 		| "headers"
 		| "compat"
 		| "type"

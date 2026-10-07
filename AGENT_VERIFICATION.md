@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-09-27
+> 更新日期：2026-10-06
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -9,7 +9,17 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
-- 上游 Pi 基线为 `v0.87.1`；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前为 `0.87.1-lystar.2`。
+- 上游 Pi 基线为 `v1.0.4`（`7c10bd4337495ee613f2224843ecdf349b80d1df`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前为 `1.0.4-lystar.1`。
+
+## 1.0.4-lystar.1 发行前验证（2026-10-06）
+
+- `npm run check`、`npm run build:offline`、严格模型目录生成、`bash scripts/test-install-sh.sh` 通过。保留 LYStar 的 shrinkwrap、中文 TUI、Web 工作台、角色协作、上下文 Provider、读文件来源详情和安装更新入口。
+- Coding Agent 定向测试 16 个文件、364 项：363 项通过；唯一失败是 `test/tools.test.ts` 仍断言 `read.details` 为空。合并前的 `5ed1f12ba` 已返回 `details.source`，原断言也已存在；本轮保留来源详情，未改写该测试。
+- Web Runtime 定向测试 5 个文件、69 项，Web 对话/Transcript 定向测试 5 个文件、76 项，TUI 重绘/图片测试 145 项全部通过。Web Runtime 测试使用隔离的 `PI_CODING_AGENT_DIR`，避免本机 `lystar.json` 会话命名模型设置影响 faux Provider。
+- `npm run release:local -- --out /tmp/lystar-1.0.4-local-release --skip-check --skip-bun-install` 成功；独立 npm 安装的 SDK/CLI consumer smoke 通过。跳过的静态检查已单独执行，另一个 Bun 包管理器安装未运行。
+- Linux x64 standalone 归档 SHA-256 校验通过；从 `/tmp` 启动 Node 安装包和 Bun standalone，两者的版本、帮助、离线模型列表以及默认模型真实非交互请求均通过，回复 `ok`。
+- 独立 tmux socket 中，Node 和 Bun TUI 均收到默认模型的真实回复 `ok`；Bun TUI 在 80×24、80×8 和 120×36 下完成启动、设置页、resize 与退出检查。
+- 本机验证限于 Linux x64；其他四平台的构建、候选检查和正式资产发布由本版 Release workflow 完成，本机记录不替代跨平台实机验证。
 
 ## 0.87.1-lystar.2 发行前验证（2026-09-27）
 

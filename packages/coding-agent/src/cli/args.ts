@@ -36,6 +36,7 @@ export interface Args {
 	noBuiltinTools?: boolean;
 	extensions?: string[];
 	noExtensions?: boolean;
+	noMcp?: boolean;
 	print?: boolean;
 	export?: string;
 	noSkills?: boolean;
@@ -143,7 +144,10 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
-			result.models = args[++i].split(",").map((s) => s.trim());
+			result.models = args[++i]
+				.split(",")
+				.map((s) => s.trim())
+				.filter((pattern) => pattern.length > 0);
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
@@ -182,6 +186,8 @@ export function parseArgs(args: string[]): Args {
 			result.extensions.push(args[++i]);
 		} else if (arg === "--no-extensions" || arg === "-ne") {
 			result.noExtensions = true;
+		} else if (arg === "--no-mcp") {
+			result.noMcp = true;
 		} else if (arg === "--skill" && i + 1 < args.length) {
 			result.skills = result.skills ?? [];
 			result.skills.push(args[++i]);
@@ -333,11 +339,13 @@ ${chalk.bold("选项：")}
                                  支持 glob 和模糊匹配
   --no-tools, -nt                默认禁用全部工具
   --no-builtin-tools, -nbt       默认禁用内置工具，保留 Extension 和自定义工具
-  --tools, -t <tools>            启用的工具名称，逗号分隔
-  --exclude-tools, -xt <tools>   禁用的工具名称，逗号分隔
+  --tools, -t <tools>            启用的工具名称或 * 模式，逗号分隔
+                                 默认保留 MCP 工具，除非包含 mcp__ 开头的条目
+  --exclude-tools, -xt <tools>   禁用的工具名称或 * 模式，包含 MCP 工具
   --thinking <level>             思考强度：off、minimal、low、medium、high、xhigh、max
   --extension, -e <path>         加载 Extension 文件，可重复使用
   --no-extensions, -ne           关闭 Extension 自动发现，显式 -e 仍生效
+  --no-mcp                       本次运行关闭内置 MCP，不连接服务器或提供 MCP 工具
   --skill <path>                 加载 Skill 文件或目录，可重复使用
   --no-skills, -ns               关闭 Skill 自动发现和加载
   --prompt-template <path>       加载 Prompt Template 文件或目录，可重复使用
@@ -421,6 +429,9 @@ ${chalk.bold("示例：")}
 
   # 只读模式
   ${APP_NAME} --tools read,grep,find,ls -p "Review the code in src/"
+
+  # Codemode 仅使用指定 MCP 服务器的工具
+  ${APP_NAME} --tools read,bash,codemode,'mcp__radius__*'
 
   # 禁用一个工具，保留其余工具
   ${APP_NAME} --exclude-tools ask_question
