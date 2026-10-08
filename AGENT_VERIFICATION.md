@@ -11,15 +11,18 @@
 - 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
 - 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前候选版本为 `1.1.0-lystar.1`，尚未打 Tag 或发布。
 
-## 1.1.0-lystar.1 发行前验证（2026-10-08，未通过发布条件）
+## 1.1.0-lystar.1 发行前验证（2026-10-08，本机 gate 通过）
 
-- 当前待提交改动已保存为 `9ef54350d`；合并 Pi `v1.1.0`，保留 LYStar 的快照行范围编辑、Tool Recovery、中文全屏 TUI、Web 工作台、角色协作、Context Provider 和 `lc`/`lystar` 入口。
-- `npm run check` 通过。适配 Bedrock 的 `ultra` 思考等级和 Server 对上游 `durationMs` 字段的显式处理；协议 v1 不新增该字段。
-- Web 定向测试 6 个文件、102 项全部通过；Agent 定向测试 80 项、AI 耗时/计价/重试/分类定向测试 31 项、Web Protocol 42 项和发行 artifact/install/smoke 脚本 9 项通过。
-- `npm run release:local -- --out /tmp/lystar-1.1.0-local-release --skip-check --skip-bun-install` 完成严格模型目录生成、全量离线构建和 npm tarball 打包。随后调用隔离环境的 `./test.sh`，全量测试失败，脚本未进入 standalone 构建和外部 consumer 安装验证阶段。
-- 已确认的契约差异包括：旧测试仍断言 `read` 返回纯文本、程序状态使用 `pi` 名称、工具权限使用 `aria-pressed`、Web 默认监听旧地址。部分测试 mock 缺少 Context Provider、ProgramStatusReporter、Runtime `clearQueue` 或 DOM `querySelector`。
-- 另有并发探测、取消/压缩、TUI 输入和 Runtime/RPC 工具链路失败需要继续排查；不能将全量失败都归类为旧测试。`packages/env` 的 5 个测试套件缺少 Rust daemon 构建产物，未执行用例。
-- 完整日志：`/tmp/pi-bash-fbddaaa76bd5afd9.log`。未改写测试用例、未跳过断言失败发布；Node/Bun 真实请求和 PTY smoke、安装器、五平台正式资产验证尚未完成。需明确授权适配已有测试后继续验证。
+- 原改动已提交为 `9ef54350d`，Pi `v1.1.0` 合并为 `9a081e849`；保留 LYStar 的快照行范围编辑、Tool Recovery、中文全屏 TUI、Web 工作台、角色协作、Context Provider 和 `lc`/`lystar` 入口。
+- 获得用户授权后，只适配已有测试断言和 mock，不新增或删除用例。修复 Bash 卡片未采用记录耗时、结算回调被取消后仍报告完成的真实回归。
+- `npm run check` 通过；`npm --workspace @earendil-works/pi-env run build:daemon` 补齐本机 Rust daemon。
+- `npm run release:local -- --out /tmp/lystar-1.1.0-local-release --force --skip-check --skip-bun-install` 成功完成严格模型目录生成、全量离线构建、npm tarball 打包、隔离环境的 `./test.sh`、Linux x64 standalone 构建及全部 npm consumer 安装验证。静态检查单独执行；另一个 Bun 包管理器安装未运行，未跳过全量测试。
+- 全量测试包括 Coding Agent 360 个文件、3259 项通过（1 项跳过），AI 1283 项通过（5 项跳过），Web 452 项、Web Runtime 372 项、Web Protocol 42 项、Env 41 项通过（1 项按环境跳过）；其余工作区和 TUI 测试均通过。
+- `bash scripts/test-install-sh.sh` 通过。Node 安装包与 Bun standalone 从 `/tmp` 启动，版本、帮助、离线模型列表、默认模型真实非交互请求均通过，返回 `ok`。
+- 独立 tmux socket 中，Node 和 Bun TUI 均收到默认模型真实回复 `ok`；Bun TUI 在 80×24、80×8、120×36 下完成设置页、resize 和退出检查，tmux 服务随退出结束。
+- 本机既有模型筛选和重复 MCP 扩展配置产生警告；不影响请求和退出，未修改用户配置。Bun 构建出现 directory mismatch 提示，但返回成功，归档启动与真实请求已通过。
+- 完整发行日志：`/tmp/lystar-1.1.0-release-final.log`；PTY 回复：`/tmp/lystar-110-node-pty.log`、`/tmp/lystar-110-bun-pty.log`。此前失败日志保留为 `/tmp/pi-bash-fbddaaa76bd5afd9.log`。
+- 本机证据限于 Linux x64；其他四平台原生构建、候选资产校验和正式发布由 Release workflow 完成，尚未执行的跨平台实机行为不写成已验证。
 
 ## 1.0.4-lystar.1 发行前验证（2026-10-06）
 

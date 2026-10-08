@@ -12,8 +12,8 @@ test("WebConfigStore 将完整配置写入 agentDir 根目录", async () => {
 		const saved = await store.save({ host: "127.0.0.1", port: 1420, password: "web-password" });
 		assert.deepEqual(saved, {
 			version: 1,
-			host: "127.0.0.1",
-			allowedHosts: ["localhost", "127.0.0.1", "::1"],
+			host: "0.0.0.0",
+			allowedHosts: ["*"],
 			port: 1420,
 			runtimePort: 1422,
 			password: "web-password",

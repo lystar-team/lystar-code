@@ -500,7 +500,7 @@ describe("legacy apply_patch compatibility implementation", () => {
 		const tool = createApplyPatchToolDefinition();
 		expect(tool.promptSnippet).toContain("*** Begin Patch");
 		expect(tool.promptGuidelines).toContain(
-			"Use apply_patch only with the *** Begin Patch format; use edit for exact oldText/newText replacements.",
+			"Use apply_patch only with the *** Begin Patch format; use read snapshots and inclusive line ranges with edit, not oldText/newText replacements.",
 		);
 		expect(tool.promptGuidelines).toContain(
 			"For update hunks, include 3 lines of unchanged context before and after each change when possible.",

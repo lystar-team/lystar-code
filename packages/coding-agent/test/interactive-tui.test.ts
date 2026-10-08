@@ -186,10 +186,10 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput("\x1b[6~");
 			expect(workspace.render(terminal.columns)[1]).toContain("line-21");
 
-			terminal.sendInput("\x1b[H");
+			terminal.sendInput("\x1b[1;5H");
 			expect(workspace.render(terminal.columns)[1]).toContain("line-0");
 
-			terminal.sendInput("\x1b[F");
+			terminal.sendInput("\x1b[1;5F");
 			expect(workspace.render(terminal.columns)[1]).toContain("line-24");
 			expect(workspace.isFollowing()).toBe(true);
 

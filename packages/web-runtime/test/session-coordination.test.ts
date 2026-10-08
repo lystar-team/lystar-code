@@ -114,6 +114,7 @@ function createFakeRuntime(
 		followUp: async (text: string) => {
 			if (options.respondToFollowUp && !aborted) completeMessage(text);
 		},
+		clearQueue: async () => ({ steering: [], followUp: [] }),
 		abort: async () => {
 			aborted = true;
 			releasePrompt?.();

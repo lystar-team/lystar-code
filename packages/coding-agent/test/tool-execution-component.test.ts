@@ -430,7 +430,7 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("edit README.md");
+		expect(rendered).toContain("已编辑");
 		expect(rendered).toContain("README.md");
 		expect(rendered).not.toContain(":1");
 	});
@@ -610,10 +610,11 @@ describe("ToolExecutionComponent parity", () => {
 				vi.advanceTimersByTime(3_600_000);
 			}
 			component.updateResult({ content: [], isError: false, durationMs: 4_200 }, false);
+			component.setExpanded(true);
 			return stripAnsi(component.render(120).join("\n"));
 		};
-		expect(render(true)).toContain("Took 4.2s");
-		expect(render(false)).toContain("Took 4.2s");
+		expect(render(true)).toContain("$ sleep 4  4.2s");
+		expect(render(false)).toContain("$ sleep 4  4.2s");
 	});
 
 	test("does not duplicate built-in headers when passed the active built-in definition", () => {

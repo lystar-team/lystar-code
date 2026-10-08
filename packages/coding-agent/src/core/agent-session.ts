@@ -1549,8 +1549,10 @@ export class AgentSession {
 		this._isEmittingAgentSettled = true;
 		try {
 			const lastAssistant = this._findLastAssistantMessage();
-			const aborted = this._agentRunAbortRequested || lastAssistant?.stopReason === "aborted";
+			let aborted = this._agentRunAbortRequested || lastAssistant?.stopReason === "aborted";
 			await this._extensionRunner.emit({ type: "agent_settled", turn, aborted });
+			// 结算回调也可能被取消，最终结果必须采用回调结束后的状态。
+			aborted ||= this._agentRunAbortRequested || this._agentRunAbortController?.signal.aborted === true;
 			const finalText = this.getLastAssistantText();
 			const outcome = aborted ? "aborted" : lastAssistant?.stopReason === "error" ? "failed" : "completed";
 			this._lastTurnResult = {

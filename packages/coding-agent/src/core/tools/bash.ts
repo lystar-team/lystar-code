@@ -539,9 +539,11 @@ export function createShellToolDefinition(
 				state.endedAt ??= Date.now();
 			}
 			const duration =
-				state.startedAt !== undefined && state.endedAt !== undefined
-					? formatDuration(state.endedAt - state.startedAt)
-					: undefined;
+				!context.isPartial && context.durationMs !== undefined
+					? formatDuration(context.durationMs)
+					: state.startedAt !== undefined && state.endedAt !== undefined
+						? formatDuration(state.endedAt - state.startedAt)
+						: undefined;
 			const summary = getToolSummary(context.lastComponent);
 			summary.setText(
 				formatShellCall(args, config.prompt, {

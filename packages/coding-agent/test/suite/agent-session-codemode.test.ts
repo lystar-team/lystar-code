@@ -809,8 +809,8 @@ describe("codemode options and store", () => {
 			'text(await tools.read({ path: "notes.txt" }));\nconst shot = await tools.read({ path: "pixel.png" });\ntext(shot.note);\nimage(shot);',
 		);
 		expect(result.isError).toBe(false);
-		expect(checkSavedImages(resultText(result))).toBe(
-			"==> text 1/2 <==\nhello\n==> text 2/2 <==\nRead image file [image/png]\n<saved>\n<image>",
+		expect(checkSavedImages(resultText(result))).toMatch(
+			/^==> text 1\/2 <==\n\[snapshot r[0-9a-f]+; lines 1-1 of 1\]\n1\| hello\n==> text 2\/2 <==\nRead image file \[image\/png\]\n<saved>\n<image>$/,
 		);
 		expect(result.content.at(-1)).toEqual({ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 	});

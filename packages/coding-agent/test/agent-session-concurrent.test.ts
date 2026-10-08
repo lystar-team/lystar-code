@@ -496,9 +496,13 @@ describe("AgentSession concurrent prompt guard", () => {
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
 				invalidate: (message?: string) => void;
+				prepareContextProviders: () => Promise<[]>;
+				observeContextProviderToolResult: () => Promise<void>;
 			};
 		};
 		sessionWithRunner._extensionRunner = {
+			prepareContextProviders: async () => [],
+			observeContextProviderToolResult: async () => {},
 			hasHandlers: (eventType) => eventType === "tool_call",
 			emit: async () => {},
 			emitMessageEnd: async () => undefined,
@@ -643,9 +647,13 @@ describe("AgentSession concurrent prompt guard", () => {
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
 				invalidate: (message?: string) => void;
+				prepareContextProviders: () => Promise<[]>;
+				observeContextProviderToolResult: () => Promise<void>;
 			};
 		};
 		sessionWithRunner._extensionRunner = {
+			prepareContextProviders: async () => [],
+			observeContextProviderToolResult: async () => {},
 			hasHandlers: () => false,
 			emit: async () => {},
 			emitMessageEnd: async (event) => {

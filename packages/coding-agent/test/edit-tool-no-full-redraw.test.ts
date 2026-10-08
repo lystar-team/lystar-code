@@ -208,7 +208,7 @@ describe("edit tool TUI rendering", () => {
 		expect(rendered).toContain("line 150 changed");
 	});
 
-	it("shows a preflight error without rendering a diff when the edits do not apply", async () => {
+	it("shows an argument-only preview and renders the execution error without a diff", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-preflight-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "missing-edit.txt");
@@ -234,13 +234,10 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 		await waitForRender();
 
-		const rendered = await waitForRenderedText(
-			() => component.render(80).join("\n"),
-			"Could not find",
-			() => tui.requestRender(true),
-		);
-		expect(rendered).not.toContain("+1 ");
-		expect(rendered).not.toContain("-1 ");
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("预览 +1 -1");
+		expect(rendered).not.toContain("does not exist");
+		expect(rendered).not.toContain("replacement");
 
 		component.updateResult(
 			{
@@ -251,5 +248,7 @@ describe("edit tool TUI rendering", () => {
 		);
 		const settledError = stripAnsi(component.render(80).join("\n"));
 		expect(settledError.match(/Could not find/g)).toHaveLength(1);
+		expect(settledError).toContain("编辑失败");
+		expect(settledError).not.toContain("replacement");
 	});
 });

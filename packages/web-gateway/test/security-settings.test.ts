@@ -38,7 +38,7 @@ function captureResponse(): {
 test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-security-settings-"));
 	const server = new WebGatewayServer({
-		host: "127.0.0.1",
+		host: "0.0.0.0",
 		port: 1422,
 		agentDir,
 		runtimeEndpoint: join(agentDir, "host.sock"),
@@ -58,7 +58,7 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		const request = Readable.from([
 			Buffer.from(
 				JSON.stringify({
-					host: "192.168.2.35",
+					host: "0.0.0.0",
 					allowedHosts: ["127.0.0.1", "192.168.2.35"],
 					port: 15432,
 					runtimePort: 15433,
@@ -79,12 +79,14 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 
 		assert.equal(capture.getStatus(), 202);
 		assert.deepEqual(JSON.parse(capture.getBody()), {
-			host: "192.168.2.35",
+			host: "0.0.0.0",
+			ipAddresses: ["127.0.0.1", "192.168.2.35"],
+			accessPort: 15432,
 			allowedHosts: ["127.0.0.1", "192.168.2.35"],
 			port: 15432,
 			runtimePort: 15433,
 			passwordConfigured: true,
-			editable: { host: true, allowedHosts: true, port: true, runtimePort: true, password: true },
+			editable: { host: false, allowedHosts: true, port: true, runtimePort: true, password: true },
 			accepted: true,
 			passwordChanged: true,
 			restartPending: true,
@@ -92,10 +94,10 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		});
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(restartCount, 1);
-		assert.deepEqual(await loadWebGatewaySettings(agentDir), { host: "192.168.2.35", port: 15432 });
+		assert.deepEqual(await loadWebGatewaySettings(agentDir), { host: "0.0.0.0", port: 15432 });
 		assert.deepEqual(JSON.parse(await readFile(webConfigPath(agentDir), "utf8")), {
 			version: 1,
-			host: "192.168.2.35",
+			host: "0.0.0.0",
 			allowedHosts: ["127.0.0.1", "192.168.2.35"],
 			port: 15432,
 			runtimePort: 15433,

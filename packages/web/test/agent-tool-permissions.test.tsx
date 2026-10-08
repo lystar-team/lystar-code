@@ -31,7 +31,7 @@ describe("agent tool permissions", () => {
 			/>,
 		);
 		expect(markup).toContain("禁止使用");
-		expect(markup).toContain('aria-pressed="true"');
+		expect(markup).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*aria-label="禁止使用"/);
 		expect(markup).toContain("运行终端命令，执行脚本或检查项目");
 		expect(markup).toContain("查看项目状态");
 		expect(markup).toContain('type="checkbox" checked=""');

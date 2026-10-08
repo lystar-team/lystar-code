@@ -223,7 +223,7 @@ describe("AgentSession actionable boundaries", () => {
 			},
 		]);
 
-		await harness.session.prompt("old input ".repeat(500));
+		await harness.session.prompt("old input ".repeat(400));
 
 		expect(harness.eventsOfType("compaction_start").length).toBeGreaterThan(0);
 		expect(requests).toHaveLength(1);
@@ -733,7 +733,9 @@ describe("AgentSession actionable boundaries", () => {
 			expect.objectContaining({ type: "custom", customType: "committed-after-abort", data: true }),
 		);
 		// #10607: settlement reports the abort although the last response succeeded.
-		expect(harness.eventsOfType("agent_settled")).toEqual([{ type: "agent_settled", aborted: true }]);
+		expect(harness.eventsOfType("agent_settled")).toEqual([
+			{ type: "agent_settled", turn: expect.objectContaining({ turnId: expect.any(String) }), aborted: true },
+		]);
 	});
 });
 

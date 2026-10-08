@@ -20,14 +20,17 @@ const tool: ToolDefinition = {
 	execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 };
 
-type OutputPaddedComponent = Component & { setOutputPad(outputPad: number): void };
+type OutputPaddedComponent = Component & {
+	setOutputPad(outputPad: number): void;
+	setExpanded(expanded: boolean): void;
+};
 
-/** Text lines without ANSI codes or trailing fill. Blank lines and full-width borders are skipped. */
+/** 仅比较展开后的结果正文，排除固定卡片标题、展开指示和分隔线。 */
 function renderLines(component: Component): string[] {
 	return component
 		.render(60)
 		.map((line) => stripAnsi(line).trimEnd())
-		.filter((line) => /[\w$(]/.test(line));
+		.filter((line) => ["ok", "/tmp", "Could not find old text", "summary"].includes(line.trim()));
 }
 
 function createTool(definition: ToolDefinition | undefined, outputPad: number): ToolExecutionComponent {
@@ -86,8 +89,9 @@ describe("outputPad", () => {
 
 	test.each(components)("$name renders at outputPad 0 and 1", ({ create }) => {
 		const component = create(0);
+		component.setExpanded(true);
 		const lines = renderLines(component);
-		expect(lines.filter((line) => line.startsWith(" "))).toEqual([]);
+		expect(lines).toHaveLength(1);
 		component.setOutputPad(1);
 		expect(renderLines(component)).toEqual(lines.map((line) => ` ${line}`));
 	});

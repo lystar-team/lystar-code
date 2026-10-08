@@ -12,7 +12,7 @@ export default function runtimeContractExtension(pi: ExtensionAPI): void {
 	});
 
 	const isSessionNameRequest = (context: { messages: readonly unknown[] }): boolean =>
-		JSON.stringify(context.messages).includes("会话命名助手");
+		JSON.stringify(context.messages).includes("你只负责为会话生成标题");
 	if (scenario === "tool") {
 		let toolCallReturned = false;
 		faux.setResponses([

@@ -50,6 +50,8 @@ async function startSilentSocket(
 ): Promise<void> {
 	const server = createServer((socket) => {
 		rawSockets.add(socket);
+		// 消费握手字节，让对端关闭后能及时观察到 FIN，而不返回握手响应。
+		socket.resume();
 		if (connections) {
 			connections.active += 1;
 			connections.maximum = Math.max(connections.maximum, connections.active);

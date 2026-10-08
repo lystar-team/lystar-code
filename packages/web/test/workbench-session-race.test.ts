@@ -132,6 +132,7 @@ describe("后台展示与读取生命周期", () => {
 		addEventListener: ReturnType<typeof vi.fn>;
 		removeEventListener: ReturnType<typeof vi.fn>;
 		documentElement: { dataset: Record<string, string> };
+		querySelector: ReturnType<typeof vi.fn>;
 	};
 
 	beforeEach(() => {
@@ -142,6 +143,7 @@ describe("后台展示与读取生命周期", () => {
 			addEventListener: vi.fn(),
 			removeEventListener: vi.fn(),
 			documentElement: { dataset: {} },
+			querySelector: vi.fn().mockReturnValue(null),
 		};
 		vi.stubGlobal("document", visibility);
 		vi.stubGlobal("BroadcastChannel", undefined);
