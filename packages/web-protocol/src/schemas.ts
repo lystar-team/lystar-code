@@ -579,9 +579,45 @@ const SessionWorkspaceSchema = StrictObject({
 	worktreePath: Type.Optional(Type.String({ minLength: 1 })),
 	baselinePath: Type.Optional(Type.String({ minLength: 1 })),
 	patchPath: Type.Optional(Type.String({ minLength: 1 })),
+	baselineTree: Type.Optional(Type.String({ minLength: 1 })),
+	sizeBytes: Type.Optional(Type.Integer({ minimum: 0 })),
+	retainedReason: Type.Optional(Type.String()),
+	trustSource: Type.Optional(Type.String()),
 });
 export type SessionWorkspace = Static<typeof SessionWorkspaceSchema>;
 
+export const SessionCollaborationResultSchema = StrictObject({
+	taskId: Id,
+	outcome: Type.Union([
+		Type.Literal("completed"),
+		Type.Literal("failed"),
+		Type.Literal("aborted"),
+		Type.Literal("interrupted"),
+	]),
+	resultText: Type.Optional(Type.String()),
+	resultMessageId: Type.Optional(Id),
+	error: Type.Optional(Type.String()),
+	completedAt: Type.String(),
+	workspace: Type.Optional(SessionWorkspaceSchema),
+	changedFiles: Type.Optional(Type.Array(Type.String())),
+	deliveryCommit: Type.Optional(Type.String()),
+	patchPath: Type.Optional(Type.String()),
+});
+export type SessionCollaborationResult = Static<typeof SessionCollaborationResultSchema>;
+export const SessionWorkspacesResultSchema = StrictObject({
+	workspaces: Type.Array(
+		StrictObject({
+			sessionId: Id,
+			sessionPath: Type.String(),
+			workspace: SessionWorkspaceSchema,
+			canRelease: Type.Boolean(),
+			reason: Type.Optional(Type.String()),
+			result: Type.Optional(SessionCollaborationResultSchema),
+		}),
+	),
+	released: Type.Optional(Type.Array(Id)),
+});
+export type SessionWorkspacesResult = Static<typeof SessionWorkspacesResultSchema>;
 export const SessionSummarySchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
 	id: Id,
@@ -1233,11 +1269,18 @@ export const SettingSummarySchema = StrictObject({
 });
 export type SettingSummary = Static<typeof SettingSummarySchema>;
 
+export const ProjectTrustCollaborationInheritanceSchema = StrictObject({
+	enabled: Type.Boolean(),
+	inherited: Type.Boolean(),
+	sourceCwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	reason: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
+});
 export const ProjectTrustSchema = StrictObject({
 	cwd: Type.String({ minLength: 1, maxLength: 4096 }),
 	trusted: Type.Union([Type.Boolean(), Type.Null()]),
 	reason: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
 	resourceRisk: Type.Boolean(),
+	collaborationInheritance: Type.Optional(ProjectTrustCollaborationInheritanceSchema),
 });
 export type ProjectTrust = Static<typeof ProjectTrustSchema>;
 
@@ -1547,6 +1590,8 @@ export const ClipboardImageReadResultSchema = StrictObject({
 export type ClipboardImageReadResult = Static<typeof ClipboardImageReadResultSchema>;
 
 export const WorkspaceCommandResultSchemas = {
+	session_workspaces: SessionWorkspacesResultSchema,
+	session_accept_result: SessionCollaborationResultSchema,
 	list_skills: ListSkillsResultSchema,
 	list_harness_imports: ListHarnessImportsResultSchema,
 	import_harness_resources: ImportHarnessResourcesResultSchema,
@@ -1651,6 +1696,21 @@ export const CommandSchema = Type.Union([
 		metadataOnly: Type.Optional(Type.Boolean()),
 	}),
 	StrictObject({
+		command: Type.Literal("session_workspaces"),
+		cwd: Type.String({ minLength: 1 }),
+		action: Type.Union([Type.Literal("preview"), Type.Literal("cleanup")]),
+		sessionIds: Type.Optional(Type.Array(Id)),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("session_accept_result"),
+		cwd: Type.String({ minLength: 1 }),
+		sessionId: Id,
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
 		command: Type.Literal("list_project_sessions"),
 		cwd: Type.String({ minLength: 1 }),
 	}),
@@ -1745,6 +1805,9 @@ export const CommandSchema = Type.Union([
 		sessionId: Id,
 		title: Type.String({ minLength: 1, maxLength: 200 }),
 		description: Type.Optional(Type.String({ maxLength: 8000 })),
+		workspaceMode: Type.Optional(
+			Type.Union([Type.Literal("shared"), Type.Literal("worktree"), Type.Literal("patch")]),
+		),
 	}),
 	StrictObject({
 		command: Type.Literal("room_task_list"),
@@ -2274,7 +2337,8 @@ export const CommandSchema = Type.Union([
 		sessionPath: Type.String({ minLength: 1 }),
 		leaseId: Id,
 		cwd: Type.String({ minLength: 1 }),
-		trusted: Type.Boolean(),
+		trusted: Type.Union([Type.Boolean(), Type.Null()]),
+		inheritCollaboration: Type.Optional(Type.Boolean()),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

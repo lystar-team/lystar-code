@@ -260,6 +260,10 @@ const ConversationTranscriptScroller = forwardRef<
 				) contextRef.current.onExpansionIntent?.();
 			}}
 			onKeyDownCapture={(event) => {
+				if (event.target instanceof Element) {
+					if (event.target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) return;
+					if (event.key === " " && event.target.closest('button, a[href], [role="button"]')) return;
+				}
 				if (SCROLL_INTENT_KEYS.has(event.key)) contextRef.current.onUserScrollIntent();
 				if (SCROLL_AWAY_KEYS.has(event.key) || (event.key === " " && event.shiftKey)) {
 					contextRef.current.onUserScrollAway();
@@ -274,13 +278,14 @@ const ConversationTranscriptScroller = forwardRef<
 				} else if (event.deltaY > 0) contextRef.current.onUserScrollDown();
 			}}
 			onTouchStart={(event) => {
+				contextRef.current.onUserScrollIntent();
 				lastTouchYRef.current = event.touches[0]?.clientY;
 			}}
 			onTouchMove={(event) => {
 				const y = event.touches[0]?.clientY;
 				if (y !== undefined && lastTouchYRef.current !== undefined) {
+					contextRef.current.onUserScrollIntent();
 					if (y > lastTouchYRef.current) {
-						contextRef.current.onUserScrollIntent();
 						contextRef.current.onUserScrollAway();
 						contextRef.current.onUserScrollUp();
 					} else if (y < lastTouchYRef.current) contextRef.current.onUserScrollDown();
@@ -296,6 +301,13 @@ const ConversationTranscriptScroller = forwardRef<
 			onPointerDown={(event) => {
 				pointerActiveRef.current = true;
 				lastScrollTopRef.current = event.currentTarget.scrollTop;
+				const bounds = event.currentTarget.getBoundingClientRect();
+				const contentLeft = bounds.left + event.currentTarget.clientLeft;
+				const contentRight = contentLeft + event.currentTarget.clientWidth;
+				if (event.target === event.currentTarget && (event.clientX < contentLeft || event.clientX >= contentRight)) {
+					contextRef.current.onUserScrollIntent();
+					contextRef.current.onUserScrollAway();
+				}
 			}}
 			onPointerUp={() => {
 				pointerActiveRef.current = false;
@@ -409,6 +421,9 @@ export interface VirtualizedConversationTranscriptProps<T>
 	header?: ReactNode;
 	onScrollStateCapture: (sessionKey: string, state: ConversationTranscriptScrollState) => void;
 	scrollState?: ConversationTranscriptScrollState;
+	historyCursor?: string;
+	onUserScrollIntent?: () => void;
+	onScrollingStateChange?: (scrolling: boolean) => void;
 	totalListHeightChanged?: (height: number) => void;
 	onScrollerRef?: (element: HTMLElement | null) => void;
 	onUserScrollAway: () => void;
@@ -438,6 +453,8 @@ export function VirtualizedConversationTranscript<T>({
 	onUserScrollDown,
 	onUserScrollUp,
 	onExpansionIntent,
+	onUserScrollIntent,
+	onScrollingStateChange,
 	sessionKey,
 	virtuosoRef,
 	isItemEqual,
@@ -455,6 +472,7 @@ export function VirtualizedConversationTranscript<T>({
 	}
 	const handleScrollingStateChange = useCallback(
 		(scrolling: boolean) => {
+			onScrollingStateChange?.(scrolling);
 			if (scrolling) {
 				scrollingStartedRef.current = true;
 				return;
@@ -493,7 +511,7 @@ export function VirtualizedConversationTranscript<T>({
 			);
 			if (anchor) onScrollStateCapture(sessionKey, anchor);
 		},
-		[atBottomStateChange, followOutput, getKey, items, onScrollStateCapture, sessionKey],
+		[atBottomStateChange, followOutput, getKey, items, onScrollStateCapture, onScrollingStateChange, sessionKey],
 	);
 	const handleScrollerRef = useCallback(
 		(element: HTMLElement | null) => {
@@ -504,7 +522,8 @@ export function VirtualizedConversationTranscript<T>({
 	);
 	const handleUserScrollIntent = useCallback(() => {
 		userScrollIntentRef.current = true;
-	}, []);
+		onUserScrollIntent?.();
+	}, [onUserScrollIntent]);
 	const context = useMemo(
 		() => ({
 			footer,

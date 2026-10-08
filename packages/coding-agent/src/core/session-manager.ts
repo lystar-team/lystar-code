@@ -62,6 +62,10 @@ export interface SessionWorkspaceSnapshot {
 	worktreePath?: string;
 	baselinePath?: string;
 	patchPath?: string;
+	baselineTree?: string;
+	sizeBytes?: number;
+	retainedReason?: string;
+	trustSource?: string;
 }
 
 export interface SessionCollaborationTask {
@@ -1120,6 +1124,14 @@ function parseSessionWorkspaceSnapshot(value: unknown): SessionWorkspaceSnapshot
 		...(typeof candidate.worktreePath === "string" ? { worktreePath: candidate.worktreePath } : {}),
 		...(typeof candidate.baselinePath === "string" ? { baselinePath: candidate.baselinePath } : {}),
 		...(typeof candidate.patchPath === "string" ? { patchPath: candidate.patchPath } : {}),
+		...(typeof candidate.baselineTree === "string" ? { baselineTree: candidate.baselineTree } : {}),
+		...(typeof candidate.sizeBytes === "number" &&
+		Number.isSafeInteger(candidate.sizeBytes) &&
+		candidate.sizeBytes >= 0
+			? { sizeBytes: candidate.sizeBytes }
+			: {}),
+		...(typeof candidate.retainedReason === "string" ? { retainedReason: candidate.retainedReason } : {}),
+		...(typeof candidate.trustSource === "string" ? { trustSource: candidate.trustSource } : {}),
 	};
 }
 
@@ -2051,9 +2063,46 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Persist the latest result of a collaboration task. Returns entry id. */
+	/** Persist the latest result of a collaboration task and synchronize its workspace header. */
 	appendCollaborationResult(result: SessionCollaborationResult): string {
-		return this.appendCustomEntry(SESSION_COLLABORATION_RESULT_CUSTOM_TYPE, result);
+		this._assertWritable();
+		const header = this.getHeader();
+		const currentWorkspace = header?.collaborationWorkspace;
+		const workspace = result.workspace
+			? currentWorkspace?.id === result.workspace.id
+				? { ...currentWorkspace, ...result.workspace }
+				: result.workspace
+			: undefined;
+		const entry: CustomEntry<SessionCollaborationResult> = {
+			type: "custom",
+			customType: SESSION_COLLABORATION_RESULT_CUSTOM_TYPE,
+			data: { ...result, ...(workspace ? { workspace } : {}) },
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		const previousEntries = this.fileEntries;
+		const previousCwd = this.cwd;
+		const nextEntries = this.fileEntries.slice();
+		if (header && workspace) {
+			const headerIndex = nextEntries.findIndex((candidate) => candidate.type === "session");
+			if (headerIndex < 0) throw new Error("Session header is missing");
+			nextEntries[headerIndex] = { ...header, cwd: workspace.cwd, collaborationWorkspace: workspace };
+		}
+		nextEntries.push(entry);
+		this.fileEntries = nextEntries;
+		if (workspace) this.cwd = resolvePath(workspace.cwd);
+		this._buildIndex();
+		try {
+			if (this.flushed) this._rewriteFile();
+			else this._persist(entry);
+		} catch (error) {
+			this.fileEntries = previousEntries;
+			this.cwd = previousCwd;
+			this._buildIndex();
+			throw error;
+		}
+		return entry.id;
 	}
 
 	/** Read the collaboration task declared in the session header. */
@@ -2064,6 +2113,47 @@ export class SessionManager {
 	/** Read the workspace declared in the session header. */
 	getCollaborationWorkspace(): SessionWorkspaceSnapshot | undefined {
 		return this.getHeader()?.collaborationWorkspace;
+	}
+
+	/** Update workspace metadata in place while retaining this manager's writer lease. */
+	setCollaborationWorkspace(
+		workspace: SessionWorkspaceSnapshot | undefined,
+		options: { cwd?: string; syncLatestResult?: boolean } = {},
+	): void {
+		this._assertWritable();
+		const header = this.getHeader();
+		if (!header) throw new Error("Session header is missing");
+		const cwd = resolvePath(workspace?.cwd ?? options.cwd ?? header.cwd);
+		const previousEntries = this.fileEntries;
+		const previousCwd = this.cwd;
+		const nextEntries = this.fileEntries.slice();
+		const headerIndex = nextEntries.findIndex((candidate) => candidate.type === "session");
+		if (headerIndex < 0) throw new Error("Session header is missing");
+		const nextHeader: SessionHeader = { ...header, cwd };
+		if (workspace) nextHeader.collaborationWorkspace = workspace;
+		else delete nextHeader.collaborationWorkspace;
+		nextEntries[headerIndex] = nextHeader;
+		if (options.syncLatestResult && workspace) {
+			for (let index = nextEntries.length - 1; index >= 0; index--) {
+				const entry = nextEntries[index];
+				if (entry?.type !== "custom" || entry.customType !== SESSION_COLLABORATION_RESULT_CUSTOM_TYPE) continue;
+				const result = parseSessionCollaborationResult(entry.data);
+				if (result?.workspace?.id !== workspace.id) continue;
+				nextEntries[index] = { ...entry, data: { ...result, workspace } };
+				break;
+			}
+		}
+		this.fileEntries = nextEntries;
+		this.cwd = cwd;
+		this._buildIndex();
+		try {
+			if (this.persist && this.sessionFile && this.flushed) this._rewriteFile();
+		} catch (error) {
+			this.fileEntries = previousEntries;
+			this.cwd = previousCwd;
+			this._buildIndex();
+			throw error;
+		}
 	}
 
 	/** Read the latest persisted collaboration result. */

@@ -25,6 +25,7 @@ export interface SessionRoomCoordinatorOptions {
 	getProfileDescription?(cwd: string, profileId: string): string | undefined;
 	deliver(input: SessionRoomDeliveryInput): Promise<void> | Promise<number>;
 	acceptTaskResult?(task: SessionRoomTask, ownerSessionId: string): Promise<SessionCollaborationResult>;
+	onDeliverySettled?(cwd: string): void;
 }
 
 function roomError(message: string, code: string): Error & { code: string; retryable: boolean } {
@@ -67,6 +68,7 @@ export class SessionRoomCoordinator {
 		task: SessionRoomTask,
 		ownerSessionId: string,
 	) => Promise<SessionCollaborationResult>;
+	private readonly onDeliverySettled?: (cwd: string) => void;
 	private readonly deliveriesInFlight = new Set<string>();
 	private readonly timer: ReturnType<typeof setInterval>;
 	private retryTimer?: ReturnType<typeof setTimeout>;
@@ -81,6 +83,7 @@ export class SessionRoomCoordinator {
 		this.getProfileDescription = options.getProfileDescription ?? (() => undefined);
 		this.deliver = options.deliver;
 		this.acceptTaskResult = options.acceptTaskResult;
+		this.onDeliverySettled = options.onDeliverySettled;
 		this.scheduleDeliveries();
 		this.timer = setInterval(() => {
 			this.scheduleDeliveries();
@@ -349,7 +352,7 @@ export class SessionRoomCoordinator {
 		if (!title || title.length > 200 || description.length > 8000) {
 			throw roomError("任务标题或内容长度无效", "room_task_content_invalid");
 		}
-		const task = this.store.createTask(input.roomId, input.sessionId, title, description);
+		const task = this.store.createTask(input.roomId, input.sessionId, title, description, input.workspaceMode);
 		await this.offerTask(task, input.sessionId);
 		return task;
 	}
@@ -371,7 +374,7 @@ export class SessionRoomCoordinator {
 			targetSessionIds: [task.assigneeSessionId],
 			kind: "task",
 			taskId: task.id,
-			body: `任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n此任务由 Runtime 在隔离工作区执行；提交实际产物、验证结果和阻塞，不创建下级会话。`,
+			body: `任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n工作区模式：${task.workspaceMode ?? "worktree"}。此任务由 Runtime 按指定模式执行；提交实际产物、验证结果和阻塞，不创建下级会话。`,
 			capabilities: {
 				allowedTools: [
 					"read",
@@ -636,6 +639,7 @@ export class SessionRoomCoordinator {
 				} finally {
 					this.deliveriesInFlight.delete(key);
 					this.scheduleDeliveries();
+					if (!this.disposed) this.onDeliverySettled?.(this.store.room(message.roomId).cwd);
 				}
 			}),
 		);

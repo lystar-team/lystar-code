@@ -6,6 +6,7 @@ import {
 	collaborationAlias,
 	collaborationStatus,
 } from "./collaboration-session";
+import { SessionWorkspaceActions } from "./session-workspaces";
 
 function collaborationStatusIcon(session: WebSessionSummary) {
 	switch (session.activity) {
@@ -44,10 +45,16 @@ function collaborationStatusClass(session: WebSessionSummary): string {
 
 export function CollaborationCapsules({
 	sessions,
+	projectId,
 	onOpenSession,
+	onRefresh,
+	onToast,
 }: {
 	sessions: WebSessionSummary[];
+	projectId?: string;
 	onOpenSession: (sessionId: string) => void;
+	onRefresh: (projectId: string) => Promise<void>;
+	onToast: (message: string) => void;
 }) {
 	const childSessions = sessions.filter(
 		(session) => session.relation === "collaboration" && Boolean(session.parentId),
@@ -64,10 +71,10 @@ export function CollaborationCapsules({
 				const status = collaborationStatus(session);
 				const task = session.firstMessage.trim() && session.firstMessage !== "未命名会话" ? session.firstMessage : undefined;
 				return (
-					<div key={session.id} role="listitem">
+					<div className="flex max-w-[min(34rem,92vw)] shrink-0 items-center overflow-hidden rounded-full border border-border/70 bg-muted/20" key={session.id} role="listitem">
 						<button
 							aria-label={`打开协作子会话 ${alias}，${status}`}
-							className="flex min-w-0 max-w-[min(26rem,88vw)] shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-muted/20 px-2.5 py-1 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 							onClick={() => onOpenSession(session.id)}
 							title={`${alias} · ${agentType}${task ? `：${task}` : ""}`}
 							type="button"
@@ -77,6 +84,13 @@ export function CollaborationCapsules({
 							<span className="min-w-0 truncate text-muted-foreground">{agentType}</span>
 							<StatusIcon className={`size-3 shrink-0 ${collaborationStatusClass(session)}`} aria-hidden="true" />
 						</button>
+						<SessionWorkspaceActions
+							projectId={projectId}
+							session={session}
+							sessions={childSessions}
+							onRefresh={onRefresh}
+							onToast={onToast}
+						/>
 					</div>
 				);
 			})}

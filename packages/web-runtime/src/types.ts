@@ -114,6 +114,7 @@ export interface RuntimeSessionAsyncControls {
 		activeToolNames?: readonly string[];
 		capabilities?: AgentCapabilityLease;
 	}): RuntimePromptReservation;
+	updateCollaborationWorkspace?(workspace: SessionWorkspaceSnapshot): Promise<void>;
 	recordCollaborationResult?(result: SessionCollaborationResult): Promise<void>;
 }
 
@@ -297,6 +298,11 @@ export interface RuntimeAdapter {
 		onUiRequest: UiRequestHandler,
 		options?: { deferExtensionLifecycle?: boolean },
 	): Promise<RuntimeSession>;
+	relocateSession?(
+		sessionPath: string,
+		workspace: SessionWorkspaceSnapshot,
+		transition?: () => Promise<void>,
+	): Promise<void>;
 	inspectSession(sessionPath: string): SessionStateSnapshot | Promise<SessionStateSnapshot>;
 	inspectSessionActivity?(sessionPath: string): Promise<SessionActivity | undefined>;
 	isSessionWriterLocked(sessionPath: string): boolean;
@@ -402,7 +408,7 @@ export interface RuntimeAdapter {
 	): { transcript?: SubagentSnapshot } | Promise<{ transcript?: SubagentSnapshot }>;
 	getProjectTrust(cwd: string): ProjectTrust;
 	getProjectTrustDecision(cwd: string): boolean | null;
-	setProjectTrust(cwd: string, trusted: boolean | null): Promise<ProjectTrust>;
+	setProjectTrust(cwd: string, trusted: boolean | null, inheritCollaboration?: boolean): Promise<ProjectTrust>;
 	listPackages(cwd: string): PackageSummary[];
 	installPackage(
 		cwd: string,

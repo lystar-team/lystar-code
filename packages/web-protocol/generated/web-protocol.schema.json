@@ -119,6 +119,93 @@
                   "type": "object",
                   "required": [
                     "command",
+                    "cwd",
+                    "action",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "session_workspaces"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "preview"
+                        },
+                        {
+                          "type": "string",
+                          "const": "cleanup"
+                        }
+                      ]
+                    },
+                    "sessionIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      }
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "sessionId",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "session_accept_result"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
                     "cwd"
                   ],
                   "properties": {
@@ -613,6 +700,22 @@
                     "description": {
                       "type": "string",
                       "maxLength": 8000
+                    },
+                    "workspaceMode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "shared"
+                        },
+                        {
+                          "type": "string",
+                          "const": "worktree"
+                        },
+                        {
+                          "type": "string",
+                          "const": "patch"
+                        }
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -4020,6 +4123,16 @@
                       "minLength": 1
                     },
                     "trusted": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "inheritCollaboration": {
                       "type": "boolean"
                     },
                     "clientInstanceId": {
@@ -8736,6 +8849,488 @@
           "additionalProperties": false
         }
       ]
+    },
+    "WorkspaceSessionWorkspacesResult": {
+      "type": "object",
+      "required": [
+        "workspaces"
+      ],
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sessionId",
+              "sessionPath",
+              "workspace",
+              "canRelease"
+            ],
+            "properties": {
+              "sessionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "sessionPath": {
+                "type": "string"
+              },
+              "workspace": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "mode",
+                  "projectCwd",
+                  "cwd",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "shared"
+                      },
+                      {
+                        "type": "string",
+                        "const": "worktree"
+                      },
+                      {
+                        "type": "string",
+                        "const": "patch"
+                      }
+                    ]
+                  },
+                  "projectCwd": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "active"
+                      },
+                      {
+                        "type": "string",
+                        "const": "delivered"
+                      },
+                      {
+                        "type": "string",
+                        "const": "accepted"
+                      },
+                      {
+                        "type": "string",
+                        "const": "failed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "released"
+                      }
+                    ]
+                  },
+                  "repositoryRoot": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "baseCommit": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "branch": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "worktreePath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "baselinePath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "patchPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "baselineTree": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "retainedReason": {
+                    "type": "string"
+                  },
+                  "trustSource": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "canRelease": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "result": {
+                "type": "object",
+                "required": [
+                  "taskId",
+                  "outcome",
+                  "completedAt"
+                ],
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "outcome": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "completed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "failed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "aborted"
+                      },
+                      {
+                        "type": "string",
+                        "const": "interrupted"
+                      }
+                    ]
+                  },
+                  "resultText": {
+                    "type": "string"
+                  },
+                  "resultMessageId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "completedAt": {
+                    "type": "string"
+                  },
+                  "workspace": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "mode",
+                      "projectCwd",
+                      "cwd",
+                      "status"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "mode": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "shared"
+                          },
+                          {
+                            "type": "string",
+                            "const": "worktree"
+                          },
+                          {
+                            "type": "string",
+                            "const": "patch"
+                          }
+                        ]
+                      },
+                      "projectCwd": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "cwd": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "active"
+                          },
+                          {
+                            "type": "string",
+                            "const": "delivered"
+                          },
+                          {
+                            "type": "string",
+                            "const": "accepted"
+                          },
+                          {
+                            "type": "string",
+                            "const": "failed"
+                          },
+                          {
+                            "type": "string",
+                            "const": "released"
+                          }
+                        ]
+                      },
+                      "repositoryRoot": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "baseCommit": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "branch": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "worktreePath": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "baselinePath": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "patchPath": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "baselineTree": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sizeBytes": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "retainedReason": {
+                        "type": "string"
+                      },
+                      "trustSource": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "changedFiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "deliveryCommit": {
+                    "type": "string"
+                  },
+                  "patchPath": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "released": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceSessionAcceptResultResult": {
+      "type": "object",
+      "required": [
+        "taskId",
+        "outcome",
+        "completedAt"
+      ],
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "completed"
+            },
+            {
+              "type": "string",
+              "const": "failed"
+            },
+            {
+              "type": "string",
+              "const": "aborted"
+            },
+            {
+              "type": "string",
+              "const": "interrupted"
+            }
+          ]
+        },
+        "resultText": {
+          "type": "string"
+        },
+        "resultMessageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "error": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "object",
+          "required": [
+            "id",
+            "mode",
+            "projectCwd",
+            "cwd",
+            "status"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "shared"
+                },
+                {
+                  "type": "string",
+                  "const": "worktree"
+                },
+                {
+                  "type": "string",
+                  "const": "patch"
+                }
+              ]
+            },
+            "projectCwd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "active"
+                },
+                {
+                  "type": "string",
+                  "const": "delivered"
+                },
+                {
+                  "type": "string",
+                  "const": "accepted"
+                },
+                {
+                  "type": "string",
+                  "const": "failed"
+                },
+                {
+                  "type": "string",
+                  "const": "released"
+                }
+              ]
+            },
+            "repositoryRoot": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baseCommit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "branch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "worktreePath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baselinePath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "patchPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baselineTree": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sizeBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retainedReason": {
+              "type": "string"
+            },
+            "trustSource": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deliveryCommit": {
+          "type": "string"
+        },
+        "patchPath": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "WorkspaceListSkillsResult": {
       "type": "object",
@@ -17892,6 +18487,32 @@
         },
         "resourceRisk": {
           "type": "boolean"
+        },
+        "collaborationInheritance": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "inherited"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "inherited": {
+              "type": "boolean"
+            },
+            "sourceCwd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -17927,6 +18548,32 @@
         },
         "resourceRisk": {
           "type": "boolean"
+        },
+        "collaborationInheritance": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "inherited"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "inherited": {
+              "type": "boolean"
+            },
+            "sourceCwd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

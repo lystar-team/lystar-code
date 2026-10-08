@@ -1,12 +1,13 @@
-import { LoaderCircle, Plus } from "lucide-react";
+import { ArrowRight, LoaderCircle, Plus } from "lucide-react";
 import { collaborationAlias } from "@lystar/code-web-protocol";
 import { useEffect, useState } from "react";
 import type { RoomWorkspaceController } from "../../state/use-room-workspace";
-import type { WebRoomMember, WebRoomTask, WebRoomTaskStatus } from "../../types";
+import type { WebRoomMember, WebRoomTask, WebRoomTaskStatus, WebSessionSummary, WebSessionWorkspaceMode } from "../../types";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
+import { formatWorkspaceSize, SessionWorkspaceActions, workspaceModeLabel, workspaceStatusLabel } from "./session-workspaces";
 
 const COLUMNS: ReadonlyArray<{ status: WebRoomTaskStatus; title: string }> = [
 	{ status: "todo", title: "待认领" },
@@ -20,10 +21,25 @@ function memberName(members: readonly WebRoomMember[], sessionId: string): strin
 	return member?.role === "owner" ? "你" : member?.nickname?.trim() || collaborationAlias(sessionId);
 }
 
-function TaskDetail({ task, members, controller, onClose }: {
+function TaskDetail({
+	task,
+	members,
+	controller,
+	projectId,
+	sessions,
+	onOpenSession,
+	onRefreshSessions,
+	onToast,
+	onClose,
+}: {
 	task: WebRoomTask;
 	members: readonly WebRoomMember[];
 	controller: RoomWorkspaceController;
+	projectId?: string;
+	sessions: readonly WebSessionSummary[];
+	onOpenSession: (sessionId: string) => void;
+	onRefreshSessions: (projectId: string) => Promise<void>;
+	onToast: (message: string) => void;
 	onClose: () => void;
 }) {
 	const [status, setStatus] = useState<WebRoomTaskStatus>(task.status);
@@ -37,6 +53,8 @@ function TaskDetail({ task, members, controller, onClose }: {
 	useEffect(() => { setStatus(task.status); }, [task.status]);
 	useEffect(() => { setAssigneeSessionId(task.assigneeSessionId ?? ""); }, [task.assigneeSessionId]);
 	const changed = title.trim() !== task.title || description.trim() !== task.description || assigneeSessionId !== (task.assigneeSessionId ?? "");
+	const executionSession = sessions.find((session) => session.id === task.execution?.sessionId);
+	const workspace = executionSession?.workspace ?? task.execution?.workspace;
 
 	const submit = async (action: () => Promise<void>) => {
 		setSubmitting(true);
@@ -51,20 +69,65 @@ function TaskDetail({ task, members, controller, onClose }: {
 			<DialogContent className="sm:max-w-xl">
 				<DialogHeader><DialogTitle className="pr-6">{task.title}</DialogTitle></DialogHeader>
 				<div className="grid max-h-[65dvh] gap-5 overflow-y-auto py-1">
-				<div className="grid gap-2">
-					<label htmlFor="room-task-edit-title" className="text-sm font-medium">标题</label>
-					<Input id="room-task-edit-title" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
-					<label htmlFor="room-task-edit-description" className="text-sm font-medium">任务内容</label>
-					<Textarea id="room-task-edit-description" maxLength={8000} rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
-					<label htmlFor="room-task-assignee" className="text-sm font-medium">负责人</label>
-					<select id="room-task-assignee" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={assigneeSessionId} onChange={(event) => setAssigneeSessionId(event.target.value)}>
-						<option value="">待认领</option>
-						{members.filter((member) => member.role === "member" && !member.leftAt).map((member) => <option key={member.sessionId} value={member.sessionId}>{memberName(members, member.sessionId)}</option>)}
-					</select>
-					<Button variant="outline" className="justify-self-end" disabled={submitting || !title.trim() || !changed || (task.status === "done" && assigneeSessionId !== (task.assigneeSessionId ?? ""))} onClick={() => void submit(async () => {
-						await controller.editRoomTask(task.id, { title: title.trim(), description: description.trim(), assigneeSessionId: assigneeSessionId || null });
-					})}>保存任务</Button>
-				</div>
+					<div className="grid gap-2 border-b border-border/70 pb-3">
+						<div className="flex flex-wrap justify-between gap-x-4 gap-y-1 text-sm">
+							<span className="text-muted-foreground">任务工作区模式</span>
+							<span>{task.workspaceMode ? workspaceModeLabel(task.workspaceMode) : "未记录"}</span>
+						</div>
+						{task.execution?.sessionId ? (
+							<>
+								{workspace ? (
+									<div className="grid gap-1 text-xs text-muted-foreground">
+										<p>执行工作区：{workspaceModeLabel(workspace.mode)}，{workspaceStatusLabel(workspace.status)}</p>
+										<p>大小：{formatWorkspaceSize(workspace.sizeBytes)}</p>
+										{workspace.retainedReason ? <p className="break-words">保留原因：{workspace.retainedReason}</p> : null}
+										<p className="break-all">信任来源：{workspace.trustSource ?? "未提供"}</p>
+									</div>
+								) : <p className="text-xs text-muted-foreground">执行会话尚未提供工作区状态。</p>}
+								<div className="flex flex-wrap items-center gap-2">
+									<Button variant="outline" size="sm" onClick={() => onOpenSession(task.execution!.sessionId!)}>
+										<ArrowRight className="size-4" aria-hidden="true" />打开执行会话
+									</Button>
+									{executionSession?.workspace && projectId ? (
+										<SessionWorkspaceActions
+											projectId={projectId}
+											session={executionSession}
+											sessions={sessions}
+											onRefresh={onRefreshSessions}
+											onToast={onToast}
+										/>
+									) : null}
+								</div>
+							</>
+						) : <p className="text-xs text-muted-foreground">任务尚未开始执行。</p>}
+					</div>
+					<div className="grid gap-2">
+						<label htmlFor="room-task-edit-title" className="text-sm font-medium">标题</label>
+						<Input id="room-task-edit-title" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
+						<label htmlFor="room-task-edit-description" className="text-sm font-medium">任务内容</label>
+						<Textarea id="room-task-edit-description" maxLength={8000} rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
+						<label htmlFor="room-task-assignee" className="text-sm font-medium">负责人</label>
+						<select id="room-task-assignee" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={assigneeSessionId} onChange={(event) => setAssigneeSessionId(event.target.value)}>
+							<option value="">待认领</option>
+							{members.filter((member) => member.role === "member" && !member.leftAt).map((member) => (
+								<option key={member.sessionId} value={member.sessionId}>{memberName(members, member.sessionId)}</option>
+							))}
+						</select>
+						<Button
+							variant="outline"
+							className="justify-self-end"
+							disabled={submitting || !title.trim() || !changed || (task.status === "done" && assigneeSessionId !== (task.assigneeSessionId ?? ""))}
+							onClick={() => void submit(async () => {
+								await controller.editRoomTask(task.id, {
+									title: title.trim(),
+									description: description.trim(),
+									assigneeSessionId: assigneeSessionId || null,
+								});
+							})}
+						>
+							保存任务
+						</Button>
+					</div>
 				{task.resultText ? <div className="grid gap-2 border-t border-border pt-3"><h3 className="text-sm font-medium">任务结果</h3><p className="whitespace-pre-wrap break-words text-sm leading-6">{task.resultText}</p></div> : null}
 				{task.updates.length ? (
 					<div className="grid gap-2 border-t border-border pt-3">
@@ -100,25 +163,40 @@ function TaskDetail({ task, members, controller, onClose }: {
 	);
 }
 
-export function RoomTaskBoard({ controller }: { controller: RoomWorkspaceController }) {
+export function RoomTaskBoard({
+	controller,
+	projectId,
+	sessions,
+	onOpenSession,
+	onRefreshSessions,
+	onToast,
+}: {
+	controller: RoomWorkspaceController;
+	projectId?: string;
+	sessions: readonly WebSessionSummary[];
+	onOpenSession: (sessionId: string) => void;
+	onRefreshSessions: (projectId: string) => Promise<void>;
+	onToast: (message: string) => void;
+}) {
 	const [createOpen, setCreateOpen] = useState(false);
 	const [title, setTitle] = useState("");
 	const [description, setDescription] = useState("");
+	const [workspaceMode, setWorkspaceMode] = useState<WebSessionWorkspaceMode>("shared");
 	const [selectedId, setSelectedId] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string>();
 	const members = controller.selectedRoom?.members ?? [];
 	const selectedTask = controller.roomTasks.find((task) => task.id === selectedId);
-
 	const create = async () => {
 		if (!title.trim()) return;
 		setSubmitting(true);
 		setError(undefined);
 		try {
-			await controller.createRoomTask(title.trim(), description.trim());
+			await controller.createRoomTask(title.trim(), description.trim(), workspaceMode);
 			setCreateOpen(false);
 			setTitle("");
 			setDescription("");
+			setWorkspaceMode("shared");
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -145,12 +223,27 @@ export function RoomTaskBoard({ controller }: { controller: RoomWorkspaceControl
 								<section key={column.status} aria-label={column.title} className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-muted p-3 sm:p-4">
 									<h3 className="mb-3 flex shrink-0 items-baseline gap-2 text-base font-semibold">{column.title}<span className="text-xs font-normal tabular-nums text-muted-foreground">{tasks.length}</span></h3>
 									<div className="grid min-h-0 flex-1 content-start gap-2.5 overflow-y-auto">
-										{tasks.map((task) => (
-											<button key={task.id} type="button" onClick={() => setSelectedId(task.id)} className="min-h-24 w-full rounded-xl border border-input/65 bg-card px-3 py-3 text-left text-sm shadow-sm transition-colors hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-4 sm:py-4">
-												<span className="block break-words font-medium sm:text-base">{task.title}</span>
-												<span className="mt-2 block text-xs text-muted-foreground sm:text-sm">{task.assigneeSessionId ? memberName(members, task.assigneeSessionId) : "待认领"}</span>
-											</button>
-										))}
+										{tasks.map((task) => {
+											const executionSession = sessions.find((session) => session.id === task.execution?.sessionId);
+											const workspace = executionSession?.workspace ?? task.execution?.workspace;
+											return (
+												<button
+													key={task.id}
+													type="button"
+													onClick={() => setSelectedId(task.id)}
+													className="min-h-28 w-full rounded-md border border-input/65 bg-card px-3 py-3 text-left text-sm transition-colors hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-4 sm:py-4"
+												>
+													<span className="block break-words font-medium sm:text-base">{task.title}</span>
+													<span className="mt-2 block truncate text-xs text-muted-foreground sm:text-sm">{task.assigneeSessionId ? memberName(members, task.assigneeSessionId) : "待认领"}</span>
+													<span className="mt-1 block truncate text-xs text-muted-foreground">{task.workspaceMode ? workspaceModeLabel(task.workspaceMode) : "模式未记录"}</span>
+													{workspace ? (
+														<span className="mt-1 block truncate text-xs text-muted-foreground">
+															执行状态：{workspaceStatusLabel(workspace.status)}
+														</span>
+													) : null}
+												</button>
+											);
+										})}
 									</div>
 								</section>
 							);
@@ -158,8 +251,24 @@ export function RoomTaskBoard({ controller }: { controller: RoomWorkspaceControl
 					</div>
 				</div>
 			)}
-			{selectedTask ? <TaskDetail key={selectedTask.id} task={selectedTask} members={members} controller={controller} onClose={() => setSelectedId(undefined)} /> : null}
-			<Dialog open={createOpen} onOpenChange={setCreateOpen}>
+			{selectedTask ? (
+				<TaskDetail
+					key={selectedTask.id}
+					task={selectedTask}
+					members={members}
+					controller={controller}
+					projectId={projectId}
+					sessions={sessions}
+					onOpenSession={onOpenSession}
+					onRefreshSessions={onRefreshSessions}
+					onToast={onToast}
+					onClose={() => setSelectedId(undefined)}
+				/>
+			) : null}
+			<Dialog open={createOpen} onOpenChange={(open) => {
+				setCreateOpen(open);
+				if (open) setWorkspaceMode("shared");
+			}}>
 				<DialogContent className="sm:max-w-lg">
 					<DialogHeader><DialogTitle>新建任务</DialogTitle></DialogHeader>
 					<div className="grid gap-3 py-2">
@@ -167,6 +276,12 @@ export function RoomTaskBoard({ controller }: { controller: RoomWorkspaceControl
 						<Input id="room-task-title" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
 						<label htmlFor="room-task-description" className="text-sm font-medium">任务内容</label>
 						<Textarea id="room-task-description" maxLength={8000} rows={5} value={description} onChange={(event) => setDescription(event.target.value)} />
+						<label htmlFor="room-task-workspace-mode" className="text-sm font-medium">工作区模式</label>
+						<select id="room-task-workspace-mode" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as WebSessionWorkspaceMode)}>
+							<option value="shared">共享工作区</option>
+							<option value="worktree">独立 worktree</option>
+							<option value="patch">补丁交付</option>
+						</select>
 						{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
 					</div>
 					<DialogFooter>

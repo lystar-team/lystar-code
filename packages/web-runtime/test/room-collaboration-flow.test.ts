@@ -84,6 +84,7 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 						roomId,
 						title: "按接口结论生成文件",
 						description: "依据 A 的结论生成 delivery.txt，并记录验证结果",
+						workspaceMode: "patch",
 					}),
 				],
 				{ stopReason: "toolUse" },
@@ -187,7 +188,10 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 			targetSessionIds: [b.session.id],
 			body: "依据 A 的结论执行交付",
 		});
-		await expect.poll(() => store.listTasks(roomId)[0]?.status, { timeout: 20_000 }).toBe("done");
+		await expect.poll(() => store.listTasks(roomId)[0]?.status, { timeout: 30_000 }).toBe("done");
+		await expect
+			.poll(() => store.listTasks(roomId)[0]?.execution?.result?.workspace?.status, { timeout: 10_000 })
+			.toBe("released");
 		const task = store.listTasks(roomId)[0]!;
 		expect(errors).toEqual([]);
 		expect(bSawA).toBe(true);
@@ -208,7 +212,7 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 		const result = task.execution!.result!;
 		expect(readFileSync(join(result.workspace!.cwd, "delivery.txt"), "utf8")).toContain("orderId");
 		expect(existsSync(join(cwd, "delivery.txt"))).toBe(true);
-		expect(task.execution?.result?.workspace?.status).toBe("accepted");
+		expect(task.execution?.result?.workspace?.status).toBe("released");
 		expect(readFileSync(result.patchPath!, "utf8")).toContain("orderId");
 		expect(task.resultMessageId).toBeTruthy();
 		expect(task.updates.at(-1)?.note).toContain("验收通过");
@@ -234,4 +238,4 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 		vi.restoreAllMocks();
 		rmSync(root, { recursive: true, force: true });
 	}
-}, 45_000);
+}, 60_000);

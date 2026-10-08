@@ -2896,6 +2896,34 @@ export class WebGatewayServer {
 				return;
 			}
 		}
+		if (parts.length === 4 && parts[3] === "session-workspaces" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			if (body.action !== "preview" && body.action !== "cleanup") {
+				throw new HttpError(400, "session_workspace_action_invalid", "工作区操作无效");
+			}
+			let sessionIds: string[] | undefined;
+			if (body.sessionIds !== undefined) {
+				if (
+					!Array.isArray(body.sessionIds) ||
+					!body.sessionIds.every((value) => typeof value === "string" && value.trim())
+				) {
+					throw new HttpError(400, "session_workspace_ids_invalid", "会话编号无效");
+				}
+				sessionIds = [...new Set(body.sessionIds as string[])];
+			}
+			const command = {
+				command: "session_workspaces",
+				cwd: project.cwd,
+				action: body.action,
+				...(sessionIds ? { sessionIds } : {}),
+				clientInstanceId: context.id,
+				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+			} as unknown as Command;
+			const result = await (await this.getClient(context)).request<JsonValue>(command);
+			if (body.action === "cleanup") this.invalidateBootstrap(context);
+			sendJson(response, 200, result);
+			return;
+		}
 		if (parts.length === 6 && parts[3] === "rooms" && parts[5] === "tasks") {
 			const roomId = parts[4];
 			const client = await this.getClient(context);
@@ -2925,6 +2953,15 @@ export class WebGatewayServer {
 				if (session.projectId !== project.id)
 					throw new HttpError(400, "room_project_mismatch", "会话不属于当前项目");
 				const title = stringValue(body.title)?.trim();
+				const workspaceMode = body.workspaceMode;
+				if (
+					workspaceMode !== undefined &&
+					workspaceMode !== "shared" &&
+					workspaceMode !== "worktree" &&
+					workspaceMode !== "patch"
+				) {
+					throw new HttpError(400, "room_task_workspace_mode_invalid", "工作区模式无效");
+				}
 				if (
 					!title ||
 					title.length > 200 ||
@@ -2933,18 +2970,16 @@ export class WebGatewayServer {
 				) {
 					throw new HttpError(400, "room_task_content_invalid", "任务标题或内容长度无效");
 				}
-				sendJson(
-					response,
-					201,
-					await client.request<JsonValue>({
-						command: "room_task_create",
-						cwd: project.cwd,
-						roomId,
-						sessionId,
-						title,
-						...(typeof body.description === "string" ? { description: body.description } : {}),
-					}),
-				);
+				const command = {
+					command: "room_task_create",
+					cwd: project.cwd,
+					roomId,
+					sessionId,
+					title,
+					...(typeof body.description === "string" ? { description: body.description } : {}),
+					...(workspaceMode ? { workspaceMode } : {}),
+				} as Command;
+				sendJson(response, 201, await client.request<JsonValue>(command));
 				return;
 			}
 		}
@@ -3458,6 +3493,10 @@ export class WebGatewayServer {
 				const body = await parseJsonBody(request);
 				if (typeof body.sessionId !== "string")
 					throw new HttpError(400, "session_required", "写入项目信任状态需要当前会话");
+				if (!(body.trusted === null || typeof body.trusted === "boolean"))
+					throw new HttpError(400, "project_trust_value_invalid", "项目信任值无效");
+				if (body.inheritCollaboration !== undefined && typeof body.inheritCollaboration !== "boolean")
+					throw new HttpError(400, "project_trust_inheritance_invalid", "协作信任继承值无效");
 				const session = await this.resolveSession(context, body.sessionId);
 				const lease = await this.requireLease(context, body.sessionId);
 				sendJson(
@@ -3466,7 +3505,10 @@ export class WebGatewayServer {
 					await client.request<ProjectTrust>({
 						command: "set_project_trust",
 						cwd: project.cwd,
-						trusted: body.trusted === true,
+						trusted: body.trusted,
+						...(typeof body.inheritCollaboration === "boolean"
+							? { inheritCollaboration: body.inheritCollaboration }
+							: {}),
 						sessionPath: session.path,
 						leaseId: lease.leaseId,
 						clientInstanceId: context.id,
@@ -3562,6 +3604,21 @@ export class WebGatewayServer {
 		const sessionId = parts[2];
 		const session = await this.resolveSession(context, sessionId);
 		const client = await this.getClient(context);
+		if (parts.length === 4 && parts[3] === "accept-result") {
+			if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "不支持的会话操作");
+			const body = await parseJsonBody(request);
+			const command = {
+				command: "session_accept_result",
+				cwd: this.project(session.projectId).cwd,
+				sessionId,
+				clientInstanceId: context.id,
+				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
+			} as unknown as Command;
+			const result = await client.request<JsonValue>(command);
+			this.invalidateBootstrap(context);
+			sendJson(response, 200, result);
+			return;
+		}
 		if (parts.length === 3 && request.method === "GET") {
 			sendJson(response, 200, {
 				session: publicSessionSnapshot(

@@ -1,5 +1,5 @@
 import type { AgentCapabilityLease } from "./input-origin.ts";
-import type { SessionCollaborationResult, SessionWorkspaceSnapshot } from "./session-manager.ts";
+import type { SessionCollaborationResult, SessionWorkspaceMode, SessionWorkspaceSnapshot } from "./session-manager.ts";
 
 export type SessionRoomMode = "direct" | "group";
 export type SessionRoomRoute = "direct" | "broadcast" | "one_of_us";
@@ -78,6 +78,7 @@ export interface SessionRoomTask {
 	roomId: string;
 	title: string;
 	description: string;
+	workspaceMode?: SessionWorkspaceMode;
 	status: SessionRoomTaskStatus;
 	createdBySessionId: string;
 	assigneeSessionId?: string;
@@ -176,6 +177,7 @@ export interface SessionRoomApi {
 		sessionId: string;
 		title: string;
 		description?: string;
+		workspaceMode?: SessionWorkspaceMode;
 	}): Promise<SessionRoomTask>;
 	taskList(input: { cwd: string; roomId: string; sessionId: string }): Promise<SessionRoomTask[]>;
 	taskClaim(input: { cwd: string; roomId: string; taskId: string; sessionId: string }): Promise<SessionRoomTask>;

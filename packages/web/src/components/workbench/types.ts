@@ -137,7 +137,7 @@ export interface WorkbenchActions {
 	refreshHostInstructions: () => Promise<void>;
 	saveHostInstruction: (content: string, expectedHash?: string) => Promise<void>;
 	setTheme: (theme: ThemeMode) => void;
-	setProjectTrust: (trusted: boolean) => Promise<void>;
+	setProjectTrust: (trusted: boolean | null, inheritCollaboration?: boolean) => Promise<void>;
 	respondUiRequest: (
 		request: UiRequestEvent,
 		response: { value?: unknown; confirmed?: boolean; cancelled?: boolean },

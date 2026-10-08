@@ -87,4 +87,16 @@ export interface SessionCoordinator {
 		note?: string;
 		onProgress?: (session: SessionCoordinatorSummary) => void;
 	}): Promise<SessionCoordinatorSummary>;
+	accept?(input: { cwd: string; sessionId: string; callerSessionId?: string }): Promise<SessionCollaborationResult>;
+	workspaces?(input: { cwd: string; action: "preview" | "cleanup"; sessionIds?: string[] }): Promise<{
+		workspaces: Array<{
+			sessionId: string;
+			sessionPath: string;
+			workspace: SessionWorkspaceSnapshot;
+			canRelease: boolean;
+			reason?: string;
+			result?: SessionCollaborationResult;
+		}>;
+		released?: string[];
+	}>;
 }

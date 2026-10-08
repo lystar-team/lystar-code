@@ -68,10 +68,15 @@ export function useWorkbenchProjectActions({
 	}, [updateState]);
 
 	const setProjectTrust = useCallback(
-		async (trusted: boolean) => {
+		async (trusted: boolean | null, inheritCollaboration?: boolean) => {
 			const current = stateRef.current;
 			if (!current.currentProjectId || !current.sessionId || current.readOnly) return;
-			const result = await webApi.setProjectTrust(current.currentProjectId, current.sessionId, trusted);
+			const result = await webApi.setProjectTrust(
+				current.currentProjectId,
+				current.sessionId,
+				trusted,
+				inheritCollaboration,
+			);
 			updateState((next) => ({ ...next, projectTrust: result }));
 		},
 		[updateState],

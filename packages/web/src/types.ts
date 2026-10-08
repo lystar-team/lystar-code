@@ -26,6 +26,9 @@ import type {
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionSummary,
+	SessionWorkspace,
+	SessionCollaborationResult,
+	SessionWorkspacesResult,
 	SessionTreeNode,
 	SettingSummary,
 	SubagentConfig,
@@ -51,8 +54,13 @@ export type {
 	SubagentSnapshot,
 };
 
+export type WebSessionWorkspace = SessionWorkspace;
 export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean; roomMember?: boolean };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
+export type WebSessionWorkspaceMode = SessionWorkspace["mode"];
+export type WebSessionWorkspaceStatus = SessionWorkspace["status"];
+export type WebSessionCollaborationResult = SessionCollaborationResult;
+export type WebSessionWorkspacesResult = SessionWorkspacesResult;
 export type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 
 export type ToolBatchState =
@@ -172,6 +180,12 @@ export interface WebRoomTask {
 	resultMessageId?: string;
 	resultText?: string;
 	updates: Array<{ actorSessionId: string; status: WebRoomTaskStatus; note?: string; kind?: "comment"; createdAt: string }>;
+	execution?: {
+		sessionId?: string;
+		workspace?: WebSessionWorkspace;
+		result?: WebSessionCollaborationResult;
+	};
+	workspaceMode?: WebSessionWorkspaceMode;
 	createdAt: string;
 	updatedAt: string;
 }

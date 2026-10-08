@@ -16,6 +16,7 @@ import {
 import { SessionToolsDialog } from "./session-tree-panel";
 import { SessionTurnRow } from "./session-turn-row";
 import type { WorkbenchActions } from "./types";
+import type { ProjectTrustResponse } from "../../types";
 
 const TITLES = {
 	model: "选择模型",
@@ -54,7 +55,8 @@ export function CommandDialog({ request, state, actions, onClose }: {
 	const [busy, setBusy] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
-	const [trust, setTrust] = useState<WorkbenchState["projectTrust"]>();
+	const [trust, setTrust] = useState<ProjectTrustResponse>();
+	const [inheritCollaboration, setInheritCollaboration] = useState(false);
 	const model = state.modelOptions.find((item) => item.provider === state.session?.model?.provider && item.id === state.session?.model?.id);
 	const levels = visibleThinkingLevels(model?.supportedThinkingLevels.length ? model.supportedThinkingLevels : ["off"]);
 	const selectedThinkingLevel = selectedVisibleThinkingLevel(state.session?.thinkingLevel ?? "off", levels);
@@ -75,7 +77,10 @@ export function CommandDialog({ request, state, actions, onClose }: {
 				if (request.kind === "tree") await actions.loadSessionTree();
 				if (request.kind === "trust" && state.currentProjectId) {
 					const result = await webApi.projectTrust(state.currentProjectId);
-					if (!cancelled) setTrust(result);
+					if (!cancelled) {
+						setTrust(result);
+						setInheritCollaboration(result.collaborationInheritance?.enabled ?? false);
+					}
 				}
 			} catch (cause) {
 				if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
@@ -94,6 +99,21 @@ export function CommandDialog({ request, state, actions, onClose }: {
 		try {
 			await operation();
 			onClose();
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setBusy(false);
+		}
+	};
+	const updateInheritance = async (enabled: boolean) => {
+		if (unavailable || !trust || trust.trusted !== true || !state.currentProjectId) return;
+		setBusy(true);
+		setError("");
+		try {
+			await actions.setProjectTrust(trust.trusted, enabled);
+			const result = await webApi.projectTrust(state.currentProjectId);
+			setTrust(result);
+			setInheritCollaboration(result.collaborationInheritance?.enabled ?? false);
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -185,7 +205,30 @@ export function CommandDialog({ request, state, actions, onClose }: {
 
 				{request.kind === "trust" && trust ? <div className="grid gap-4">
 					<p className="text-sm">{trust.trusted === true ? "当前项目已信任" : trust.trusted === false ? "当前项目未信任" : "当前项目尚未设置信任"}</p>
-					<DialogFooter><Button variant="outline" disabled={unavailable} onClick={() => void run(() => actions.setProjectTrust(false))}>不信任</Button><Button disabled={unavailable} onClick={() => void run(() => actions.setProjectTrust(true))}>信任项目</Button></DialogFooter>
+					<div className="grid gap-2 border-t border-border/70 pt-3">
+						<label className="flex items-start gap-2 text-sm">
+							<input
+								aria-label="允许协作工作区继承信任"
+								checked={trust.trusted === true && inheritCollaboration}
+								className="mt-0.5 size-4 accent-primary"
+								disabled={unavailable || trust.trusted !== true || !trust.collaborationInheritance}
+								onChange={(event) => void updateInheritance(event.target.checked)}
+								type="checkbox"
+							/>
+							<span>允许协作工作区继承信任</span>
+						</label>
+						{trust.collaborationInheritance ? (
+							<p className="break-words text-xs text-muted-foreground">
+								{trust.collaborationInheritance.sourceCwd && trust.collaborationInheritance.sourceCwd !== trust.cwd ? (trust.collaborationInheritance.inherited ? "已继承" : "未继承") : (trust.collaborationInheritance.enabled ? "已启用协作继承" : "未启用协作继承")}
+								{trust.collaborationInheritance.sourceCwd ? `，来源：${trust.collaborationInheritance.sourceCwd}` : ""}
+								{trust.collaborationInheritance.reason ? `，${trust.collaborationInheritance.reason}` : ""}
+							</p>
+						) : null}
+					</div>
+					<DialogFooter>
+						<Button variant="outline" disabled={unavailable} onClick={() => void run(() => actions.setProjectTrust(false, false))}>不信任</Button>
+						<Button disabled={unavailable} onClick={() => void run(() => actions.setProjectTrust(true))}>信任项目</Button>
+					</DialogFooter>
 				</div> : null}
 				{request.kind === "session" ? <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 text-sm">
 					<dt className="text-muted-foreground">名称</dt><dd className="break-words">{sessionTitle(state.session)}</dd>

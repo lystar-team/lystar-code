@@ -81,6 +81,8 @@ describe("协作会话工具", () => {
 		expect(names).toEqual([
 			"session_create",
 			"session_send",
+			"session_accept_result",
+			"session_workspaces",
 			"session_wait",
 			"session_list",
 			"session_profiles",

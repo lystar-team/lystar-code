@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.1.0-lystar.2] - 2026-10-08
+
+### New Features
+
+- **协作工作区生命周期**：普通子会话和房间任务支持 shared、worktree 和 patch 模式；默认 shared 仅开放读取，成果可核验后接收，空闲且已接收的工作区自动回收。新增工作区预览、清理与项目级信任继承，详见 [协作工作区说明](https://github.com/lystar-team/lystar-code/blob/v1.1.0-lystar.2/docs/development/collaboration-workspaces.md)。
+
 ## [1.1.0-lystar.1] - 2026-10-08
 
 ### New Features

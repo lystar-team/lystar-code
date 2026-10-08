@@ -310,6 +310,7 @@ export function useConversationScroll({
 		handleTranscriptScrollerRef,
 		handleUserScrollAway,
 		handleUserScrollDown,
+		handleUserScrollIntent: cancelScrollOperation,
 		handleUserScrollUp,
 		handleVirtuosoRef,
 		pauseFollowOutput,

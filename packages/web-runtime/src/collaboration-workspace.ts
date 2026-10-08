@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -50,6 +51,7 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
 			encoding: "utf8",
 			maxBuffer: COMMAND_MAX_BUFFER,
 			env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1", LC_ALL: "C" },
+			timeout: 30_000,
 		});
 		return result.stdout;
 	} catch (error) {
@@ -59,13 +61,14 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
 	}
 }
 
-async function runGitWrite(cwd: string, args: string[]): Promise<string> {
+async function runGitWrite(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
 	try {
 		const result = await execFileAsync("git", args, {
 			cwd,
 			encoding: "utf8",
 			maxBuffer: COMMAND_MAX_BUFFER,
-			env: { ...process.env, GIT_LITERAL_PATHSPECS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+			env: { ...process.env, GIT_LITERAL_PATHSPECS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...env },
+			timeout: 30_000,
 		});
 		return result.stdout;
 	} catch (error) {
@@ -105,7 +108,7 @@ function parseGitStatusPaths(output: string): string[] {
 		const path = record.slice(3);
 		if (!path) continue;
 		paths.push(path);
-		if (record[0] === "R" || record[0] === "C") {
+		if (record[0] === "R" || record[0] === "C" || record[1] === "R" || record[1] === "C") {
 			const renamedPath = records[++index];
 			if (renamedPath) paths.push(renamedPath);
 		}
@@ -118,26 +121,33 @@ async function gitChangedFiles(worktreePath: string, baseCommit: string): Promis
 		runGit(worktreePath, ["diff", "--name-only", "-z", baseCommit, "--"]),
 		runGit(worktreePath, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
 	]);
-	return [...new Set([...diffOutput.split("\0").filter(Boolean), ...parseGitStatusPaths(statusOutput)])].sort();
+	const untracked = statusOutput
+		.split("\0")
+		.filter((record) => record.startsWith("?? "))
+		.map((record) => record.slice(3));
+	return [...new Set([...diffOutput.split("\0").filter(Boolean), ...untracked])].sort();
 }
 
 async function patchGitWorkspace(workspace: SessionWorkspaceSnapshot): Promise<string> {
 	if (!workspace.baseCommit || !workspace.worktreePath) {
 		throw workspaceError("Patch 工作区缺少 Git 基线", "workspace_patch_base_missing");
 	}
-	const statusOutput = await runGit(workspace.worktreePath, [
-		"status",
-		"--porcelain=v1",
-		"-z",
-		"--untracked-files=all",
-	]);
-	const untracked = parseGitStatusPaths(statusOutput).filter((path) => statusOutput.includes(`?? ${path}`));
-	if (untracked.length > 0) await runGitWrite(workspace.worktreePath, ["add", "-N", "--", ...untracked]);
-	const patch = await runGit(workspace.worktreePath, ["diff", "--binary", workspace.baseCommit, "--"]);
+	const base = workspace.baselineTree ?? workspace.baseCommit;
 	const patchPath = workspace.patchPath;
 	if (!patchPath) throw workspaceError("Patch 工作区缺少补丁路径", "workspace_patch_path_missing");
-	await writeFile(patchPath, patch, "utf8");
-	return patchPath;
+	const indexPath = join(workspace.worktreePath, "..", `patch-${randomUUID()}.index`);
+	const env = { GIT_INDEX_FILE: indexPath };
+	try {
+		await runGitWrite(workspace.worktreePath, ["read-tree", base], env);
+		const paths = await gitChangedFiles(workspace.worktreePath, base);
+		for (let offset = 0; offset < paths.length; offset += 100)
+			await runGitWrite(workspace.worktreePath, ["add", "--", ...paths.slice(offset, offset + 100)], env);
+		const patch = await runGitWrite(workspace.worktreePath, ["diff", "--cached", "--binary", base, "--"], env);
+		await writeFile(patchPath, patch, "utf8");
+		return patchPath;
+	} finally {
+		await rm(indexPath, { force: true });
+	}
 }
 
 async function listDirectoryFiles(root: string, current = root): Promise<string[]> {
@@ -205,7 +215,7 @@ export class CollaborationWorkspaceManager {
 	): Promise<SessionWorkspaceSnapshot> {
 		const source = canonicalPath(projectCwd);
 		if (mode === "shared") {
-			return { id: workspaceId, mode, projectCwd: source, cwd: source, status: "active" };
+			return { id: workspaceId, mode, projectCwd: source, cwd: source, status: "active", sizeBytes: 0 };
 		}
 		const workspaceRoot = join(this.root, workspaceId);
 		await mkdir(workspaceRoot, { recursive: true });
@@ -228,6 +238,27 @@ export class CollaborationWorkspaceManager {
 				await rm(workspaceRoot, { recursive: true, force: true });
 				throw error;
 			}
+			const indexPath = join(workspaceRoot, "baseline.index");
+			let baselineTree: string;
+			try {
+				// 只写临时索引，保留主项目已有暂存和未提交成果。
+				const env = { GIT_INDEX_FILE: indexPath };
+				await runGitWrite(repositoryRoot, ["read-tree", baseCommit], env);
+				const status = await runGit(repositoryRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+				const paths = [...new Set(parseGitStatusPaths(status))];
+				for (let offset = 0; offset < paths.length; offset += 100)
+					await runGitWrite(repositoryRoot, ["add", "--", ...paths.slice(offset, offset + 100)], env);
+				baselineTree = (await runGitWrite(repositoryRoot, ["write-tree"], env)).trim();
+				await runGitWrite(repositoryRoot, ["update-ref", `refs/lystar/workspaces/${workspaceId}`, baselineTree]);
+				await runGitWrite(worktreePath, ["read-tree", "--reset", "-u", baselineTree]);
+			} catch (error) {
+				await runGitWrite(repositoryRoot, ["worktree", "remove", "--force", worktreePath]);
+				if (mode === "worktree") await runGitWrite(repositoryRoot, ["branch", "-d", branch]);
+				await runGitWrite(repositoryRoot, ["update-ref", "-d", `refs/lystar/workspaces/${workspaceId}`]);
+				throw error;
+			} finally {
+				await rm(indexPath, { force: true });
+			}
 			return {
 				id: workspaceId,
 				mode,
@@ -236,9 +267,10 @@ export class CollaborationWorkspaceManager {
 				status: "active",
 				repositoryRoot,
 				baseCommit,
+				baselineTree,
 				...(mode === "worktree" ? { branch } : {}),
 				worktreePath,
-				...(mode === "patch" ? { patchPath: join(workspaceRoot, "result.patch") } : {}),
+				patchPath: join(workspaceRoot, "result.patch"),
 			};
 		}
 
@@ -248,8 +280,13 @@ export class CollaborationWorkspaceManager {
 		}
 		const baselinePath = join(workspaceRoot, "baseline");
 		const worktreePath = join(workspaceRoot, "worktree");
-		await copyProject(source, baselinePath);
-		await copyProject(baselinePath, worktreePath);
+		try {
+			await copyProject(source, baselinePath);
+			await copyProject(baselinePath, worktreePath);
+		} catch (error) {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			throw error;
+		}
 		return {
 			id: workspaceId,
 			mode,
@@ -274,7 +311,10 @@ export class CollaborationWorkspaceManager {
 		}
 		const changedFiles =
 			workspace.repositoryRoot && workspace.baseCommit
-				? await gitChangedFiles(workspace.cwd, workspace.baseCommit)
+				? await gitChangedFiles(
+						workspace.worktreePath ?? workspace.cwd,
+						workspace.baselineTree ?? workspace.baseCommit,
+					)
 				: workspace.baselinePath && workspace.worktreePath
 					? await changedCopiedFiles(workspace.baselinePath, workspace.worktreePath)
 					: [];
@@ -284,17 +324,19 @@ export class CollaborationWorkspaceManager {
 					? await readGitHead(workspace.cwd)
 					: undefined
 				: undefined;
-		const patchPath =
-			workspace.mode === "patch"
-				? workspace.repositoryRoot
-					? await patchGitWorkspace(workspace)
-					: await patchCopiedWorkspace(workspace)
-				: undefined;
+		const collectedWorkspace = {
+			...workspace,
+			patchPath: workspace.patchPath ?? join(this.root, workspace.id, `result-${randomUUID()}.patch`),
+		};
+		const patchPath = workspace.repositoryRoot
+			? await patchGitWorkspace(collectedWorkspace)
+			: await patchCopiedWorkspace(collectedWorkspace);
 		return {
 			workspace: {
 				...workspace,
 				status: outcome === "completed" ? "delivered" : "failed",
 				...(patchPath ? { patchPath } : {}),
+				...(await this.describe(workspace)),
 			},
 			changedFiles,
 			...(deliveryCommit ? { deliveryCommit } : {}),
@@ -306,36 +348,49 @@ export class CollaborationWorkspaceManager {
 		workspace: SessionWorkspaceSnapshot,
 		changedFiles: readonly string[] = [],
 	): Promise<SessionWorkspaceSnapshot> {
-		if (workspace.status === "accepted") return workspace;
+		if (workspace.status === "accepted" || workspace.status === "released") return workspace;
 		if (workspace.mode === "shared") return { ...workspace, status: "accepted" };
 		if (workspace.repositoryRoot && workspace.baseCommit && workspace.worktreePath) {
-			const untrackedStatus = await runGit(workspace.cwd, [
-				"status",
-				"--porcelain=v1",
-				"-z",
-				"--untracked-files=all",
-			]);
-			const untracked = parseGitStatusPaths(untrackedStatus).filter((path) =>
-				untrackedStatus.includes(`?? ${path}`),
-			);
-			if (untracked.length > 0) await runGitWrite(workspace.cwd, ["add", "-N", "--", ...untracked]);
-			const patch = await runGit(workspace.cwd, ["diff", "--binary", workspace.baseCommit, "--"]);
+			const patchPath = await patchGitWorkspace({
+				...workspace,
+				patchPath: workspace.patchPath ?? join(this.root, workspace.id, "result.patch"),
+			});
+			const patch = await readFile(patchPath, "utf8");
 			if (patch.trim()) {
-				const patchPath = join(workspace.worktreePath, "..", "receive.patch");
-				await writeFile(patchPath, patch, "utf8");
-				try {
-					await runGitWrite(workspace.repositoryRoot, ["apply", "--3way", "--binary", patchPath]);
-				} finally {
-					await rm(patchPath, { force: true });
+				// 已接收的补丁可幂等重试；检查冲突后再写，避免失败留下部分成果。
+				const reversed = await execFileAsync("git", ["apply", "--reverse", "--check", "--binary", patchPath], {
+					cwd: workspace.repositoryRoot,
+					timeout: 30_000,
+				}).then(
+					() => true,
+					() => false,
+				);
+				if (!reversed) {
+					await runGitWrite(workspace.repositoryRoot, ["apply", "--check", "--binary", patchPath]);
+					await runGitWrite(workspace.repositoryRoot, ["apply", "--binary", patchPath]);
 				}
 			}
-			return { ...workspace, status: "accepted" };
+			return { ...workspace, patchPath, status: "accepted" };
 		}
 		if (workspace.baselinePath && workspace.worktreePath) {
 			const paths =
 				changedFiles.length > 0
 					? changedFiles
 					: await changedCopiedFiles(workspace.baselinePath, workspace.worktreePath);
+			for (const path of paths) {
+				const baseline = resolve(workspace.baselinePath, path);
+				const source = resolve(workspace.worktreePath, path);
+				const target = resolve(workspace.projectCwd, path);
+				const targetExists = existsSync(target);
+				const sameBaseline =
+					targetExists === existsSync(baseline) &&
+					(!targetExists || (await readFile(target)).equals(await readFile(baseline)));
+				const alreadyReceived =
+					targetExists === existsSync(source) &&
+					(!targetExists || (await readFile(target)).equals(await readFile(source)));
+				if (!sameBaseline && !alreadyReceived)
+					throw workspaceError(`主项目文件已变化：${path}`, "workspace_receive_conflict");
+			}
 			for (const path of paths) {
 				const source = resolve(workspace.worktreePath, path);
 				const target = resolve(workspace.projectCwd, path);
@@ -349,15 +404,136 @@ export class CollaborationWorkspaceManager {
 		}
 		return { ...workspace, status: "accepted" };
 	}
+	async resume(workspace: SessionWorkspaceSnapshot): Promise<SessionWorkspaceSnapshot> {
+		if (workspace.status === "active") return workspace;
+		if (workspace.status === "released") throw workspaceError("已回收的工作区需要重新创建", "workspace_released");
+		const resumed: SessionWorkspaceSnapshot = {
+			...workspace,
+			status: "active",
+			...(workspace.mode !== "shared"
+				? { patchPath: join(this.root, workspace.id, `result-${randomUUID()}.patch`) }
+				: {}),
+			retainedReason: undefined,
+		};
+		if (workspace.status !== "accepted" || workspace.mode === "shared") return resumed;
+		if (workspace.repositoryRoot && workspace.baseCommit && workspace.worktreePath && workspace.patchPath) {
+			const indexPath = join(this.root, workspace.id, `resume-${randomUUID()}.index`);
+			const env = { GIT_INDEX_FILE: indexPath };
+			try {
+				await runGitWrite(
+					workspace.worktreePath,
+					["read-tree", workspace.baselineTree ?? workspace.baseCommit],
+					env,
+				);
+				if ((await readFile(workspace.patchPath, "utf8")).trim())
+					await runGitWrite(workspace.worktreePath, ["apply", "--cached", "--binary", workspace.patchPath], env);
+				const baselineTree = (await runGitWrite(workspace.worktreePath, ["write-tree"], env)).trim();
+				await runGitWrite(workspace.repositoryRoot, [
+					"update-ref",
+					`refs/lystar/workspaces/${workspace.id}`,
+					baselineTree,
+				]);
+				return { ...resumed, baselineTree };
+			} finally {
+				await rm(indexPath, { force: true });
+			}
+		}
+		if (workspace.baselinePath && workspace.worktreePath) {
+			const reason = await this.canRelease(workspace);
+			if (reason) throw workspaceError(reason, "workspace_resume_conflict");
+			const baselinePath = join(this.root, workspace.id, `baseline-${randomUUID()}`);
+			await copyProject(workspace.worktreePath, baselinePath);
+			return { ...resumed, baselinePath };
+		}
+		throw workspaceError("工作区缺少已接收的基线", "workspace_resume_base_missing");
+	}
+	async describe(workspace: SessionWorkspaceSnapshot): Promise<{ sizeBytes: number }> {
+		if (workspace.mode === "shared" || workspace.status === "released") return { sizeBytes: 0 };
+		const root = join(this.root, workspace.id);
+		const directories = [root];
+		const seen = new Set<string>();
+		let sizeBytes = 0;
+		while (directories.length) {
+			const directory = directories.pop()!;
+			if (!existsSync(directory)) continue;
+			for (const entry of await readdir(directory, { withFileTypes: true })) {
+				const path = join(directory, entry.name);
+				const info = await lstat(path).catch((error: unknown) => {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+					throw error;
+				});
+				if (!info) continue;
+				const inode = `${info.dev}:${info.ino}`;
+				if (seen.has(inode)) continue;
+				seen.add(inode);
+				sizeBytes += info.blocks * 512;
+				if (entry.isDirectory()) directories.push(path);
+			}
+		}
+		return { sizeBytes };
+	}
+
+	async canRelease(workspace: SessionWorkspaceSnapshot): Promise<string | undefined> {
+		if (workspace.mode === "shared" || workspace.status === "released") return "工作区无需回收";
+		if (workspace.status !== "accepted")
+			return workspace.status === "failed" ? "任务未成功，保留成果用于重试" : "成果尚未接收";
+		if (!workspace.worktreePath || !existsSync(workspace.worktreePath)) return undefined;
+		if (workspace.repositoryRoot && workspace.baseCommit) {
+			if (!workspace.patchPath || !existsSync(workspace.patchPath)) return "缺少已接收的交付补丁";
+			const patch = await readFile(workspace.patchPath, "utf8");
+			const currentPath = join(this.root, workspace.id, "release.patch");
+			try {
+				await patchGitWorkspace({ ...workspace, patchPath: currentPath });
+				if ((await readFile(currentPath, "utf8")) !== patch) return "接收后又产生了改动";
+			} finally {
+				await rm(currentPath, { force: true });
+			}
+		} else if (workspace.baselinePath) {
+			for (const path of await changedCopiedFiles(workspace.baselinePath, workspace.worktreePath)) {
+				const source = join(workspace.worktreePath, path);
+				const target = join(workspace.projectCwd, path);
+				if (existsSync(source) !== existsSync(target)) return "接收后文件状态已变化";
+				if (existsSync(source) && !(await readFile(source)).equals(await readFile(target)))
+					return "接收后文件内容已变化";
+			}
+		}
+		return undefined;
+	}
+
 	async release(workspace: SessionWorkspaceSnapshot): Promise<SessionWorkspaceSnapshot> {
-		if (workspace.mode !== "shared" && workspace.repositoryRoot && workspace.worktreePath) {
+		if (workspace.mode === "shared") return { ...workspace, status: "released", sizeBytes: 0 };
+		const workspaceRoot = join(this.root, workspace.id);
+		if (resolve(workspace.worktreePath ?? "") !== resolve(workspaceRoot, "worktree"))
+			throw workspaceError("工作区目录与登记不一致", "workspace_path_mismatch");
+		if (workspace.repositoryRoot && workspace.worktreePath) {
 			try {
 				await runGitWrite(workspace.repositoryRoot, ["worktree", "remove", "--force", workspace.worktreePath]);
 			} catch (error) {
 				if (existsSync(workspace.worktreePath)) throw error;
 			}
+			if (
+				workspace.branch?.startsWith("lystar/task/") &&
+				workspace.baseCommit &&
+				(await readGitHead(workspace.repositoryRoot))
+			) {
+				const merged = await execFileAsync("git", ["merge-base", "--is-ancestor", workspace.branch, "HEAD"], {
+					cwd: workspace.repositoryRoot,
+					timeout: 30_000,
+				}).then(
+					() => true,
+					() => false,
+				);
+				if (merged) await runGitWrite(workspace.repositoryRoot, ["branch", "-d", workspace.branch]);
+			}
+			await runGitWrite(workspace.repositoryRoot, ["update-ref", "-d", `refs/lystar/workspaces/${workspace.id}`]);
 		}
-		if (workspace.mode !== "shared") await rm(join(this.root, workspace.id), { recursive: true, force: true });
-		return { ...workspace, cwd: workspace.projectCwd, status: "released" };
+		await rm(join(workspaceRoot, "worktree"), { recursive: true, force: true });
+		if (existsSync(workspaceRoot)) {
+			for (const entry of await readdir(workspaceRoot, { withFileTypes: true })) {
+				if (entry.isDirectory() && (entry.name === "baseline" || entry.name.startsWith("baseline-")))
+					await rm(join(workspaceRoot, entry.name), { recursive: true, force: true });
+			}
+		}
+		return { ...workspace, cwd: workspace.projectCwd, status: "released", sizeBytes: 0, retainedReason: undefined };
 	}
 }

@@ -19,19 +19,22 @@ export interface ResolveProjectTrustedOptions {
 	extensionsResult?: LoadExtensionsResult;
 	projectTrustContext: ProjectTrustContext;
 	onExtensionError?: (message: string) => void;
+	forcePrompt?: boolean;
+	reason?: string;
 }
 
-function formatProjectTrustPrompt(cwd: string): string {
-	return `是否信任项目目录？\n${cwd}\n\n信任后，${APP_TITLE} 可以加载项目级 ${CONFIG_DIR_NAME} 设置和资源、安装缺失的项目 Package，并执行项目 Extension。`;
+function formatProjectTrustPrompt(cwd: string, reason?: string): string {
+	return `是否信任项目目录？\n${cwd}${reason ? `\n\n${reason}` : ""}\n\n信任后，${APP_TITLE} 可以加载项目级 ${CONFIG_DIR_NAME} 设置和资源、安装缺失的项目 Package，并执行项目 Extension。`;
 }
 
 async function selectProjectTrustOption(
 	cwd: string,
 	ctx: ProjectTrustContext,
+	reason?: string,
 ): Promise<ProjectTrustOption | undefined> {
 	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 	const selected = await ctx.ui.select(
-		formatProjectTrustPrompt(cwd),
+		formatProjectTrustPrompt(cwd, reason),
 		options.map((option) => option.label),
 	);
 	return options.find((option) => option.label === selected);
@@ -44,14 +47,14 @@ function saveProjectTrustPromptResult(trustStore: ProjectTrustStore, result: Pro
 }
 
 export async function resolveProjectTrusted(options: ResolveProjectTrustedOptions): Promise<boolean> {
-	if (options.trustOverride !== undefined) {
+	if (options.trustOverride !== undefined && !options.forcePrompt) {
 		return options.trustOverride;
 	}
 	if (!hasTrustRequiringProjectResources(options.cwd)) {
 		return true;
 	}
 
-	if (options.extensionsResult) {
+	if (!options.forcePrompt && options.extensionsResult) {
 		const { result, errors } = await emitProjectTrustEvent(
 			options.extensionsResult,
 			{ type: "project_trust", cwd: options.cwd },
@@ -69,25 +72,23 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		}
 	}
 
-	const decision = options.trustStore.get(options.cwd);
-	if (decision !== null) {
-		return decision;
+	const decision = options.forcePrompt ? null : options.trustStore.get(options.cwd);
+	if (decision !== null) return decision;
+
+	if (!options.forcePrompt) {
+		switch (options.defaultProjectTrust ?? "ask") {
+			case "always":
+				return true;
+			case "never":
+				return false;
+			case "ask":
+				break;
+		}
 	}
 
-	switch (options.defaultProjectTrust ?? "ask") {
-		case "always":
-			return true;
-		case "never":
-			return false;
-		case "ask":
-			break;
-	}
+	if (!options.projectTrustContext.hasUI) return false;
 
-	if (!options.projectTrustContext.hasUI) {
-		return false;
-	}
-
-	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext);
+	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext, options.reason);
 	if (selected !== undefined) {
 		saveProjectTrustPromptResult(options.trustStore, selected);
 		return selected.trusted;

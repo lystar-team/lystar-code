@@ -116,6 +116,7 @@ const RoomTaskCreateParams = Type.Object({
 	roomId: Type.String({ minLength: 1, maxLength: 256 }),
 	title: Type.String({ minLength: 1, maxLength: 200 }),
 	description: Type.Optional(Type.String({ maxLength: 8000 })),
+	workspaceMode: Type.Optional(SessionWorkspaceModeSchema),
 });
 
 const RoomTaskUpdateParams = Type.Object({
@@ -147,7 +148,7 @@ export function createSessionCreateTool(
 		name: "session_create",
 		label: "创建下级会话",
 		description:
-			"以当前会话为父会话创建下级会话，可同时派发任务。带任务的会话默认使用独立 Git Worktree；shared 共享当前工作目录，非 Git 项目可使用 patch。",
+			"以当前会话为父会话创建下级会话，可同时派发任务。调查和评审默认 shared，只允许读取；代码写入请指定 worktree，非 Git 项目写入使用 patch。接收并验证产物后使用 session_accept_result 完成接收和回收。",
 		promptSnippet: "创建下级会话并派发任务",
 		parameters: SessionCreateParams,
 		executionMode: "sequential",
@@ -494,7 +495,8 @@ export function createRoomTaskCreateTool(
 	return {
 		name: "room_task_create",
 		label: "创建协作任务",
-		description: "在智能体协作空间创建任务卡；创建后向成员派发待认领通知。",
+		description:
+			"在智能体协作空间创建任务卡并通知成员。调查和评审默认 shared；代码写入指定 worktree，非 Git 项目写入指定 patch。",
 		parameters: RoomTaskCreateParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -507,6 +509,7 @@ export function createRoomTaskCreateTool(
 					sessionId: ctx.sessionManager.getSessionId(),
 					title: params.title,
 					description: params.description,
+					workspaceMode: params.workspaceMode,
 				}),
 			);
 		},
@@ -539,6 +542,58 @@ export function createRoomTaskUpdateTool(
 	};
 }
 
+const SessionAcceptParams = Type.Object({ sessionId: Type.String({ minLength: 1, maxLength: 256 }) });
+const SessionWorkspacesParams = Type.Object({
+	action: Type.Union([Type.Literal("preview"), Type.Literal("cleanup")]),
+	sessionIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256 }))),
+});
+
+export function createSessionAcceptTool(
+	getCoordinator: () => SessionCoordinator | undefined,
+): ToolDefinition<typeof SessionAcceptParams> {
+	return {
+		name: "session_accept_result",
+		label: "接收会话产物",
+		description: "接收已经核对并验证的子会话产物；没有待执行任务时自动回收工作区，保留会话与记录。",
+		parameters: SessionAcceptParams,
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+			const coordinator = getCoordinator();
+			if (!coordinator?.accept) return coordinatorUnavailable();
+			return resultText(
+				await coordinator.accept({
+					cwd: collaborationCwd(ctx),
+					sessionId: params.sessionId,
+					callerSessionId: ctx.sessionManager.getSessionId(),
+				}),
+			);
+		},
+	};
+}
+
+export function createSessionWorkspacesTool(
+	getCoordinator: () => SessionCoordinator | undefined,
+): ToolDefinition<typeof SessionWorkspacesParams> {
+	return {
+		name: "session_workspaces",
+		label: "管理协作工作区",
+		description: "预览协作工作区占用和保留原因，或回收已接收且没有待执行任务的工作区。失败和未接收成果继续保留。",
+		parameters: SessionWorkspacesParams,
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+			const coordinator = getCoordinator();
+			if (!coordinator?.workspaces) return coordinatorUnavailable();
+			return resultText(
+				await coordinator.workspaces({
+					cwd: collaborationCwd(ctx),
+					action: params.action,
+					sessionIds: params.sessionIds,
+				}),
+			);
+		},
+	};
+}
+
 /**
  * 注册全部智能体协作工具。每个动作是独立工具，便于按名称授权或禁用。
  */
@@ -546,6 +601,8 @@ export function createCollaborationTools(getCoordinator: () => SessionCoordinato
 	return [
 		createSessionCreateTool(getCoordinator),
 		createSessionSendTool(getCoordinator),
+		createSessionAcceptTool(getCoordinator),
+		createSessionWorkspacesTool(getCoordinator),
 		createSessionWaitTool(getCoordinator),
 		createSessionListTool(getCoordinator),
 		createSessionProfilesTool(getCoordinator),

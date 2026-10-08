@@ -51,16 +51,32 @@ export class PrependAnchoredConversationTranscript<T> extends Component<Virtuali
 	private mutationObserver?: MutationObserver;
 	private frame?: number;
 	private observedRows = new WeakSet<HTMLElement>();
-
+	private scrolling = false;
 	getSnapshotBeforeUpdate(previous: VirtualizedConversationTranscriptProps<T>): ContentAnchor | null {
-		if (previous.sessionKey !== this.props.sessionKey || this.props.followOutput !== false || previous.items === this.props.items || !this.scroller) return null;
+		if (
+			previous.sessionKey !== this.props.sessionKey ||
+			this.props.followOutput !== false ||
+			previous.items === this.props.items ||
+			!this.scroller
+		) return null;
+		const firstItem = previous.items[0];
+		const firstKey = firstItem === undefined ? undefined : previous.getKey(firstItem, 0);
+		const prepended = firstKey !== undefined && this.props.items.findIndex((item, index) => this.props.getKey(item, index) === firstKey) > 0;
+		// 游标变化覆盖补页并入同一个步骤组的情况；普通流式更新不启动历史补偿。
+		if (!prepended && previous.historyCursor === this.props.historyCursor) return null;
 		return captureConversationContentAnchor(this.scroller) ?? null;
 	}
 
 	componentDidUpdate(previous: VirtualizedConversationTranscriptProps<T>, _state: unknown, snapshot: ContentAnchor | null): void {
+		if (previous.sessionKey !== this.props.sessionKey) this.scrolling = false;
 		if (previous.sessionKey !== this.props.sessionKey || this.props.followOutput !== false) this.cancelAnchor();
 		if (!snapshot || !this.scroller) return;
 		this.cancelAnchor();
+		if (this.scrolling) {
+			// 滚动中补页只修正本次提交的偏移，后续惯性滚动继续由用户控制。
+			restoreConversationContentAnchor(this.scroller, snapshot);
+			return;
+		}
 		this.anchor = snapshot;
 		this.resizeObserver = new ResizeObserver(this.scheduleRestore);
 		this.resizeObserver.observe(this.scroller);
@@ -102,8 +118,19 @@ export class PrependAnchoredConversationTranscript<T> extends Component<Virtuali
 	};
 
 	private handleScrollerRef = (element: HTMLElement | null): void => {
+		if (element !== this.scroller) this.cancelAnchor();
 		this.scroller = element ?? undefined;
 		this.props.onScrollerRef?.(element);
+	};
+
+	private handleScrollIntent = (): void => {
+		this.cancelAnchor();
+		this.props.onUserScrollIntent?.();
+	};
+
+	private handleScrollingStateChange = (scrolling: boolean): void => {
+		this.scrolling = scrolling;
+		this.props.onScrollingStateChange?.(scrolling);
 	};
 
 	private handleScrollAway = (): void => { this.cancelAnchor(); this.props.onUserScrollAway(); };
@@ -118,6 +145,8 @@ export class PrependAnchoredConversationTranscript<T> extends Component<Virtuali
 			onUserScrollUp={this.handleScrollUp}
 			onUserScrollDown={this.handleScrollDown}
 			onExpansionIntent={this.handleExpansion}
+			onUserScrollIntent={this.handleScrollIntent}
+			onScrollingStateChange={this.handleScrollingStateChange}
 		/>;
 	}
 }

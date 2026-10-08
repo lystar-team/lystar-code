@@ -487,6 +487,7 @@ function ConversationBody({
 		handleTranscriptScrollerRef,
 		handleUserScrollAway,
 		handleUserScrollDown,
+		handleUserScrollIntent,
 		handleUserScrollUp,
 		handleVirtuosoRef,
 		pauseFollowOutput,
@@ -836,6 +837,7 @@ function ConversationBody({
 					}
 					gap={transcriptGap}
 					header={historyStatus}
+					historyCursor={state.previousCursor}
 					renderItem={renderConversationItem}
 					isItemEqual={conversationRenderItemEqual}
 					atBottomStateChange={handleAtBottomStateChange}
@@ -847,6 +849,7 @@ function ConversationBody({
 					onScrollerRef={handleTranscriptScrollerRef}
 					onUserScrollAway={handleUserScrollAway}
 					onUserScrollDown={handleUserScrollDown}
+					onUserScrollIntent={handleUserScrollIntent}
 					onUserScrollUp={handleUserScrollUp}
 					onExpansionIntent={pauseFollowOutput}
 					sessionKey={state.sessionId ?? "empty"}

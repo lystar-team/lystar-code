@@ -2,6 +2,9 @@ import { createUuid, type SessionInfoResult } from "@lystar/code-web-protocol";
 import type {
 	WebRoomTask,
 	WebRoomTaskStatus,
+	WebSessionCollaborationResult,
+	WebSessionWorkspacesResult,
+	WebSessionWorkspaceMode,
 	BootstrapResponse,
 	DirectoryListing,
 	FileMetadataResponse,
@@ -213,13 +216,33 @@ export class WebApi {
 		return this.request<{ sessions: WebSessionSummary[] }>(`/api/projects/${encodeURIComponent(projectId)}/sessions`);
 	}
 
+	async sessionWorkspaces(
+		projectId: string,
+		action: "preview" | "cleanup",
+		sessionIds?: string[],
+	): Promise<WebSessionWorkspacesResult> {
+		return this.request<WebSessionWorkspacesResult>(`/api/projects/${encodeURIComponent(projectId)}/session-workspaces`, {
+			method: "POST",
+			body: JSON.stringify({
+				action,
+				...(sessionIds ? { sessionIds } : {}),
+				clientInstanceId: clientId(),
+				clientRequestId: createUuid(),
+			}),
+		});
+	}
+
+	async acceptSessionResult(sessionId: string): Promise<WebSessionCollaborationResult> {
+		return this.request<WebSessionCollaborationResult>(`/api/sessions/${encodeURIComponent(sessionId)}/accept-result`, {
+			method: "POST",
+			body: JSON.stringify({ clientInstanceId: clientId(), clientRequestId: createUuid() }),
+		});
+	}
+
 	async reorderSessions(projectId: string, sessionIds: string[]): Promise<{ sessions: WebSessionSummary[] }> {
 		return this.request<{ sessions: WebSessionSummary[] }>(
 			`/api/projects/${encodeURIComponent(projectId)}/sessions/order`,
-			{
-				method: "PATCH",
-				body: JSON.stringify({ sessionIds }),
-			},
+			{ method: "PATCH", body: JSON.stringify({ sessionIds }) },
 		);
 	}
 
@@ -311,10 +334,17 @@ export class WebApi {
 		);
 	}
 
-	async createRoomTask(projectId: string, roomId: string, sessionId: string, title: string, description: string): Promise<WebRoomTask> {
+	async createRoomTask(
+		projectId: string,
+		roomId: string,
+		sessionId: string,
+		title: string,
+		description: string,
+		workspaceMode: WebSessionWorkspaceMode,
+	): Promise<WebRoomTask> {
 		return this.request<WebRoomTask>(`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks`, {
 			method: "POST",
-			body: JSON.stringify({ sessionId, title, description }),
+			body: JSON.stringify({ sessionId, title, description, workspaceMode }),
 		});
 	}
 
@@ -536,10 +566,15 @@ export class WebApi {
 		return this.request<ProjectTrustResponse>(`/api/projects/${encodeURIComponent(projectId)}/trust`);
 	}
 
-	async setProjectTrust(projectId: string, sessionId: string, trusted: boolean): Promise<ProjectTrustResponse> {
+	async setProjectTrust(
+		projectId: string,
+		sessionId: string,
+		trusted: boolean | null,
+		inheritCollaboration?: boolean,
+	): Promise<ProjectTrustResponse> {
 		return this.request<ProjectTrustResponse>(`/api/projects/${encodeURIComponent(projectId)}/trust`, {
 			method: "POST",
-			body: JSON.stringify({ sessionId, trusted }),
+			body: JSON.stringify({ sessionId, trusted, ...(inheritCollaboration !== undefined ? { inheritCollaboration } : {}) }),
 		});
 	}
 

@@ -359,7 +359,10 @@ export const Composer = memo(function Composer({
 							{!inline && !roomMode && collaborationSessions.length ? (
 								<CollaborationCapsules
 									sessions={collaborationSessions}
+									projectId={state.currentProjectId}
 									onOpenSession={(sessionId) => void actions.selectSession(sessionId)}
+									onRefresh={actions.refreshProjectSessions}
+									onToast={actions.showToast}
 								/>
 							) : null}
 							{!inline && activeSubagents.length ? (

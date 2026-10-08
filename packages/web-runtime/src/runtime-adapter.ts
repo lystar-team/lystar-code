@@ -2367,8 +2367,24 @@ class CoreRuntimeSession implements RuntimeSession {
 		return this.runtime.session.getTurnResult(turnId);
 	}
 
+	async updateCollaborationWorkspace(workspace: SessionWorkspaceSnapshot): Promise<void> {
+		this.runtime.session.sessionManager.setCollaborationWorkspace(workspace);
+		this.emitStateChanged();
+	}
+
 	async recordCollaborationResult(result: SessionCollaborationResult): Promise<void> {
-		const latestAssistantMessageId = [...this.runtime.session.sessionManager.getEntries()]
+		const sessionManager = this.runtime.session.sessionManager;
+		const currentWorkspace = sessionManager.getCollaborationWorkspace();
+		if (
+			currentWorkspace?.status === "active" &&
+			result.workspace &&
+			(currentWorkspace.id !== result.workspace.id ||
+				result.workspace.status === "released" ||
+				(currentWorkspace.baselineTree !== undefined &&
+					result.workspace.baselineTree !== currentWorkspace.baselineTree))
+		)
+			return;
+		const latestAssistantMessageId = [...sessionManager.getEntries()]
 			.reverse()
 			.find((entry) => entry.type === "message" && entry.message.role === "assistant")?.id;
 		const persistedResult: SessionCollaborationResult = {
@@ -2385,9 +2401,15 @@ class CoreRuntimeSession implements RuntimeSession {
 			...(result.deliveryCommit ? { deliveryCommit: result.deliveryCommit } : {}),
 			...(result.patchPath ? { patchPath: result.patchPath } : {}),
 		};
-		const previousResult = this.runtime.session.sessionManager.getCollaborationResult();
-		if (previousResult && JSON.stringify(previousResult) === JSON.stringify(persistedResult)) return;
-		this.runtime.session.sessionManager.appendCollaborationResult(persistedResult);
+		const previousResult = sessionManager.getCollaborationResult();
+		if (previousResult && JSON.stringify(previousResult) === JSON.stringify(persistedResult)) {
+			if (persistedResult.workspace && currentWorkspace?.status !== "active") {
+				sessionManager.setCollaborationWorkspace(persistedResult.workspace, { syncLatestResult: true });
+				this.emitStateChanged();
+			}
+			return;
+		}
+		sessionManager.appendCollaborationResult(persistedResult);
 		this.emitStateChanged();
 	}
 
@@ -3129,6 +3151,36 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		}
 	}
 
+	async relocateSession(
+		sessionPath: string,
+		workspace: SessionWorkspaceSnapshot,
+		transition?: () => Promise<void>,
+	): Promise<void> {
+		const manager = await SessionManager.openAsync(sessionPath);
+		try {
+			const header = manager.getHeader();
+			if (!header) throw new Error("Session header is missing");
+			let updated = false;
+			try {
+				manager.setCollaborationWorkspace(workspace, { syncLatestResult: workspace.status === "released" });
+				updated = true;
+				await transition?.();
+			} catch (error) {
+				if (updated) {
+					manager.setCollaborationWorkspace(header.collaborationWorkspace, {
+						cwd: header.cwd,
+						syncLatestResult: true,
+					});
+				}
+				throw error;
+			}
+		} finally {
+			manager.dispose();
+			this.sessionSummaryCache.entries.clear();
+			this.sessionMetadataCache.entries.clear();
+		}
+	}
+
 	async inspectSession(sessionPath: string): Promise<SessionStateSnapshot> {
 		const inspection = await readSessionInspection(sessionPath);
 		const storage = sessionGeneration(sessionPath, inspection.header.id);
@@ -3207,40 +3259,48 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		)
 			.then((sessions) => {
 				const idsByPath = new Map(sessions.map((session) => [resolve(session.path), session.id]));
-				return sessions.map<SessionSummaryBase>((session) => ({
-					path: session.path,
-					id: session.id,
-					cwd: session.cwd,
-					...(session.name ? { name: session.name } : {}),
-					...(session.parentSessionPath && idsByPath.get(resolve(session.parentSessionPath))
-						? { parentId: idsByPath.get(resolve(session.parentSessionPath)) }
-						: {}),
-					...(session.relation ? { relation: session.relation } : {}),
-					...(session.profile
-						? {
-								profileId: session.profile.id,
-								profileName: session.profile.name,
-								...(session.profile.icon ? { profileIcon: session.profile.icon } : {}),
-							}
-						: {}),
-					...((session.collaborationResult?.workspace ?? session.collaborationWorkspace)
-						? { workspace: session.collaborationResult?.workspace ?? session.collaborationWorkspace }
-						: {}),
-					createdAt: session.created.getTime(),
-					updatedAt: session.modified.getTime(),
-					messageCount: session.messageCount,
-					firstMessage:
-						(session.firstMessage === "(no messages)" ? "" : promptDisplayText(session.firstMessage)) ||
-						"未命名会话",
-					activity: session.lastOutcome ?? session.collaborationResult?.outcome ?? "idle",
-					...(session.collaborationTask
-						? {
-								taskId: session.collaborationTask.id,
-								taskDescription: session.collaborationTask.description,
-							}
-						: {}),
-					...(session.collaborationResult ? { collaborationResult: session.collaborationResult } : {}),
-				}));
+				return sessions.map<SessionSummaryBase>((session) => {
+					const currentWorkspace = session.collaborationWorkspace;
+					const staleActiveResult = currentWorkspace?.status === "active";
+					const collaborationResult = staleActiveResult ? undefined : session.collaborationResult;
+					return {
+						path: session.path,
+						id: session.id,
+						cwd: session.cwd,
+						...(session.name ? { name: session.name } : {}),
+						...(session.parentSessionPath && idsByPath.get(resolve(session.parentSessionPath))
+							? { parentId: idsByPath.get(resolve(session.parentSessionPath)) }
+							: {}),
+						...(session.relation ? { relation: session.relation } : {}),
+						...(session.profile
+							? {
+									profileId: session.profile.id,
+									profileName: session.profile.name,
+									...(session.profile.icon ? { profileIcon: session.profile.icon } : {}),
+								}
+							: {}),
+						...((currentWorkspace ?? collaborationResult?.workspace)
+							? { workspace: currentWorkspace ?? collaborationResult?.workspace }
+							: {}),
+						createdAt: session.created.getTime(),
+						updatedAt: session.modified.getTime(),
+						messageCount: session.messageCount,
+						firstMessage:
+							(session.firstMessage === "(no messages)" ? "" : promptDisplayText(session.firstMessage)) ||
+							"未命名会话",
+						activity:
+							staleActiveResult && session.lastOutcome === "completed"
+								? "idle"
+								: (session.lastOutcome ?? collaborationResult?.outcome ?? "idle"),
+						...(session.collaborationTask
+							? {
+									taskId: session.collaborationTask.id,
+									taskDescription: session.collaborationTask.description,
+								}
+							: {}),
+						...(collaborationResult ? { collaborationResult } : {}),
+					};
+				});
 			})
 			.then((sessions) => {
 				return sessions;
@@ -4668,7 +4728,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	getProjectTrust(cwd: string): ProjectTrust {
 		const root = canonicalDirectory(cwd);
-		const trusted = new ProjectTrustStore(this.agentDir).get(root);
+		const trustStore = new ProjectTrustStore(this.agentDir);
+		const trusted = trustStore.get(root);
+		const directEntry = trustStore.getEntry(root);
+		const explicitlyTrusted = directEntry?.path === root && directEntry.decision === true;
+		const inheritance = trustStore.getCollaborationInheritance(root);
+		const inheritanceEnabled = inheritance.enabled && explicitlyTrusted;
 		const resourceRisk = hasTrustRequiringProjectResources(root);
 		return {
 			cwd: root,
@@ -4681,6 +4746,16 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 						? "项目资源被明确设为不信任"
 						: "项目包含需信任资源，尚未选择"
 				: "项目没有需信任资源",
+			collaborationInheritance: {
+				enabled: inheritanceEnabled,
+				inherited: false,
+				...(inheritanceEnabled ? { sourceCwd: root } : {}),
+				reason: inheritanceEnabled
+					? "已启用；协作工作区仍会核验来源项目、同仓库关系和资源指纹"
+					: inheritance.enabled
+						? "来源项目没有有效的明确授权，继承已停用"
+						: "尚未启用项目内协作信任继承",
+			},
 		};
 	}
 
@@ -4690,10 +4765,148 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return entry?.path === root ? entry.decision : null;
 	}
 
-	async setProjectTrust(cwd: string, trusted: boolean | null): Promise<ProjectTrust> {
+	async setProjectTrust(cwd: string, trusted: boolean | null, inheritCollaboration?: boolean): Promise<ProjectTrust> {
 		const root = canonicalDirectory(cwd);
-		new ProjectTrustStore(this.agentDir).set(root, trusted);
+		const trustStore = new ProjectTrustStore(this.agentDir);
+		if (inheritCollaboration === true) {
+			if (trusted !== true) {
+				throw Object.assign(new Error("协作信任继承需要来源项目明确设为信任"), {
+					code: "project_trust_required",
+					retryable: false,
+				});
+			}
+			let repositoryRoot: string;
+			try {
+				repositoryRoot = await this.gitRepositoryRoot(root);
+			} catch (error) {
+				throw Object.assign(new Error("协作信任继承只支持 Git 项目", { cause: error }), {
+					code: "collaboration_trust_git_repository_required",
+					retryable: false,
+				});
+			}
+			const resourceFingerprint = trustStore.getResourceFingerprint(root, repositoryRoot);
+			trustStore.set(root, true);
+			trustStore.setCollaborationInheritance(root, true, resourceFingerprint);
+		} else {
+			trustStore.set(root, trusted);
+			if (inheritCollaboration === false) trustStore.setCollaborationInheritance(root, false);
+		}
 		return this.getProjectTrust(root);
+	}
+
+	private async gitRepositoryRoot(cwd: string): Promise<string> {
+		return canonicalDirectory(await git(cwd, ["rev-parse", "--show-toplevel"]));
+	}
+
+	private async resolveCollaborationWorkspaceTrust(
+		sessionManager: SessionManager,
+		runtimeCwd: string,
+		trustStore: ProjectTrustStore,
+	): Promise<{ sourceCwd: string; inherited: boolean; forcePrompt: boolean; reason: string } | undefined> {
+		const header = sessionManager.getHeader();
+		const workspace = header?.collaborationWorkspace;
+		if (!header || header.relation !== "collaboration" || !workspace) return undefined;
+		const invalid = (sourceCwd: string, reason: string) => ({
+			sourceCwd,
+			inherited: false,
+			forcePrompt: true,
+			reason,
+		});
+		let sourceCwd: string;
+		try {
+			sourceCwd = canonicalDirectory(workspace.projectCwd);
+		} catch {
+			return invalid(workspace.projectCwd, "协作工作区来源项目路径不可用，需重新确认。");
+		}
+		if (!header.parentSession) return invalid(sourceCwd, "协作工作区没有可验证的父会话，需重新确认。");
+		let parentHeader: ReturnType<typeof readSessionHeader>;
+		try {
+			parentHeader = readSessionHeader(header.parentSession);
+		} catch {
+			parentHeader = null;
+		}
+		const parentSource = parentHeader?.collaborationWorkspace?.projectCwd ?? parentHeader?.cwd;
+		if (!parentHeader || !parentSource) return invalid(sourceCwd, "协作工作区来源与父会话不匹配，需重新确认。");
+		try {
+			if (canonicalDirectory(parentSource) !== sourceCwd) {
+				return invalid(sourceCwd, "协作工作区来源与父会话不匹配，需重新确认。");
+			}
+		} catch {
+			return invalid(sourceCwd, "协作工作区来源与父会话不匹配，需重新确认。");
+		}
+		const inheritance = trustStore.getCollaborationInheritance(sourceCwd);
+		if (!inheritance.enabled) {
+			return { sourceCwd, inherited: false, forcePrompt: false, reason: "来源项目尚未启用协作信任继承。" };
+		}
+		const sourceTrust = trustStore.getEntry(sourceCwd);
+		if (sourceTrust?.path !== sourceCwd || sourceTrust.decision !== true) {
+			return invalid(sourceCwd, "来源项目没有有效的明确授权，需重新确认。");
+		}
+		if (!inheritance.resourceFingerprint) return invalid(sourceCwd, "来源项目缺少资源授权记录，需重新确认。");
+		if (workspace.status === "released") return invalid(sourceCwd, "工作区已释放，需重新确认后才能加载项目资源。");
+
+		let runtimeRoot: string;
+		let sourceRepositoryRoot: string;
+		let targetRepositoryRoot: string;
+		let sourceCommonDir: string;
+		let targetCommonDir: string;
+		try {
+			runtimeRoot = canonicalDirectory(runtimeCwd);
+			if (canonicalDirectory(workspace.cwd) !== runtimeRoot) {
+				return invalid(sourceCwd, "协作工作区 cwd 与会话 cwd 不匹配，需重新确认。");
+			}
+			sourceRepositoryRoot = await this.gitRepositoryRoot(sourceCwd);
+			targetRepositoryRoot = await this.gitRepositoryRoot(runtimeRoot);
+			const commonDir = async (path: string): Promise<string> => {
+				const value = await git(path, ["rev-parse", "--git-common-dir"]);
+				return canonicalDirectory(isAbsolute(value) ? value : resolve(path, value));
+			};
+			[sourceCommonDir, targetCommonDir] = await Promise.all([commonDir(sourceCwd), commonDir(runtimeRoot)]);
+		} catch {
+			return invalid(sourceCwd, "协作工作区不是可验证的 Git 仓库，需重新确认。");
+		}
+		if (
+			sourceCommonDir !== targetCommonDir ||
+			relative(sourceRepositoryRoot, sourceCwd) !== relative(targetRepositoryRoot, runtimeRoot)
+		) {
+			return invalid(sourceCwd, "协作工作区与来源项目不属于同一 Git 仓库，需重新确认。");
+		}
+		if (workspace.mode === "shared") {
+			if (runtimeRoot !== sourceCwd) return invalid(sourceCwd, "共享工作区路径与来源项目不一致，需重新确认。");
+		} else {
+			if (!/^[0-9a-f-]{36}$/i.test(workspace.id) || !workspace.worktreePath || !workspace.repositoryRoot) {
+				return invalid(sourceCwd, "协作工作区缺少系统登记信息，需重新确认。");
+			}
+			try {
+				const registrationRoot = canonicalDirectory(join(this.agentDir, "collaboration-workspaces", workspace.id));
+				const worktreeRoot = canonicalDirectory(workspace.worktreePath);
+				if (
+					!isInside(registrationRoot, worktreeRoot) ||
+					!isInside(worktreeRoot, runtimeRoot) ||
+					worktreeRoot !== targetRepositoryRoot ||
+					canonicalDirectory(workspace.repositoryRoot) !== sourceRepositoryRoot
+				) {
+					return invalid(sourceCwd, "协作工作区未通过系统登记或仓库校验，需重新确认。");
+				}
+			} catch {
+				return invalid(sourceCwd, "协作工作区未通过系统登记校验，需重新确认。");
+			}
+		}
+		let sourceFingerprint: string;
+		let workspaceFingerprint: string;
+		try {
+			sourceFingerprint = trustStore.getResourceFingerprint(sourceCwd, sourceRepositoryRoot);
+			workspaceFingerprint = trustStore.getResourceFingerprint(runtimeRoot, targetRepositoryRoot);
+		} catch {
+			return invalid(sourceCwd, "协作工作区资源无法核验，需重新确认。");
+		}
+		if (sourceFingerprint !== inheritance.resourceFingerprint) {
+			return invalid(sourceCwd, "来源项目资源自授权后已变化，需重新确认。");
+		}
+		if (workspaceFingerprint !== sourceFingerprint) {
+			return invalid(sourceCwd, "协作工作区资源与来源项目不一致，需重新确认。");
+		}
+		return { sourceCwd, inherited: true, forcePrompt: false, reason: "已继承来源项目的协作信任。" };
 	}
 
 	listPackages(cwd: string): PackageSummary[] {
@@ -4827,8 +5040,25 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		}) => {
 			const effectiveProfile =
 				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
+			const workspaceTrust = await this.resolveCollaborationWorkspaceTrust(
+				runtimeSessionManager,
+				runtimeCwd,
+				trustStore,
+			);
+			const headerWorkspace = runtimeSessionManager.getCollaborationWorkspace();
+			if (headerWorkspace) {
+				const nextWorkspace = { ...headerWorkspace };
+				if (workspaceTrust?.inherited) nextWorkspace.trustSource = workspaceTrust.sourceCwd;
+				else delete nextWorkspace.trustSource;
+				if (JSON.stringify(headerWorkspace) !== JSON.stringify(nextWorkspace)) {
+					runtimeSessionManager.setCollaborationWorkspace(nextWorkspace);
+				}
+			}
 			const hasTrustResources = hasTrustRequiringProjectResources(runtimeCwd);
-			const trusted = !hasTrustResources || trustStore.get(runtimeCwd) === true;
+			const trusted =
+				!hasTrustResources ||
+				workspaceTrust?.inherited === true ||
+				(!workspaceTrust?.forcePrompt && trustStore.get(runtimeCwd) === true);
 			const settingsManager = SettingsManager.create(runtimeCwd, agentDir, { projectTrusted: trusted });
 			const services = await createAgentSessionServices({
 				cwd: runtimeCwd,
@@ -4870,13 +5100,14 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 						: {}),
 				},
 				resourceLoaderReloadOptions:
-					hasTrustResources && trustStore.get(runtimeCwd) === null
+					hasTrustResources &&
+					(workspaceTrust?.forcePrompt === true || (!trusted && trustStore.get(runtimeCwd) === null))
 						? {
 								resolveProjectTrust: async ({ extensionsResult }) =>
 									resolveProjectTrusted({
 										cwd: runtimeCwd,
 										trustStore,
-										defaultProjectTrust: settingsManager.getDefaultProjectTrust(),
+										defaultProjectTrust: workspaceTrust ? "ask" : settingsManager.getDefaultProjectTrust(),
 										extensionsResult,
 										projectTrustContext: projectTrustContext ?? {
 											cwd: runtimeCwd,
@@ -4884,6 +5115,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 											hasUI: true,
 											ui: createUiContext(onUiRequest),
 										},
+										forcePrompt: workspaceTrust?.forcePrompt,
+										reason: workspaceTrust?.reason,
 									}),
 							}
 						: undefined,

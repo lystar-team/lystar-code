@@ -437,7 +437,13 @@ export class SessionRoomStore {
 			.map((room) => this.summary(room.id));
 	}
 
-	createTask(roomId: string, sessionId: string, title: string, description: string): SessionRoomTask {
+	createTask(
+		roomId: string,
+		sessionId: string,
+		title: string,
+		description: string,
+		workspaceMode: SessionRoomTask["workspaceMode"] = "shared",
+	): SessionRoomTask {
 		return this.transaction(() => {
 			this.activeMember(roomId, sessionId);
 			const now = new Date().toISOString();
@@ -446,6 +452,7 @@ export class SessionRoomStore {
 				roomId,
 				title,
 				description,
+				workspaceMode,
 				status: "todo",
 				createdBySessionId: sessionId,
 				updates: [],
@@ -562,7 +569,8 @@ export class SessionRoomStore {
 			if (task.assigneeSessionId !== sessionId || task.status !== "doing")
 				throw roomError("任务负责人或状态已变化", "room_task_claim_conflict");
 			const previous = task.execution;
-			if (previous?.result && previous.result.outcome === "completed" && !previous.result.error) return task;
+			if (previous?.messageId === messageId && previous.result?.outcome === "completed" && !previous.result.error)
+				return task;
 			const now = Date.now();
 			if (
 				previous?.leaseExpiresAt &&
@@ -584,6 +592,8 @@ export class SessionRoomStore {
 				return task;
 			const execution = {
 				...(previous?.workspace ? { workspace: clone(previous.workspace) } : {}),
+				...(previous?.sessionId ? { sessionId: previous.sessionId } : {}),
+				...(previous?.taskId ? { taskId: previous.taskId } : {}),
 				leaseId: randomUUID(),
 				ownerId,
 				state: "starting" as const satisfies SessionRoomExecutionState,
@@ -627,7 +637,9 @@ export class SessionRoomStore {
 			if (
 				task.execution &&
 				task.execution.messageId === execution.messageId &&
-				task.execution.sessionId === execution.sessionId
+				task.execution.sessionId === execution.sessionId &&
+				task.execution.state === "running" &&
+				task.execution.workspace?.id === execution.workspace?.id
 			)
 				return task;
 			const next = {
@@ -686,7 +698,12 @@ export class SessionRoomStore {
 				throw roomError("任务执行结果已变化", "room_task_execution_conflict");
 			const next: SessionRoomTask = {
 				...task,
-				execution: { ...task.execution, state: "completed", result: clone(result) },
+				execution: {
+					...task.execution,
+					state: "completed",
+					result: clone(result),
+					...(result.workspace ? { workspace: clone(result.workspace) } : {}),
+				},
 				updatedAt: new Date().toISOString(),
 			};
 			this.commit([{ type: "task_updated", task: next }]);

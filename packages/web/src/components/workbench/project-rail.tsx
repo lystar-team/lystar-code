@@ -75,6 +75,7 @@ import { SessionButton, type SessionButtonProps } from "./session-button";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
 import { VirtualizedSessionList } from "./virtualized-session-list";
+import { WorkspaceManagementDialog } from "./session-workspaces";
 import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar";
 import { WorkspaceModeSwitch, type WorkspaceMode } from "./workspace-mode-switch";
 
@@ -213,6 +214,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const [movingProject, setMovingProject] = useState<WebProject>();
 	const [addingProjectToGroup, setAddingProjectToGroup] = useState<ProjectGroup>();
 	const [sessionManagementProject, setSessionManagementProject] = useState<WebProject>();
+	const [workspaceManagementProject, setWorkspaceManagementProject] = useState<WebProject>();
 	const [sessionRenameTarget, setSessionRenameTarget] = useState<WebSessionSummary>();
 	const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string }>();
 	const [agentSessionProject, setAgentSessionProject] = useState<WebProject>();
@@ -1298,6 +1300,19 @@ export const ProjectRail = memo(function ProjectRail({
 				</Button>
 			</div>
 			<div className="px-3 pb-3">
+				<Button
+					aria-label="工作区管理"
+					className={cn("h-9 w-full gap-2", withNavigationRail ? "justify-center px-0" : "justify-start")}
+					disabled={!selectedProject}
+					onClick={() => { if (selectedProject) setWorkspaceManagementProject(selectedProject); }}
+					title="工作区管理"
+					variant="outline"
+				>
+					<FolderTree className="size-4 shrink-0" aria-hidden="true" />
+					<span className={cn("project-list-item-label", withNavigationRail && "sr-only")}>工作区管理</span>
+				</Button>
+			</div>
+			<div className="px-3 pb-3">
 				<div className="relative">
 					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 					<Input
@@ -1474,6 +1489,15 @@ export const ProjectRail = memo(function ProjectRail({
 				project={sessionManagementProject}
 				actions={actions}
 				onClose={() => setSessionManagementProject(undefined)}
+			/>
+			<WorkspaceManagementDialog
+				open={Boolean(workspaceManagementProject)}
+				projectId={workspaceManagementProject?.id ?? ""}
+				sessions={workspaceManagementProject?.sessions ?? []}
+				onOpenChange={(open) => { if (!open) setWorkspaceManagementProject(undefined); }}
+				onReleased={async () => {
+					if (workspaceManagementProject) await actions.refreshProjectSessions(workspaceManagementProject.id);
+				}}
 			/>
 			<SessionRenameDialog
 				session={sessionRenameTarget}

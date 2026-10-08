@@ -190,6 +190,8 @@ function isActiveSessionActivity(activity: SessionActivity): boolean {
 }
 
 const WORKSPACE_COMMANDS = {
+	session_workspaces: true,
+	session_accept_result: true,
 	list_skills: true,
 	list_harness_imports: true,
 	import_harness_resources: true,
@@ -418,6 +420,7 @@ export class WebRuntimeService {
 	private readonly clients = new Map<string, ClientConnection>();
 	private readonly runtimes = new Map<string, RuntimeSession>();
 	private readonly runtimeOpenings = new Map<string, Promise<RuntimeSession>>();
+	private readonly workspaceTransitions = new Map<string, Promise<unknown>>();
 	private disposed = false;
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
 	private readonly activeOperationBySession = new Map<string, string>();
@@ -452,6 +455,8 @@ export class WebRuntimeService {
 	private readonly sessionSummaryRequests = new Map<string, Promise<ObservedSessionSummary[]>>();
 	private readonly projectSessionSnapshots = new Map<string, ProjectSessionSnapshot>();
 	private readonly projectSessionRequests = new Map<string, Promise<ProjectSessionSnapshot>>();
+	private readonly reconciledWorkspaceProjects = new Set<string>();
+	private readonly pendingWorkspaceReleases = new Map<string, { cwd: string; sessionId: string }>();
 	private readonly runtimeTranscriptFacts = new Map<string, RuntimeTranscriptFact>();
 	private readonly sessionHandoffHosts = new Map<string, SessionHandoffHost>();
 	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
@@ -498,6 +503,7 @@ export class WebRuntimeService {
 			getProfileDescription: (cwd, profileId) =>
 				discoverSessionProfiles(cwd, this.agentDir).find((profile) => profile.id === profileId)?.description,
 			acceptTaskResult: (task, ownerSessionId) => this.acceptRoomTaskResult(task, ownerSessionId),
+			onDeliverySettled: (cwd) => this.retryPendingWorkspaceReleases(cwd),
 			deliver: (input) =>
 				this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message, input.messages),
 		});
@@ -534,6 +540,8 @@ export class WebRuntimeService {
 			list: (input) => this.listCoordinatorSessions(input),
 			profiles: (input) => this.listCoordinatorProfiles(input),
 			stop: (input) => this.stopCoordinatorSession(input),
+			accept: (input) => this.acceptCoordinatorResult(input.cwd, input.sessionId, input.callerSessionId),
+			workspaces: (input) => this.sessionWorkspaces(input.cwd, input.action, input.sessionIds),
 		};
 	}
 
@@ -641,6 +649,11 @@ export class WebRuntimeService {
 		let promptSucceeded = false;
 		let errorMessage: string | undefined;
 		try {
+			if (workspace && workspace.status !== "active") {
+				if (!runtime.updateCollaborationWorkspace) throw new Error("Runtime 不支持更新任务基线");
+				workspace = await this.collaborationWorkspaces.resume(workspace);
+				await runtime.updateCollaborationWorkspace(workspace);
+			}
 			if (roomMessage) {
 				if (!runtime.promptWithOrigin) throw new Error("任务执行会话不支持结构化输入");
 				await this.runRoomModelTurn(runtime, () =>
@@ -655,15 +668,30 @@ export class WebRuntimeService {
 							senderSessionId: roomMessage.senderSessionId,
 							taskId: roomMessage.taskId,
 						},
-						activeToolNames: ROOM_EXECUTION_TOOL_NAMES,
+						activeToolNames:
+							workspace?.mode === "shared" ? ["read", "grep", "find", "ls"] : ROOM_EXECUTION_TOOL_NAMES,
 						capabilities: {
-							allowedTools: ROOM_EXECUTION_TOOL_NAMES,
+							allowedTools:
+								workspace?.mode === "shared" ? ["read", "grep", "find", "ls"] : ROOM_EXECUTION_TOOL_NAMES,
 							readRoots: [snapshot.cwd],
-							writeRoots: [snapshot.cwd],
-							shell: "sandboxed",
+							writeRoots: workspace?.mode === "shared" ? [] : [snapshot.cwd],
+							shell: workspace?.mode === "shared" ? "disabled" : "sandboxed",
 						},
 					}),
 				);
+			} else if (workspace?.mode === "shared") {
+				if (!runtime.promptWithOrigin) throw new Error("当前 Runtime 不支持只读协作任务");
+				await runtime.promptWithOrigin(text, undefined, {
+					inputId: randomUUID(),
+					origin: { type: "user", channel: "rpc" },
+					activeToolNames: ["read", "grep", "find", "ls"],
+					capabilities: {
+						allowedTools: ["read", "grep", "find", "ls"],
+						readRoots: [snapshot.cwd],
+						writeRoots: [],
+						shell: "disabled",
+					},
+				});
 			} else await runtime.prompt(text);
 			promptSucceeded = true;
 		} catch (error) {
@@ -819,11 +847,14 @@ export class WebRuntimeService {
 				}
 			: undefined;
 		const workspaceMode: SessionWorkspaceMode | undefined = collaborationTask
-			? (input.workspaceMode ?? "worktree")
+			? (input.workspaceMode ?? "shared")
 			: undefined;
 		let workspace: SessionWorkspaceSnapshot | undefined;
 		if (options.workspace) {
-			workspace = options.workspace;
+			workspace =
+				options.workspace.status === "released"
+					? await this.collaborationWorkspaces.create(input.cwd, options.workspace.mode, randomUUID())
+					: options.workspace;
 		} else if (workspaceMode) {
 			try {
 				workspace = await this.collaborationWorkspaces.create(input.cwd, workspaceMode, randomUUID());
@@ -909,25 +940,165 @@ export class WebRuntimeService {
 				code: "room_task_result_invalid",
 				retryable: false,
 			});
-		if (!result.workspace || result.workspace.status === "accepted") return result;
-		const delivery = await this.collaborationWorkspaces.receive(result.workspace, result.changedFiles);
-		const accepted: SessionCollaborationResult = { ...result, workspace: delivery };
-		if (task.execution?.sessionId) {
-			try {
-				const found = await this.findCoordinatorSession(
-					this.roomStore.room(task.roomId).cwd,
-					task.execution.sessionId,
-				);
-				const runtime = await this.ensureRuntime(
-					found.path,
-					this.coordinatorUiHandler(found.path, { suppressInfoNotifications: true }),
-				);
-				await this.persistCoordinatorResult(runtime, accepted);
-			} catch {
-				// 协作 Store 已记录接收状态；子会话不可用时不阻止主工作区接收。
+		if (!task.execution?.sessionId) throw new Error("任务缺少执行会话");
+		const cwd = this.roomStore.room(task.roomId).cwd;
+		return this.acceptCoordinatorResult(cwd, task.execution.sessionId);
+	}
+
+	private async transitionWorkspace<T>(sessionPath: string, run: () => Promise<T>): Promise<T> {
+		const previous = this.workspaceTransitions.get(sessionPath);
+		const transition = Promise.resolve(previous)
+			.catch(() => {})
+			.then(run);
+		this.workspaceTransitions.set(sessionPath, transition);
+		try {
+			return await transition;
+		} finally {
+			if (this.workspaceTransitions.get(sessionPath) === transition) this.workspaceTransitions.delete(sessionPath);
+		}
+	}
+
+	private workspaceBusyReason(base: SessionSummaryBase, includePending = true): string | undefined {
+		const path = canonicalSessionPath(base.path);
+		const runtime = this.runtimes.get(path);
+		if (
+			this.coordinatorTasks.has(path) ||
+			this.runtimeOpenings.has(path) ||
+			this.sessionsInHandoff.has(path) ||
+			this.isSessionStopping(path) ||
+			this.sessionsBeingDeleted.has(path)
+		)
+			return "任务正在执行或切换工作区";
+		if (runtime && this.isRuntimeActive(runtime)) return "任务正在执行或等待回复";
+		if (isActiveSessionActivity(base.activity) && !runtime) return "会话仍在执行或等待回复";
+		if (!runtime && this.adapter.isSessionWriterLocked(path)) return "工作区仍由其他会话占用";
+		if (runtime?.hasExternalClients?.()) return "会话仍由其他客户端使用";
+		if (includePending && (this.coordinatorDemand.has(path) || this.roomDeliveryDemand.has(path)))
+			return "会话还有待处理任务";
+		if (
+			includePending &&
+			this.journal.list(path).some((operation) => ACTIVE_OPERATION_STATUSES.has(operation.status))
+		)
+			return "还有排队任务";
+		if (
+			includePending &&
+			this.roomStore
+				.pending()
+				.some((pending) => pending.targetSessionId === base.id || pending.targetSessionId === base.parentId)
+		)
+			return "还有待处理的协作消息";
+		return undefined;
+	}
+
+	private async releaseCoordinatorWorkspace(base: SessionSummaryBase): Promise<SessionWorkspaceSnapshot | undefined> {
+		const workspace = base.workspace;
+		if (!workspace) return undefined;
+		const path = canonicalSessionPath(base.path);
+		if (workspace.status === "accepted" && workspace.mode !== "shared")
+			this.pendingWorkspaceReleases.set(path, { cwd: workspace.projectCwd, sessionId: base.id });
+		else this.pendingWorkspaceReleases.delete(path);
+		const reason =
+			this.workspaceBusyReason(base) ??
+			(this.leases.has(path) ? "会话当前已打开" : await this.collaborationWorkspaces.canRelease(workspace));
+		if (reason) return { ...workspace, retainedReason: reason };
+		if (!this.adapter.relocateSession) return { ...workspace, retainedReason: "Runtime 不支持工作区恢复" };
+		await this.disposeRuntime(path);
+		if (this.runtimes.has(path) || this.adapter.isSessionWriterLocked(path))
+			return { ...workspace, retainedReason: "工作区仍由其他会话占用" };
+		const released: SessionWorkspaceSnapshot = {
+			...workspace,
+			cwd: workspace.projectCwd,
+			status: "released",
+			sizeBytes: 0,
+			retainedReason: undefined,
+		};
+		// writer lease 贯穿记录更新和目录移除，阻止其他 Runtime 提前续接。
+		await this.adapter.relocateSession(path, released, async () => {
+			await this.collaborationWorkspaces.release(workspace);
+		});
+		this.pendingWorkspaceReleases.delete(path);
+		for (const summary of this.roomStore.listAllRooms(workspace.projectCwd)) {
+			for (const task of this.roomStore.listTasks(summary.room.id)) {
+				if (task.execution?.sessionId !== base.id || !task.execution.result) continue;
+				this.roomStore.recordTaskAcceptance(summary.room.id, task.id, summary.room.ownerSessionId, {
+					...task.execution.result,
+					workspace: released,
+				});
 			}
 		}
-		return accepted;
+		await this.broadcast({ type: "sessions_changed", cwd: workspace.projectCwd });
+		return released;
+	}
+
+	private async acceptCoordinatorResult(
+		cwd: string,
+		sessionId: string,
+		callerSessionId?: string,
+	): Promise<SessionCollaborationResult> {
+		const found = await this.findCoordinatorSession(cwd, sessionId);
+		return this.transitionWorkspace(found.path, async () => {
+			const current = await this.findCoordinatorSession(cwd, sessionId);
+			if (callerSessionId && current.base.parentId !== callerSessionId) throw new Error("只能接收自己的子会话产物");
+			const result = current.base.collaborationResult;
+			if (!result || result.outcome !== "completed" || result.error) throw new Error("会话没有可接收的成功结果");
+			if (!result.workspace || result.workspace.status === "released") return result;
+			const busy = this.workspaceBusyReason(current.base, false);
+			if (busy) throw Object.assign(new Error(busy), { code: "workspace_busy", retryable: true });
+			const runtime = await this.ensureRuntime(current.path, this.coordinatorUiHandler(current.path), {
+				workspaceTransition: true,
+			});
+			const workspace = await this.enqueueWriteScope(`workspace-project:${cwd}`, () =>
+				this.collaborationWorkspaces.receive(result.workspace!, result.changedFiles),
+			);
+			const accepted = { ...result, workspace };
+			await this.persistCoordinatorResult(runtime, accepted);
+			const updated = await this.findCoordinatorSession(cwd, sessionId);
+			const released = await this.releaseCoordinatorWorkspace({ ...updated.base, workspace });
+			const finalResult = { ...accepted, workspace: released ?? workspace };
+			const live = this.runtimes.get(current.path);
+			if (live) await this.persistCoordinatorResult(live, finalResult);
+			await this.broadcast({ type: "sessions_changed", cwd });
+			return finalResult;
+		});
+	}
+
+	private async sessionWorkspaces(cwd: string, action: "preview" | "cleanup", sessionIds?: readonly string[]) {
+		const sessions = await this.adapter.listSessions(cwd);
+		const selected = sessionIds ? new Set(sessionIds) : undefined;
+		const workspaces = [];
+		const released: string[] = [];
+		for (const base of sessions) {
+			if (!base.workspace || (selected && !selected.has(base.id))) continue;
+			const workspace = { ...base.workspace, ...(await this.collaborationWorkspaces.describe(base.workspace)) };
+			let reason =
+				this.workspaceBusyReason(base) ??
+				(this.leases.has(canonicalSessionPath(base.path))
+					? "会话当前已打开"
+					: await this.collaborationWorkspaces.canRelease(workspace));
+			let finalWorkspace = workspace;
+			if (action === "cleanup" && !reason) {
+				try {
+					const next = await this.transitionWorkspace(canonicalSessionPath(base.path), async () => {
+						const fresh = await this.findCoordinatorSession(cwd, base.id);
+						return this.releaseCoordinatorWorkspace(fresh.base);
+					});
+					if (next) finalWorkspace = { ...next, sizeBytes: next.sizeBytes ?? workspace.sizeBytes };
+					if (next?.status === "released") released.push(base.id);
+					else reason = next?.retainedReason;
+				} catch (error) {
+					reason = error instanceof Error ? error.message : String(error);
+				}
+			}
+			workspaces.push({
+				sessionId: base.id,
+				sessionPath: base.path,
+				workspace: { ...finalWorkspace, retainedReason: reason },
+				canRelease: !reason && finalWorkspace.status !== "released",
+				...(reason ? { reason } : {}),
+				...(base.collaborationResult ? { result: base.collaborationResult } : {}),
+			});
+		}
+		return { workspaces, ...(action === "cleanup" ? { released } : {}) };
 	}
 
 	private async executeRoomTask(cwd: string, targetSessionId: string, message: SessionRoomMessage): Promise<number> {
@@ -959,8 +1130,8 @@ export class WebRuntimeService {
 			this.serverInstanceId,
 			allowRecovery,
 		);
+		if (!claimed.execution) throw new Error("任务执行租约没有建立");
 		let execution = claimed.execution;
-		if (!execution) throw new Error("任务执行租约没有建立");
 		let executionSessionPath: string | undefined;
 		if (execution.sessionId) {
 			try {
@@ -970,11 +1141,11 @@ export class WebRuntimeService {
 				// 旧执行会话已不可见，下面复用原工作区创建新的执行会话。
 			}
 		}
+		const attachment = await roomAttachmentInput(message);
+		const description = `${context.text}\n\n${attachment.text}\n\n提交任务产物和验证结果，未完成时说明阻塞。不要创建下级会话。`;
 		if (!executionSessionPath) {
 			const member = this.roomStore.member(message.roomId, targetSessionId);
 			const parent = await this.findCoordinatorSession(cwd, targetSessionId);
-			const attachment = await roomAttachmentInput(message);
-			const description = `${context.text}\n\n${attachment.text}\n\n提交任务产物和验证结果，未完成时说明阻塞。不要创建下级会话。`;
 			const created = await this.createCoordinatorSession(
 				{
 					cwd,
@@ -982,7 +1153,7 @@ export class WebRuntimeService {
 					parentSessionId: targetSessionId,
 					profileId: member.profileId,
 					task: description,
-					...(execution.workspace ? {} : { workspaceMode: "worktree" as const }),
+					workspaceMode: execution.workspace?.mode ?? task.workspaceMode ?? "worktree",
 				},
 				{ deferTask: true, ...(execution.workspace ? { workspace: execution.workspace } : {}) },
 			);
@@ -1009,6 +1180,28 @@ export class WebRuntimeService {
 				executionSessionPath,
 				this.runCoordinatorPrompt(runtime, execution.taskId!, description, execution.workspace, message),
 			);
+		} else if (!execution.result && !this.coordinatorTasks.has(executionSessionPath)) {
+			const path = executionSessionPath;
+			await this.transitionWorkspace(path, async () => {
+				const runtime = await this.ensureRuntime(path, this.coordinatorUiHandler(path), {
+					workspaceTransition: true,
+				});
+				if (this.isRuntimeActive(runtime)) return;
+				const workspace = readSessionHeader(path)?.collaborationWorkspace ?? execution.workspace;
+				const bound = { ...execution, workspace, taskId: execution.taskId ?? randomUUID(), messageId: message.id };
+				const updated = this.roomStore.bindTaskExecution(
+					message.roomId,
+					task.id,
+					targetSessionId,
+					bound,
+					this.serverInstanceId,
+				);
+				execution = updated.execution!;
+				this.trackCoordinatorTask(
+					path,
+					this.runCoordinatorPrompt(runtime, execution.taskId!, description, workspace, message),
+				);
+			});
 		}
 		let leaseLost = false;
 		const leaseHeartbeat =
@@ -1224,26 +1417,40 @@ export class WebRuntimeService {
 		input: Parameters<SessionCoordinator["send"]>[0],
 	): Promise<SessionCoordinatorSummary> {
 		const found = await this.findCoordinatorSession(input.cwd, input.sessionId);
-		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
-		input.onProgress?.(this.coordinatorSummary(found.base, runtime));
-		const mode: SessionSendMode = input.mode ?? "auto";
-		if (mode === "steer" || (mode === "auto" && runtime.getSnapshot("available").activity === "running")) {
-			await runtime.steer(input.text);
-		} else if (
-			mode === "follow_up" ||
-			(mode === "auto" && runtime.getSnapshot("available").activity === "waiting_for_input")
-		) {
-			await runtime.followUp(input.text);
-		} else {
-			const task = found.base.taskId
-				? this.runCoordinatorPrompt(runtime, found.base.taskId, input.text, found.base.workspace)
-				: runtime.prompt(input.text).then(() => undefined);
-			this.trackCoordinatorTask(found.path, task);
-		}
-		await this.sendSessionSnapshots(runtime);
-		const summary = this.coordinatorSummary(found.base, runtime);
-		delete summary.result;
-		return summary;
+		return this.transitionWorkspace(found.path, async () => {
+			const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path), {
+				workspaceTransition: true,
+			});
+			input.onProgress?.(this.coordinatorSummary(found.base, runtime));
+			const mode: SessionSendMode = input.mode ?? "auto";
+			const active = this.isRuntimeActive(runtime) || this.coordinatorTasks.has(found.path);
+			if (
+				active &&
+				(mode === "steer" || (mode === "auto" && runtime.getSnapshot("available").activity === "running"))
+			) {
+				await runtime.steer(input.text);
+			} else if (
+				active &&
+				(mode === "follow_up" ||
+					(mode === "auto" && runtime.getSnapshot("available").activity === "waiting_for_input"))
+			) {
+				await runtime.followUp(input.text);
+			} else {
+				const task = found.base.taskId
+					? this.runCoordinatorPrompt(
+							runtime,
+							found.base.taskId,
+							input.text,
+							readSessionHeader(found.path)?.collaborationWorkspace ?? found.base.workspace,
+						)
+					: runtime.prompt(input.text).then(() => undefined);
+				this.trackCoordinatorTask(found.path, task);
+			}
+			await this.sendSessionSnapshots(runtime);
+			const summary = this.coordinatorSummary(found.base, runtime);
+			delete summary.result;
+			return summary;
+		});
 	}
 
 	private async waitForRuntimeIdle(runtime: RuntimeSession, timeoutMs: number): Promise<void> {
@@ -1644,6 +1851,30 @@ export class WebRuntimeService {
 		afterResponse: (action: () => void) => void,
 	): Promise<JsonValue> {
 		switch (request.command) {
+			case "session_workspaces": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				if (request.action === "preview")
+					return jsonValue(await this.sessionWorkspaces(cwd, "preview", request.sessionIds));
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `project:${cwd}`,
+					payload: { cwd, ...(request.sessionIds ? { sessionIds: request.sessionIds } : {}) },
+					run: async () => jsonValue(await this.sessionWorkspaces(cwd, "cleanup", request.sessionIds)),
+				});
+			}
+			case "session_accept_result": {
+				const cwd = canonicalProjectCwd(request.cwd);
+				return this.executeJournaledWrite(connection, {
+					command: request.command,
+					clientInstanceId: request.clientInstanceId,
+					clientRequestId: request.clientRequestId,
+					scope: `project:${cwd}`,
+					payload: { cwd, sessionId: request.sessionId },
+					run: async () => jsonValue(await this.acceptCoordinatorResult(cwd, request.sessionId)),
+				});
+			}
 			case "get_snapshot": {
 				let startupSession: { path: string; cwd: string } | undefined;
 				if (this.startupSessionPath) {
@@ -1776,6 +2007,7 @@ export class WebRuntimeService {
 						sessionId: request.sessionId,
 						title: request.title,
 						description: request.description,
+						workspaceMode: request.workspaceMode,
 					}),
 				);
 			case "room_task_list":
@@ -2967,27 +3199,41 @@ export class WebRuntimeService {
 					clientRequestId: request.clientRequestId,
 					scope: `project:${cwd}`,
 					lockSessionPath: sessionPath,
-					payload: { sessionPath, cwd, trusted: request.trusted },
+					payload: {
+						sessionPath,
+						cwd,
+						trusted: request.trusted,
+						...(request.inheritCollaboration !== undefined
+							? { inheritCollaboration: request.inheritCollaboration }
+							: {}),
+					},
 					run: async () => {
 						const { runtime } = this.assertExtensionSession(connection, request);
-						if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) !== cwd) {
+						const projectCwd =
+							readSessionHeader(sessionPath)?.collaborationWorkspace?.projectCwd ??
+							runtime.getSnapshot("available").cwd;
+						if (canonicalProjectCwd(projectCwd) !== cwd) {
 							throw Object.assign(new Error("项目信任目录与当前会话不一致"), {
 								code: "project_trust_session_mismatch",
 								retryable: false,
 							});
 						}
 						const previousDecision = this.adapter.getProjectTrustDecision(cwd);
-						const result = await this.adapter.setProjectTrust(cwd, request.trusted);
+						const previousInheritance =
+							this.adapter.getProjectTrust(cwd).collaborationInheritance?.enabled ?? false;
+						const result = await this.adapter.setProjectTrust(cwd, request.trusted, request.inheritCollaboration);
 						const reloadProjectRuntimes = async () => {
 							for (const runtime of this.runtimes.values()) {
-								if (canonicalProjectCwd(runtime.getSnapshot("available").cwd) === cwd)
-									await runtime.reloadResources();
+								const sourceCwd =
+									readSessionHeader(runtime.sessionPath)?.collaborationWorkspace?.projectCwd ??
+									runtime.getSnapshot("available").cwd;
+								if (canonicalProjectCwd(sourceCwd) === cwd) await runtime.reloadResources();
 							}
 						};
 						try {
 							await reloadProjectRuntimes();
 						} catch (error) {
-							await this.adapter.setProjectTrust(cwd, previousDecision);
+							await this.adapter.setProjectTrust(cwd, previousDecision, previousInheritance);
 							await reloadProjectRuntimes();
 							throw error;
 						}
@@ -3332,6 +3578,16 @@ export class WebRuntimeService {
 
 	private async listSessionSummariesUnqueued(cwd: string, metadataOnly: boolean): Promise<ObservedSessionSummary[]> {
 		const sessions = await this.adapter.listSessions(cwd, { metadataOnly });
+		if (!this.reconciledWorkspaceProjects.has(cwd)) {
+			this.reconciledWorkspaceProjects.add(cwd);
+			const acceptedIds = sessions
+				.filter((session) => session.workspace?.status === "accepted")
+				.map((session) => session.id);
+			if (acceptedIds.length)
+				void this.sessionWorkspaces(cwd, "cleanup", acceptedIds).catch((error: unknown) => {
+					console.error("协作工作区回收未完成", error);
+				});
+		}
 		const summaries = await Promise.all(
 			sessions.map(async (session) => {
 				const sessionPath = canonicalSessionPath(session.path);
@@ -3346,7 +3602,21 @@ export class WebRuntimeService {
 					...(session.profileId ? { profileId: session.profileId } : {}),
 					...(session.profileName ? { profileName: session.profileName } : {}),
 					...(session.profileIcon ? { profileIcon: session.profileIcon } : {}),
-					...(session.workspace ? { workspace: session.workspace } : {}),
+					...(session.workspace
+						? {
+								workspace: {
+									...session.workspace,
+									retainedReason:
+										this.workspaceBusyReason(session) ??
+										session.workspace.retainedReason ??
+										(session.workspace.status === "failed"
+											? "任务未成功，保留成果用于重试"
+											: session.workspace.status === "active" || session.workspace.status === "delivered"
+												? "成果尚未接收"
+												: undefined),
+								},
+							}
+						: {}),
 					createdAt: session.createdAt,
 					updatedAt: session.updatedAt,
 					messageCount: session.messageCount,
@@ -4370,8 +4640,9 @@ export class WebRuntimeService {
 	private async ensureRuntime(
 		sessionPath: string,
 		onUiRequest: UiRequestHandler,
-		options: { deferExtensionLifecycle?: boolean } = {},
+		options: { deferExtensionLifecycle?: boolean; workspaceTransition?: boolean } = {},
 	): Promise<RuntimeSession> {
+		if (!options.workspaceTransition) await this.workspaceTransitions.get(sessionPath);
 		if (this.disposed) throw new Error("Web Runtime 已关闭");
 		if (this.sessionsInHandoff.has(sessionPath)) {
 			throw Object.assign(new Error("会话正在交给 TUI，请稍后重试"), {
@@ -4394,6 +4665,22 @@ export class WebRuntimeService {
 			) {
 				await this.ensureSessionHandoffServer(current);
 				return current;
+			}
+			const header = existsSync(sessionPath) ? readSessionHeader(sessionPath) : undefined;
+			const workspace = header?.collaborationWorkspace;
+			if (workspace?.status === "released" && workspace.mode !== "shared") {
+				if (!this.adapter.relocateSession) throw new Error("Runtime 不支持工作区恢复");
+				const restored = await this.collaborationWorkspaces.create(
+					workspace.projectCwd,
+					workspace.mode,
+					randomUUID(),
+				);
+				try {
+					await this.adapter.relocateSession(sessionPath, restored);
+				} catch (error) {
+					await this.collaborationWorkspaces.release(restored);
+					throw error;
+				}
 			}
 			const replacement = await this.adapter.openSession(sessionPath, onUiRequest, {
 				deferExtensionLifecycle: options.deferExtensionLifecycle === true,
@@ -4619,10 +4906,38 @@ export class WebRuntimeService {
 		);
 	}
 
+	private retryPendingWorkspaceReleases(cwd?: string): void {
+		if (this.disposed) return;
+		for (const [path, pending] of this.pendingWorkspaceReleases) {
+			if (cwd && canonicalProjectCwd(cwd) !== canonicalProjectCwd(pending.cwd)) continue;
+			if (!existsSync(path)) {
+				this.pendingWorkspaceReleases.delete(path);
+				continue;
+			}
+			if (this.workspaceTransitions.has(path)) continue;
+			void this.transitionWorkspace(path, async () => {
+				const current = await this.findCoordinatorSession(pending.cwd, pending.sessionId);
+				await this.releaseCoordinatorWorkspace(current.base);
+			}).catch((error: unknown) => console.error("协作工作区回收未完成", error));
+		}
+	}
+
 	private async disposeRuntimeIfUnused(sessionPath: string): Promise<void> {
 		const runtime = this.runtimes.get(sessionPath);
-		if (!runtime || this.runtimeHasDemand(sessionPath, runtime)) return;
+		if (!runtime || this.runtimeHasDemand(sessionPath, runtime)) {
+			this.retryPendingWorkspaceReleases();
+			return;
+		}
+		const workspace = existsSync(sessionPath) ? readSessionHeader(sessionPath)?.collaborationWorkspace : undefined;
 		await this.disposeRuntime(sessionPath);
+		if (workspace?.status === "accepted") {
+			await this.transitionWorkspace(sessionPath, async () => {
+				const sessions = await this.adapter.listSessions(workspace.projectCwd);
+				const base = sessions.find((session) => canonicalSessionPath(session.path) === sessionPath);
+				if (base) await this.releaseCoordinatorWorkspace(base);
+			});
+		}
+		this.retryPendingWorkspaceReleases();
 	}
 
 	private async disposeRuntime(sessionPath: string): Promise<void> {
