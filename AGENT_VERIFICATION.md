@@ -9,7 +9,7 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前候选版本为 `1.1.0-lystar.1`，尚未打 Tag 或发布。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前正式版本为 `1.1.0-lystar.1`，Tag 和 GitHub Release 已发布。
 
 ## 1.1.0-lystar.1 发行前验证（2026-10-08，本机 gate 通过）
 
@@ -23,6 +23,15 @@
 - 本机既有模型筛选和重复 MCP 扩展配置产生警告；不影响请求和退出，未修改用户配置。Bun 构建出现 directory mismatch 提示，但返回成功，归档启动与真实请求已通过。
 - 完整发行日志：`/tmp/lystar-1.1.0-release-final.log`；PTY 回复：`/tmp/lystar-110-node-pty.log`、`/tmp/lystar-110-bun-pty.log`。此前失败日志保留为 `/tmp/pi-bash-fbddaaa76bd5afd9.log`。
 - 本机证据限于 Linux x64；其他四平台原生构建、候选资产校验和正式发布由 Release workflow 完成，尚未执行的跨平台实机行为不写成已验证。
+
+## 1.1.0-lystar.1 发布后验证（2026-10-08）
+
+- 正式 Tag `v1.1.0-lystar.1` 指向 `40394592109d3679fb0d0604f30876338f52574e`；Release workflow `37738441280` 的五平台原生构建、候选校验和发布共 7 个 job 全部成功。Release 于 `2026-10-08T06:44:35Z` 公开发布，不是 draft/prerelease。
+- 已下载 10 个公开资产到 `/tmp/lystar-110-official-release`；五个平台归档 SHA-256 全部通过。按 `.gitattributes` 的规范行尾取得安装器源码后，`generate-release-metadata.mjs --verify` 确认版本、Pi 版本、仓库、五平台文件名、大小、SHA 和三个安装器一致。初次校验差异仅为本机 `install.cmd` 的 LF 与规范 CRLF。
+- 使用临时 GitHub CLI 验证 Linux x64 归档的 attestation，签名来源为本仓库 `release.yml`、正式 Tag 和上述提交；结果保存在 `/tmp/lystar-110-attestation.json`，未替换本机 CLI。
+- 正式 Linux x64 归档解压后，版本、帮助、离线模型列表和默认模型真实请求通过，回复 `ok`。
+- 在隔离的 `/tmp/lystar-110-upgrade-home` 中，从正式 `1.0.4-lystar.1` 执行 `lc update` 升级成功；`current` 指向 `versions/1.1.0-lystar.1`，`previous` 保留 `versions/1.0.4-lystar.1`。再次更新显示已是最新版本。未更新用户默认安装或重启既有 Web 服务。
+- macOS、Linux ARM64 和 Windows 的证据为对应原生 runner 的构建及归档检查；未在本机验证这些平台的完整交互或安装行为。
 
 ## 1.0.4-lystar.1 发行前验证（2026-10-06）
 
