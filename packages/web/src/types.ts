@@ -70,6 +70,7 @@ export interface ToolBatchTool {
 	state: ToolBatchState;
 	stepId?: string;
 	detail?: string;
+	progress?: string;
 	webSearch?: WebSearchProgress;
 	sources?: Array<{ url: string; title?: string }>;
 	images?: Array<{ contentRef: string; mimeType: string; byteLength: number; alt?: string }>;
@@ -462,6 +463,8 @@ export interface SystemPermissionsResponse {
 
 export interface SecuritySettingsResponse {
 	host: string;
+	ipAddresses: string[];
+	accessPort: number;
 	allowedHosts: string[];
 	port: number;
 	runtimePort: number;

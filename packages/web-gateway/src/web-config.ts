@@ -24,7 +24,7 @@ export interface WebConfig {
 }
 
 export interface WebConfigInput {
-	host: string;
+	host?: string;
 	port: number;
 	password: string;
 	allowedHosts?: readonly string[];
@@ -120,7 +120,7 @@ function parseWebConfig(value: unknown): WebConfig {
 	const record = recordValue(value);
 	if (record.version !== WEB_CONFIG_VERSION) throw new Error(`Web 配置版本无效：${String(record.version)}`);
 	try {
-		const host = validateGatewayHost(record.host);
+		const host = DEFAULT_WEB_HOST;
 		return {
 			version: WEB_CONFIG_VERSION,
 			host,
@@ -189,7 +189,7 @@ export class WebConfigStore {
 			}
 			const record = recordValue(value);
 			try {
-				result.host = validateGatewayHost(record.host);
+				result.host = DEFAULT_WEB_HOST;
 				result.allowedHosts =
 					record.allowedHosts === undefined ? undefined : validateAllowedHosts(record.allowedHosts);
 				result.port = parseGatewayPort(record.port);
@@ -225,7 +225,7 @@ export class WebConfigStore {
 	}
 
 	async save(input: WebConfigInput): Promise<WebConfig> {
-		const host = validateGatewayHost(input.host);
+		const host = DEFAULT_WEB_HOST;
 		const config: WebConfig = {
 			version: WEB_CONFIG_VERSION,
 			host,

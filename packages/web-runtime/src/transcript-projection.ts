@@ -1,6 +1,8 @@
+import type { ToolActivitySnapshot } from "@earendil-works/pi-coding-agent/core";
 import type {
 	AgentStep,
 	JsonValue,
+	ToolActivity,
 	ToolDiff,
 	TranscriptCodemodeDetails,
 	TranscriptFile,
@@ -15,7 +17,7 @@ import {
 	type ExtensionActivityRecord,
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
-import { toolProgressDiff } from "./tool-progress.ts";
+import { isDiffTool, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 
 const INTERNAL_FILE_REFERENCE_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
 const FILE_ATTRIBUTE_PATTERN = /\bname="([^"]*)"/u;
@@ -124,19 +126,30 @@ function subagentReferences(details: JsonValue | undefined): TranscriptSubagentR
 	});
 }
 
-function codemodeDetails(value: JsonValue | undefined): TranscriptCodemodeDetails | undefined {
-	let source = record(value);
+export function projectedCodemodeDetails(
+	value: unknown,
+	nestedCalls?: JsonValue,
+): TranscriptCodemodeDetails | undefined {
+	let source = toolRecord(value);
 	if (!source && typeof value === "string") {
 		try {
-			source = record(JSON.parse(value) as JsonValue);
+			source = toolRecord(JSON.parse(value));
 		} catch {
 			// Older transcript entries may store structured details as JSON text.
 		}
 	}
 	if (!source || !Array.isArray(source.calls)) return undefined;
+	const nestedById = new Map<string, JsonRecord>();
+	const savedCalls = record(nestedCalls)?.calls;
+	if (Array.isArray(savedCalls)) {
+		for (const value of savedCalls) {
+			const saved = record(value);
+			if (typeof saved?.id === "string") nestedById.set(saved.id, saved);
+		}
+	}
 	const states = new Set(["running", "ok", "error", "cancelled"]);
-	const calls = source.calls.flatMap((candidate) => {
-		const call = record(candidate);
+	const calls = source.calls.slice(0, 128).flatMap((candidate) => {
+		const call = toolRecord(candidate);
 		if (
 			!call ||
 			typeof call.id !== "string" ||
@@ -147,11 +160,34 @@ function codemodeDetails(value: JsonValue | undefined): TranscriptCodemodeDetail
 		)
 			return [];
 		const status = call.status as TranscriptCodemodeDetails["calls"][number]["status"];
+		let args = nestedById.get(call.id)?.arguments;
+		if (args === undefined) {
+			try {
+				args = JSON.parse(call.args) as JsonValue;
+			} catch {
+				// 截断参数仍保留原文；文件名只来自实际调用记录。
+			}
+		}
+		const summary =
+			typeof call.summary === "string"
+				? call.summary
+				: args !== undefined
+					? toolCallSummary(call.name, args)
+					: call.args;
+		const diff = call.diff
+			? toolProgressDiff("apply_patch", undefined, { details: call.diff })
+			: status === "running" || status === "ok"
+				? toolProgressDiff(call.name, args)
+				: undefined;
 		return [
 			{
 				id: bounded(call.id),
 				name: bounded(call.name),
 				args: bounded(call.args),
+				summary: bounded(summary),
+				...(diff ? { diff } : {}),
+				...(typeof call.progress === "string" ? { progress: bounded(call.progress) } : {}),
+				...(typeof call.result === "string" ? { result: bounded(call.result) } : {}),
 				status,
 				...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0
 					? { durationMs: call.durationMs }
@@ -166,6 +202,12 @@ function codemodeDetails(value: JsonValue | undefined): TranscriptCodemodeDetail
 	const fullOutputPath = typeof source.fullOutputPath === "string" ? bounded(source.fullOutputPath) : undefined;
 	if (calls.length === 0 && !fullOutputPath) return undefined;
 	return { calls, ...(fullOutputPath ? { fullOutputPath } : {}) };
+}
+
+export function projectedToolActivity(source: ToolActivitySnapshot): ToolActivity {
+	const { details, ...activity } = source;
+	const codemode = activity.name === "codemode" ? projectedCodemodeDetails(details) : undefined;
+	return { ...activity, ...(codemode ? { codemode } : {}) };
 }
 
 function projectedAgentStep(payload: JsonRecord | undefined): AgentStep | undefined {
@@ -342,6 +384,10 @@ function diffValue(value: JsonValue | undefined): { diff?: string; truncated?: b
 		const diff = bounded(value);
 		return { diff, ...(diff.length < value.length ? { truncated: true } : {}) };
 	}
+	const reference = record(value);
+	if (reference?.type === "content_ref" && typeof reference.previewHead === "string") {
+		return { diff: bounded(reference.previewHead), truncated: true };
+	}
 	return {};
 }
 
@@ -378,14 +424,16 @@ function toolDiff(name: string, details: JsonValue | undefined) {
 		});
 		return files.length > 0 ? { files } : undefined;
 	}
+	const path = typeof source.path === "string" ? source.path : undefined;
 	const additions = number(source.additions);
 	const deletions = number(source.deletions);
 	const operation = typeof source.operation === "string" ? source.operation : undefined;
 	const result = diffValue(source.diff);
-	if (additions === undefined && deletions === undefined && !operation && !result.diff) return undefined;
+	if (!path && additions === undefined && deletions === undefined && !operation && !result.diff) return undefined;
 	return {
 		files: [
 			{
+				...(path ? { path } : {}),
 				...(operation ? { operation } : {}),
 				...(additions === undefined ? {} : { additions }),
 				...(deletions === undefined ? {} : { deletions }),
@@ -824,9 +872,13 @@ function projectTranscriptViews(
 			entryMessage.details,
 		);
 		const diff = isError ? resultDiff : mergeToolDiff(call?.diff, resultDiff);
-		const summary = generatedImageSummary(name, call, entryMessage.details);
+		const summary =
+			(name === "edit" || name === "write") && (!call?.summary || call.summary === name) && diff?.files[0]?.path
+				? toolCallSummary(name, { path: diff.files[0].path })
+				: generatedImageSummary(name, call, entryMessage.details);
 		const subagents = name === "subagent" ? subagentReferences(entryMessage.details) : [];
-		const codemode = name === "codemode" ? codemodeDetails(entryMessage.details) : undefined;
+		const codemode =
+			name === "codemode" ? projectedCodemodeDetails(entryMessage.details, entryMessage.nestedCalls) : undefined;
 		return [
 			{
 				type: "tool_result",
@@ -1025,6 +1077,7 @@ export function projectTranscriptBatch(
 	items: readonly TranscriptItem[],
 	knownAgentSteps: readonly AgentStep[] = [],
 	contextCalls: readonly TranscriptItem[] = [],
+	pendingFileCalls?: Map<string, TranscriptToolCallProjection>,
 ): TranscriptItem[] {
 	const stepByToolCall = new Map<string, string>();
 	const latestStepEntryIdsByStep = new Map<string, string>();
@@ -1037,7 +1090,7 @@ export function projectTranscriptBatch(
 	for (const step of knownAgentSteps) {
 		for (const toolCallId of step.toolCallIds) stepByToolCall.set(toolCallId, step.id);
 	}
-	const toolCalls = new Map<string, TranscriptToolCallProjection>();
+	const toolCalls = new Map<string, TranscriptToolCallProjection>(pendingFileCalls);
 	for (const item of [...contextCalls, ...items]) {
 		const payload = record(item.payload);
 		const entryMessage = record(payload?.message);
@@ -1051,9 +1104,15 @@ export function projectTranscriptBatch(
 			if (candidate && typeof candidate.id === "string" && projection) toolCalls.set(candidate.id, projection);
 		}
 	}
+	// 实时提交按批次到达；仅保留尚未返回结果的文件调用预览。
+	if (pendingFileCalls) {
+		for (const [id, call] of toolCalls) {
+			if (call.name === "read" || isDiffTool(call.name)) pendingFileCalls.set(id, call);
+		}
+	}
 	const latestStepEntryIds = new Set(latestStepEntryIdsByStep.values());
 	const extensionActivities = extensionActivityBatchProjection(items);
-	return items.flatMap((item) => {
+	const projectedItems = items.flatMap((item) => {
 		const activityView = extensionActivities.views.get(item.entryId);
 		if (activityView) return [{ ...item, view: activityView }];
 		if (extensionActivities.hiddenEntryIds.has(item.entryId)) return [];
@@ -1064,6 +1123,10 @@ export function projectTranscriptBatch(
 			view,
 		}));
 	});
+	for (const item of projectedItems) {
+		if (item.view?.type === "tool_result") pendingFileCalls?.delete(item.view.callId);
+	}
+	return projectedItems;
 }
 
 export function projectTranscriptItem(item: TranscriptItem): TranscriptViewItem {

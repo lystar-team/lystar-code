@@ -16,7 +16,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
+import { createServer as createTcpServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Duplex, Transform, Writable } from "node:stream";
@@ -79,7 +79,9 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
 	bearerToken,
 	cookieValue,
+	DEFAULT_RUNTIME_HOST,
 	DEFAULT_RUNTIME_PORT,
+	DEFAULT_WEB_HOST,
 	hostMatches,
 	isValidClientId,
 	loadWebGatewayConfig,
@@ -87,10 +89,10 @@ import {
 	parseGatewayPort,
 	requestHostname,
 	validateAllowedHosts,
-	validateGatewayHost,
 	validateWebPassword,
 	WebConfigStore,
 	type WebGatewayConfig,
+	webAccessAddresses,
 } from "./config.ts";
 import { logGatewayConnection, watchGatewayEventLoop, withGatewayRequest } from "./connection-log.ts";
 import {
@@ -99,7 +101,6 @@ import {
 	diskUsage,
 	hostCpu,
 	hostMemory,
-	hostNetworkAddresses,
 	hostUptimeSeconds,
 	readCpuSnapshot,
 } from "./host-diagnostics.ts";
@@ -337,6 +338,8 @@ interface BootstrapCache {
 
 interface GatewaySecuritySettingsResponse {
 	host: string;
+	ipAddresses: string[];
+	accessPort: number;
 	allowedHosts: string[];
 	port: number;
 	runtimePort: number;
@@ -992,7 +995,7 @@ export class WebGatewayServer {
 
 	constructor(config: WebGatewayConfig) {
 		configureServiceEventLog(config.agentDir, config.serviceProfile);
-		this.config = config;
+		this.config = { ...config, host: DEFAULT_WEB_HOST };
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
 		this.productUpdate = new ProductUpdateController(config.agentDir);
@@ -2091,9 +2094,8 @@ export class WebGatewayServer {
 			...existing,
 			generatedAt: Date.now(),
 			web: {
-				host: this.config.host,
-				port: this.config.port,
-				ipAddresses: hostNetworkAddresses(),
+				port: this.config.frontendPort ?? this.config.port,
+				ipAddresses: webAccessAddresses(this.config.allowedHosts),
 			},
 			gateway: {
 				status: "running",
@@ -2118,7 +2120,7 @@ export class WebGatewayServer {
 			},
 			checks: [
 				...existingChecks,
-				{ id: "web-gateway", status: "ok", message: `Web Gateway ${this.config.host}:${this.config.port}` },
+				{ id: "web-gateway", status: "ok", message: `Web Gateway 运行中，端口 ${this.config.port}` },
 				{
 					id: "web-runtime",
 					status: runtimeStatus.reachable ? "ok" : "error",
@@ -4375,7 +4377,7 @@ export class WebGatewayServer {
 
 	private gatewaySecuritySettingsEditable(): GatewaySecuritySettingsResponse["editable"] {
 		return {
-			host: !process.env.PI_WEB_HOST?.trim(),
+			host: false,
 			allowedHosts: !process.env.PI_WEB_ALLOWED_HOSTS?.trim(),
 			port: !process.env.PI_WEB_PORT?.trim(),
 			runtimePort: this.config.manageRuntime && !process.env.PI_WEB_RUNTIME_PORT?.trim(),
@@ -4386,7 +4388,9 @@ export class WebGatewayServer {
 	private async gatewaySecuritySettings(): Promise<GatewaySecuritySettingsResponse> {
 		const persisted = await new WebConfigStore(this.config.agentDir, this.config.configPath).loadOrMigrate();
 		return {
-			host: persisted?.host ?? this.config.host,
+			host: DEFAULT_WEB_HOST,
+			ipAddresses: webAccessAddresses(this.config.allowedHosts),
+			accessPort: this.config.frontendPort ?? this.config.port,
 			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
 			port: persisted?.port ?? this.config.port,
 			runtimePort: this.config.manageRuntime
@@ -4419,8 +4423,8 @@ export class WebGatewayServer {
 			password: persisted?.password ?? this.config.token,
 		};
 		const editable = this.gatewaySecuritySettingsEditable();
-		if (!editable.host && body.host !== undefined && body.host !== current.host)
-			throw new HttpError(409, "gateway_host_managed_by_environment", "监听 IP 由启动环境变量管理");
+		if (body.host !== undefined && body.host !== DEFAULT_WEB_HOST)
+			throw new HttpError(409, "gateway_host_fixed", "监听地址不可修改");
 		if (!editable.allowedHosts && body.allowedHosts !== undefined) {
 			try {
 				if (JSON.stringify(validateAllowedHosts(body.allowedHosts)) !== JSON.stringify(current.allowedHosts))
@@ -4440,12 +4444,10 @@ export class WebGatewayServer {
 			throw new HttpError(409, "gateway_runtime_port_managed_by_environment", "Runtime 端口由启动环境变量管理");
 		if (!editable.password && body.password !== undefined && body.password !== "")
 			throw new HttpError(409, "gateway_password_managed_by_environment", "访问密码由启动环境变量管理");
-		let host: string;
 		let allowedHosts: string[];
 		let port: number;
 		let runtimePort: number;
 		try {
-			host = validateGatewayHost(body.host ?? current.host);
 			allowedHosts = validateAllowedHosts(body.allowedHosts ?? current.allowedHosts);
 			port = parseGatewayPort(body.port ?? current.port);
 			runtimePort = parseGatewayPort(body.runtimePort ?? current.runtimePort);
@@ -4455,6 +4457,23 @@ export class WebGatewayServer {
 				"gateway_network_settings_invalid",
 				error instanceof Error ? error.message : String(error),
 			);
+		}
+		if (port === runtimePort || (this.config.manageRuntime && port === this.config.runtimePort))
+			throw new HttpError(400, "gateway_ports_conflict", "Web 端口和 Runtime 端口不能相同");
+		const changedPorts = [
+			...(port !== this.config.port ? [{ port, host: DEFAULT_WEB_HOST }] : []),
+			...(this.config.manageRuntime && runtimePort !== (this.config.runtimePort ?? DEFAULT_RUNTIME_PORT)
+				? [{ port: runtimePort, host: DEFAULT_RUNTIME_HOST }]
+				: []),
+		];
+		for (const target of changedPorts) {
+			await new Promise<void>((resolve, reject) => {
+				const probe = createTcpServer();
+				probe.once("error", (error: NodeJS.ErrnoException) => {
+					reject(new HttpError(409, "gateway_port_unavailable", `端口 ${target.port} 不可用：${error.message}`));
+				});
+				probe.listen(target.port, target.host, () => probe.close((error) => (error ? reject(error) : resolve())));
+			});
 		}
 		let password = current.password;
 		let passwordChanged = false;
@@ -4475,9 +4494,11 @@ export class WebGatewayServer {
 			}
 		}
 
-		const saved = await store.save({ host, allowedHosts, port, runtimePort, password });
+		const saved = await store.save({ allowedHosts, port, runtimePort, password });
 		const result: GatewaySecuritySettingsSaveResponse = {
 			host: saved.host,
+			ipAddresses: webAccessAddresses(saved.allowedHosts),
+			accessPort: this.config.frontendPort ?? saved.port,
 			allowedHosts: saved.allowedHosts,
 			port: saved.port,
 			runtimePort: saved.runtimePort,

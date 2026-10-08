@@ -14,8 +14,13 @@ import { uiGlyphs } from "../../modes/interactive/ui-glyphs.ts";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
+import { splitBom } from "../../utils/text.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
+import { normalizeToLF } from "./edit-diff.ts";
+import { formatFileSnapshot, getFileEditState } from "./file-edit-context.ts";
+import type { FileEditState } from "./file-edit-state.ts";
+import { getMutationQueueKey } from "./file-mutation-queue.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { readRenderers } from "./renderers/read.ts";
@@ -24,18 +29,22 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
 
 const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
-	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+	offset: Type.Optional(Type.Integer({ minimum: 1, description: "Line number to start reading from (1-indexed)" })),
+	limit: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum number of lines to read" })),
 });
 
 export const readToolSystemPromptContribution = {
 	snippet: "Read file contents",
-	guidelines: ["Use read to examine files instead of cat or sed."],
+	guidelines: [
+		"Use read to examine files instead of cat or sed.",
+		"Text reads return a snapshot reference and numbered source lines. Use that snapshot and its displayed line ranges with edit; do not reproduce oldText or include line-number prefixes in newText.",
+	],
 } as const;
 
 export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadSourceDetails {
+	snapshot: string;
 	absolutePath: string;
 	revision: string;
 	startLine: number;
@@ -92,6 +101,8 @@ const defaultReadOperations: ReadOperations = {
 };
 
 export interface ReadToolOptions {
+	/** Shared read/edit state for standalone SDK tools. Sessions use their own state automatically. */
+	fileEditState?: FileEditState;
 	/** Whether to auto-resize images. Default: true */
 	autoResizeImages?: boolean;
 	/** Fallback resize profile when the execution context has no model metadata. */
@@ -449,7 +460,7 @@ export function createReadToolDefinition(
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+		description: `Read the contents of a file. Text reads return a snapshot reference and numbered source lines for edit. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is limited to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Use offset/limit to read the regions you need. Only displayed source ranges can be edited with the returned snapshot.`,
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,
@@ -509,65 +520,60 @@ export function createReadToolDefinition(
 							} else {
 								// Read text content.
 								const buffer = await ops.readFile(absolutePath);
-								const textContent = buffer.toString("utf-8");
-								const allLines = textContent.split("\n");
-								const totalFileLines = allLines.length;
-								// Apply offset if specified. Convert from 1-indexed input to 0-indexed array access.
-								const startLine = offset ? Math.max(0, offset - 1) : 0;
-								const startLineDisplay = startLine + 1;
-								// Check if offset is out of bounds.
+								if (aborted) return;
+								const rawContent = buffer.toString("utf-8");
+								const allLines = normalizeToLF(splitBom(rawContent).text).split("\n");
+								const startLine = (offset ?? 1) - 1;
+								if (
+									!Number.isSafeInteger(startLine) ||
+									startLine < 0 ||
+									(limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
+								) {
+									throw new Error("Read offset and limit must be positive integers.");
+								}
 								if (startLine >= allLines.length) {
 									throw new Error(`Offset ${offset} is beyond end of file (${allLines.length} lines total)`);
 								}
-								let selectedContent: string;
-								let userLimitedLines: number | undefined;
-								// If limit is specified by the user, honor it first. Otherwise truncateHead decides.
-								if (limit !== undefined) {
-									const endLine = Math.min(startLine + limit, allLines.length);
-									selectedContent = allLines.slice(startLine, endLine).join("\n");
-									userLimitedLines = endLine - startLine;
-								} else {
-									selectedContent = allLines.slice(startLine).join("\n");
-								}
-								// Apply truncation, respecting both line and byte limits.
-								const truncation = truncateHead(selectedContent);
+								const selectedLines = allLines.slice(
+									startLine,
+									limit === undefined ? undefined : startLine + limit,
+								);
+								const numbered = selectedLines
+									.map((line, index) => `${startLine + index + 1}| ${line}`)
+									.join("\n");
+								// 给快照引用和补读说明预留空间；只有完整展示的源行进入快照范围。
+								const truncation = truncateHead(numbered, { maxBytes: DEFAULT_MAX_BYTES - 512 });
 								let outputText: string;
 								if (truncation.firstLineExceedsLimit) {
-									// First line alone exceeds the byte limit. Point the model at a bash fallback.
-									const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
-									outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
+									const lineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf8"));
+									outputText = `[Line ${startLine + 1} is ${lineSize}, exceeds the text output limit. No edit snapshot was issued for this line.]`;
 									details = { truncation };
-								} else if (truncation.truncated) {
-									// Truncation occurred. Build an actionable continuation notice.
-									const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
-									const nextOffset = endLineDisplay + 1;
-									outputText = truncation.content;
-									if (truncation.truncatedBy === "lines") {
-										outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Use offset=${nextOffset} to continue.]`;
-									} else {
-										outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
-									}
-									details = { truncation };
-								} else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
-									// User-specified limit stopped early, but the file still has more content.
-									const remaining = allLines.length - (startLine + userLimitedLines);
-									const nextOffset = startLine + userLimitedLines + 1;
-									outputText = `${truncation.content}\n\n[${remaining} more lines in file. Use offset=${nextOffset} to continue.]`;
 								} else {
-									// No truncation and no remaining user-limited content.
-									outputText = truncation.content;
-								}
-								const sourceOutputLines = truncation.outputLines;
-								if (sourceOutputLines > 0 && !truncation.firstLineExceedsLimit) {
+									const displayedLines = selectedLines.slice(0, truncation.outputLines);
+									const state = getFileEditState(ctx?.cwd || cwd, ctx, options?.fileEditState);
+									const canonicalPath = await getMutationQueueKey(absolutePath);
+									if (aborted) return;
+									const snapshot = state.capture(
+										canonicalPath,
+										rawContent,
+										startLine + 1,
+										startLine + displayedLines.length,
+									);
+									outputText = formatFileSnapshot(state, snapshot, displayedLines);
+									if (snapshot.endLine < allLines.length) {
+										const remaining = allLines.length - snapshot.endLine;
+										outputText += `\n\n[${remaining} more lines in file. Use offset=${snapshot.endLine + 1} to continue.]`;
+									}
 									const source: ReadSourceDetails = {
+										snapshot: snapshot.id,
 										absolutePath,
 										revision: sha256(buffer),
-										startLine: startLineDisplay,
-										endLine: startLineDisplay + sourceOutputLines - 1,
-										totalLines: totalFileLines,
+										startLine: snapshot.startLine,
+										endLine: snapshot.endLine,
+										totalLines: snapshot.totalLines,
 										outputHash: sha256(outputText),
 									};
-									details = { ...(details ?? {}), source };
+									details = { ...(truncation.truncated ? { truncation } : {}), source };
 								}
 								content = [{ type: "text", text: outputText }];
 							}
@@ -643,6 +649,9 @@ export function createReadToolDefinition(
 	};
 }
 
-export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
+export function createReadTool(
+	cwd: string,
+	options?: ReadToolOptions,
+): AgentTool<typeof readSchema, ReadToolDetails | undefined> {
 	return wrapToolDefinition(createReadToolDefinition(cwd, options));
 }

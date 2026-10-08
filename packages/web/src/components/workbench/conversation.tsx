@@ -508,6 +508,7 @@ function ConversationBody({
 	const renderStateRef = useRef({ sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses });
 	renderStateRef.current = { sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses };
 	const openSubagent = actions.openSubagent;
+	const openSession = actions.selectSession;
 	const renderToolStack = useCallback(
 		(entry: TranscriptToolStackRenderItem) => {
 			const current = renderStateRef.current;
@@ -526,6 +527,7 @@ function ConversationBody({
 								sessionId={current.sessionId}
 								onOpenPath={(path) => void openResource(path)}
 								onOpenSubagent={openSubagent}
+								onOpenSession={openSession}
 							/>
 						))}
 					</div>
@@ -544,6 +546,7 @@ function ConversationBody({
 					sessionId={current.sessionId}
 					onOpenPath={(path) => void openResource(path)}
 					onOpenSubagent={openSubagent}
+					onOpenSession={openSession}
 				/>
 			);
 		},
@@ -553,6 +556,7 @@ function ConversationBody({
 			getToolStackPresentation,
 			openResource,
 			openSubagent,
+			openSession,
 			updateExpandedToolBatch,
 			updateExpandedToolRow,
 		],

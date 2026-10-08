@@ -43,6 +43,7 @@ import type {
 } from "../../core/extensions/types.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
+import type { ToolActivityDiff } from "../../core/tool-activity.ts";
 import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts";
 import { loadCodemodeExecutor } from "./execute.lazy.ts";
 import { codemodeRenderers } from "./renderer.ts";
@@ -110,6 +111,14 @@ export interface CodemodeNestedCall {
 	name: string;
 	/** Compact JSON of the arguments, truncated for display. */
 	args: string;
+	/** 与外层工具活动共用的输入摘要和文件差异。 */
+	summary?: string;
+	diff?: ToolActivityDiff;
+	/** 子工具的最新进度与返回内容。 */
+	progress?: string;
+	result?: string;
+	/** Structured edit revisions, plan, item conflicts, and write outcome; source text stays in the result. */
+	diagnostics?: Record<string, unknown>;
 	status: CodemodeNestedCallStatus;
 	durationMs?: number;
 	/** Error text, truncated for display. */
@@ -128,6 +137,7 @@ export const codemodeToolSystemPromptContribution = {
 	snippet: "Run JavaScript that calls other tools",
 	guidelines: [
 		"Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
+		"通过 codemode 调用 session_wait 时不要设置短 timeout_ms；脚本截止只取消等待，不代表子任务失败，也不能据此停止子任务。",
 	],
 } as const;
 

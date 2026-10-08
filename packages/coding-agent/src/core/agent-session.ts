@@ -2265,7 +2265,7 @@ export class AgentSession {
 		}
 		if (validToolNames.includes("edit") && !validToolNames.includes("apply_patch")) {
 			promptGuidelines.push(
-				"The apply_patch tool is unavailable. Use edit with unique oldText/newText replacements for file changes.",
+				"The apply_patch tool is unavailable. Use read snapshots and inclusive line ranges with edit; do not send oldText.",
 			);
 		}
 

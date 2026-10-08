@@ -88,13 +88,14 @@ function parseJsonCandidate(value: string, start: number): { end: number; value:
 }
 
 function unwrapEncodedOutput(output: string): string {
-	let current = output.trim();
+	let current = output;
 	for (let depth = 0; depth < 2; depth++) {
-		if (!current.startsWith('"') || !current.endsWith('"')) return current;
+		const encoded = current.trim();
+		if (!encoded.startsWith('"') || !encoded.endsWith('"')) return current;
 		try {
-			const decoded: unknown = JSON.parse(current);
+			const decoded: unknown = JSON.parse(encoded);
 			if (typeof decoded !== "string") return current;
-			current = decoded.trim();
+			current = decoded;
 		} catch {
 			return current;
 		}
@@ -164,20 +165,9 @@ function statusLabel(status: string | undefined): string {
 	return "已返回";
 }
 
-function decodeEscapedText(value: string): string {
-	return value
-		.replaceAll("\\r\\n", "\n")
-		.replaceAll("\\n", "\n")
-		.replaceAll("\\r", "\r")
-		.replaceAll("\\t", "\t")
-		.replaceAll('\\"', '"')
-		.replaceAll("\\\\", "\\");
-}
-
 function ResultValue({ value, depth = 0 }: { value: JsonValue; depth?: number }) {
 	if (typeof value === "string") {
-		const text = decodeEscapedText(value);
-		return text.trim() ? <pre className="m-0 whitespace-pre-wrap break-words text-xs leading-5 text-foreground">{text}</pre> : <span className="text-xs text-muted-foreground">无内容</span>;
+		return value.trim() ? <pre className="m-0 whitespace-pre-wrap break-words text-xs leading-5 text-foreground">{value}</pre> : <span className="text-xs text-muted-foreground">无内容</span>;
 	}
 	if (value === null) return <span className="text-xs text-muted-foreground">无内容</span>;
 	if (typeof value === "number" || typeof value === "boolean") return <span className="text-xs text-foreground">{String(value)}</span>;
@@ -222,7 +212,7 @@ function ResultCard({ value, index }: { value: JsonValue; index: number }) {
 function StructuredOutput({ segments }: { segments: OutputSegment[] }) {
 	return (
 		<div className="max-h-80 min-w-0 overflow-auto p-2 text-xs leading-5">
-			{segments.map((segment, index) => segment.kind === "json" ? <ResultCard key={`result-${index}`} value={segment.value} index={index} /> : segment.value ? <pre className="m-0 whitespace-pre-wrap break-words px-1 py-1 text-xs leading-5 text-foreground" key={`text-${index}`}>{decodeEscapedText(segment.value)}</pre> : null)}
+			{segments.map((segment, index) => segment.kind === "json" ? <ResultCard key={`result-${index}`} value={segment.value} index={index} /> : segment.value ? <pre className="m-0 whitespace-pre-wrap break-words px-1 py-1 text-xs leading-5 text-foreground" key={`text-${index}`}>{segment.value}</pre> : null)}
 		</div>
 	);
 }

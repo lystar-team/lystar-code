@@ -180,7 +180,10 @@ function gatewaySpec(config: WebGatewayConfig, options: WebServiceLaunchOptions)
 		profile,
 		agentDir: config.agentDir,
 		invocation: { ...serviceInvocation(options.gatewayInvocation)!, cwd: config.agentDir },
-		environment: serviceEnvironment(config, options.configFileName, options.serviceVersion),
+		environment: {
+			...serviceEnvironment(config, options.configFileName, options.serviceVersion),
+			PI_WEB_FRONTEND_PORT: options.frontendPort?.toString(),
+		},
 		logPath: serviceLogPath(config.agentDir, "gateway", profile),
 	};
 }
@@ -291,6 +294,13 @@ function stateConfig(state: WebServiceState, options: WebServiceLaunchOptions): 
 	};
 }
 
+function activeRuntimeConfig(config: WebGatewayConfig, options: WebServiceLaunchOptions): WebGatewayConfig {
+	const state = readState(config.agentDir, options.configFileName);
+	return state && state.runtimeEndpoint !== config.runtimeEndpoint
+		? { ...config, runtimeEndpoint: state.runtimeEndpoint, runtimePort: state.runtimePort }
+		: config;
+}
+
 async function loadConfiguredGateway(options: WebServiceLaunchOptions): Promise<WebGatewayConfig | undefined> {
 	const stored = await loadWebConfig(options.agentDir, options.configFileName);
 	if (!stored) return undefined;
@@ -394,13 +404,16 @@ export async function runWebSessionStop(options: WebSessionStopOptions): Promise
 		throw new Error(
 			`Web 尚未完成配置，请先运行 lc web。配置文件：${join(options.agentDir, options.configFileName ?? "web-config.json")}`,
 		);
-	return stopRuntimeSession(config.runtimeEndpoint, options.sessionId);
+	return stopRuntimeSession(activeRuntimeConfig(config, options).runtimeEndpoint, options.sessionId);
 }
 
 export async function getWebServicesStatus(options: WebServiceLaunchOptions): Promise<WebServicesStatus> {
 	const configured = await loadConfiguredGateway(options);
 	const state = readState(options.agentDir, options.configFileName);
-	const fallbackConfig = configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
+	const fallbackConfig = activeRuntimeConfig(
+		configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options)),
+		options,
+	);
 	const frontend = frontendSpec(fallbackConfig, options);
 	const frontendStatus = frontend ? getWebServiceStatus(frontend) : undefined;
 	const gateway = gatewaySpec(fallbackConfig, options);
@@ -441,6 +454,8 @@ async function applyWebServices(
 	options: WebServiceLaunchOptions,
 	reinstall: boolean,
 ): Promise<void> {
+	const previousConfig = activeRuntimeConfig(config, options);
+	const runtimeChanged = previousConfig.runtimeEndpoint !== config.runtimeEndpoint;
 	const frontend = frontendSpec(config, options);
 	const frontendStatus = frontend ? getWebServiceStatus(frontend) : undefined;
 	const gateway = gatewaySpec(config, options);
@@ -455,9 +470,9 @@ async function applyWebServices(
 	const profile = profileFor(options.configFileName);
 	if (reinstall) {
 		if (frontend && frontendStatus?.running) await stopFrontendService(frontend, options);
-		if (config.manageRuntime && !options.forceRuntimeRestart) await assertRuntimeIdle(config.runtimeEndpoint);
+		if (config.manageRuntime && !options.forceRuntimeRestart) await assertRuntimeIdle(previousConfig.runtimeEndpoint);
 		// 先停止接收新请求，避免旧 Gateway 在版本切换期间拉起旧 Runtime。
-		stopWebService(gateway, false, {
+		stopWebService(gatewaySpec(previousConfig, options), false, {
 			detachedPid: readGatewayPid(config.agentDir, profile),
 			interactiveAdmin: options.interactiveAdmin ?? false,
 		});
@@ -472,6 +487,16 @@ async function applyWebServices(
 		}
 	}
 	if (config.manageRuntime) {
+		if (reinstall && runtimeChanged) {
+			await stopRuntimeService(
+				previousConfig.runtimeEndpoint,
+				options.forceRuntimeRestart ?? false,
+				runtimeProfileFor(previousConfig),
+				runtimeInvocation,
+				options.interactiveAdmin ?? false,
+				config.agentDir,
+			);
+		}
 		if (reinstall && options.forceRuntimeRestart && (runtimeStatus.running || runtimeStatus.reachable)) {
 			await stopRuntimeService(
 				config.runtimeEndpoint,
@@ -537,7 +562,11 @@ export async function ensureWebServices(options: WebServiceLaunchOptions): Promi
 			`Web 尚未完成配置，请先运行 lc web。配置文件：${join(options.agentDir, options.configFileName ?? "web-config.json")}`,
 		);
 	const state = readState(options.agentDir, options.configFileName);
-	if (requiresServiceVersionReconcile(options.serviceVersion, state?.serviceVersion)) {
+	if (
+		requiresServiceVersionReconcile(options.serviceVersion, state?.serviceVersion) ||
+		(state &&
+			(state.host !== config.host || state.port !== config.port || state.runtimeEndpoint !== config.runtimeEndpoint))
+	) {
 		return reconcileWebServices(options);
 	}
 	const launchOptions = state?.serviceVersion ? { ...options, serviceVersion: state.serviceVersion } : options;
@@ -586,12 +615,19 @@ async function runWebComponentActionInternal(
 	const state = readState(options.agentDir, options.configFileName);
 	if (
 		(options.action === "start" || options.action === "restart") &&
-		requiresServiceVersionReconcile(options.serviceVersion, state?.serviceVersion)
+		(requiresServiceVersionReconcile(options.serviceVersion, state?.serviceVersion) ||
+			(configured && state && configured.runtimeEndpoint !== state.runtimeEndpoint))
 	) {
-		const services = await reconcileWebServices(options);
+		const services = await reconcileWebServices({
+			...options,
+			...(options.component === "runtime" && options.force ? { forceRuntimeRestart: true } : {}),
+		});
 		return options.component === "runtime" ? services.runtime : services.gateway;
 	}
-	const config = configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
+	const config = activeRuntimeConfig(
+		configured ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options)),
+		options,
+	);
 	const profile = profileFor(options.configFileName);
 	const interactiveAdmin = options.interactiveAdmin ?? false;
 	const runtimeInvocation = serviceInvocation(options.runtimeInvocation);
@@ -706,7 +742,10 @@ async function runWebServiceActionInternal(options: WebServiceActionOptions): Pr
 		const status = await getWebServicesStatus(options);
 		const config = await loadConfiguredGateway(options);
 		const state = readState(options.agentDir, options.configFileName);
-		const base = config ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options));
+		const base = activeRuntimeConfig(
+			config ?? (state ? stateConfig(state, options) : fallbackGatewayConfig(options)),
+			options,
+		);
 		if (base) {
 			const frontend = frontendSpec(base, options);
 			if (frontend) {
@@ -737,8 +776,9 @@ async function runWebServiceActionInternal(options: WebServiceActionOptions): Pr
 	}
 	if (options.action === "status") return getWebServicesStatus(options);
 	if (options.action === "stop") {
-		const config = await loadConfiguredGateway(options);
-		if (!config) return getWebServicesStatus(options);
+		const configured = await loadConfiguredGateway(options);
+		if (!configured) return getWebServicesStatus(options);
+		const config = activeRuntimeConfig(configured, options);
 		const frontend = frontendSpec(config, options);
 		if (frontend && getWebServiceStatus(frontend).running) await stopFrontendService(frontend, options);
 		const gateway = gatewaySpec(config, options);
@@ -771,8 +811,9 @@ async function runWebServiceActionInternal(options: WebServiceActionOptions): Pr
 	}
 	if (options.action === "start") return ensureWebServices(options);
 	if (options.action === "restart") {
-		const config = await loadConfiguredGateway(options);
-		if (!config) return ensureWebServices(options);
+		const configured = await loadConfiguredGateway(options);
+		if (!configured) return ensureWebServices(options);
+		const config = activeRuntimeConfig(configured, options);
 		const frontend = frontendSpec(config, options);
 		if (frontend && getWebServiceStatus(frontend).running) {
 			stopWebService(frontend, true, { interactiveAdmin: options.interactiveAdmin ?? false });

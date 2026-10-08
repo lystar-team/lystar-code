@@ -26,6 +26,8 @@ import {
 import { getCodemodeWorkerSpecifier, getQuickJSWasmPath } from "../../config.ts";
 import type { ExtensionToolContext, ToolNamespace } from "../../core/extensions/types.ts";
 import type { SessionEntry } from "../../core/session-manager.ts";
+import { createCollaborationTools } from "../../core/session-tool.ts";
+import { toolInputSummary, toolOutputSummary, toolProgressDiff } from "../../core/tool-activity.ts";
 import { formatSize } from "../../core/tools/truncate.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
 import { writeOutputFile } from "../../utils/output-files.ts";
@@ -45,6 +47,49 @@ import {
 
 const ARGS_PREVIEW_CHARS = 200;
 const ERROR_PREVIEW_CHARS = 500;
+const COLLABORATION_TOOL_NAMES = new Set(createCollaborationTools(() => undefined).map((tool) => tool.name));
+const COLLABORATION_IDENTITY_FIELDS = new Set([
+	"id",
+	"sessionId",
+	"senderSessionId",
+	"assigneeSessionId",
+	"profileId",
+	"roomId",
+	"taskId",
+	"name",
+	"profileName",
+	"nickname",
+	"memberName",
+	"activity",
+	"status",
+	"state",
+	"outcome",
+	"mode",
+	"reason",
+]);
+
+function collaborationPreview(value: unknown): string {
+	let parsed = value;
+	if (typeof value === "string") {
+		try {
+			parsed = JSON.parse(value);
+		} catch {
+			return truncateText(value, 4096);
+		}
+	}
+	let remaining = 4096;
+	// 保留完整 JSON 结构，避免截断序列化文本后无法识别成员和消息字段。
+	return (
+		JSON.stringify(parsed, (key, entry: unknown) => {
+			if (Array.isArray(entry)) return entry.slice(0, 32);
+			if (typeof entry !== "string" || COLLABORATION_IDENTITY_FIELDS.has(key)) return entry;
+			const preview = truncateText(entry, Math.max(3, Math.min(1024, remaining)));
+			remaining = Math.max(0, remaining - preview.length);
+			return preview;
+		}) ?? ""
+	);
+}
+
 /** `models.classify()` and `models.generateImages()` calls one script may have in flight; `Promise.all` over many items queues the rest. */
 const MAX_CONCURRENT_MODEL_CALLS = 4;
 /**
@@ -367,6 +412,8 @@ export async function executeCodemode(
 	const startedAt = performance.now();
 	const { code, options: sourceOptions } = parseCodemodeSource(input.code);
 	const calls: CodemodeNestedCall[] = [];
+	let nestedToolCallCount = 0;
+	let terminate = false;
 	// Usage of the script's `models.*` calls. Nested tool calls report theirs through the session.
 	let modelUsage: Usage | undefined;
 	// Images returned by `models.generateImages()`, to notice a script that never shows them.
@@ -391,10 +438,17 @@ export async function executeCodemode(
 		name: tool.name,
 		description: samples.get(tool.name),
 		execute: async (args, { signal: callSignal }) => {
+			if (tool.name === "session_wait" && sourceOptions.timeoutMs !== undefined)
+				throw new Error(
+					"session_wait 的等待时长由系统管理。请移除脚本的 timeout_ms，或直接调用 session_wait；子任务仍在执行。",
+				);
+			const collaboration = COLLABORATION_TOOL_NAMES.has(tool.name);
 			const record: CodemodeNestedCall = {
-				id: `${toolCallId}/?`,
+				id: `${toolCallId}/${++nestedToolCallCount}`,
 				name: tool.name,
-				args: previewArgs(args),
+				args: collaboration ? collaborationPreview(args) : previewArgs(args),
+				summary: collaboration ? collaborationPreview(args) : toolInputSummary(tool.name, args),
+				diff: toolProgressDiff(tool.name, args),
 				status: "running",
 			};
 			calls.push(record);
@@ -402,8 +456,63 @@ export async function executeCodemode(
 			const callStartedAt = performance.now();
 			// Only tools from ctx.tools are callable, so ctx is set here.
 			if (!ctx) throw new Error("Tool calls need a session");
-			const outcome = await ctx.executeTool(tool.name, args, { signal: callSignal });
+			const outcome = await ctx.executeTool(tool.name, args, {
+				signal: callSignal,
+				onUpdate: (partial: AgentToolResult<unknown>) => {
+					record.progress = collaboration
+						? collaborationPreview(textOf(partial))
+						: toolOutputSummary(partial, tool.name);
+					record.diff = toolProgressDiff(tool.name, args, partial) ?? record.diff;
+					publish();
+				},
+			});
 			record.id = outcome.toolCall.id;
+			terminate ||= outcome.result.terminate === true;
+			if (tool.name === "edit" && isRecord(outcome.result.details)) {
+				const metadata = outcome.result.details;
+				const keys = [
+					"code",
+					"path",
+					"status",
+					"plan",
+					"snapshot",
+					"sourceRevision",
+					"resultRevision",
+					"writeState",
+					"applied",
+					"alreadyApplied",
+					"attempt",
+					"recoveryAllowed",
+					"validationMs",
+					"writeMs",
+					"durationMs",
+				];
+				record.diagnostics = Object.fromEntries(
+					keys.flatMap((key) => {
+						const value = metadata[key];
+						return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+							? [[key, value]]
+							: [];
+					}),
+				);
+				if (Array.isArray(metadata.issues)) {
+					record.diagnostics.issueCount = metadata.issues.length;
+					record.diagnostics.issues = metadata.issues
+						.slice(0, 20)
+						.filter(isRecord)
+						.map((issue) => ({
+							code: issue.code,
+							editIndex: issue.editIndex,
+							startLine: issue.startLine,
+							endLine: issue.endLine,
+							message: typeof issue.message === "string" ? truncateText(issue.message, 500) : undefined,
+						}));
+				}
+			}
+			record.result = collaboration
+				? collaborationPreview(textOf(outcome.result))
+				: toolOutputSummary(outcome.result, tool.name);
+			record.diff = outcome.isError ? undefined : toolProgressDiff(tool.name, args, outcome.result);
 			record.durationMs = performance.now() - callStartedAt;
 			if (outcome.isError) {
 				record.status = callSignal.aborted ? "cancelled" : "error";
@@ -474,6 +583,7 @@ export async function executeCodemode(
 		content: [{ type: "text", text: header }, ...output],
 		details,
 		...(modelUsage ? { usage: modelUsage } : {}),
+		...(terminate ? { terminate: true } : {}),
 		...(result.ok ? {} : { isError: true }),
 	};
 }

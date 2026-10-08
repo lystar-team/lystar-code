@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import {
 	discoverSessionProfiles,
 	readSessionHeader,
@@ -53,8 +54,14 @@ import {
 import { roomAttachmentInput } from "./session-room-attachments.ts";
 import { SessionRoomCoordinator } from "./session-room-coordinator.ts";
 import { SESSION_ROOM_EXECUTION_RENEW_MS, SessionRoomStore } from "./session-room-store.ts";
+import { observeSessionWait } from "./session-wait.ts";
+import { isDiffTool } from "./tool-progress.ts";
 import { readTranscriptPageWithinFrameBudget } from "./transcript-page-budget.ts";
-import { projectTranscriptBatch, promptDisplayText } from "./transcript-projection.ts";
+import {
+	projectTranscriptBatch,
+	promptDisplayText,
+	type TranscriptToolCallProjection,
+} from "./transcript-projection.ts";
 import { TranscriptReader } from "./transcript-reader.ts";
 import type { RuntimeAdapter, RuntimeSession, SessionSummaryBase, UiRequestHandler } from "./types.ts";
 
@@ -450,7 +457,10 @@ export class WebRuntimeService {
 	private readonly sessionHandoffRecoveries = new Map<string, Promise<void>>();
 	private readonly sessionsInHandoff = new Set<string>();
 	private readonly coordinatorTasks = new Map<string, Promise<SessionCoordinatorResult | undefined>>();
+	private readonly coordinatorTaskErrors = new Map<string, Error>();
 	private readonly coordinatorDemand = new Set<string>();
+	private readonly coordinatorWaitAbort = new AbortController();
+	private readonly coordinatorSessionListeners = new Set<(sessionPath: string) => void>();
 	private readonly roomDeliveryDemand = new Set<string>();
 	private readonly roomDeliveryQueues = new Map<string, Promise<void>>();
 	private readonly roomModelTurns = new Map<string, Set<Promise<void>>>();
@@ -544,12 +554,15 @@ export class WebRuntimeService {
 		runtime?: RuntimeSession,
 	): SessionCoordinatorSummary {
 		const snapshot = runtime?.getSnapshot("available");
-		const activity =
+		const pendingTask = this.coordinatorTasks.has(canonicalSessionPath(base.path));
+		const observedActivity =
 			snapshot && isActiveSessionActivity(snapshot.activity)
 				? snapshot.activity
 				: base.activity !== "idle"
 					? base.activity
 					: (base.collaborationResult?.outcome ?? base.activity);
+		// 协作任务包含结果持久化和工作区交付，尚未结束时不复用上一轮结果。
+		const activity = pendingTask && observedActivity !== "waiting_for_input" ? "running" : observedActivity;
 		return {
 			id: base.id,
 			...(base.name ? { name: base.name } : {}),
@@ -564,7 +577,9 @@ export class WebRuntimeService {
 			...(base.workspace ? { workspace: base.workspace } : {}),
 			...(base.taskId ? { taskId: base.taskId } : {}),
 			...(base.taskDescription ? { taskDescription: base.taskDescription } : {}),
-			...(base.collaborationResult ? { result: { ...base.collaborationResult, sessionId: base.id } } : {}),
+			...(!pendingTask && base.collaborationResult
+				? { result: { ...base.collaborationResult, sessionId: base.id } }
+				: {}),
 		};
 	}
 
@@ -706,11 +721,18 @@ export class WebRuntimeService {
 	private async recoverCoordinatorTask(
 		found: Awaited<ReturnType<WebRuntimeService["findCoordinatorSession"]>>,
 	): Promise<void> {
-		if (!found.base.taskId || found.base.collaborationResult) return;
-		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
-		if (found.base.activity === "running" || found.base.activity === "waiting_for_input") {
-			await runtime.abort();
-		}
+		if (!found.base.taskId || found.base.collaborationResult || this.coordinatorTasks.has(found.path)) return;
+		const live = this.runtimes.get(found.path);
+		// 任务记录缺失不代表任务已停止；活跃 Runtime 或外部 Writer 仍是执行事实源。
+		if (
+			(live?.isConnected?.() !== false && live && isActiveSessionActivity(live.getSnapshot("available").activity)) ||
+			this.adapter.isSessionWriterLocked(found.path)
+		)
+			return;
+		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path), {
+			deferExtensionLifecycle: true,
+		});
+		if (isActiveSessionActivity(runtime.getSnapshot("available").activity)) return;
 		const outcome: SessionCoordinatorResult["outcome"] =
 			found.base.activity === "completed" ||
 			found.base.activity === "failed" ||
@@ -750,18 +772,28 @@ export class WebRuntimeService {
 
 	private trackCoordinatorTask(sessionPath: string, task: Promise<SessionCoordinatorResult | undefined>): void {
 		this.coordinatorDemand.add(sessionPath);
-		const tracked = task.finally(async () => {
-			if (this.coordinatorTasks.get(sessionPath) !== tracked) return;
-			this.coordinatorTasks.delete(sessionPath);
-			this.coordinatorDemand.delete(sessionPath);
-			const runtime = this.runtimes.get(sessionPath);
-			if (runtime) {
-				await this.sendSessionSnapshots(runtime);
-				await this.broadcast({ type: "transcript_changed", sessionPath });
-				await this.broadcast({ type: "sessions_changed", cwd: runtime.getSnapshot("available").cwd });
-			}
-			await this.disposeRuntimeIfUnused(sessionPath);
-		});
+		this.coordinatorTaskErrors.delete(sessionPath);
+		const tracked = task
+			.catch((error: unknown) => {
+				const failure = error instanceof Error ? error : new Error(String(error));
+				if (this.coordinatorTasks.get(sessionPath) === tracked)
+					this.coordinatorTaskErrors.set(sessionPath, failure);
+				logRuntimeConnection("coordinator_task_failed", { sessionPath, error: failure.message });
+				throw failure;
+			})
+			.finally(async () => {
+				if (this.coordinatorTasks.get(sessionPath) !== tracked) return;
+				this.coordinatorTasks.delete(sessionPath);
+				this.coordinatorDemand.delete(sessionPath);
+				this.notifyCoordinatorSessionChanged(sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (runtime) {
+					await this.sendSessionSnapshots(runtime);
+					await this.broadcast({ type: "transcript_changed", sessionPath });
+					await this.broadcast({ type: "sessions_changed", cwd: runtime.getSnapshot("available").cwd });
+				}
+				await this.disposeRuntimeIfUnused(sessionPath);
+			});
 		this.coordinatorTasks.set(sessionPath, tracked);
 		void tracked.catch(() => {});
 	}
@@ -1193,6 +1225,7 @@ export class WebRuntimeService {
 	): Promise<SessionCoordinatorSummary> {
 		const found = await this.findCoordinatorSession(input.cwd, input.sessionId);
 		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
+		input.onProgress?.(this.coordinatorSummary(found.base, runtime));
 		const mode: SessionSendMode = input.mode ?? "auto";
 		if (mode === "steer" || (mode === "auto" && runtime.getSnapshot("available").activity === "running")) {
 			await runtime.steer(input.text);
@@ -1208,7 +1241,9 @@ export class WebRuntimeService {
 			this.trackCoordinatorTask(found.path, task);
 		}
 		await this.sendSessionSnapshots(runtime);
-		return this.coordinatorSummary(found.base, runtime);
+		const summary = this.coordinatorSummary(found.base, runtime);
+		delete summary.result;
+		return summary;
 	}
 
 	private async waitForRuntimeIdle(runtime: RuntimeSession, timeoutMs: number): Promise<void> {
@@ -1235,58 +1270,125 @@ export class WebRuntimeService {
 		});
 	}
 
-	private async waitForCoordinatorTask(
-		task: Promise<SessionCoordinatorResult | undefined>,
-		timeoutMs: number,
-	): Promise<void> {
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		try {
-			await Promise.race([
-				task,
-				new Promise<void>((_, reject) => {
-					timer = setTimeout(
-						() =>
-							reject(
-								Object.assign(new Error("等待会话完成超时"), { code: "session_wait_timeout", retryable: true }),
-							),
-						timeoutMs,
-					);
-				}),
-			]);
-		} finally {
-			if (timer) clearTimeout(timer);
-		}
+	private notifyCoordinatorSessionChanged(sessionPath: string): void {
+		for (const listener of this.coordinatorSessionListeners) listener(sessionPath);
 	}
 
 	private async waitForCoordinatorSessions(
 		input: Parameters<SessionCoordinator["wait"]>[0],
 	): Promise<SessionCoordinatorSummary[]> {
-		const timeoutMs = input.timeoutMs ?? 10 * 60 * 1000;
-		const found = await Promise.all(
-			input.sessionIds.map((sessionId) => this.findCoordinatorSession(input.cwd, sessionId)),
+		const signal = input.signal
+			? AbortSignal.any([input.signal, this.coordinatorWaitAbort.signal])
+			: this.coordinatorWaitAbort.signal;
+		signal.throwIfAborted();
+		const sessionIds = [...new Set(input.sessionIds)];
+		if (sessionIds.length === 0 || sessionIds.length > 32)
+			throw Object.assign(new Error("等待对象必须是 1 到 32 个会话"), { code: "session_wait_targets_invalid" });
+		const found = await raceWithAbortSignal(
+			Promise.all(sessionIds.map((sessionId) => this.findCoordinatorSession(input.cwd, sessionId))),
+			signal,
 		);
-		await Promise.all(
-			found.map(async (item) => {
-				const task = this.coordinatorTasks.get(item.path);
-				if (task) {
-					await this.waitForCoordinatorTask(task, timeoutMs);
-					return;
-				}
-				if (item.base.taskId && !item.base.collaborationResult) {
-					await this.recoverCoordinatorTask(item);
-					return;
-				}
-				const runtime = this.runtimes.get(item.path);
-				if (runtime) await this.waitForRuntimeIdle(runtime, timeoutMs);
-			}),
-		);
-		const refreshed = await this.adapter.listSessions(input.cwd);
-		const byId = new Map(refreshed.map((session) => [session.id, session]));
-		return input.sessionIds.map((sessionId) => {
-			const base = byId.get(sessionId);
-			if (!base) throw Object.assign(new Error(`未找到会话：${sessionId}`), { code: "session_not_found" });
-			return this.coordinatorSummary(base, this.runtimes.get(canonicalSessionPath(base.path)));
+		const paths = new Set(found.map((item) => item.path));
+		const waitId = randomUUID();
+		const startedAt = performance.now();
+		let lastLogAt = 0;
+		let lastState = "";
+		logRuntimeConnection("coordinator_wait_started", {
+			waitId,
+			sessionIds: sessionIds.join(","),
+			targetCount: sessionIds.length,
 		});
+		try {
+			const result = await observeSessionWait({
+				signal,
+				subscribe: (changed) => {
+					const listener = (sessionPath: string) => {
+						if (paths.has(sessionPath)) changed();
+					};
+					this.coordinatorSessionListeners.add(listener);
+					return () => this.coordinatorSessionListeners.delete(listener);
+				},
+				read: async () => {
+					signal.throwIfAborted();
+					let sessions = await this.adapter.listSessions(input.cwd);
+					let recovered = false;
+					for (const item of found) {
+						signal.throwIfAborted();
+						const taskError = this.coordinatorTaskErrors.get(item.path);
+						if (taskError) throw taskError;
+						const base = sessions.find((session) => session.id === item.base.id);
+						const runtime = this.runtimes.get(item.path);
+						if (
+							base?.taskId &&
+							!base.collaborationResult &&
+							!this.coordinatorTasks.has(item.path) &&
+							(!runtime || !isActiveSessionActivity(runtime.getSnapshot("available").activity)) &&
+							!this.adapter.isSessionWriterLocked(item.path)
+						) {
+							await this.recoverCoordinatorTask({ base, path: item.path });
+							recovered = true;
+						}
+					}
+					if (recovered) sessions = await this.adapter.listSessions(input.cwd);
+					const summaries = await Promise.all(
+						found.map(async (item) => {
+							const runtime = this.runtimes.get(item.path);
+							const base =
+								sessions.find((session) => session.id === item.base.id) ??
+								(runtime ? this.runtimeCoordinatorBase(runtime) : undefined);
+							if (!base)
+								throw Object.assign(new Error(`未找到会话：${item.base.id}`), { code: "session_not_found" });
+							const observedBase = runtime
+								? base
+								: {
+										...base,
+										activity: await this.resolveSessionActivity(
+											item.path,
+											base.activity,
+											this.latestOperation(item.path),
+										),
+									};
+							return this.coordinatorSummary(observedBase, runtime);
+						}),
+					);
+					for (const item of found) {
+						const taskError = this.coordinatorTaskErrors.get(item.path);
+						if (taskError) throw taskError;
+					}
+					return summaries;
+				},
+				onProgress: (progress) => {
+					const states = progress.sessions.map((session) => `${session.id}:${session.activity}`).join(",");
+					if (states !== lastState || progress.elapsedMs - lastLogAt >= 30_000) {
+						logRuntimeConnection("coordinator_wait_progress", {
+							waitId,
+							durationMs: progress.elapsedMs,
+							state: progress.state,
+							sessionStates: states,
+						});
+						lastState = states;
+						lastLogAt = progress.elapsedMs;
+					}
+					input.onProgress?.(progress);
+				},
+			});
+			logRuntimeConnection("coordinator_wait_finished", {
+				waitId,
+				outcome: result.some((session) => session.activity === "waiting_for_input")
+					? "needs_input"
+					: "result_available",
+				durationMs: Math.round(performance.now() - startedAt),
+			});
+			return result;
+		} catch (error) {
+			logRuntimeConnection("coordinator_wait_ended", {
+				waitId,
+				outcome: signal.aborted ? "cancelled" : "failed",
+				error: error instanceof Error ? error.message : String(error),
+				durationMs: Math.round(performance.now() - startedAt),
+			});
+			throw error;
+		}
 	}
 
 	private async listCoordinatorSessions(
@@ -1311,16 +1413,50 @@ export class WebRuntimeService {
 	private async stopCoordinatorSession(
 		input: Parameters<SessionCoordinator["stop"]>[0],
 	): Promise<SessionCoordinatorSummary> {
+		if (
+			input.callerSessionId &&
+			((input.reason !== "user_requested" && input.reason !== "task_cancelled") || !input.note?.trim())
+		)
+			throw Object.assign(
+				new Error("停止智能体必须有明确的用户停止要求或任务撤销原因；等待时间长不能作为停止理由"),
+				{ code: "session_stop_reason_required", retryable: false },
+			);
 		const found = await this.findCoordinatorSession(input.cwd, input.sessionId);
-		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path));
-		const task = this.coordinatorTasks.get(found.path);
-		await runtime.abort();
-		if (task) await task.catch(() => {});
-		if (!task && found.base.taskId && !found.base.collaborationResult) await this.recoverCoordinatorTask(found);
-		await this.sendSessionSnapshots(runtime);
-		const refreshed = await this.adapter.listSessions(input.cwd);
-		const base = refreshed.find((session) => session.id === input.sessionId) ?? found.base;
-		return this.coordinatorSummary(base, runtime);
+		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path), {
+			deferExtensionLifecycle: true,
+		});
+		const release = this.beginSessionStop(found.path);
+		try {
+			input.onProgress?.(this.coordinatorSummary(found.base, runtime));
+			logRuntimeConnection("coordinator_stop_requested", {
+				sessionId: input.sessionId,
+				callerSessionId: input.callerSessionId,
+				reason: input.reason ?? "user_requested",
+			});
+			const stopped = await this.stopSession(runtime);
+			const taskError = this.coordinatorTaskErrors.get(found.path);
+			if (taskError) throw taskError;
+			let refreshed = await this.adapter.listSessions(input.cwd);
+			let base = refreshed.find((session) => session.id === input.sessionId) ?? found.base;
+			if (!this.coordinatorTasks.has(found.path) && base.taskId && !base.collaborationResult) {
+				await this.recoverCoordinatorTask({ base, path: found.path });
+				refreshed = await this.adapter.listSessions(input.cwd);
+				base = refreshed.find((session) => session.id === input.sessionId) ?? base;
+			}
+			logRuntimeConnection("coordinator_stop_finished", {
+				sessionId: input.sessionId,
+				stopped: stopped.stopped,
+				outcome: this.coordinatorSummary(base, runtime).activity,
+			});
+			return {
+				...this.coordinatorSummary(base, runtime),
+				...(input.reason ? { stopReason: input.reason } : {}),
+				...(input.note ? { stopNote: input.note.trim() } : {}),
+			};
+		} finally {
+			release();
+			void this.disposeRuntimeIfUnused(found.path).catch(() => {});
+		}
 	}
 
 	createConnection(send: (message: ServerMessage) => Promise<void>): {
@@ -1367,6 +1503,7 @@ export class WebRuntimeService {
 
 	async dispose(): Promise<void> {
 		this.disposed = true;
+		this.coordinatorWaitAbort.abort(new DOMException("Web Runtime 已关闭，等待已取消", "AbortError"));
 		this.roomCoordinator.dispose();
 		const coordinatorTasks = [...this.coordinatorTasks.values()];
 		this.roomDeliveryDemand.clear();
@@ -1378,6 +1515,7 @@ export class WebRuntimeService {
 		);
 		await Promise.allSettled(coordinatorTasks);
 		this.coordinatorTasks.clear();
+		this.coordinatorTaskErrors.clear();
 		this.coordinatorDemand.clear();
 		if (this.sessionRefreshTimer) clearTimeout(this.sessionRefreshTimer);
 		if (this.sessionFallbackTimer) clearTimeout(this.sessionFallbackTimer);
@@ -3249,9 +3387,10 @@ export class WebRuntimeService {
 		items: readonly TranscriptItem[],
 		agentSteps: readonly AgentStep[] = [],
 		contextCalls: readonly TranscriptItem[] = [],
+		pendingFileCalls?: Map<string, TranscriptToolCallProjection>,
 	): TranscriptItem[] {
 		const compactItems = items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item));
-		return projectTranscriptBatch(compactItems, agentSteps, contextCalls).map((item) =>
+		return projectTranscriptBatch(compactItems, agentSteps, contextCalls, pendingFileCalls).map((item) =>
 			this.contentStore.compactAssistantTranscriptItem(sessionPath, item),
 		);
 	}
@@ -3976,9 +4115,28 @@ export class WebRuntimeService {
 		if (existing) throw new Error(`Session runtime is already attached: ${sessionPath}`);
 		this.runtimes.set(sessionPath, runtime);
 		this.rememberRuntimeTranscriptFact(runtime);
+		const snapshot = runtime.getSnapshot?.("available");
+		let transcriptGeneration = snapshot?.transcriptGeneration;
+		const pendingFileCalls = new Map<string, TranscriptToolCallProjection>();
+		for (const activity of snapshot?.toolActivities ?? []) {
+			if (activity.name !== "read" && !isDiffTool(activity.name)) continue;
+			pendingFileCalls.set(activity.toolCallId, {
+				name: activity.name,
+				summary: activity.summary,
+				...(activity.stepId ? { stepId: activity.stepId } : {}),
+				...(activity.diff ? { diff: activity.diff } : {}),
+			});
+		}
 		this.runtimeUnsubscribers.set(
 			sessionPath,
 			runtime.onEvent((event) => {
+				if (
+					event.type === "state_changed" ||
+					event.type === "entry_committed" ||
+					event.type === "turn_settled" ||
+					event.type === "disconnected"
+				)
+					this.notifyCoordinatorSessionChanged(sessionPath);
 				if (event.type === "disconnected") {
 					this.startDisconnectedRuntimeRecovery(sessionPath, runtime);
 					return;
@@ -3994,9 +4152,20 @@ export class WebRuntimeService {
 						fromRevision: number;
 						transcriptRevision: number;
 						agentSteps?: AgentStep[];
+						contextCalls?: TranscriptItem[];
 						blockMappings?: Array<{ blockId: string; entryId: string; contentIndex: number }>;
 					};
-					const items = this.projectTranscriptItems(sessionPath, payload.items, payload.agentSteps);
+					if (transcriptGeneration !== payload.transcriptGeneration) {
+						pendingFileCalls.clear();
+						transcriptGeneration = payload.transcriptGeneration;
+					}
+					const items = this.projectTranscriptItems(
+						sessionPath,
+						payload.items,
+						payload.agentSteps,
+						payload.contextCalls,
+						pendingFileCalls,
+					);
 					const blockMappings = (payload.blockMappings ?? []).flatMap((mapping) => {
 						const item = items.find(
 							(candidate) =>

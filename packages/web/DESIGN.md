@@ -86,6 +86,7 @@ React 19 + TypeScript、Vite 8、Tailwind CSS 4、CSS 语义变量、shadcn/ui�
 - 输入区是例外：`src/styles.css` 把 `.prompt-input-shell` 内的 input-group 设为 `border-radius: 48px`，与排队消息区拼成一个整体。不要把其他控件也改成胶囊。
 - 审阅工作区是右侧分栏，使用边框区分，不使用浮层阴影和大圆角。
 - 阴影只给浮层：输入区 `0 2px 12px rgb(0 0 0 / 0.05)`、覆盖面板 `shadow-lg`。分组靠边框和背景差，不靠阴影。
+- 所有工作台页签统一使用 `WorkbenchTabBar`（审阅工作区同款）：胶囊轨道、图标与标签、滑动高亮；状态与键盘导航交给 Radix `Tabs`。桌面设置分类和智能体编辑器使用同一组件的竖排布局，窄屏使用可横向滚动的横排布局，不另写按钮组或下划线页签。
 - 图标来自 Lucide，默认 `size-4`（16px），小图标 `size-3`，导航栏图标 18px。图标按钮命中区用 `size-8`、`size-9`、`size-10`，导航栏按钮 `h-14 w-14`。
 - 滚动条：`10px` 宽，滑块用 `--line`，悬停用 `--text-muted`，轨道透明。
 

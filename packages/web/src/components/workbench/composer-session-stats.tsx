@@ -1,7 +1,10 @@
 import type { SessionInfoResult } from "@lystar/code-web-protocol";
+import { ArrowDown, ArrowUp, Gauge, Layers3 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import type { WorkbenchState } from "../../state/workbench-types";
+import { Tabs, TabsContent } from "../ui/tabs";
+import { WorkbenchTabBar } from "./workbench-tab-bar";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 type Metric = "tps" | "cache" | "input" | "output";
@@ -10,6 +13,7 @@ type OutputSpeed = WorkbenchState["lastOutputSpeed"];
 
 const metrics: Metric[] = ["tps", "cache", "input", "output"];
 const labels: Record<Metric, string> = { tps: "TPS", cache: "缓存命中", input: "输入", output: "输出" };
+const metricIcons = { tps: Gauge, cache: Layers3, input: ArrowDown, output: ArrowUp };
 
 function compactTokens(value: number): string {
 	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
@@ -144,23 +148,16 @@ export function ComposerSessionStats({
 					className="max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border-border bg-popover p-3 shadow-md"
 				>
 					<div className="mb-2 text-sm font-medium">会话统计</div>
-					<div className="grid grid-cols-2 gap-1.5" role="group" aria-label="选择统计项">
-						{metrics.map((metric) => (
-							<button
-								key={metric}
-								type="button"
-								aria-pressed={mobileMetric === metric}
-								className={`min-w-0 rounded-lg border p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${mobileMetric === metric ? "border-border bg-muted" : "border-border/70 hover:bg-muted/60"}`}
-								onClick={() => setMobileMetric(metric)}
-							>
-								<span className="block text-xs text-muted-foreground">{labels[metric]}</span>
-								<span className="block truncate text-sm font-medium tabular-nums text-foreground">{values[metric]}</span>
-							</button>
-						))}
-					</div>
-					<div className="mt-3 border-t border-border pt-3">
-						<MetricBreakdown metric={mobileMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} />
-					</div>
+					<Tabs value={mobileMetric} onValueChange={(value) => setMobileMetric(value as Metric)} className="min-w-0 gap-0">
+						<WorkbenchTabBar
+							activeId={mobileMetric}
+							tabs={metrics.map((metric) => ({ value: metric, icon: metricIcons[metric], label: `${labels[metric]} ${values[metric]}` }))}
+							label="选择统计项"
+						/>
+						<TabsContent value={mobileMetric} className="mt-3 border-t border-border pt-3">
+							<MetricBreakdown metric={mobileMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} />
+						</TabsContent>
+					</Tabs>
 				</PopoverContent>
 			</Popover>
 			<div className="hidden w-full items-center gap-0.5 whitespace-nowrap text-xs @min-[22rem]/stats:flex">

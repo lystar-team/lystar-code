@@ -17,6 +17,65 @@ function parseToolSummary(summary: string): Record<string, unknown> | undefined 
 	}
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+export function parseSessionToolInput(summary: string): Record<string, unknown> | undefined {
+	return recordValue(parseToolSummary(summary));
+}
+
+interface SessionToolPayload {
+	value: unknown;
+	details?: Record<string, unknown>;
+	incomplete?: boolean;
+}
+
+function parsedSessionToolValue(value: unknown, depth = 0): unknown {
+	if (depth < 5 && typeof value === "string") {
+		try {
+			return parsedSessionToolValue(JSON.parse(value), depth + 1);
+		} catch {
+			return value;
+		}
+	}
+	if (Array.isArray(value)) return value.map((item) => parsedSessionToolValue(item, depth + 1));
+	return value;
+}
+
+export function parseSessionToolPayload(detail: string | undefined): SessionToolPayload | undefined {
+	if (!detail?.trim()) return undefined;
+	let decoded: unknown = detail;
+	for (let depth = 0; depth < 5 && typeof decoded === "string"; depth++) {
+		const encoded = decoded;
+		try {
+			decoded = JSON.parse(encoded);
+		} catch {
+			// 传输预览可能截断 JSON；保留缺口标记，不把它作为正文或真实错误展示。
+			return /^\s*[\[{]/u.test(encoded) ? { value: undefined, incomplete: true } : { value: encoded };
+		}
+	}
+	const wrapper = recordValue(decoded);
+	if (!wrapper) return { value: parsedSessionToolValue(decoded) };
+	const detailsValue = parsedSessionToolValue(wrapper.details);
+	const details = recordValue(detailsValue);
+	if (Array.isArray(wrapper.content)) {
+		const texts = wrapper.content.flatMap((item) => {
+			const block = recordValue(item);
+			return block?.type === "text" && typeof block.text === "string" ? [parsedSessionToolValue(block.text)] : [];
+		});
+		if (texts.length) return { value: texts.length === 1 ? texts[0] : texts, ...(details ? { details } : {}) };
+	}
+	if (wrapper.structuredContent !== undefined) {
+		return { value: parsedSessionToolValue(wrapper.structuredContent), ...(details ? { details } : {}) };
+	}
+	return { value: parsedSessionToolValue(decoded), ...(details ? { details } : {}) };
+}
+
+export function parseSessionToolResult(detail: string | undefined): unknown {
+	return parseSessionToolPayload(detail)?.value;
+}
+
 export type SessionToolPhase = "running" | "queued" | "completed" | "error" | "cancelled" | "interrupted";
 
 /** 每个协作工具的动作短语；阶段文案由短语拼出。 */
@@ -67,7 +126,7 @@ export function sessionToolLabel(name: string, phase: SessionToolPhase): string 
 }
 
 export function sessionToolTask(summary: string): string | undefined {
-	const parsed = parseToolSummary(summary);
+	const parsed = parseSessionToolInput(summary);
 	const task = [parsed?.task, parsed?.title].find(
 		(value): value is string => typeof value === "string" && value.trim().length > 0,
 	);
@@ -78,49 +137,73 @@ export interface SessionToolAgentIdentity {
 	nickname?: string;
 }
 
-function parseJson(value: string | undefined): unknown {
-	if (!value) return undefined;
-	try {
-		return JSON.parse(value);
-	} catch {
-		return undefined;
-	}
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-}
-
 function sessionResultObject(detail: string | undefined): Record<string, unknown> | undefined {
-	let current: unknown = parseJson(detail);
-	for (let depth = 0; depth < 3; depth++) {
-		if (typeof current === "string") {
-			current = parseJson(current);
-			continue;
-		}
-		const object = objectValue(current);
-		if (!object) return undefined;
-		const session = objectValue(object.session);
-		if (session) return session;
-		if (typeof object.id === "string" || typeof object.sessionId === "string" || typeof object.agentId === "string") return object;
-		const content = Array.isArray(object.content) ? object.content : [];
-		const text = content.find((item) => objectValue(item)?.type === "text");
-		current = objectValue(text)?.text;
+	const current = parseSessionToolResult(detail);
+	if (Array.isArray(current)) return recordValue(current[0]);
+	const object = recordValue(current);
+	if (!object) return undefined;
+	const sessions = Array.isArray(object.sessions) ? object.sessions : undefined;
+	return recordValue(object.session) ?? recordValue(sessions?.[0]) ?? object;
+}
+
+export function sessionToolStatusLabel(value: unknown): string | undefined {
+	const status = typeof value === "string" ? value.trim() : undefined;
+	if (!status) return undefined;
+	const labels: Record<string, string> = {
+		todo: "待认领",
+		doing: "进行中",
+		blocked: "阻塞",
+		done: "已完成",
+		queued: "已排队",
+		idle: "尚未开始",
+		running: "运行中",
+		waiting: "等待中",
+		waiting_for_input: "需要输入",
+		needs_input: "需要输入",
+		interrupted: "已中断",
+		succeeded: "已完成",
+		completed: "已完成",
+		failed: "失败",
+		cancelled: "已停止",
+		aborted: "已停止",
+	};
+	return labels[status] ?? status;
+}
+
+export function sessionToolActivityLabel(detail: string | undefined): string | undefined {
+	return sessionToolStatusLabel(sessionResultObject(detail)?.activity);
+}
+
+export function sessionToolSessionId(name: string, summary: string, detail?: string): string | undefined {
+	const input = parseSessionToolInput(summary);
+	if (name === "session_send" || name === "session_stop") {
+		return typeof input?.sessionId === "string" ? input.sessionId : undefined;
 	}
-	return undefined;
+	if (name === "session_wait") {
+		return Array.isArray(input?.sessionIds) && input.sessionIds.length === 1 && typeof input.sessionIds[0] === "string"
+			? input.sessionIds[0]
+			: undefined;
+	}
+	if (name !== "session_create") return undefined;
+	const result = sessionResultObject(detail);
+	return typeof result?.id === "string" ? result.id : undefined;
 }
 
 export function sessionToolAgent(summary: string, detail?: string): SessionToolAgentIdentity | undefined {
-	const input = parseToolSummary(summary);
+	const input = parseSessionToolInput(summary);
 	const result = sessionResultObject(detail);
-	const profileNames = new Set(
-		[input?.profileId, result?.profileId, result?.profileName].filter(
+	const taskNames = new Set(
+		[input?.task, input?.title, result?.taskDescription, result?.taskTitle, result?.title].filter(
 			(value): value is string => typeof value === "string" && value.trim().length > 0,
-		),
+		).map((value) => value.trim()),
 	);
-	const nickname = [result?.nickname, result?.name].find(
+	const displayName = typeof result?.name === "string" && result.name !== result.profileId && result.name !== input?.profileId
+		? result.name
+		: undefined;
+	const candidates = [result?.nickname, result?.memberName, input?.nickname, result?.profileName, input?.profileName, displayName];
+	const nickname = candidates.find(
 		(value): value is string =>
-			typeof value === "string" && value.trim().length > 0 && !profileNames.has(value.trim()),
+			typeof value === "string" && value.trim().length > 0 && !taskNames.has(value.trim()),
 	);
 	return nickname ? { nickname: nickname.trim() } : undefined;
 }

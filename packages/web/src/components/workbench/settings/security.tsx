@@ -11,7 +11,6 @@ import type { WorkbenchActions } from "../types";
 
 export function SecuritySettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const settings = state.securitySettings;
-	const [host, setHost] = useState("");
 	const [allowedHosts, setAllowedHosts] = useState("");
 	const [port, setPort] = useState("");
 	const [runtimePort, setRuntimePort] = useState("");
@@ -19,7 +18,6 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 
 	useEffect(() => {
 		if (!settings) return;
-		setHost(settings.host);
 		setAllowedHosts(settings.allowedHosts.join(","));
 		setPort(String(settings.port));
 		setRuntimePort(String(settings.runtimePort));
@@ -38,22 +36,19 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 	const passwordValid = !password || password.trim().length >= 8;
 	const dirty = Boolean(
 		settings &&
-		(host !== settings.host ||
-			allowedHosts !== settings.allowedHosts.join(",") ||
+		(allowedHosts !== settings.allowedHosts.join(",") ||
 			port !== String(settings.port) ||
 			runtimePort !== String(settings.runtimePort) ||
 			password.trim()),
 	);
 	const canSave = Boolean(
 		settings &&
-		(host.trim() || !settings.editable.host) &&
 		(allowedHostsValid || !settings.editable.allowedHosts) &&
 		(port || !settings.editable.port) &&
 		(runtimePort || !settings.editable.runtimePort) &&
 		portValid &&
 		runtimePortValid &&
 		passwordValid &&
-		(!settings.editable.host || host.trim() !== "") &&
 		(!settings.editable.port || portNumber > 0) &&
 		(!settings.editable.runtimePort || runtimePortNumber > 0) &&
 		dirty,
@@ -62,7 +57,7 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 	const save = () => {
 		if (!settings || !canSave) return;
 		void actions.saveSecuritySettings({
-			host: settings.editable.host ? host.trim() : settings.host,
+			host: settings.host,
 			allowedHosts: settings.editable.allowedHosts ? allowedHostValues : settings.allowedHosts,
 			port: settings.editable.port ? portNumber : settings.port,
 			runtimePort: settings.editable.runtimePort ? runtimePortNumber : settings.runtimePort,
@@ -95,22 +90,13 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 						) : (
 							<>
 								<div className="grid gap-4 sm:grid-cols-2">
-									<div className="grid gap-2">
-										<div className="flex items-center justify-between gap-2">
-											<label className="text-sm font-medium" htmlFor="gateway-host">
-												监听 IP
-											</label>
-											{settings && !settings.editable.host ? <span className="text-xs text-muted-foreground">启动参数管理</span> : null}
-										</div>
-										<Input
-											id="gateway-host"
-											value={host}
-											onChange={(event) => setHost(event.target.value)}
-											placeholder="例如 0.0.0.0"
-											disabled={!settings?.editable.host || state.securitySettingsSaving}
-											autoComplete="off"
-										/>
-										<p className="text-xs leading-5 text-muted-foreground">填写 Gateway 监听的 IPv4 或 IPv6 地址。</p>
+									<div className="grid content-start gap-2">
+										<p className="text-sm font-medium">可访问地址</p>
+										{settings?.ipAddresses.map((address) => (
+											<a key={address} className="break-all font-mono text-sm underline underline-offset-4" href={`http://${address}:${settings.accessPort}`}>
+												http://{address}:{settings.accessPort}
+											</a>
+										))}
 									</div>
 									<div className="grid gap-2">
 										<div className="flex items-center justify-between gap-2">
@@ -151,7 +137,11 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 											aria-invalid={Boolean(port) && !portValid}
 											disabled={!settings?.editable.port || state.securitySettingsSaving}
 										/>
-										<p className="text-xs leading-5 text-muted-foreground">浏览器访问 Web UI 使用此端口，范围为 1 到 65535。</p>
+										<p className="text-xs leading-5 text-muted-foreground">
+											{settings?.accessPort !== settings?.port
+												? "开发前端代理到此 Gateway 端口，浏览器访问地址保持不变。"
+												: "浏览器访问 Web UI 使用此端口，范围为 1 到 65535。"}
+										</p>
 									</div>
 									<div className="grid gap-2">
 										<div className="flex items-center justify-between gap-2">
@@ -171,7 +161,7 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 											aria-invalid={Boolean(runtimePort) && !runtimePortValid}
 											disabled={!settings?.editable.runtimePort || state.securitySettingsSaving}
 										/>
-										<p className="text-xs leading-5 text-muted-foreground">Gateway 连接的本机 Runtime 端口，范围为 1 到 65535。</p>
+										<p className="text-xs leading-5 text-muted-foreground">保存后继续使用当前 Runtime；新端口在重启整个 Web 服务后生效。</p>
 									</div>
 								</div>
 
@@ -199,7 +189,7 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 									<ShieldCheck className="size-4" />
 									<AlertTitle>Runtime 不会停止</AlertTitle>
 									<AlertDescription>
-										保存会让当前 Web 连接短暂断开。同一地址会按新配置重连；Web 或 Runtime 端口变化后，请使用新地址或新配置打开页面。正在执行的会话由独立 Runtime 继续运行。
+										保存会让 Web 连接短暂断开。修改 Web 端口后，请用新地址打开页面。修改 Runtime 端口后，需在本机执行 {settings?.accessPort !== settings?.port ? "lcd" : "lc"} web service restart；该命令会结束运行中的会话，请先完成任务。
 									</AlertDescription>
 								</Alert>
 							</>

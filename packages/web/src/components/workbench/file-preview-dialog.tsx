@@ -1,4 +1,4 @@
-import { Copy, Download, LoaderCircle, Save, X } from "lucide-react";
+import { Copy, Download, Eye, LoaderCircle, Pencil, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isAbsoluteResourcePath } from "../../lib/resource-path.ts";
 import { cn } from "../../lib/utils.ts";
@@ -9,6 +9,8 @@ import { MessageResponse, shouldVirtualizeMarkdown } from "../ai-elements/messag
 import { ResourceImage, ResourceImageViewer, type ResourceImageItem } from "../ai-elements/resource-preview.tsx";
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.tsx";
+import { Tabs, TabsContent } from "../ui/tabs.tsx";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar.tsx";
 import { FileTypeIcon } from "./file-type-icon.tsx";
 import { languageForPath, monacoLanguageForPath } from "./file-language.ts";
 import {
@@ -35,6 +37,11 @@ const INITIAL_EDITOR_STATE: MonacoFileEditorState = {
 };
 
 type MarkdownView = "preview" | "edit";
+
+const MARKDOWN_VIEW_TABS: readonly WorkbenchTabOption<MarkdownView>[] = [
+	{ icon: Eye, label: "预览", value: "preview" },
+	{ icon: Pencil, label: "编辑", value: "edit" },
+];
 
 export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const autoDownloadKeyRef = useRef<string>();
@@ -128,6 +135,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 					showCloseButton={false}
 					className="z-[70] flex h-[min(88vh,900px)] w-[min(94vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(94vw,1200px)] max-sm:left-0 max-sm:top-0 max-sm:h-dvh max-sm:w-screen max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:border-0"
 				>
+					<Tabs value={markdownFile ? markdownView : "edit"} onValueChange={(value) => handleMarkdownViewChange(value as MarkdownView)} className="contents">
 					<DialogHeader className="flex-row flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3 text-left sm:px-5 sm:py-4 max-sm:gap-x-2 max-sm:gap-y-1">
 						<div className="order-1 min-w-0 flex-1 sm:order-none">
 							<DialogTitle className="flex min-w-0 items-center gap-2 text-sm">
@@ -161,42 +169,12 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 							</DialogDescription>
 						</div>
 						{markdownFile ? (
-							<div
-								className="order-3 flex h-8 w-full shrink-0 items-stretch sm:order-none sm:w-auto"
-								role="tablist"
-								aria-label="Markdown 文件视图"
-							>
-								<button
-									type="button"
-									id="markdown-preview-tab"
-									role="tab"
-									aria-controls="markdown-preview-panel"
-									aria-selected={markdownView === "preview"}
-									className={cn(
-										"relative min-w-0 flex-1 px-3 text-sm text-muted-foreground hover:text-foreground sm:flex-none",
-										markdownView === "preview" &&
-											"text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-foreground",
-									)}
-									onClick={() => handleMarkdownViewChange("preview")}
-								>
-									预览
-								</button>
-								<button
-									type="button"
-									id="markdown-edit-tab"
-									role="tab"
-									aria-controls="markdown-edit-panel"
-									aria-selected={markdownView === "edit"}
-									className={cn(
-										"relative min-w-0 flex-1 px-3 text-sm text-muted-foreground hover:text-foreground sm:flex-none",
-										markdownView === "edit" &&
-											"text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-foreground",
-									)}
-									onClick={() => handleMarkdownViewChange("edit")}
-								>
-									编辑
-								</button>
-							</div>
+							<WorkbenchTabBar
+								activeId={markdownView}
+								tabs={MARKDOWN_VIEW_TABS}
+								label="Markdown 文件视图"
+								className="order-3 !w-full shrink-0 sm:order-none sm:!w-48"
+							/>
 						) : null}
 						<div className="order-2 flex shrink-0 items-center gap-1 sm:order-none">
 							{binaryFile?.data && !binaryFile.truncated ? (
@@ -316,10 +294,8 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 						) : textFile ? (
 							<>
 								{markdownFile && markdownView === "preview" ? (
+									<TabsContent value="preview" asChild>
 									<MessageResponse
-										id="markdown-preview-panel"
-										role="tabpanel"
-										aria-labelledby="markdown-preview-tab"
 										className={cn(
 											"markdown-file-preview sd-prose !h-auto mx-auto min-h-full w-full max-w-4xl px-1 py-2 sm:px-4 sm:py-4",
 											markdownPreviewVirtualized && "!h-full !max-w-none !min-h-0 !px-0 !py-0",
@@ -335,11 +311,10 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 									>
 										{markdownPreviewContent}
 									</MessageResponse>
+									</TabsContent>
 								) : null}
+								<TabsContent value="edit" forceMount asChild>
 								<div
-									id={markdownFile ? "markdown-edit-panel" : undefined}
-									role={markdownFile ? "tabpanel" : undefined}
-									aria-labelledby={markdownFile ? "markdown-edit-tab" : undefined}
 									className={cn(
 										"h-full min-h-0",
 										markdownFile && markdownView === "preview" && "hidden",
@@ -356,6 +331,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 										onStateChange={setEditorState}
 									/>
 								</div>
+								</TabsContent>
 							</>
 						) : state.fileContent ? (
 							<div className="space-y-3">
@@ -381,6 +357,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 							</div>
 						) : null}
 					</div>
+					</Tabs>
 				</DialogContent>
 			</Dialog>
 			<ResourceImageViewer

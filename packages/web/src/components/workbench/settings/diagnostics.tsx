@@ -18,7 +18,7 @@ import { SettingSection, StatText } from "./shared";
 type DiagnosticsSnapshot = {
 	generatedAt?: number;
 	product?: { version?: string };
-	web?: { host?: string; port?: number; ipAddresses?: string[] };
+	web?: { port?: number; ipAddresses?: string[] };
 	gateway?: ServiceSnapshot;
 	runtime?: ServiceSnapshot & { processMemory?: ProcessMemory };
 	host?: { platform?: string; arch?: string; uptimeSeconds?: number };
@@ -576,7 +576,7 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 		() => diagnostics.processMemory?.processes?.find((processInfo) => processInfo.role === "runtime"),
 		[diagnostics.processMemory?.processes],
 	);
-	const ipAddresses = diagnostics.web?.ipAddresses?.[0] ?? "未发现外部 IP";
+	const ipAddresses = diagnostics.web?.ipAddresses ?? [];
 	const processMemoryDetail = `${formatBytes(diagnostics.processMemory?.totalRssBytes)} · Gateway ${formatBytes(diagnostics.gateway?.rssBytes)}${runtimeProcess ? ` · Runtime ${formatBytes(runtimeProcess.rssBytes)}` : ""}`;
 	const processMemoryPercent = ratioPercent(diagnostics.processMemory?.totalRssBytes, diagnostics.memory?.totalBytes);
 	const memoryValue = formatBytesValue(diagnostics.memory?.usedBytes);
@@ -612,7 +612,7 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 						description="负责浏览器连接、页面资源、API 请求和实时消息转发。"
 						status={diagnostics.gateway}
 						metadata={[
-							{ label: "地址", value: `${diagnostics.web?.host ?? "—"}:${diagnostics.web?.port ?? "—"}` },
+							{ label: "端口", value: String(diagnostics.gateway?.port ?? "—") },
 							{ label: "PID", value: String(diagnostics.gateway?.pid ?? "—") },
 						]}
 						restarting={activeAction === "gateway"}
@@ -633,9 +633,18 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 				</div>
 			</SettingSection>
 
+			<SettingSection title="可访问地址">
+				<div className="grid gap-2">
+					{ipAddresses.map((address) => (
+						<a key={address} className="break-all font-mono text-sm underline underline-offset-4" href={`http://${address}:${diagnostics.web?.port}`}>
+							http://{address}:{diagnostics.web?.port}
+						</a>
+					))}
+				</div>
+			</SettingSection>
+
 			<SettingSection title="主机信息">
-				<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-					<StatText label="Host IP" value={ipAddresses} />
+				<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
 					<StatText label="Web 服务端口" value={diagnostics.web?.port ? String(diagnostics.web.port) : "—"} />
 					<StatText label={`${state.branding.name} 版本`} value={diagnostics.product?.version ?? "—"} />
 					<StatText label="平台 / 架构" value={`${diagnostics.host?.platform ?? "—"} / ${diagnostics.host?.arch ?? "—"}`} />

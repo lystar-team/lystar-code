@@ -45,9 +45,20 @@ import {
 } from "../ui/dropdown-menu";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { Tabs, TabsContent } from "../ui/tabs";
 import { Textarea } from "../ui/textarea";
 import type { WorkbenchActions } from "./types";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar";
+
+const GIT_PANEL_TABS: readonly WorkbenchTabOption<"changes" | "history">[] = [
+	{ icon: GitCommitHorizontal, label: "变更", value: "changes" },
+	{ icon: History, label: "历史", value: "history" },
+];
+
+const GIT_VIEW_TABS: readonly WorkbenchTabOption<"tree" | "list">[] = [
+	{ icon: FolderTree, label: "树形", value: "tree" },
+	{ icon: List, label: "列表", value: "list" },
+];
 
 type GitDirectoryNode = {
 	name: string;
@@ -288,41 +299,11 @@ export function GitPanel({ state, actions }: { state: WorkbenchState; actions: W
 						onValueChange={(value) => setPanelTab(value as "changes" | "history")}
 						className="min-h-0 flex-1 gap-2"
 					>
-						<TabsList className="grid h-9 w-full grid-cols-2">
-							<TabsTrigger value="changes" className="text-xs">
-								<GitCommitHorizontal className="size-3.5" />
-								变更
-							</TabsTrigger>
-							<TabsTrigger value="history" className="text-xs">
-								<History className="size-3.5" />
-								历史
-							</TabsTrigger>
-						</TabsList>
+						<WorkbenchTabBar activeId={panelTab} tabs={GIT_PANEL_TABS} label="Git 视图" />
 						<TabsContent value="changes" className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
-							<div className="flex shrink-0 items-center justify-end gap-0.5">
-								<Button
-									type="button"
-									size="xs"
-									className="!text-xs"
-									variant={viewMode === "tree" ? "secondary" : "ghost"}
-									aria-pressed={viewMode === "tree"}
-									onClick={() => setViewMode("tree")}
-								>
-									<FolderTree className="size-3.5" />
-									树形
-								</Button>
-								<Button
-									type="button"
-									size="xs"
-									className="!text-xs"
-									variant={viewMode === "list" ? "secondary" : "ghost"}
-									aria-pressed={viewMode === "list"}
-									onClick={() => setViewMode("list")}
-								>
-									<List className="size-3.5" />
-									列表
-								</Button>
-							</div>
+							<Tabs value={viewMode} onValueChange={(value) => setViewMode(value as "tree" | "list")} className="shrink-0 gap-0">
+								<WorkbenchTabBar activeId={viewMode} tabs={GIT_VIEW_TABS} label="Git 文件排列" className="!w-44 !self-start" compact />
+							</Tabs>
 							<div className="min-h-0 flex-1 overflow-hidden rounded-lg border bg-background">
 								<ScrollArea className="h-full w-full">
 									<div className="grid gap-3 p-2">

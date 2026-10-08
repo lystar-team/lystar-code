@@ -1,4 +1,4 @@
-import { Check, Eye, ListChecks, LoaderCircle, Plus, RefreshCw, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Check, Eye, ListChecks, LoaderCircle, Plus, RefreshCw, Settings, SlidersHorizontal, Trash2, Wrench } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
@@ -13,7 +13,7 @@ import { Input } from "../../ui/input";
 import { ScrollArea } from "../../ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
+import { Tabs, TabsContent } from "../../ui/tabs";
 import {
 	THINKING_LEVEL_LABELS,
 	VISIBLE_THINKING_LEVELS,
@@ -675,14 +675,14 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 					onValueChange={(value) => setProviderTab(value as "custom" | "builtin")}
 					className="gap-2"
 				>
-					<TabsList className="!flex-row h-9 w-fit max-w-full flex-nowrap overflow-x-auto">
-						<TabsTrigger value="custom">
-							自定义<span className="ml-1 text-xs text-muted-foreground">{customProviders.length}</span>
-						</TabsTrigger>
-						<TabsTrigger value="builtin">
-							内置<span className="ml-1 text-xs text-muted-foreground">{builtinProviders.length}</span>
-						</TabsTrigger>
-					</TabsList>
+					<WorkbenchTabBar
+						activeId={providerTab}
+						tabs={[
+							{ icon: Wrench, label: "自定义", value: "custom", count: customProviders.length, countLabel: "供应商" },
+							{ icon: Settings, label: "内置", value: "builtin", count: builtinProviders.length, countLabel: "供应商" },
+						]}
+						label="模型供应商类型"
+					/>
 					{providersInTab.length ? (
 						<div className="grid gap-1">
 							{providersInTab.map((provider) => {

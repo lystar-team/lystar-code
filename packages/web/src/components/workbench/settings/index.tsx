@@ -1,6 +1,5 @@
 import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, BrainCircuit, CircleHelp, KeyRound, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
-import type { ReactNode } from "react";
 import { webApi } from "../../../adapters/host-protocol/api";
 import { cn } from "../../../lib/utils";
 import { useAppInstall } from "../../../state/use-app-install";
@@ -8,7 +7,7 @@ import type { SettingsTab, WorkbenchState } from "../../../state/use-workbench";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../ui/dialog";
 import { Input } from "../../ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
+import { Tabs, TabsContent } from "../../ui/tabs";
 import { GsapReveal } from "../../ui/gsap-reveal";
 import { AboutSettings } from "./about";
 import { AppearanceSettings } from "./appearance";
@@ -21,6 +20,7 @@ import { SkillsSettings } from "./skills";
 import { SubagentSettings } from "./subagents";
 import { SystemSettings } from "./system";
 import type { WorkbenchActions } from "../types";
+import { WorkbenchTabBar, type WorkbenchTabOption } from "../workbench-tab-bar";
 
 const DiagnosticsSettings = lazy(() =>
 	import("./diagnostics").then((module) => ({ default: module.DiagnosticsSettings })),
@@ -53,20 +53,20 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 			active = false;
 		};
 	}, [state.settingsOpen]);
-	const settingItems: Array<{ value: SettingsTab; label: string; icon: ReactNode; section: string }> = [
-		{ value: "appearance", label: "外观", icon: <SunMoon className="size-4" />, section: "个人" },
-		{ value: "instructions", label: "全局提示词", icon: <BookOpen className="size-4" />, section: "个人" },
-		{ value: "models", label: "模型与认证", icon: <Bot className="size-4" />, section: "工作区" },
-		{ value: "skills", label: "技能", icon: <WandSparkles className="size-4" />, section: "工作区" },
-		{ value: "subagents", label: "智能体", icon: <BrainCircuit className="size-4" />, section: "工作区" },
-		{ value: "imports", label: "迁移导入", icon: <ArrowDownToLine className="size-4" />, section: "工作区" },
-		{ value: "diagnostics", label: "诊断", icon: <CircleHelp className="size-4" />, section: "工作区" },
-		{ value: "system", label: "系统", icon: <Settings2 className="size-4" />, section: "系统" },
+	const settingItems: Array<WorkbenchTabOption<SettingsTab> & { section: string }> = [
+		{ value: "appearance", label: "外观", icon: SunMoon, section: "个人" },
+		{ value: "instructions", label: "全局提示词", icon: BookOpen, section: "个人" },
+		{ value: "models", label: "模型与认证", icon: Bot, section: "工作区" },
+		{ value: "skills", label: "技能", icon: WandSparkles, section: "工作区" },
+		{ value: "subagents", label: "智能体", icon: BrainCircuit, section: "工作区" },
+		{ value: "imports", label: "迁移导入", icon: ArrowDownToLine, section: "工作区" },
+		{ value: "diagnostics", label: "诊断", icon: CircleHelp, section: "工作区" },
+		{ value: "system", label: "系统", icon: Settings2, section: "系统" },
 		...(permissionsSupported
-			? [{ value: "permissions" as const, label: "系统授权", icon: <KeyRound className="size-4" />, section: "系统" }]
+			? [{ value: "permissions" as const, label: "系统授权", icon: KeyRound, section: "系统" }]
 			: []),
-		{ value: "security", label: "安全与访问", icon: <ShieldCheck className="size-4" />, section: "系统" },
-		{ value: "about", label: "关于", icon: <Sparkles className="size-4" />, section: "其他" },
+		{ value: "security", label: "安全与访问", icon: ShieldCheck, section: "系统" },
+		{ value: "about", label: "关于", icon: Sparkles, section: "其他" },
 	];
 	const visibleItems = settingItems.filter((item) => item.label.toLowerCase().includes(query.toLowerCase()));
 	const currentLabel = settingItems.find((item) => item.value === state.settingsTab)?.label ?? "设置";
@@ -113,30 +113,13 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 								/>
 							</div>
 						</div>
-						<TabsList
-							className="mx-4 mt-3 min-h-0 w-auto min-w-0 max-w-[calc(100%-2rem)] flex-none !flex-row flex-nowrap items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 md:mx-0 md:mt-0 md:w-full md:max-w-none md:flex-1 md:!flex-col md:items-stretch md:overflow-auto md:rounded-none md:px-5 md:pb-5"
-							variant="line"
-						>
-							{["个人", "工作区", "系统", "其他"].map((section) => {
-								const items = visibleItems.filter((item) => item.section === section);
-								if (!items.length) return null;
-								return (
-									<div className="contents md:grid md:w-full md:gap-1" key={section}>
-										<p className="hidden px-3 pb-2 pt-4 text-xs font-medium text-muted-foreground md:block">{section}</p>
-										{items.map((item) => (
-											<TabsTrigger
-													className="h-9 !w-auto !min-w-max !flex-none !justify-center whitespace-nowrap rounded-xl border-0 px-2 text-xs font-medium text-muted-foreground after:hidden data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none md:h-10 md:!w-full md:!min-w-0 md:!justify-start md:gap-3 md:rounded-md md:border-0 md:px-3 md:text-sm md:whitespace-normal md:data-[state=active]:bg-accent"
-												key={item.value}
-												value={item.value}
-											>
-												{item.icon}
-												{item.label}
-											</TabsTrigger>
-										))}
-									</div>
-								);
-							})}
-						</TabsList>
+						<WorkbenchTabBar
+							activeId={state.settingsTab}
+							tabs={visibleItems}
+							label="设置分类"
+							orientation={isMobile ? "horizontal" : "vertical"}
+							className="mx-4 mb-3 !w-auto min-w-0 md:mx-5 md:mb-5 md:flex-1"
+						/>
 					</aside>
 					<section data-settings-content className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
 						<GsapReveal animationKey={state.settingsTab} className="min-h-0 w-full" distance={16} duration={0.32}>
@@ -169,7 +152,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 												: state.settingsTab === "permissions"
 											? "检查并完成 macOS Web 后台任务需要的系统授权。"
 										: state.settingsTab === "security"
-													? "配置 Web Gateway 的监听 IP、白名单、Web/Runtime 端口和密码。"
+													? "查看可访问地址，配置白名单、Web/Runtime 端口和密码。"
 													: state.settingsTab === "about"
 														? `查看 ${state.branding.name} 的版本信息。`
 													: state.settingsTab === "appearance"

@@ -62,6 +62,8 @@ export interface ToolExecutionErrorOptions {
 	fingerprintConstraint?: unknown;
 	/** 已哈希的目标标识，覆盖从调用参数提取的 targetHash。 */
 	failureTargetHash?: string;
+	/** End the current tool loop after a terminal failure; a later prompt can submit corrected work. */
+	terminate?: boolean;
 	cause?: Error;
 }
 
@@ -72,6 +74,7 @@ export class ToolExecutionError extends Error {
 	public readonly details?: Record<string, unknown>;
 	public readonly fingerprintConstraint?: unknown;
 	public readonly failureTargetHash?: string;
+	public readonly terminate: boolean;
 
 	constructor(message: string, options: ToolExecutionErrorOptions) {
 		super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -82,5 +85,6 @@ export class ToolExecutionError extends Error {
 		this.details = options.details;
 		this.fingerprintConstraint = options.fingerprintConstraint;
 		this.failureTargetHash = options.failureTargetHash;
+		this.terminate = options.terminate === true;
 	}
 }

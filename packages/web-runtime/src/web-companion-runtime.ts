@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import {
 	getWebCompanionEndpoint,
+	type ToolActivitySnapshot,
 	WEB_COMPANION_CAPABILITIES,
 	WEB_COMPANION_LEGACY_CAPABILITIES,
 	WEB_COMPANION_LEGACY_PROTOCOL_VERSION,
@@ -25,11 +26,11 @@ import type {
 	SettingSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
-	ToolActivity,
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-web-protocol";
 import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
+import { projectedToolActivity } from "./transcript-projection.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 import { webSearchProgressFromCall, webSearchProgressSummary } from "./web-search-progress.ts";
 
@@ -190,7 +191,7 @@ export function projectAgentEvent(value: unknown): SessionProgress[] {
 	if (event.type === "tool_activity") {
 		const activity = record(event.activity);
 		if (!activity || typeof activity.activityEpoch !== "string" || typeof activity.toolCallId !== "string") return [];
-		return [{ type: "tool_state", activity: activity as ToolActivity }];
+		return [{ type: "tool_state", activity: projectedToolActivity(activity as unknown as ToolActivitySnapshot) }];
 	}
 	if (event.type === "tool_execution_update" && event.toolName === "bash") {
 		return [
@@ -373,7 +374,7 @@ function snapshot(
 		transcriptRevision: value.transcriptRevision,
 		...(value.toolActivityEpoch ? { toolActivityEpoch: value.toolActivityEpoch } : {}),
 		...(value.toolActivityRevision === undefined ? {} : { toolActivityRevision: value.toolActivityRevision }),
-		...(value.toolActivities ? { toolActivities: value.toolActivities } : {}),
+		...(value.toolActivities ? { toolActivities: value.toolActivities.map(projectedToolActivity) } : {}),
 	};
 }
 

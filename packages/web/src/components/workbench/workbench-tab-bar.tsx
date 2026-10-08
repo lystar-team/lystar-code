@@ -1,5 +1,5 @@
 import type { LucideProps } from "lucide-react";
-import type { ComponentType } from "react";
+import { Fragment, type ComponentType } from "react";
 import { cn } from "../../lib/utils";
 import {
 	ExpandableActionBar,
@@ -15,21 +15,24 @@ export type WorkbenchTabOption<Value extends string> = {
 	label: string;
 	value: Value;
 	count?: number;
+	countLabel?: string;
+	section?: string;
 };
 
-function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, count, compact }: WorkbenchTabOption<Value> & { compact: boolean }) {
+function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, count, countLabel = "会话", compact, orientation }: WorkbenchTabOption<Value> & { compact: boolean; orientation: "horizontal" | "vertical" }) {
 	const item = useExpandableActionBarItem(value);
 
 	return (
 		<TabsTrigger
 			value={value}
-			aria-label={count === undefined ? label : `${label}，${count} 个会话`}
+			aria-label={count === undefined ? label : `${label}，${count} 个${countLabel}`}
 			title={item.labelVisible ? undefined : label}
 			onFocus={item.onFocus}
 			onPointerEnter={item.onPointerEnter}
 			className={cn(
-				"isolate relative !h-7 !min-w-0 !gap-0 !rounded-full !border-0 !py-0 !text-xs !font-medium !text-muted-foreground after:!hidden",
-				compact ? "!flex-auto !px-0.5" : "!flex-1 !px-1.5",
+				"isolate relative !h-7 !gap-0 !rounded-full !border-0 !py-0 !text-xs !font-medium !text-muted-foreground after:!hidden",
+				compact ? "!min-w-0 !flex-auto !px-0.5" : "!min-w-max !flex-1 !shrink-0 !px-1.5",
+				orientation === "vertical" && "!w-full !flex-none !justify-start !px-3",
 				"data-[state=active]:!bg-transparent data-[state=active]:!text-foreground",
 			)}
 		>
@@ -54,21 +57,31 @@ export function WorkbenchTabBar<Value extends string>({
 	className,
 	compact = false,
 	label,
+	orientation = "horizontal",
 	tabs,
 }: {
 	activeId: Value;
 	className?: string;
 	compact?: boolean;
 	label: string;
+	orientation?: "horizontal" | "vertical";
 	tabs: readonly WorkbenchTabOption<Value>[];
 }) {
 	return (
 		<TabsList
+			data-workbench-tab-bar
 			aria-label={label}
-			className={cn("!h-auto !w-auto min-w-0 self-stretch !justify-start !gap-0 !rounded-none !border-0 !bg-transparent !p-0", className)}
+			className={cn("!h-auto !w-auto min-w-0 self-stretch !justify-start !gap-0 !rounded-none !border-0 !bg-transparent !p-0", orientation === "vertical" && "min-h-0 !w-full", className)}
 		>
-			<ExpandableActionBar activeId={activeId} defaultExpanded expandOnFocus={false} expandOnHover={false} size="sm">
-				{tabs.map((tab) => <WorkbenchTabTrigger key={tab.value} {...tab} compact={compact} />)}
+			<ExpandableActionBar activeId={activeId} defaultExpanded expandOnFocus={false} expandOnHover={false} orientation={orientation} size="sm">
+				{tabs.map((tab, index) => (
+					<Fragment key={tab.value}>
+						{orientation === "vertical" && tab.section && tab.section !== tabs[index - 1]?.section ? (
+							<p className="px-3 pb-1 pt-3 text-xs font-medium text-muted-foreground">{tab.section}</p>
+						) : null}
+						<WorkbenchTabTrigger {...tab} compact={compact} orientation={orientation} />
+					</Fragment>
+				))}
 			</ExpandableActionBar>
 		</TabsList>
 	);

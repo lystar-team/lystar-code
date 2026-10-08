@@ -1174,7 +1174,7 @@ async function executePreparedToolCall(
 			if (signal?.aborted) return cancelledToolCallOutcome(recovery);
 			if (!recovery || !controller?.decideAttempt) {
 				return {
-					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					result: createErrorToolResult(error),
 					isError: true,
 					error,
 					recovery,
@@ -1195,7 +1195,7 @@ async function executePreparedToolCall(
 			}
 			if (!decision) {
 				return {
-					result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					result: createErrorToolResult(error),
 					isError: true,
 					error,
 					recovery,
@@ -1205,8 +1205,7 @@ async function executePreparedToolCall(
 			if (decision.action.type !== "retry_same_args") {
 				const replacementResult = decision.action.replacementResult;
 				return {
-					result:
-						replacementResult ?? createErrorToolResult(error instanceof Error ? error.message : String(error)),
+					result: replacementResult ?? createErrorToolResult(error),
 					isError: decision.action.type !== "accept_as_success",
 					error: decision.action.type === "accept_as_success" ? undefined : error,
 					recovery,
@@ -1348,10 +1347,15 @@ async function emitRecoveryObservation(observation: ToolRecoveryObservation, emi
 	});
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function createErrorToolResult(error: unknown): AgentToolResult<Record<string, unknown>> {
+	const message = error instanceof Error ? error.message : String(error);
 	return {
 		content: [{ type: "text", text: message }],
-		details: {},
+		...(error instanceof ToolExecutionError && error.terminate ? { terminate: true } : {}),
+		details:
+			error instanceof ToolExecutionError
+				? { ...error.details, code: error.code, category: error.category, retryable: error.retryable }
+				: {},
 	};
 }
 

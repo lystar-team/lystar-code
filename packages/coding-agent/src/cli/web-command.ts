@@ -443,7 +443,7 @@ export async function runWebCommand(args: readonly string[] = []): Promise<void>
 			? `${settings.commandName} web 会启动并托管 Vite HMR 前端、Gateway 和 Runtime。`
 			: `默认启动为后台模式；需要前台运行时使用：${settings.commandName} web --foreground。`;
 		console.log(
-			`用法：${settings.commandName} web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。${developmentFrontend}\n配置文件：${settings.configFileName ?? "web-config.json"}。\n${launchMode}\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n\nmacOS 授权：\n  ${settings.commandName} web permissions status\n  ${settings.commandName} web permissions setup\n`,
+			`用法：${settings.commandName} web\n\n首次运行会依次配置白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：${settings.defaultPort}；Runtime 默认端口：${settings.defaultRuntimePort}。${developmentFrontend}\n配置文件：${settings.configFileName ?? "web-config.json"}。\n${launchMode}\n\n组件命令：\n  ${settings.commandName} web gateway status|stop|start|restart\n  ${settings.commandName} web runtime status|stop|start|restart\n\n服务命令：\n  ${settings.commandName} web service install\n  ${settings.commandName} web service status\n  ${settings.commandName} web service restart\n  ${settings.commandName} web service uninstall\n\nmacOS 授权：\n  ${settings.commandName} web permissions status\n  ${settings.commandName} web permissions setup\n`,
 		);
 		return;
 	}

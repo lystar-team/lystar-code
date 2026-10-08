@@ -516,7 +516,10 @@ function collectRenderedToolIds(items: readonly ConversationRenderItem[]): Set<s
 	const ids = new Set<string>();
 	const collectContent = (entry: ConversationContentRenderItem): void => {
 		if (entry.kind === "tool-stack") {
-			for (const batch of entry.batches) for (const tool of batch.tools) ids.add(tool.id);
+			for (const batch of entry.batches) for (const tool of batch.tools) {
+				ids.add(tool.id);
+				for (const call of tool.codemode?.calls ?? []) ids.add(call.id);
+			}
 		} else if (entry.kind === "agent-step") {
 			for (const item of entry.items) collectContent(item);
 		}
@@ -547,6 +550,9 @@ export function appendLiveRenderItems(
 		return entry;
 	});
 	const renderedToolCallIds = collectRenderedToolIds(next);
+	const nestedCodemodeCallIds = new Set(Object.values(liveTools).flatMap((tool) =>
+		tool.name === "codemode" ? (tool.codemode?.calls ?? []).map((call) => call.id) : [],
+	));
 	const stepIdByToolCallId = new Map<string, string>();
 	for (const entry of next) {
 		if (entry.kind !== "agent-step") continue;
@@ -619,7 +625,7 @@ export function appendLiveRenderItems(
 		if (item.kind !== "tools") continue;
 		const tools = item.toolIds.flatMap((toolId) => {
 			const tool = liveTools[toolId];
-			if (!tool || committedToolCallIds.has(toolId) || renderedToolCallIds.has(toolId)) return [];
+			if (!tool || committedToolCallIds.has(toolId) || renderedToolCallIds.has(toolId) || nestedCodemodeCallIds.has(toolId)) return [];
 			return [toLiveToolViewModel(tool)];
 		});
 		if (!tools.length) continue;

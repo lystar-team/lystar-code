@@ -51,6 +51,11 @@ body,
 	color: var(--foreground);
 }
 
+html,
+body {
+	overflow: hidden;
+}
+
 .brand-logo {
 	display: inline-flex;
 	flex-shrink: 0;

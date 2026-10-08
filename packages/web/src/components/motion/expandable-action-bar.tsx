@@ -134,6 +134,7 @@ export function ExpandableActionBar({
 	defaultExpanded = false,
 	expandOnFocus = true,
 	expandOnHover = true,
+	orientation = "horizontal",
 	size = "md",
 }: {
 	activeId?: string;
@@ -143,6 +144,7 @@ export function ExpandableActionBar({
 	defaultExpanded?: boolean;
 	expandOnFocus?: boolean;
 	expandOnHover?: boolean;
+	orientation?: "horizontal" | "vertical";
 	size?: ExpandableActionBarSize;
 }) {
 	const layoutId = useId();
@@ -207,14 +209,17 @@ export function ExpandableActionBar({
 					if (expandOnFocus) close();
 				}}
 				transition={EXPANDABLE_ACTION_BAR_TRANSITION}
-				className={cn("flex w-full min-w-0", className)}
+				className={cn("flex w-full min-w-0", orientation === "vertical" && "min-h-0", className)}
 			>
 				<motion.div
 					layout="size"
 					transition={EXPANDABLE_ACTION_BAR_TRANSITION}
 					className={cn(
 						// 展开后的标签可能超出容器，轨道自己横向滚动，避免最后一项跑出可视区；滚动条不进入视觉。
-						"relative flex w-full min-w-0 items-center overflow-x-auto overflow-y-hidden rounded-full",
+						"relative flex w-full min-w-0",
+						orientation === "vertical"
+							? "min-h-0 flex-col items-stretch overflow-x-hidden overflow-y-auto rounded-3xl"
+							: "items-center overflow-x-auto overflow-y-hidden rounded-full",
 						"border border-border bg-card/90 shadow-[0_8px_24px_rgb(0_0_0/0.08)] backdrop-blur-xl",
 						"[-webkit-scrollbar]:hidden [scrollbar-width:none]",
 						SIZE_CLASS[size],

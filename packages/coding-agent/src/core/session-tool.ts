@@ -2,7 +2,12 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "./extensions/types.ts";
 import { createRoomClaimTool } from "./room-claim-tool.ts";
-import type { SessionCoordinator, SessionSendMode } from "./session-coordinator.ts";
+import type {
+	SessionCoordinator,
+	SessionCoordinatorSummary,
+	SessionSendMode,
+	SessionWaitProgress,
+} from "./session-coordinator.ts";
 
 const SessionSendModeSchema = Type.Union([Type.Literal("auto"), Type.Literal("steer"), Type.Literal("follow_up")]);
 const SessionWorkspaceModeSchema = Type.Union([
@@ -37,10 +42,12 @@ const SessionSendParams = Type.Object({
 	mode: Type.Optional(SessionSendModeSchema),
 });
 
-const SessionWaitParams = Type.Object({
-	sessionIds: Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { minItems: 1, maxItems: 32 }),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 * 60 * 1000 })),
-});
+const SessionWaitParams = Type.Object(
+	{
+		sessionIds: Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { minItems: 1, maxItems: 32 }),
+	},
+	{ additionalProperties: false },
+);
 
 const SessionListParams = Type.Object({
 	parentSessionId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
@@ -50,6 +57,8 @@ const SessionProfilesParams = Type.Object({});
 
 const SessionStopParams = Type.Object({
 	sessionId: Type.String({ minLength: 1, maxLength: 256 }),
+	reason: Type.Union([Type.Literal("user_requested"), Type.Literal("task_cancelled")]),
+	note: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 
 const RoomCreateParams = Type.Object({
@@ -166,6 +175,16 @@ export function createSessionCreateTool(
 	};
 }
 
+function sessionProgressSnapshot(session: SessionCoordinatorSummary) {
+	return {
+		id: session.id,
+		...(session.name ? { name: session.name.slice(0, 64) } : {}),
+		...(session.profileName ? { profileName: session.profileName.slice(0, 64) } : {}),
+		activity: session.activity,
+		...(session.taskDescription ? { taskDescription: session.taskDescription.slice(0, 160) } : {}),
+	};
+}
+
 export function createSessionSendTool(
 	getCoordinator: () => SessionCoordinator | undefined,
 ): ToolDefinition<typeof SessionSendParams> {
@@ -175,7 +194,7 @@ export function createSessionSendTool(
 		description: "向指定下级会话发送消息。会话运行中可用 steer，等待输入时可用 follow_up，其余情况用 auto。",
 		parameters: SessionSendParams,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+		async execute(_toolCallId, params, _signal, onUpdate, ctx: ExtensionContext) {
 			const coordinator = getCoordinator();
 			if (!coordinator) return coordinatorUnavailable();
 			return resultText(
@@ -184,6 +203,7 @@ export function createSessionSendTool(
 					sessionId: params.sessionId,
 					text: params.text,
 					mode: params.mode as SessionSendMode | undefined,
+					onProgress: (session) => onUpdate?.(resultText(sessionProgressSnapshot(session))),
 				}),
 			);
 		},
@@ -196,20 +216,36 @@ export function createSessionWaitTool(
 	return {
 		name: "session_wait",
 		label: "等待子会话",
-		description: "等待一个或多个下级会话结束，返回会话摘要与持久化结果。",
-		promptSnippet: "等待子会话返回结果",
+		description:
+			"等待下级会话返回结果或需要输入，由系统持续等待并更新进度。取消等待不停止子任务；已有结果返回后，只继续等待仍在运行的会话。",
+		promptSnippet: "持续等待子会话返回结果，取消等待不停止子任务",
+		promptGuidelines: [
+			"session_wait 的等待时长由系统管理，不传 timeoutMs；通过 codemode 调用时不设置 timeout_ms。",
+			"任务仍在运行时继续等待，不因暂时没有回复或主会话准备结束调用 session_stop。",
+			"返回结果可能同时包含已完成和仍在运行的成员；处理已有结果后只等待剩余会话。",
+		],
 		parameters: SessionWaitParams,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
 			const coordinator = getCoordinator();
 			if (!coordinator) return coordinatorUnavailable();
-			return resultText(
-				await coordinator.wait({
-					cwd: collaborationCwd(ctx),
-					sessionIds: params.sessionIds,
-					timeoutMs: params.timeoutMs,
-				}),
-			);
+			signal?.throwIfAborted();
+			let progress: SessionWaitProgress | undefined;
+			const sessions = await coordinator.wait({
+				cwd: collaborationCwd(ctx),
+				sessionIds: params.sessionIds,
+				signal,
+				onProgress: (next) => {
+					progress = next;
+					const snapshot = {
+						state: next.state,
+						elapsedMs: next.elapsedMs,
+						sessions: next.sessions.map(sessionProgressSnapshot),
+					};
+					onUpdate?.({ content: [{ type: "text", text: JSON.stringify(snapshot) }], details: snapshot });
+				},
+			});
+			return { ...resultText(sessions), details: progress ?? null };
 		},
 	};
 }
@@ -256,13 +292,25 @@ export function createSessionStopTool(
 	return {
 		name: "session_stop",
 		label: "停止子会话",
-		description: "停止指定下级会话；正在运行的任务会记录为中断结果。",
+		description:
+			"仅在用户明确要求停止或任务明确撤销时停止下级会话，必须填写原因和说明。等待时间长、没有新回复或主会话结束不构成停止理由。",
+		promptGuidelines: ["session_stop 只用于明确取消任务；正常任务完成后直接读取结果，不调用停止工具清理。"],
 		parameters: SessionStopParams,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
 			const coordinator = getCoordinator();
 			if (!coordinator) return coordinatorUnavailable();
-			return resultText(await coordinator.stop({ cwd: collaborationCwd(ctx), sessionId: params.sessionId }));
+			signal?.throwIfAborted();
+			return resultText(
+				await coordinator.stop({
+					cwd: collaborationCwd(ctx),
+					sessionId: params.sessionId,
+					callerSessionId: ctx.sessionManager.getSessionId(),
+					reason: params.reason,
+					note: params.note,
+					onProgress: (session) => onUpdate?.(resultText(sessionProgressSnapshot(session))),
+				}),
+			);
 		},
 	};
 }

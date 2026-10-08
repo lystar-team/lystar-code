@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyEditsToNormalizedContent as applyDurableEdits } from "../../durable/src/tools/edit-diff.ts";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import { createEditTool, createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { applyEditsToNormalizedContent, type Edit } from "../src/core/tools/edit-diff.ts";
+import { applyEditsToNormalizedContent, normalizeToLF, type Edit } from "../src/core/tools/edit-diff.ts";
+import { FileEditState, type SnapshotEditIssue, type SnapshotRangeEdit } from "../src/core/tools/file-edit-state.ts";
+import { splitBom } from "../src/utils/text.ts";
 
 type ApplyEdits = typeof applyEditsToNormalizedContent;
 const implementations: Array<[string, ApplyEdits]> = [
@@ -15,12 +17,15 @@ const implementations: Array<[string, ApplyEdits]> = [
 ];
 const directories: string[] = [];
 
-async function fixture(content: string) {
+async function fixture(content: string, startLine = 1, endLine?: number) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-edit-reliability-"));
 	directories.push(directory);
 	const path = join(directory, "target.txt");
 	await writeFile(path, content);
-	return { directory, path, tool: createEditTool(directory) };
+	const state = new FileEditState();
+	const totalLines = normalizeToLF(splitBom(content).text).split("\n").length;
+	const snapshot = state.capture(path, content, startLine, endLine ?? totalLines);
+	return { directory, path, state, snapshot, tool: createEditTool(directory, { fileEditState: state }) };
 }
 
 afterEach(async () => {
@@ -31,14 +36,18 @@ interface RecoveryResolution {
 	type: string;
 	replacementResult: {
 		content: Array<{ type: string; text: string }>;
-		details: { recovery: { evidenceLines: number; candidateLines: number[]; targetChanged: boolean } };
+		details: { recovery: { code: string; issues: SnapshotEditIssue[]; attempt: number; plan?: string; snapshotHash: string; recoveryAllowed: boolean } };
 	};
 }
 
-async function recover(tool: ReturnType<typeof createEditTool>, edits: Edit[], beforeRecovery?: () => Promise<void>) {
+async function recover(
+	tool: ReturnType<typeof createEditTool>,
+	snapshot: string,
+	edits: SnapshotRangeEdit[],
+): Promise<{ failure: unknown; result: RecoveryResolution; text: string }> {
 	let failure: unknown;
 	try {
-		await tool.execute("failed", { path: "target.txt", edits });
+		await tool.execute("failed", { path: "target.txt", snapshot, edits });
 	} catch (error) {
 		failure = error;
 	}
@@ -47,9 +56,8 @@ async function recover(tool: ReturnType<typeof createEditTool>, edits: Edit[], b
 		Symbol.for("pi.toolRecoveryHandler")
 	];
 	expect(handler).toBeTypeOf("function");
-	await beforeRecovery?.();
 	const result = await handler({});
-	return { result, text: result.replacementResult.content.map((part) => part.text).join("\n") };
+	return { failure, result, text: result.replacementResult.content.map((part) => part.text).join("\n") };
 }
 
 for (const [name, apply] of implementations) {
@@ -192,91 +200,123 @@ for (const [name, apply] of implementations) {
 }
 
 describe("edit recovery evidence and write outcomes", () => {
-	it("returns the beginning of a block when only its last anchor survives", async () => {
-		const anchor = "THE_STABLE_LONG_ANCHOR_AT_END_OF_TARGET_BLOCK";
-		const current = [...Array.from({ length: 11 }, (_, index) => `current-${index}`), anchor].join("\n");
-		const oldText = [...Array.from({ length: 11 }, (_, index) => `old-${index}`), anchor].join("\n");
-		const { tool, path } = await fixture(current);
-		const { text } = await recover(tool, [{ oldText, newText: "replacement" }]);
-		expect(text).toContain("current-0");
-		expect(text).toContain(anchor);
-		expect(text).not.toMatch(/^\d+: /m);
+	it("returns numbered current evidence and a snapshot for a range outside a partial read", async () => {
+		const current = Array.from({ length: 8 }, (_, index) => `line-${index + 1}`).join("\n");
+		const { tool, path, snapshot } = await fixture(current, 1, 2);
+		const { failure, result, text } = await recover(tool, snapshot.id, [
+			{ startLine: 4, endLine: 4, newText: "FOUR" },
+		]);
+
+		expect(failure).toMatchObject({
+			code: "RANGE_OUTSIDE_SNAPSHOT",
+			details: {
+				plan: expect.any(String),
+				snapshot: expect.any(String),
+				writeState: "not_written",
+			},
+		});
+		expect(result.type).toBe("ask_model_to_rebuild");
+		expect(result.replacementResult.details.recovery).toMatchObject({
+			code: "RANGE_OUTSIDE_SNAPSHOT",
+				attempt: 1,
+				recoveryAllowed: true,
+				plan: expect.any(String),
+				snapshotHash: expect.any(String),
+		});
+		expect(text).toMatch(/\[snapshot [^;]+; lines 1-7 of 8\]/);
+		expect(text).toContain("1| line-1");
+		expect(text).toContain("4| line-4");
 		expect(await readFile(path, "utf8")).toBe(current);
 	});
 
-	it("shows all long ambiguous candidates within the evidence budget", async () => {
-		const block = Array.from({ length: 80 }, (_, index) => `duplicate-block-line-${index}`).join("\n");
-		const current = Array.from(
-			{ length: 5 },
-			(_, index) => `${block}\n${Array.from({ length: 50 }, (_, row) => `gap-${index}-${row}`).join("\n")}`,
-		).join("\n");
-		const { tool } = await fixture(current);
-		const { text, result } = await recover(tool, [{ oldText: `${block}\n`, newText: "replacement\n" }]);
-		expect(result.replacementResult.details.recovery.candidateLines).toEqual([1, 131, 261, 391, 521]);
-		for (let index = 0; index < 5; index++) expect(text).toContain(`gap-${index}-0`);
-		expect(result.replacementResult.details.recovery.evidenceLines).toBeLessThanOrEqual(200);
-		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(16 * 1024);
-	});
-
-	it("does not label the first occurrence of a repeated anchor as the only target", async () => {
-		const { tool } = await fixture(
-			"function first() {\nshared long anchor\ncurrent-one\n}\nfunction second() {\nshared long anchor\ncurrent-two\n}\n",
-		);
-		const { text } = await recover(tool, [{ oldText: "shared long anchor\nmissing-value", newText: "replacement" }]);
-		expect(text).toContain("current-one");
-		expect(text).toContain("current-two");
-	});
-
-	it("does not present the start of an unrelated file as located evidence", async () => {
-		const { tool } = await fixture("completely unrelated file content\n");
-		const { text } = await recover(tool, [{ oldText: "missing target", newText: "replacement" }]);
-		expect(text).toContain("未定位");
-		expect(text).not.toContain("completely unrelated file content");
-	});
-
-	it("relocates candidates if the file changes between failure and recovery", async () => {
-		const original = "old-head\nduplicate target\nmiddle\nduplicate target\n";
-		const { tool, path } = await fixture(original);
-		const { text, result } = await recover(
-			tool,
-			[{ oldText: "duplicate target", newText: "replacement" }],
-			async () => {
-				await writeFile(path, `new-head\n${original}`);
-			},
-		);
-		expect(result.replacementResult.details.recovery).toMatchObject({ targetChanged: true, candidateLines: [3, 5] });
-		expect(text).toContain("已变化");
-		expect(await readFile(path, "utf8")).toBe(`new-head\n${original}`);
-	});
-
-	it("provides batch issues for overlap failures without writing valid blocks", async () => {
-		const { tool, path } = await fixture("one\ntwo\nthree\nfour\n");
-		const { text } = await recover(tool, [
-			{ oldText: "one\ntwo\n", newText: "ONE\nTWO\n" },
-			{ oldText: "two\nthree\n", newText: "TWO\nTHREE\n" },
-			{ oldText: "four", newText: "FOUR" },
+	it("repairs only the failed item in a retained plan using the returned snapshot", async () => {
+		const original = "a\nb\nc\n";
+		const { tool, path, snapshot } = await fixture(original, 1, 2);
+		const { failure } = await recover(tool, snapshot.id, [
+			{ startLine: 1, endLine: 1, newText: "A\n" },
+			{ startLine: 3, endLine: 3, newText: "C\n" },
 		]);
-		expect(text).toContain("overlap");
+		const details = (failure as { details: { plan: string; snapshot: string } }).details;
+
+		const result = await tool.execute("repair", {
+			path: "target.txt",
+			plan: details.plan,
+			edits: [{ index: 1, snapshot: details.snapshot, startLine: 3, endLine: 3, newText: "C\n" }],
+		});
+
+		expect(result.details).toMatchObject({ status: "written", applied: 2, alreadyApplied: 0 });
+		expect(await readFile(path, "utf8")).toBe("A\nb\nC\n");
+	});
+
+	it("rejects duplicate corrections for one retained edit index", async () => {
+		const original = "a\nb\nc\n";
+		const { tool, path, snapshot } = await fixture(original, 1, 2);
+		const { failure } = await recover(tool, snapshot.id, [{ startLine: 3, endLine: 3, newText: "C\n" }]);
+		const details = (failure as { details: { plan: string; snapshot: string } }).details;
+
+		await expect(
+			tool.execute("duplicate-correction", {
+				path: "target.txt",
+				plan: details.plan,
+				edits: [
+					{ index: 0, snapshot: details.snapshot, startLine: 1, endLine: 1, newText: "A\n" },
+					{ index: 0, snapshot: details.snapshot, startLine: 2, endLine: 2, newText: "B\n" },
+				],
+			}),
+		).rejects.toMatchObject({
+			code: "DUPLICATE_INDEX",
+			details: { writeState: "not_written", issues: [expect.objectContaining({ code: "DUPLICATE_INDEX", editIndex: 0 })] },
+		});
+		expect(await readFile(path, "utf8")).toBe(original);
+	});
+
+	it("returns current numbered evidence for an unconfirmed external source change", async () => {
+		const original = "one\ntwo\nthree\n";
+		const { tool, path, snapshot } = await fixture(original);
+		const current = "one\nexternal\nthree\n";
+		await writeFile(path, current);
+		const { failure, text } = await recover(tool, snapshot.id, [
+			{ startLine: 2, endLine: 2, newText: "TWO\n" },
+		]);
+
+		expect(failure).toMatchObject({ code: "SOURCE_CHANGED", category: "stale_state" });
+		expect(text).toContain("2| external");
+		expect(await readFile(path, "utf8")).toBe(current);
+	});
+
+	it("reports overlapping batch ranges without applying valid items", async () => {
+		const original = "one\ntwo\nthree\nfour\n";
+		const { tool, path, snapshot } = await fixture(original);
+		const { failure, text } = await recover(tool, snapshot.id, [
+			{ startLine: 1, endLine: 2, newText: "ONE\nTWO\n" },
+			{ startLine: 2, endLine: 3, newText: "TWO\nTHREE\n" },
+			{ startLine: 4, endLine: 4, newText: "FOUR\n" },
+		]);
+
+		expect(failure).toMatchObject({
+			code: "EDIT_OVERLAP",
+			details: { writeState: "not_written", issues: [expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 1 })] },
+		});
 		expect(text).toContain("No changes were written");
-		expect(await readFile(path, "utf8")).toBe("one\ntwo\nthree\nfour\n");
+		expect(await readFile(path, "utf8")).toBe(original);
 	});
 
-	it("keeps source snippets useful for long Unicode lines and fence characters", async () => {
-		const current = `head\n${"中文".repeat(10000)} stable anchor\n\`\`\`\n`;
-		const { tool } = await fixture(current);
-		const { text } = await recover(tool, [
-			{ oldText: `head\n${"中文".repeat(10000)} stable anchor\nmissing`, newText: "replacement" },
-		]);
-		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(16 * 1024);
-		expect(text).toContain("中文");
+	it("bounds Unicode recovery evidence and directs oversized lines back to read", async () => {
+		const current = `${"中文".repeat(10000)}\n`;
+		const { tool, path, snapshot } = await fixture(current);
+		const { text } = await recover(tool, snapshot.id, [{ startLine: 3, endLine: 3, newText: "replacement" }]);
+
+		expect(Buffer.byteLength(text)).toBeLessThan(16 * 1024);
 		expect(text).not.toContain("\uFFFD");
-		expect(text).toContain("read");
+		expect(text).toContain("read offset=1 limit=2");
+		expect(await readFile(path, "utf8")).toBe(current);
 	});
 
 	it("reports a completed write when cancellation arrives during the write", async () => {
-		const { directory, path } = await fixture("before\n");
+		const { directory, path, snapshot, state } = await fixture("before\n");
 		const controller = new AbortController();
 		const tool = createEditTool(directory, {
+			fileEditState: state,
 			operations: {
 				access: async () => {},
 				readFile,
@@ -287,7 +327,11 @@ describe("edit recovery evidence and write outcomes", () => {
 			},
 		});
 		await expect(
-			tool.execute("cancel", { path, edits: [{ oldText: "before", newText: "after" }] }, controller.signal),
+			tool.execute(
+				"cancel",
+				{ path, snapshot: snapshot.id, edits: [{ startLine: 1, endLine: 1, newText: "after\n" }] },
+				controller.signal,
+			),
 		).rejects.toMatchObject({
 			details: { writeState: "written" },
 			message: expect.stringContaining("File was written"),
@@ -296,8 +340,9 @@ describe("edit recovery evidence and write outcomes", () => {
 	});
 
 	it("reports an unknown write state when an operation writes and then throws", async () => {
-		const { directory, path } = await fixture("before\n");
+		const { directory, path, snapshot, state } = await fixture("before\n");
 		const tool = createEditTool(directory, {
+			fileEditState: state,
 			operations: {
 				access: async () => {},
 				readFile,
@@ -308,7 +353,7 @@ describe("edit recovery evidence and write outcomes", () => {
 			},
 		});
 		await expect(
-			tool.execute("unknown", { path, edits: [{ oldText: "before", newText: "after" }] }),
+			tool.execute("unknown", { path, snapshot: snapshot.id, edits: [{ startLine: 1, endLine: 1, newText: "after\n" }] }),
 		).rejects.toMatchObject({
 			details: { writeState: "unknown" },
 			message: expect.stringContaining("Write outcome is unknown"),
@@ -323,10 +368,14 @@ describe("edit recovery evidence and write outcomes", () => {
 		]);
 	});
 
-	it("returns an applicable patch after an inline Unicode replacement", async () => {
+	it("returns an applicable patch for a whole-line Unicode replacement", async () => {
 		const current = "head\n\tlog(“x”);\n\tuntouched  \n";
-		const { tool, path } = await fixture(current);
-		const result = await tool.execute("patch", { path, edits: [{ oldText: 'log("x");', newText: 'log("y");' }] });
+		const { tool, path, snapshot } = await fixture(current);
+		const result = await tool.execute("patch", {
+			path,
+			snapshot: snapshot.id,
+			edits: [{ startLine: 2, endLine: 2, newText: '\tlog("y");\n' }],
+		});
 		const expected = 'head\n\tlog("y");\n\tuntouched  \n';
 		expect(await readFile(path, "utf8")).toBe(expected);
 		expect(applyPatch(current, result.details?.patch ?? "")).toBe(expected);

@@ -1,4 +1,4 @@
-import { LoaderCircle, RefreshCw, Search, WandSparkles } from "lucide-react";
+import { FolderOpen, Layers3, LoaderCircle, RefreshCw, Search, UserRound, WandSparkles } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../../../lib/utils";
 import type { WorkbenchState } from "../../../state/use-workbench";
@@ -8,12 +8,14 @@ import { Button } from "../../ui/button";
 import { Card, CardContent } from "../../ui/card";
 import { Input } from "../../ui/input";
 import { Switch } from "../../ui/switch";
+import { Tabs, TabsContent } from "../../ui/tabs";
+import { WorkbenchTabBar } from "../workbench-tab-bar";
 import type { WorkbenchActions } from "../types";
 
 const scopeOptions = [
-	{ value: "all", label: "全部" },
-	{ value: "user", label: "个人" },
-	{ value: "project", label: "项目" },
+	{ value: "all", label: "全部", icon: Layers3 },
+	{ value: "user", label: "个人", icon: UserRound },
+	{ value: "project", label: "项目", icon: FolderOpen },
 ] as const;
 
 type SkillFilterScope = (typeof scopeOptions)[number]["value"];
@@ -34,35 +36,14 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 		value === "user" ? "个人" : value === "project" ? "项目" : "临时";
 
 	return (
-		<div className="grid min-w-0 gap-4">
-			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-				<div className="grid w-full grid-cols-3 gap-1 rounded-xl border border-border/70 bg-muted/50 p-1 sm:w-auto" role="group" aria-label="技能范围">
-					{scopeOptions.map((option) => {
-						const active = scope === option.value;
-						return (
-							<button
-								key={option.value}
-								type="button"
-								aria-pressed={active}
-								className={cn(
-									"flex h-10 min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors sm:min-w-24",
-									active ? "bg-foreground text-background shadow-sm" : "text-muted-foreground hover:bg-background hover:text-foreground",
-								)}
-								onClick={() => setScope(option.value)}
-							>
-								<span>{option.label}</span>
-								<span
-									className={cn(
-										"min-w-5 rounded-md px-1.5 py-0.5 text-center text-xs tabular-nums",
-										active ? "bg-background/15 text-background" : "bg-background text-muted-foreground",
-									)}
-								>
-									{counts[option.value]}
-								</span>
-							</button>
-						);
-					})}
-				</div>
+		<Tabs value={scope} onValueChange={(value) => setScope(value as SkillFilterScope)} className="grid min-w-0 gap-4">
+			<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+				<WorkbenchTabBar
+					activeId={scope}
+					tabs={scopeOptions.map((option) => ({ ...option, count: counts[option.value], countLabel: "技能" }))}
+					label="技能范围"
+					className="!w-full lg:!w-auto"
+				/>
 				<div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
 					<div className="relative min-w-0 flex-1 sm:w-64 sm:flex-none">
 						<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -73,6 +54,7 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 					</Button>
 				</div>
 			</div>
+			<TabsContent value={scope} className="grid min-w-0 gap-4">
 			{!currentProject ? (
 				<Card className="min-w-0 shadow-none">
 					<CardContent className="py-10 text-center text-sm text-muted-foreground">请先选择一个项目，再查看该项目可用的 Skill。</CardContent>
@@ -121,6 +103,7 @@ export function SkillsSettings({ state, actions }: { state: WorkbenchState; acti
 					<AlertDescription>部分 Skill 可能无法加载，请检查 Skill 文件和配置。</AlertDescription>
 				</Alert>
 			) : null}
-		</div>
+			</TabsContent>
+		</Tabs>
 	);
 }

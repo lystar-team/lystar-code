@@ -15,13 +15,18 @@ import { writeRenderers } from "./renderers/write.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const writeSchema = Type.Object({
-	path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
+	path: Type.String({
+		description: "Path to the file to write (relative or absolute). Emit this argument first, before content.",
+	}),
 	content: Type.String({ description: "Content to write to the file" }),
 });
 
 export const writeToolSystemPromptContribution = {
 	snippet: "Create or overwrite files",
-	guidelines: ["Use write only for new files or complete rewrites."],
+	guidelines: [
+		"Use write only for new files or complete rewrites.",
+		"For edit and write calls, emit path as the first argument, before edits or content, so the user can see the target file while changes are generated. This also applies to calls inside codemode scripts.",
+	],
 } as const;
 
 export type WriteToolInput = Static<typeof writeSchema>;
@@ -40,6 +45,7 @@ export interface WriteOperations {
 }
 
 export interface WriteToolDetails {
+	path?: string;
 	operation: "created" | "updated" | "written";
 	additions: number;
 	deletions: number;
@@ -284,7 +290,7 @@ export function createWriteToolDefinition(
 		name: "write",
 		label: "write",
 		description:
-			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. In one assistant response, use only one mutation call for a file. Automatically creates parent directories.",
+			"Write content to a file. Emit path as the first argument, before content, so the target file is visible during streaming. Creates the file if it doesn't exist, overwrites if it does. In one assistant response, use only one mutation call for a file. Automatically creates parent directories.",
 		promptSnippet: writeToolSystemPromptContribution.snippet,
 		promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
 		parameters: writeSchema,
@@ -334,7 +340,7 @@ export function createWriteToolDefinition(
 
 				return {
 					content: [{ type: "text", text: `Successfully wrote to ${path}` }],
-					details: getWriteDetails(previousContent, content, ops.readFile !== undefined),
+					details: { path, ...getWriteDetails(previousContent, content, ops.readFile !== undefined) },
 				};
 			});
 		},

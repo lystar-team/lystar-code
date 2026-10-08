@@ -8,6 +8,7 @@ import type {
 	GitStatus,
 	ToolActivityState,
 	ToolDiff,
+	TranscriptCodemodeDetails,
 	WebSearchProgress,
 } from "@lystar/code-web-protocol";
 import type {
@@ -57,6 +58,7 @@ export interface LiveTool {
 	summary: string;
 	state: ToolActivityState;
 	result?: string;
+	codemode?: TranscriptCodemodeDetails;
 	status: "running" | "success" | "error";
 	stepId?: string;
 	inputPreview?: boolean;

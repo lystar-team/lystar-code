@@ -237,6 +237,8 @@ export type {
 	SessionCoordinatorSummary,
 	SessionCoordinatorTask,
 	SessionSendMode,
+	SessionStopReason,
+	SessionWaitProgress,
 } from "./session-coordinator.ts";
 export {
 	type FileEntry,

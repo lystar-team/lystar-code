@@ -8,6 +8,7 @@ import type {
 import type { SessionRoomApi } from "./session-room.ts";
 
 export type SessionSendMode = "auto" | "steer" | "follow_up";
+export type SessionStopReason = "user_requested" | "task_cancelled";
 export type SessionCoordinatorOutcome = SessionOutcome;
 export type SessionCoordinatorTask = SessionCollaborationTask;
 export type SessionCoordinatorResult = SessionCollaborationResult & { sessionId: string };
@@ -35,6 +36,14 @@ export interface SessionCoordinatorSummary {
 	taskId?: string;
 	taskDescription?: string;
 	result?: SessionCoordinatorResult;
+	stopReason?: SessionStopReason;
+	stopNote?: string;
+}
+
+export interface SessionWaitProgress {
+	state: "waiting" | "completed" | "needs_input";
+	elapsedMs: number;
+	sessions: SessionCoordinatorSummary[];
 }
 
 export interface SessionCoordinatorCreateInput {
@@ -60,9 +69,22 @@ export interface SessionCoordinator {
 		sessionId: string;
 		text: string;
 		mode?: SessionSendMode;
+		onProgress?: (session: SessionCoordinatorSummary) => void;
 	}): Promise<SessionCoordinatorSummary>;
-	wait(input: { cwd: string; sessionIds: string[]; timeoutMs?: number }): Promise<SessionCoordinatorSummary[]>;
+	wait(input: {
+		cwd: string;
+		sessionIds: string[];
+		signal?: AbortSignal;
+		onProgress?: (progress: SessionWaitProgress) => void;
+	}): Promise<SessionCoordinatorSummary[]>;
 	list(input: { cwd: string; parentSessionId?: string }): Promise<SessionCoordinatorSummary[]>;
 	profiles(input: { cwd: string }): Promise<SessionCoordinatorProfile[]>;
-	stop(input: { cwd: string; sessionId: string }): Promise<SessionCoordinatorSummary>;
+	stop(input: {
+		cwd: string;
+		sessionId: string;
+		callerSessionId?: string;
+		reason?: SessionStopReason;
+		note?: string;
+		onProgress?: (session: SessionCoordinatorSummary) => void;
+	}): Promise<SessionCoordinatorSummary>;
 }

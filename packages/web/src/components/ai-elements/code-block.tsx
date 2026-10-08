@@ -99,6 +99,7 @@ type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
 	code: string;
 	language: BundledLanguage;
 	showLineNumbers?: boolean;
+	startLine?: number;
 	plainText?: boolean;
 	transparent?: boolean;
 	wrap?: boolean;
@@ -283,6 +284,7 @@ const CodeBlockBody = memo(
 	({
 		tokenized,
 		showLineNumbers,
+		startLine = 1,
 		transparent,
 		wrap,
 		className,
@@ -290,6 +292,7 @@ const CodeBlockBody = memo(
 	}: {
 		tokenized: TokenizedCode;
 		showLineNumbers: boolean;
+		startLine?: number;
 		transparent?: boolean;
 		wrap?: boolean;
 		className?: string;
@@ -322,7 +325,8 @@ const CodeBlockBody = memo(
 				style={preStyle}
 			>
 				<code
-					className={cn("font-mono text-sm", showLineNumbers && "[counter-increment:line_0] [counter-reset:line]")}
+					className="font-mono text-sm"
+					style={showLineNumbers ? { counterReset: `line ${startLine - 1}` } : undefined}
 				>
 					{keyedLines.map((keyedLine) => (
 						<LineSpan key={keyedLine.key} keyedLine={keyedLine} showLineNumbers={showLineNumbers} />
@@ -334,6 +338,7 @@ const CodeBlockBody = memo(
 	(prevProps, nextProps) =>
 		prevProps.tokenized === nextProps.tokenized &&
 		prevProps.showLineNumbers === nextProps.showLineNumbers &&
+		prevProps.startLine === nextProps.startLine &&
 		prevProps.transparent === nextProps.transparent &&
 		prevProps.wrap === nextProps.wrap &&
 		prevProps.className === nextProps.className &&
@@ -402,20 +407,24 @@ const HighlightedCodeBlockContent = ({
 	code,
 	language,
 	showLineNumbers = false,
+	startLine = 1,
+	highlightSource = true,
 	transparent = false,
 	wrap = false,
 }: {
 	code: string;
 	language: BundledLanguage;
 	showLineNumbers?: boolean;
+	startLine?: number;
+	highlightSource?: boolean;
 	transparent?: boolean;
 	wrap?: boolean;
 }) => {
-	const tokenized = useHighlightedCode(code, language);
+	const tokenized = useHighlightedCode(code, language, highlightSource);
 
 	return (
 		<div className={cn("relative overflow-auto", wrap && "overflow-x-hidden")}>
-			<CodeBlockBody showLineNumbers={showLineNumbers} tokenized={tokenized} transparent={transparent} wrap={wrap} />
+			<CodeBlockBody showLineNumbers={showLineNumbers} startLine={startLine} tokenized={tokenized} transparent={transparent} wrap={wrap} />
 		</div>
 	);
 };
@@ -464,6 +473,7 @@ export const CodeBlockContent = ({
 	language,
 	diffLanguage,
 	showLineNumbers = false,
+	startLine = 1,
 	plainText = false,
 	transparent = false,
 	wrap = false,
@@ -472,6 +482,7 @@ export const CodeBlockContent = ({
 	language: BundledLanguage;
 	diffLanguage?: BundledLanguage;
 	showLineNumbers?: boolean;
+	startLine?: number;
 	plainText?: boolean;
 	transparent?: boolean;
 	wrap?: boolean;
@@ -484,13 +495,15 @@ export const CodeBlockContent = ({
 			transparent={transparent}
 			wrap={wrap}
 		/>
-	) : plainText ? (
+	) : plainText && !showLineNumbers ? (
 		<PlainTextBody code={code} />
 	) : (
 		<HighlightedCodeBlockContent
 			code={code}
 			language={language}
 			showLineNumbers={showLineNumbers}
+			startLine={startLine}
+			highlightSource={!plainText}
 			transparent={transparent}
 			wrap={wrap}
 		/>
@@ -501,6 +514,7 @@ export const CodeBlock = ({
 	language,
 	diffLanguage,
 	showLineNumbers = false,
+	startLine = 1,
 	plainText = false,
 	transparent = false,
 	wrap = false,
@@ -524,6 +538,7 @@ export const CodeBlock = ({
 					language={language}
 					diffLanguage={diffLanguage}
 					showLineNumbers={showLineNumbers}
+					startLine={startLine}
 					plainText={renderPlainText}
 					transparent={transparent}
 					wrap={wrap}

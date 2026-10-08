@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultRuntimeEndpoint, runtimeTcpEndpoint } from "@lystar/code-web-runtime";
@@ -12,7 +12,6 @@ import {
 	loadWebConfig,
 	parseGatewayPort,
 	validateAllowedHosts,
-	validateGatewayHost,
 	validateWebPassword,
 	WebConfigStore,
 } from "./web-config.ts";
@@ -56,6 +55,7 @@ export interface RuntimeInvocation {
 export interface WebGatewayConfig {
 	host: string;
 	port: number;
+	frontendPort?: number;
 	agentDir: string;
 	serviceProfile?: string;
 	runtimeEndpoint: string;
@@ -112,7 +112,7 @@ export async function saveWebGatewaySettings(
 	const store = new WebConfigStore(agentDir);
 	const current = await store.loadOrMigrate();
 	const legacy = current ? undefined : await store.loadLegacy();
-	const host = validateGatewayHost(settings.host);
+	const host = DEFAULT_WEB_HOST;
 	const port = parseGatewayPort(settings.port);
 	await store.save({
 		host,
@@ -149,14 +149,13 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 	const configPath = options.configFileName ? join(agentDir, options.configFileName) : undefined;
 	const store = new WebConfigStore(agentDir, configPath);
 	let persisted = await store.loadOrMigrate();
-	const environmentHost = envString("PI_WEB_HOST");
 	const environmentAllowedHosts = envString("PI_WEB_ALLOWED_HOSTS");
 	const environmentPort = envString("PI_WEB_PORT");
 	const environmentRuntimePort = envString("PI_WEB_RUNTIME_PORT");
 	const environmentPassword = envString("PI_WEB_TOKEN");
 	if (!persisted) {
 		const legacy = options.configFileName ? {} : await store.loadLegacy();
-		const host = environmentHost ?? legacy.host ?? DEFAULT_WEB_HOST;
+		const host = DEFAULT_WEB_HOST;
 		persisted = await store.save({
 			host,
 			allowedHosts:
@@ -170,15 +169,9 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 			),
 			password: environmentPassword ?? legacy.password ?? randomBytes(32).toString("hex"),
 		});
-	} else if (
-		environmentHost ||
-		environmentAllowedHosts ||
-		environmentPort ||
-		environmentRuntimePort ||
-		environmentPassword
-	) {
+	} else if (environmentAllowedHosts || environmentPort || environmentRuntimePort || environmentPassword) {
 		persisted = await store.save({
-			host: environmentHost ?? persisted.host,
+			host: DEFAULT_WEB_HOST,
 			allowedHosts:
 				environmentAllowedHosts !== undefined
 					? validateAllowedHosts(environmentAllowedHosts)
@@ -189,6 +182,7 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 		});
 	}
 	const staticDir = options.staticDir ?? envString("PI_WEB_STATIC_DIR") ?? defaultWebStaticDir();
+	const frontendPort = envString("PI_WEB_FRONTEND_PORT");
 	const runtimePort = persisted.runtimePort;
 	const environmentRuntimeEndpoint = envString("PI_WEB_RUNTIME_ENDPOINT");
 	const runtimeEndpoint =
@@ -198,6 +192,7 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 	return {
 		host: persisted.host,
 		port: persisted.port,
+		...(frontendPort ? { frontendPort: parseGatewayPort(frontendPort) } : {}),
 		runtimePort,
 		agentDir,
 		...(serviceProfile ? { serviceProfile } : {}),
@@ -222,6 +217,14 @@ export function hostMatches(hostname: string, allowedHosts: readonly string[]): 
 		if (allowed.startsWith("*.")) return normalized.endsWith(allowed.slice(1));
 		return normalized === allowed.replace(/^\[|\]$/g, "");
 	});
+}
+
+export function webAccessAddresses(allowedHosts: readonly string[]): string[] {
+	const addresses = Object.values(networkInterfaces())
+		.flatMap((entries) => entries ?? [])
+		.filter((entry) => entry.family === "IPv4" && !entry.internal)
+		.map((entry) => entry.address);
+	return [...new Set(["127.0.0.1", ...addresses])].filter((address) => hostMatches(address, allowedHosts));
 }
 
 export function requestHostname(hostHeader: string | undefined): string | undefined {

@@ -140,6 +140,15 @@ function createTrustedBuiltInTool(name: "read" | "bash" | "edit"): AgentTool {
 	return tool;
 }
 
+function getReadSource(details: unknown): { snapshot: string; revision: string } {
+	if (!details || typeof details !== "object" || !("source" in details)) throw new Error("missing read source details");
+	const source = details.source;
+	if (!source || typeof source !== "object") throw new Error("missing read source details");
+	const { snapshot, revision } = source as { snapshot?: unknown; revision?: unknown };
+	if (typeof snapshot !== "string" || typeof revision !== "string") throw new Error("incomplete read source details");
+	return { snapshot, revision };
+}
+
 function assistantMessage(
 	content: AssistantMessage["content"],
 	stopReason: AssistantMessage["stopReason"],
@@ -821,181 +830,297 @@ describe("Tool recovery observe ledger", () => {
 		sessionManager.dispose();
 	});
 
-	it("runs edit rebuild recovery once per fingerprint across changed call signatures", async () => {
-		process.env.PI_TOOL_RECOVERY_MODE = "auto";
-		for (const scenario of [
-			{ name: "missing", content: "stable\n", oldText: "missing" },
-			{ name: "ambiguous", content: "duplicate\nbody\nduplicate\n", oldText: "duplicate" },
-		] as const) {
-			const harness = await createHarness({
-				responses: [
-					{
-						toolCalls: [
-							{
-								name: "edit",
-								args: { path: "target.txt", edits: [{ oldText: scenario.oldText, newText: "first" }] },
-							},
-						],
-					},
-					"after first",
-					{
-						toolCalls: [
-							{
-								name: "edit",
-								args: { path: "target.txt", edits: [{ oldText: scenario.oldText, newText: "second" }] },
-							},
-						],
-					},
-					"after second",
-					{
-						toolCalls: [
-							{
-								name: "edit",
-								args: { path: "target.txt", edits: [{ oldText: scenario.oldText, newText: "third" }] },
-							},
-						],
-					},
-					"after third",
-				],
-			});
+	it("bounds snapshot edit recovery for one revision across direct, off, assist, and auto calls", async () => {
+		for (const mode of ["off", "assist", "auto"] as const) {
+			process.env.PI_TOOL_RECOVERY_MODE = mode;
+			const harness = await createHarness({ responses: ["unused"] });
 			try {
-				writeFileSync(join(harness.tempDir, "target.txt"), scenario.content);
+				writeFileSync(join(harness.tempDir, "target.txt"), "one\ntwo\nthree");
+				const activeRead = harness.agent.state.tools.find((tool) => tool.name === "read");
 				const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
-				expect(getToolSideEffect(activeEdit?.runtimeContext)).toBe("conditional_write");
-				let directError: unknown;
-				try {
-					await activeEdit?.execute("direct", {
-						path: "target.txt",
-						edits: [{ oldText: scenario.oldText, newText: "direct" }],
-					});
-				} catch (error) {
-					directError = error;
-				}
-				expect(directError).toBeInstanceOf(ToolExecutionError);
-				const directHandler = (
-					directError as unknown as {
-						[key: symbol]: (context: Record<string, never>) => Promise<unknown>;
-					}
-				)[Symbol.for("pi.toolRecoveryHandler")];
-				expect(directHandler).toBeTypeOf("function");
-				expect(await directHandler({})).toMatchObject({ type: "ask_model_to_rebuild" });
-				await harness.session.prompt("first");
-				await harness.session.prompt("second");
-				await harness.session.prompt("third");
+				if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
+				expect(getToolSideEffect(activeEdit.runtimeContext)).toBe("conditional_write");
 
-				const diagnostics = harness.session.getToolRecoveryDiagnostics();
-				expect(diagnostics.toolRecoveryAttemptTotal).toEqual([
-					{ tool: "edit", action: "ask_model_to_rebuild", count: 2 },
-					{ tool: "edit", action: "stop", count: 1 },
-				]);
-				const firstResult = harness.session.messages.find(
+				if (mode === "off") {
+					writeFileSync(join(harness.tempDir, "direct.txt"), "one\ntwo\nthree");
+					let directRevision: string | undefined;
+					for (let attempt = 0; attempt < 3; attempt++) {
+						const readResult = await activeRead.execute("direct-read", { path: "direct.txt", limit: 3 });
+						const source = getReadSource(readResult.details);
+						directRevision ??= source.revision;
+						expect(source.revision).toBe(directRevision);
+						const edits = Array.from({ length: attempt }, (_, index) => ({
+							startLine: index + 1,
+							endLine: index + 1,
+							newText: `changed-${attempt}-${index}`,
+						}));
+						edits.push({ startLine: 99, endLine: 99, newText: `invalid-${attempt}` });
+						let directError: unknown;
+						try {
+							await activeEdit.execute("direct-edit", { path: "direct.txt", snapshot: source.snapshot, edits });
+						} catch (error) {
+							directError = error;
+						}
+						expect(directError).toBeInstanceOf(ToolExecutionError);
+						if (!(directError instanceof ToolExecutionError)) throw new Error("missing direct edit failure");
+						expect(directError).toMatchObject({
+							code: "RANGE_OUTSIDE_SNAPSHOT",
+							terminate: attempt === 2,
+						details: { attempt: attempt + 1, recoveryAllowed: attempt < 2, writeState: "not_written" },
+						});
+						const directHandler = (
+							directError as unknown as {
+								[key: symbol]: (context: { signal?: AbortSignal }) => Promise<unknown>;
+							}
+						)[Symbol.for("pi.toolRecoveryHandler")];
+						expect(await directHandler({})).toMatchObject({
+							type: attempt < 2 ? "ask_model_to_rebuild" : "stop",
+						});
+					}
+					expect(readFileSync(join(harness.tempDir, "direct.txt"), "utf8")).toBe("one\ntwo\nthree");
+				}
+
+				let requestCount = 0;
+				const readRevisions: string[] = [];
+				harness.agent.streamFunction = (_model, context) => {
+					const request = requestCount++;
+					let message: AssistantMessage;
+					if (request % 3 === 0) {
+						message = assistantMessage(
+							[{ type: "toolCall", id: `read-${request}`, name: "read", arguments: { path: "target.txt", limit: 3 } }],
+							"toolUse",
+						);
+					} else if (request % 3 === 1) {
+						const lastRead = context.messages.findLast(
+							(entry) => entry.role === "toolResult" && entry.toolName === "read",
+						);
+						if (!lastRead || lastRead.role !== "toolResult") throw new Error("missing nested read result");
+						const source = getReadSource(lastRead.details);
+						readRevisions.push(source.revision);
+						const attempt = Math.floor(request / 3);
+						const edits = Array.from({ length: attempt }, (_, index) => ({
+							startLine: index + 1,
+							endLine: index + 1,
+							newText: `changed-${attempt}-${index}`,
+						}));
+						edits.push({ startLine: 99, endLine: 99, newText: `invalid-${attempt}` });
+						message = assistantMessage(
+							[
+								{
+									type: "toolCall",
+									id: `edit-${request}`,
+									name: "edit",
+									arguments: { path: "target.txt", snapshot: source.snapshot, edits },
+								},
+							],
+							"toolUse",
+						);
+					} else {
+						message = assistantMessage([{ type: "text", text: "attempt complete" }], "stop");
+					}
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
+					return stream;
+				};
+
+				await harness.session.prompt("attempt one");
+				await harness.session.prompt("attempt two");
+				await harness.session.prompt("attempt three");
+
+				const editResults = harness.session.messages.filter(
 					(message): message is Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> =>
-						message.role === "toolResult",
+						message.role === "toolResult" && message.toolName === "edit",
 				);
-				const evidence =
-					firstResult?.content
-						.filter((content): content is { type: "text"; text: string } => content.type === "text")
-						.map((content) => content.text)
-						.join("\n") ?? "";
-				expect(evidence).not.toMatch(/^\d+: /m);
-				expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(16 * 1024);
-				expect(evidence).toContain("最新 target.txt");
+				const editDetails = editResults.map((result) => result.details as Record<string, unknown>);
+				expect(editDetails.map((details) => [details.attempt, details.recoveryAllowed])).toEqual([
+					[1, true],
+					[2, true],
+					[3, false],
+				]);
+				expect(
+					editResults
+						.map((result) => result.content.map((content) => (content.type === "text" ? content.text : "")).join("\n"))
+						.every((text) => text.includes("RANGE_OUTSIDE_SNAPSHOT")),
+				).toBe(true);
+				expect(
+					editDetails.map((details) => (details.issues as Array<{ editIndex: number }>)[0]?.editIndex),
+				).toEqual([0, 1, 2]);
+				expect(new Set(readRevisions).size).toBe(1);
+				expect(requestCount).toBe(8);
+				expect(
+					harness.eventsOfType("tool_execution_end").findLast((event) => event.toolName === "edit")?.result,
+				).toMatchObject({
+					terminate: true,
+					details: { recoveryAllowed: false, writeState: "not_written" },
+				});
+				expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\ntwo\nthree");
 			} finally {
 				harness.cleanup();
 			}
 		}
 	});
 
-	it("locates edit recovery evidence around the failed edit anchor", async () => {
+	it("returns bounded current-source evidence for a range outside the read snapshot", async () => {
 		const harness = await createHarness();
 		try {
 			const lines = Array.from({ length: 420 }, (_, index) => `line ${index + 1}`);
-			lines[349] = "stable target anchor";
-			lines[350] = "current value";
-			writeFileSync(join(harness.tempDir, "target.txt"), `${lines.join("\n")}\n`);
-
+			writeFileSync(join(harness.tempDir, "target.txt"), lines.join("\n"));
+			const activeRead = harness.agent.state.tools.find((tool) => tool.name === "read");
 			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
+			if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
+			const readResult = await activeRead.execute("anchor-read", { path: "target.txt", offset: 347, limit: 8 });
+			const source = getReadSource(readResult.details);
+
 			let directError: unknown;
 			try {
-				await activeEdit?.execute("anchor-failure", {
+				await activeEdit.execute("range-failure", {
 					path: "target.txt",
-					edits: [{ oldText: "stable target anchor\nold value", newText: "updated" }],
+					snapshot: source.snapshot,
+					edits: [{ startLine: 360, endLine: 360, newText: "updated" }],
 				});
 			} catch (error) {
 				directError = error;
 			}
 			expect(directError).toBeInstanceOf(ToolExecutionError);
+			if (!(directError instanceof ToolExecutionError)) throw new Error("missing range edit failure");
+			expect(directError).toMatchObject({
+				code: "RANGE_OUTSIDE_SNAPSHOT",
+				details: {
+					attempt: 1,
+					recoveryAllowed: true,
+					issues: [expect.objectContaining({ editIndex: 0, startLine: 360 })],
+				},
+			});
 			const directHandler = (
 				directError as unknown as {
-					[key: symbol]: (context: Record<string, never>) => Promise<{
+					[key: symbol]: (context: { signal?: AbortSignal }) => Promise<{
 						type: string;
-						replacementResult?: {
-							content: Array<{ type: string; text: string }>;
-							details: Record<string, unknown>;
-						};
+						replacementResult?: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> };
 					}>;
 				}
 			)[Symbol.for("pi.toolRecoveryHandler")];
-			expect(directHandler).toBeTypeOf("function");
-
 			const resolution = await directHandler({});
 			const evidence = resolution.replacementResult?.content.map((content) => content.text).join("\n") ?? "";
 			expect(resolution).toMatchObject({ type: "ask_model_to_rebuild" });
-			expect(evidence).toContain("read offset=347 limit=8");
-			expect(evidence).toContain("\nstable target anchor\ncurrent value\n");
-			expect(evidence).not.toMatch(/^\d+: /m);
-			expect(evidence).not.toContain("\nline 1\n");
+			expect(evidence).toContain("\n360| line 360\n");
+			expect(evidence).not.toContain("\n1| line 1\n");
+			expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(16 * 1024);
 			expect(resolution.replacementResult?.details).toMatchObject({
-				recovery: { code: "MATCH_NOT_FOUND", failedEditIndex: 0, evidenceLine: 350 },
+				issues: [expect.objectContaining({ editIndex: 0, startLine: 360 })],
+				attempt: 1,
+				recoveryAllowed: true,
 			});
 		} finally {
 			harness.cleanup();
 		}
 	});
 
-	it("locates all ambiguous edit candidates without dumping the whole file", async () => {
+	it("reports every rejected range without dumping the whole file", async () => {
 		const harness = await createHarness();
 		try {
 			const lines = Array.from({ length: 520 }, (_, index) => `line ${index + 1}`);
-			lines[9] = "duplicate target";
-			lines[459] = "duplicate target";
-			writeFileSync(join(harness.tempDir, "target.txt"), `${lines.join("\n")}\n`);
-
+			writeFileSync(join(harness.tempDir, "target.txt"), lines.join("\n"));
+			const activeRead = harness.agent.state.tools.find((tool) => tool.name === "read");
 			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
+			if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
+			const readResult = await activeRead.execute("range-read", { path: "target.txt", offset: 1, limit: 5 });
+			const source = getReadSource(readResult.details);
+
 			let directError: unknown;
 			try {
-				await activeEdit?.execute("ambiguous-candidates", {
+				await activeEdit.execute("multiple-range-failures", {
 					path: "target.txt",
-					edits: [{ oldText: "duplicate target", newText: "updated" }],
+					snapshot: source.snapshot,
+					edits: [
+						{ startLine: 10, endLine: 10, newText: "TEN" },
+						{ startLine: 460, endLine: 460, newText: "FOUR SIXTY" },
+					],
 				});
 			} catch (error) {
 				directError = error;
 			}
 			expect(directError).toBeInstanceOf(ToolExecutionError);
+			if (!(directError instanceof ToolExecutionError)) throw new Error("missing range edit failure");
+			expect(directError.code).toBe("RANGE_OUTSIDE_SNAPSHOT");
+			expect(directError.details).toMatchObject({
+				issues: [
+					expect.objectContaining({ editIndex: 0, startLine: 10 }),
+					expect.objectContaining({ editIndex: 1, startLine: 460 }),
+				],
+			});
 			const directHandler = (
 				directError as unknown as {
-					[key: symbol]: (context: Record<string, never>) => Promise<{
+					[key: symbol]: (context: { signal?: AbortSignal }) => Promise<{
 						type: string;
-						replacementResult?: {
-							content: Array<{ type: string; text: string }>;
-							details: Record<string, unknown>;
-						};
+						replacementResult?: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> };
 					}>;
 				}
 			)[Symbol.for("pi.toolRecoveryHandler")];
-			expect(directHandler).toBeTypeOf("function");
-
 			const resolution = await directHandler({});
 			const evidence = resolution.replacementResult?.content.map((content) => content.text).join("\n") ?? "";
 			expect(resolution).toMatchObject({ type: "ask_model_to_rebuild" });
-			expect(evidence).toContain("read offset=7 limit=7");
-			expect(evidence).toContain("read offset=457 limit=7");
-			expect(evidence.match(/\nduplicate target\n/g)).toHaveLength(2);
-			expect(evidence).not.toMatch(/^\d+: /m);
-			expect(evidence).not.toContain("\nline 1\n");
+			expect(evidence).toContain("\n10| line 10\n");
+			expect(evidence).toContain("\n460| line 460\n");
+			expect(evidence).not.toContain("\n1| line 1\n");
+			expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(16 * 1024);
 			expect(resolution.replacementResult?.details).toMatchObject({
-				recovery: { code: "MATCH_AMBIGUOUS", candidateLines: [10, 460] },
+				attempt: 1,
+				recoveryAllowed: true,
+				issues: [
+					expect.objectContaining({ editIndex: 0, startLine: 10 }),
+					expect.objectContaining({ editIndex: 1, startLine: 460 }),
+				],
 			});
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("rejects expired snapshots and overlapping ranges without writing", async () => {
+		const harness = await createHarness();
+		try {
+			writeFileSync(join(harness.tempDir, "target.txt"), "one\ntwo\nthree");
+			const activeRead = harness.agent.state.tools.find((tool) => tool.name === "read");
+			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
+			if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
+			const readResult = await activeRead.execute("snapshot-read", { path: "target.txt", limit: 3 });
+			const source = getReadSource(readResult.details);
+
+			for (const scenario of [
+				{
+					name: "expired-snapshot",
+					args: { path: "target.txt", snapshot: "expired-snapshot-reference", edits: [{ startLine: 1, endLine: 1, newText: "ONE" }] },
+					code: "SNAPSHOT_NOT_FOUND",
+					attempt: 1,
+				},
+				{
+					name: "overlapping-ranges",
+					args: {
+						path: "target.txt",
+						snapshot: source.snapshot,
+						edits: [
+							{ startLine: 1, endLine: 2, newText: "ONE TWO" },
+							{ startLine: 2, endLine: 3, newText: "TWO THREE" },
+						],
+					},
+					code: "EDIT_OVERLAP",
+					attempt: 2,
+				},
+			] as const) {
+				let directError: unknown;
+				try {
+					await activeEdit.execute(scenario.name, scenario.args);
+				} catch (error) {
+					directError = error;
+				}
+				expect(directError).toBeInstanceOf(ToolExecutionError);
+				if (!(directError instanceof ToolExecutionError)) throw new Error(`missing ${scenario.name} failure`);
+				expect(directError).toMatchObject({
+					code: scenario.code,
+					details: { attempt: scenario.attempt, recoveryAllowed: true, writeState: "not_written" },
+				});
+				expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\ntwo\nthree");
+			}
 		} finally {
 			harness.cleanup();
 		}

@@ -121,16 +121,33 @@ function boundedText(value: string): { text: string; truncated?: boolean } {
 	return { text: value.slice(0, end), truncated: true };
 }
 
-function editEntries(value: Record<string, unknown> | undefined): Array<{ oldText: string; newText: string }> {
+type EditPreviewEntry = { oldText: string; newText: string } | { startLine: number; endLine: number; newText: string };
+
+function editEntries(value: Record<string, unknown> | undefined): EditPreviewEntry[] {
 	if (!value) return [];
 	const edits = value.edits;
 	if (Array.isArray(edits)) {
 		if (edits.length > MAX_PREVIEW_EDIT_ENTRIES) return [];
-		const entries: Array<{ oldText: string; newText: string }> = [];
+		const entries: EditPreviewEntry[] = [];
 		for (const entry of edits) {
 			const item = toolRecord(entry);
-			if (typeof item?.oldText === "string" && typeof item.newText === "string") {
+			if (typeof item?.newText !== "string") continue;
+			if (typeof item.oldText === "string") {
 				entries.push({ oldText: item.oldText, newText: item.newText });
+				continue;
+			}
+			const startLine = item.startLine;
+			const endLine = item.endLine;
+			if (
+				typeof startLine === "number" &&
+				Number.isSafeInteger(startLine) &&
+				startLine >= 1 &&
+				typeof endLine === "number" &&
+				Number.isSafeInteger(endLine) &&
+				endLine >= 0 &&
+				(endLine >= startLine || endLine === startLine - 1)
+			) {
+				entries.push({ startLine, endLine, newText: item.newText });
 			}
 		}
 		return entries;
@@ -172,15 +189,31 @@ function previewEditDiff(path: string | undefined, args: Record<string, unknown>
 	if (edits.length === 0) return path ? { files: [{ path }] } : undefined;
 
 	const buffer: PreviewBuffer = { lines: [], length: 0, truncated: false };
-	const deletions = edits.reduce((total, edit) => total + appendPrefixedLines(buffer, edit.oldText, "-"), 0);
-	const additions = edits.reduce((total, edit) => total + appendPrefixedLines(buffer, edit.newText, "+"), 0);
+	let additions = 0;
+	let deletions = 0;
+	let hasRangeEdit = false;
+	for (const edit of edits) {
+		if ("oldText" in edit) {
+			deletions += appendPrefixedLines(buffer, edit.oldText, "-");
+			additions += appendPrefixedLines(buffer, edit.newText, "+");
+			continue;
+		}
+		hasRangeEdit = true;
+		const header =
+			edit.endLine === edit.startLine - 1
+				? `@@ insert before line ${edit.startLine} @@`
+				: edit.newText
+					? `@@ lines ${edit.startLine}-${edit.endLine} @@`
+					: `@@ delete lines ${edit.startLine}-${edit.endLine} @@`;
+		appendPrefixedLines(buffer, header, "");
+		appendPrefixedLines(buffer, edit.newText, "+");
+	}
 	const preview = finishPreview(buffer);
 	return {
 		files: [
 			{
 				...(path ? { path } : {}),
-				additions,
-				deletions,
+				...(hasRangeEdit ? {} : { additions, deletions }),
 				...(preview.text ? { diff: preview.text } : {}),
 				...(preview.truncated ? { truncated: true } : {}),
 			},
@@ -244,7 +277,7 @@ export function toolProgressDiff(name: string, args: unknown, result?: unknown):
 		return files.length > 0 ? { files } : undefined;
 	}
 
-	const path = toolPath(args);
+	const path = toolPath(args) ?? toolPath(details);
 	const additions = toolNumber(details.additions);
 	const deletions = toolNumber(details.deletions);
 	const operation = typeof details.operation === "string" ? details.operation : undefined;

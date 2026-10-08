@@ -26,6 +26,8 @@ import {
 import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
+import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model.ts";
+import { readSourcePresentation } from "../../adapters/read-source-presentation.ts";
 import type { ToolBatchState, ToolBatchTool } from "../../types.ts";
 import { StabilityBoundary } from "../stability-boundary";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
@@ -43,14 +45,17 @@ import {
 import { ImageGeneration, type ImageGenerationStatus } from "../agents/image-generation";
 import {
 	isSessionTool,
+	sessionToolActivityLabel,
+	sessionToolSessionId,
 	sessionToolTask,
 	skillNameFromTool,
 } from "../../state/tool-batching";
 import { languageForPath } from "../../lib/file-language.ts";
 import { commandPresentation } from "./command-presentation";
-import { commandFromToolSummary, toolPresentationContext, toolPresentationTitle } from "./tool-presentation.ts";
+import { commandFromToolSummary, filePathFromTool, toolPresentationContext, toolPresentationTitle } from "./tool-presentation.ts";
 import { Source } from "./sources";
 import { CodemodeToolDetail } from "./codemode-tool";
+import { SessionCollaborationToolDetail } from "./session-collaboration-tool";
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
 
@@ -72,6 +77,7 @@ export interface ToolBatchProps {
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
 	onOpenSubagent?: (agentId: string) => void;
+	onOpenSession?: (sessionId: string) => void;
 }
 
 function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
@@ -307,6 +313,10 @@ function webSearchDetail(summary: string, webSearch?: WebSearchProgress): { labe
 function toolTitle(tool: ToolBatchTool): string {
 	if (tool.name === "web_search") return webSearchTitle(tool.summary, tool.webSearch);
 	if (isSessionTool(tool.name)) return sessionToolTask(tool.summary) ?? "智能体协作";
+	if (tool.name === "read" || tool.name === "edit" || tool.name === "write") {
+		const path = filePathFromTool(tool);
+		if (path) return path;
+	}
 	const parsed = parseToolSummary(tool.summary);
 	if (tool.name === "image_gen" && typeof parsed?.prompt === "string") return parsed.prompt;
 	if (typeof parsed?.command === "string") return parsed.command;
@@ -420,7 +430,7 @@ function ToolDiffOutput({
 											{displayPath}
 										</button>
 									) : (
-										<span className="min-w-0 truncate font-mono">{displayPath || "diff"}</span>
+										<span className="min-w-0 truncate font-mono" title={displayPath}>{displayPath || "修改预览（等待文件路径）"}</span>
 									)}
 								</CodeBlockTitle>
 								<CodeBlockActions>
@@ -478,21 +488,20 @@ function activityStatusIcon(state: ToolBatchState): ReactNode {
 	return <XCircleIcon className="size-3 text-destructive" />;
 }
 
+function readImagePath(tool: ToolBatchTool): string | undefined {
+	if (tool.name !== "read" || tool.state !== "output-available") return undefined;
+	if (!/^Read image file \[image\/[^\]\r\n]+\](?:\r?\n|$)/u.test(tool.detail ?? "")) return undefined;
+	return filePathFromTool(tool);
+}
+
 function readLineRange(tool: ToolBatchTool): string | undefined {
-	if (tool.name !== "read") return undefined;
+	if (tool.name !== "read" || tool.images?.length || readImagePath(tool)) return undefined;
+	const source = readSourcePresentation(tool);
+	if (source) return `第${source.startLine}-${source.endLine}行`;
 	const parsed = parseToolSummary(tool.summary);
-	const explicitRange = tool.detail?.match(/\[Showing lines (\d+)-(\d+) of /u);
-	if (explicitRange?.[1] && explicitRange[2]) return `第${explicitRange[1]}-${explicitRange[2]}行`;
 	if (tool.summary === tool.name || (!tool.summary && !parsed?.path)) return undefined;
 	const offset = typeof parsed?.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset > 0 ? parsed.offset : 1;
 	const limit = typeof parsed?.limit === "number" && Number.isInteger(parsed.limit) && parsed.limit > 0 ? parsed.limit : undefined;
-	if (tool.state === "output-available" && tool.detail) {
-		const content = tool.detail
-			.replace(/\n*\[Showing lines \d+-\d+ of [^\]]+\]\s*$/u, "")
-			.replace(/\n*\[\d+ more lines in file\. Use offset=\d+ to continue\.\]\s*$/u, "")
-			.replace(/\n+$/u, "");
-		if (content) return `第${offset}-${offset + content.split(/\r?\n/u).length - 1}行`;
-	}
 	if (limit) return `第${offset}-${offset + limit - 1}行`;
 	return undefined;
 }
@@ -990,11 +999,13 @@ function ToolDetail({
 	sessionId,
 	onOpenPath,
 	onOpenSubagent,
+	onOpenSession,
 }: {
 	tool: ToolBatchTool;
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
 	onOpenSubagent?: (agentId: string) => void;
+	onOpenSession?: (sessionId: string) => void;
 }) {
 	const plainText = tool.state === "input-available" || tool.state === "input-queued";
 	const title = toolTitle(tool);
@@ -1009,7 +1020,39 @@ function ToolDetail({
 		/>
 	) : null;
 
-	if (tool.name === "codemode") return <CodemodeToolDetail tool={tool} imagePreview={imagePreview} />;
+	if (tool.name === "codemode") {
+		return (
+			<CodemodeToolDetail tool={tool} imagePreview={imagePreview}>
+				{tool.codemode?.calls.length ? (
+					<div aria-label="脚本执行过程" className="grid min-w-0 gap-0 pb-2" onClick={(event) => event.stopPropagation()}>
+						{tool.codemode.calls.map((call) => (
+							<ToolBatchRow
+								key={call.id}
+								tool={toCodemodeToolViewModel(call)}
+								sessionId={sessionId}
+								onOpenPath={onOpenPath}
+								onOpenSubagent={onOpenSubagent}
+								onOpenSession={onOpenSession}
+							/>
+						))}
+					</div>
+				) : null}
+			</CodemodeToolDetail>
+		);
+	}
+	if (isSessionTool(tool.name)) {
+		return (
+			<SessionCollaborationToolDetail
+				name={tool.name}
+				summary={tool.summary}
+				detail={tool.detail}
+				progress={tool.progress}
+				result={tool.state === "output-available" ? tool.detail : undefined}
+				state={tool.state}
+				onOpenSession={onOpenSession}
+			/>
+		);
+	}
 	if (tool.name === "subagent" && tool.subagents?.length) {
 		return <SubagentToolDetail tool={tool} onOpenSubagent={onOpenSubagent} />;
 	}
@@ -1021,7 +1064,18 @@ function ToolDetail({
 
 	if (tool.name === "read") {
 		if (tool.images?.length) return imagePreview;
-		const code = tool.detail ?? "";
+		const imagePath = readImagePath(tool);
+		if (imagePath) {
+			const note = tool.detail?.split("\n").slice(1).join("\n").trim();
+			return (
+				<div className="grid min-w-0 gap-1">
+					<ResourceImage path={imagePath} alt={imagePath.split(/[\\/]/u).at(-1)} onOpenPath={onOpenPath} />
+					{note ? <p className="whitespace-pre-wrap text-xs text-muted-foreground">{note}</p> : null}
+				</div>
+			);
+		}
+		const source = readSourcePresentation(tool);
+		const code = source?.code ?? tool.detail ?? "";
 		return (
 			<div className="grid min-w-0 gap-1">
 				{tool.detail ? (
@@ -1031,6 +1085,7 @@ function ToolDetail({
 						language={plainText ? ("text" as BundledLanguage) : codeLanguageForPath(title)}
 						plainText={plainText}
 						showLineNumbers
+						startLine={source?.startLine ?? 1}
 						transparent
 					>
 						<CodeBlockHeader className="border-border/40 bg-transparent px-2 py-1">
@@ -1044,6 +1099,7 @@ function ToolDetail({
 						</CodeBlockHeader>
 					</CodeBlock>
 				) : null}
+				{source && source.remainingLines > 0 ? <p className="px-4 pb-2 text-xs text-muted-foreground">还有 {source.remainingLines} 行未显示</p> : null}
 			</div>
 		);
 	}
@@ -1065,10 +1121,13 @@ function ToolDetail({
 			</CodeBlock> : null}
 			{context ? <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{context}</p> : null}
 			{imagePreview}
+			{tool.preparing && (tool.name === "edit" || tool.name === "write") && !filePathFromTool(tool) ? (
+				<span className="text-xs text-muted-foreground">正在生成修改参数，尚未收到目标文件路径。</span>
+			) : null}
 			{diff ? (
 				<ToolDiffOutput
 					diff={diff}
-					fallbackPath={title}
+					fallbackPath={filePathFromTool(tool)}
 					onOpenPath={onOpenPath}
 					plainText={plainText}
 				/>
@@ -1100,6 +1159,7 @@ function ToolBatchRow({
 	sessionId,
 	onOpenPath,
 	onOpenSubagent,
+	onOpenSession,
 	className,
 	initialOpen = false,
 	open: controlledOpen,
@@ -1110,6 +1170,7 @@ function ToolBatchRow({
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
 	onOpenSubagent?: (agentId: string) => void;
+	onOpenSession?: (sessionId: string) => void;
 	className?: string;
 	initialOpen?: boolean;
 	open?: boolean;
@@ -1128,7 +1189,11 @@ function ToolBatchRow({
 	const active = tool.state === "input-available" || tool.state === "input-queued";
 	const previousActive = useRef(active);
 	const title = toolRowTitle(tool);
-	const status = toolRowStatus(tool);
+	const targetSessionId = sessionToolSessionId(tool.name, tool.summary, tool.detail);
+	const sessionNavigation = Boolean(targetSessionId && onOpenSession);
+	const status = sessionNavigation && (tool.state === "input-available" || tool.state === "input-queued" || tool.state === "output-available")
+		? sessionToolActivityLabel(tool.detail) ?? sessionToolActivityLabel(tool.progress) ?? toolRowStatus(tool)
+		: toolRowStatus(tool);
 	const skillName = skillNameFromTool(tool);
 	const standaloneRead = tool.name === "read" && !skillName && !tool.images?.length;
 	const standaloneMutation = tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch";
@@ -1136,12 +1201,14 @@ function ToolBatchRow({
 	const pathParts = pathActivity ? activityPathParts(tool) : undefined;
 	const lineRange = standaloneRead ? readLineRange(tool) : undefined;
 	const stats = diffStats(tool.diff);
-	const hasDetails =
-		tool.name === "image_gen" || tool.name === "codemode"
+	const hasDetails = !sessionNavigation &&
+		(isSessionTool(tool.name)
 			? true
-			: tool.name === "web_search"
+			: tool.name === "image_gen" || tool.name === "codemode"
 				? true
-				: Boolean(tool.name === "bash" || (tool.name !== "read" && parseToolSummary(tool.summary)) || isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length || tool.subagents?.length);
+				: tool.name === "web_search"
+				? true
+				: Boolean(tool.name === "bash" || (tool.name !== "read" && parseToolSummary(tool.summary)) || isActiveFileChange(tool) || visibleToolDetail(tool) || hasVisibleDiff(tool.diff) || tool.images?.length || webSearchSources(tool).length || tool.subagents?.length));
 
 	useEffect(() => {
 		if (
@@ -1162,6 +1229,12 @@ function ToolBatchRow({
 					data-transcript-resize-anchor
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					onClick={(event) => {
+						if (targetSessionId && onOpenSession) {
+							event.preventDefault();
+							event.stopPropagation();
+							onOpenSession(targetSessionId);
+							return;
+						}
 						const subagent = tool.subagents?.length === 1 ? tool.subagents[0] : undefined;
 						if (!subagent || !onOpenSubagent) return;
 						event.preventDefault();
@@ -1169,7 +1242,7 @@ function ToolBatchRow({
 						onOpenSubagent(subagent.agentId);
 					}}
 					type="button"
-					aria-label={`${title}，${status}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
+					aria-label={`${title}，${status}${sessionNavigation ? "，切换会话" : hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
 				>
 					{toolLeadingIcon(tool.state, tool.name, Boolean(skillName), Boolean(tool.images?.length), tool.name === "bash" ? toolTitle(tool) : undefined)}
 					{pathParts ? (
@@ -1241,6 +1314,7 @@ function ToolBatchRow({
 							sessionId={sessionId}
 							onOpenPath={onOpenPath}
 							onOpenSubagent={onOpenSubagent}
+							onOpenSession={onOpenSession}
 						/>
 					</StabilityBoundary>
 				</GsapCollapsibleContent>
@@ -1260,6 +1334,7 @@ export const ToolBatch = memo(function ToolBatch({
 	sessionId,
 	onOpenPath,
 	onOpenSubagent,
+	onOpenSession,
 	toolOpen,
 	initialToolOpen,
 	onToolOpenChange,
@@ -1342,6 +1417,7 @@ export const ToolBatch = memo(function ToolBatch({
 						sessionId={sessionId}
 						onOpenPath={onOpenPath}
 						onOpenSubagent={onOpenSubagent}
+						onOpenSession={onOpenSession}
 						initialOpen={initialToolOpen?.get(tool.id) ?? false}
 						open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
 						onOpenChange={onToolOpenChange ? (nextOpen) => onToolOpenChange(tool.id, nextOpen) : undefined}
@@ -1403,6 +1479,7 @@ export const ToolBatch = memo(function ToolBatch({
 				sessionId={sessionId}
 				onOpenPath={onOpenPath}
 				onOpenSubagent={onOpenSubagent}
+				onOpenSession={onOpenSession}
 				initialOpen={
 					imageTool ||
 					imageGenerationTool ||
@@ -1459,6 +1536,7 @@ export const ToolBatch = memo(function ToolBatch({
 							sessionId={sessionId}
 							onOpenPath={onOpenPath}
 							onOpenSubagent={onOpenSubagent}
+							onOpenSession={onOpenSession}
 							initialOpen={initialToolOpen?.get(tool.id) ?? false}
 							open={toolOpen ? (toolOpen.get(tool.id) ?? false) : undefined}
 							onOpenChange={onToolOpenChange ? (nextOpen) => onToolOpenChange(tool.id, nextOpen) : undefined}

@@ -178,6 +178,7 @@ import {
 	sessionAttachmentDirectory,
 } from "./session-attachments.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
+import { projectedToolActivity } from "./transcript-projection.ts";
 import type {
 	ImageModelSettings,
 	ModelProviderInput,
@@ -1699,10 +1700,10 @@ export function projectRuntimeProgress(event: AgentSessionEvent, blockId?: strin
 		}
 		case "entry_appended":
 			return [];
-		case "tool_activity":
-			return AGENT_STEP_TOOL_NAMES.has(event.activity.name)
-				? []
-				: [{ type: "tool_state", activity: event.activity }];
+		case "tool_activity": {
+			if (AGENT_STEP_TOOL_NAMES.has(event.activity.name)) return [];
+			return [{ type: "tool_state", activity: projectedToolActivity(event.activity) }];
+		}
 		case "queue_update":
 			return [{ type: "queue_update", steeringCount: event.steering.length, followUpCount: event.followUp.length }];
 		case "compaction_start":
@@ -1916,7 +1917,8 @@ class CoreRuntimeSession implements RuntimeSession {
 			typeof session.getToolActivityRevision === "function" ? session.getToolActivityRevision() : undefined;
 		const toolActivities =
 			typeof session.getToolActivitySnapshot === "function"
-				? session.getToolActivitySnapshot({ activeOnly: true }).map((activity) => {
+				? session.getToolActivitySnapshot({ activeOnly: true }).map((source) => {
+						const activity = projectedToolActivity(source);
 						const stepId = this.stepController.stepIdForTool(activity.toolCallId);
 						return stepId ? { ...activity, stepId } : activity;
 					})
@@ -2919,6 +2921,40 @@ class CoreRuntimeSession implements RuntimeSession {
 			includedEntryIds.add(entry.id);
 		}
 		const emittedEntries = entries.filter((entry) => includedEntryIds.has(entry.id));
+		const emittedFileToolCallIds = new Set<string>();
+		const requiredToolCallIds = new Set<string>();
+		for (const entry of emittedEntries) {
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "assistant") {
+				for (const part of entry.message.content) {
+					if (part.type === "toolCall" && (part.name === "read" || isDiffTool(part.name))) {
+						emittedFileToolCallIds.add(part.id);
+					}
+				}
+			} else if (
+				entry.message.role === "toolResult" &&
+				(entry.message.toolName === "read" || isDiffTool(entry.message.toolName))
+			) {
+				requiredToolCallIds.add(entry.message.toolCallId);
+			}
+		}
+		for (const toolCallId of emittedFileToolCallIds) requiredToolCallIds.delete(toolCallId);
+		const contextCalls: TranscriptItem[] = [];
+		if (requiredToolCallIds.size > 0) {
+			for (const entry of session.sessionManager.getBranch()) {
+				if (requiredToolCallIds.size === 0) break;
+				if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+				const calls = entry.message.content.filter(
+					(part): part is Extract<typeof part, { type: "toolCall" }> =>
+						part.type === "toolCall" &&
+						requiredToolCallIds.has(part.id) &&
+						(part.name === "read" || isDiffTool(part.name)),
+				);
+				if (calls.length === 0) continue;
+				contextCalls.push(entryItem({ ...entry, message: { ...entry.message, content: calls } }));
+				for (const call of calls) requiredToolCallIds.delete(call.id);
+			}
+		}
 		const agentSteps = this.stepController.stepsForEntries(transcriptEntries);
 		// 落盘条目按 entryId+viewIndex 映射回实时块：前端不再按正文猜测身份。
 		const blockMappings = getWebConversationStream(session).mappingsForEntries(emittedEntries);
@@ -2931,6 +2967,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			type: "entry_committed",
 			payload: jsonValue({
 				items: emittedEntries.map(entryItem),
+				...(contextCalls.length > 0 ? { contextCalls } : {}),
 				...(agentSteps.length > 0 ? { agentSteps } : {}),
 				...(blockMappings.length > 0 ? { blockMappings } : {}),
 				transcriptGeneration: storage.generation,

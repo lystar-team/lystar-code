@@ -27,7 +27,7 @@ import {
 	type CodemodeToolDetails,
 	createCodemodeTool,
 } from "../../src/extensions/codemode/tool.ts";
-import { createHarness, getToolResult, type Harness, type HarnessOptions } from "./harness.ts";
+import { createHarness, getAssistantTexts, getToolResult, type Harness, type HarnessOptions } from "./harness.ts";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -243,6 +243,246 @@ describe("AgentSession codemode tool", () => {
 		// Nested calls never become transcript tool results; their events carry the parent id.
 		const toolResults = harness.session.messages.filter((message) => message.role === "toolResult");
 		expect(toolResults).toHaveLength(1);
+	});
+
+	it("applies a repeated snapshot deletion once while editing a shifted range", async () => {
+		const harness = await createHarness({ initialActiveToolNames: ["read", "edit"] });
+		harnesses.push(harness);
+		const original = "one\ntwo\nthree\nfour\nfive";
+		writeFileSync(join(harness.tempDir, "target.txt"), original);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", { path: "target.txt", limit: 5 })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("read complete"),
+		]);
+		await harness.session.prompt("read target");
+		const readResult = getToolResult(harness, "read");
+		const source = readResult.details as { source?: { snapshot?: unknown } } | undefined;
+		const snapshot = source?.source?.snapshot;
+		if (typeof snapshot !== "string") throw new Error("read did not return a source snapshot");
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("edit", {
+						path: "target.txt",
+						snapshot,
+						edits: [{ startLine: 2, endLine: 2, newText: "" }],
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("deleted once"),
+		]);
+		await harness.session.prompt("delete line two");
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("edit", {
+						path: "target.txt",
+						snapshot,
+						edits: [
+							{ startLine: 2, endLine: 2, newText: "" },
+							{ startLine: 5, endLine: 5, newText: "FIVE" },
+						],
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("reconciled snapshot edits"),
+		]);
+		await harness.session.prompt("repeat the deletion and update the last source line");
+
+		expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\nthree\nfour\nFIVE");
+		expect(getToolResult(harness, "edit").details).toMatchObject({
+			status: "written",
+			applied: 1,
+			alreadyApplied: 1,
+			edits: [
+				{ index: 0, status: "already_applied" },
+				{ index: 1, status: "applied" },
+			],
+		});
+	});
+
+	it("resumes a nested failed snapshot batch and matches direct edits", async () => {
+		const original = "one\ntwo\nthree\nfour\nfive";
+		const direct = await createHarness({ initialActiveToolNames: ["read", "edit"] });
+		harnesses.push(direct);
+		writeFileSync(join(direct.tempDir, "target.txt"), original);
+		direct.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", { path: "target.txt", limit: 5 })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("read complete"),
+		]);
+		await direct.session.prompt("read target");
+		const directRead = getToolResult(direct, "read");
+		const directSource = directRead.details as { source?: { snapshot?: unknown } } | undefined;
+		const directSnapshot = directSource?.source?.snapshot;
+		if (typeof directSnapshot !== "string") throw new Error("direct read did not return a source snapshot");
+		direct.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("edit", {
+						path: "target.txt",
+						snapshot: directSnapshot,
+						edits: [
+							{ startLine: 2, endLine: 2, newText: "TWO" },
+							{ startLine: 5, endLine: 5, newText: "FIVE" },
+						],
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("direct edit complete"),
+		]);
+		await direct.session.prompt("edit source lines two and five");
+		const directContent = readFileSync(join(direct.tempDir, "target.txt"), "utf8");
+
+		const harness = await createHarness({
+			initialActiveToolNames: ["codemode", "read", "edit"],
+			extensionFactories: [createCodemodeExtension()],
+		});
+		harnesses.push(harness);
+		writeFileSync(join(harness.tempDir, "target.txt"), original);
+		const code = `
+			const path = "target.txt";
+			const source = await tools.read({ path, limit: 3 });
+			const header = source.split("\\n", 1)[0];
+			const snapshot = header.startsWith("[snapshot ") ? header.slice(10, header.indexOf(";")) : "";
+			let failureMessage = "";
+			try {
+				await tools.edit({
+					path,
+					snapshot,
+					edits: [
+						{ startLine: 2, endLine: 2, newText: "TWO" },
+						{ startLine: 5, endLine: 5, newText: "FIVE" },
+					],
+				});
+			} catch (error) {
+				failureMessage = String(error?.message ?? error);
+			}
+			const planOffset = failureMessage.indexOf("plan=");
+			const plan = planOffset < 0 ? "" : failureMessage.slice(planOffset + 5).split(" ")[0].split("。")[0];
+			const marker = "[snapshot ";
+			const snapshotOffset = failureMessage.indexOf(marker);
+			const snapshotEnd = failureMessage.indexOf(";", snapshotOffset);
+			const currentSnapshot =
+				snapshotOffset < 0 || snapshotEnd < 0
+					? ""
+					: failureMessage.slice(snapshotOffset + marker.length, snapshotEnd);
+			if (!failureMessage.includes("RANGE_OUTSIDE_SNAPSHOT") || !plan || !currentSnapshot) {
+				throw new Error("missing resumable range-conflict details");
+			}
+			const corrected = await tools.edit({
+				path,
+				plan,
+				edits: [{ index: 1, snapshot: currentSnapshot, startLine: 5, endLine: 5, newText: "FIVE" }],
+			});
+			return { conflictObserved: true, corrected };
+		`;
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("nested edit complete"),
+		]);
+		await harness.session.prompt("read, repair, and apply the edit batch");
+
+		const result = codemodeResult(harness);
+		expect(result.isError, resultText(result)).toBe(false);
+		const details = result.details as unknown as CodemodeToolDetails;
+		const editCalls = details.calls.filter((call) => call.name === "edit");
+		expect(editCalls).toHaveLength(2);
+		expect(editCalls[0]?.status).toBe("error");
+		expect(editCalls[0]?.diagnostics).toMatchObject({
+			status: "conflict",
+			plan: expect.any(String),
+			snapshot: expect.any(String),
+			sourceRevision: expect.any(String),
+			writeState: "not_written",
+			attempt: 1,
+			recoveryAllowed: true,
+			issueCount: 1,
+			issues: [expect.objectContaining({ code: "RANGE_OUTSIDE_SNAPSHOT", editIndex: 1, startLine: 5 })],
+		});
+		expect(editCalls[1]?.status).toBe("ok");
+		expect(editCalls[1]?.diagnostics).toMatchObject({
+			status: "written",
+			applied: 2,
+			alreadyApplied: 0,
+			sourceRevision: expect.any(String),
+			resultRevision: expect.any(String),
+		});
+		expect(editCalls[1]?.diagnostics?.sourceRevision).not.toBe(editCalls[1]?.diagnostics?.resultRevision);
+		expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe(directContent);
+	});
+
+	it("preserves nested edit diagnostics and propagates the third same-version termination", async () => {
+		const harness = await createHarness({
+			initialActiveToolNames: ["codemode", "read", "edit"],
+			extensionFactories: [createCodemodeExtension()],
+		});
+		harnesses.push(harness);
+		writeFileSync(join(harness.tempDir, "target.txt"), "one\ntwo\nthree");
+		const code = `
+			const outcomes = [];
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const source = await tools.read({ path: "target.txt", limit: 3 });
+				const header = source.split("\\n", 1)[0];
+				const snapshot = header.startsWith("[snapshot ") ? header.slice(10, header.indexOf(";")) : "";
+				const edits = Array.from({ length: attempt }, (_, index) => ({
+					startLine: index + 1,
+					endLine: index + 1,
+					newText: "not written",
+				}));
+				edits.push({ startLine: 99, endLine: 99, newText: "invalid" });
+				try {
+					await tools.edit({ path: "target.txt", snapshot, edits });
+					outcomes.push(false);
+				} catch (error) {
+					outcomes.push(String(error?.message ?? error).includes("RANGE_OUTSIDE_SNAPSHOT"));
+				}
+			}
+			return outcomes;
+		`;
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("must not run after nested termination"),
+		]);
+		await harness.session.prompt("exercise bounded nested edit recovery");
+
+		const result = codemodeResult(harness);
+		expect(result.isError).toBe(false);
+		expect(resultText(result)).toBe("[true,true,true]");
+		const details = result.details as unknown as CodemodeToolDetails;
+		const editCalls = details.calls.filter((call) => call.name === "edit");
+		expect(editCalls.map((call) => call.diagnostics)).toMatchObject([
+			{
+				status: "conflict",
+				attempt: 1,
+				recoveryAllowed: true,
+				issueCount: 1,
+				issues: [expect.objectContaining({ editIndex: 0, startLine: 99 })],
+			},
+			{
+				status: "conflict",
+				attempt: 2,
+				recoveryAllowed: true,
+				issueCount: 1,
+				issues: [expect.objectContaining({ editIndex: 1, startLine: 99 })],
+			},
+			{
+				status: "conflict",
+				attempt: 3,
+				recoveryAllowed: false,
+				issueCount: 1,
+				issues: [expect.objectContaining({ editIndex: 2, startLine: 99 })],
+			},
+		]);
+		expect(harness.getPendingResponseCount()).toBe(1);
+		expect(getAssistantTexts(harness)).not.toContain("must not run after nested termination");
+		const codemodeEnd = harness.eventsOfType("tool_execution_end").findLast((event) => event.toolName === "codemode");
+		expect(codemodeEnd?.result).toHaveProperty("terminate", true);
+		expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\ntwo\nthree");
 	});
 
 	it("routes nested calls through extension hooks", async () => {
@@ -534,7 +774,9 @@ describe("codemode options and store", () => {
 			'text(await tools.read({ path: "notes.txt" }));\nconst shot = await tools.read({ path: "pixel.png" });\ntext(shot.note);\nimage(shot);',
 		);
 		expect(result.isError).toBe(false);
-		expect(checkSavedImages(resultText(result))).toBe("hello\nRead image file [image/png]\n<saved>\n<image>");
+		expect(checkSavedImages(resultText(result))).toMatch(
+			/^\[snapshot r[0-9a-f]+; lines 1-1 of 1\]\n1\| hello\nRead image file \[image\/png\]\n<saved>\n<image>$/,
+		);
 		expect(result.content.at(-1)).toEqual({ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 	});
 

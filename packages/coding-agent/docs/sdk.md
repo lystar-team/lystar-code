@@ -117,6 +117,36 @@ The CLI loads `codemode`, `tool_search`, and MCP as built-in extensions. SDK ses
 
 See the focused examples for [models](../examples/sdk/02-custom-model.ts), [tools](../examples/sdk/05-tools.ts), [extensions](../examples/sdk/06-extensions.ts), and [full control](../examples/sdk/12-full-control.ts).
 
+## File edits
+
+The coding-agent `edit` tool uses snapshots returned by `read`. Each text read displays a snapshot reference and numbered source lines; `details.source` exposes the same reference, revision, and displayed range to SDK callers. Line numbers are 1-based and ranges are inclusive. Replace a line or block by providing `newText` without the display prefixes. Empty text deletes the range. Insert before a line with `endLine = startLine - 1`; inserting after EOF requires a snapshot that includes EOF.
+
+Standalone SDK tools can share an explicit state:
+
+```typescript
+import { createEditTool, createReadTool, FileEditState } from "@earendil-works/pi-coding-agent";
+
+const state = new FileEditState();
+const read = createReadTool(process.cwd(), { fileEditState: state });
+const edit = createEditTool(process.cwd(), { fileEditState: state });
+const source = await read.execute("read-1", { path: "example.ts", offset: 1, limit: 20 });
+const snapshot = source.details?.source?.snapshot;
+if (!snapshot) throw new Error("No editable source snapshot was returned");
+await edit.execute("edit-1", {
+  path: "example.ts",
+  snapshot,
+  edits: [{ startLine: 1, endLine: 1, newText: "export const enabled = true;" }],
+});
+```
+
+Agent sessions share their own state automatically. Snapshots, pending plans, and verified receipts are bounded in-memory state. A restarted session must read again; an expired reference reports a conflict and never falls back to searching for similar text.
+
+A failed batch writes nothing and returns a retained `plan` in the error details. Resume with that plan and only corrected items, specifying their original `index` and a current snapshot. Other items remain pending. `dropIndexes` explicitly removes unwanted items. All remaining operations are revalidated before one write. Receipts recognize repeated completed operations only while their result still verifies against the current file.
+
+Result details include `status`, `writeState`, `path`, `plan`, source/result revisions, per-item statuses, applied/already-applied counts, and validation/write durations. Conflict details include the failed indexes, available current snapshots, attempt count, and `recoveryAllowed`. The third failed attempt against an unchanged file version ends automatic continuation; a later prompt can submit corrected work. Re-reading unchanged content or changing item indexes does not reset this budget.
+
+This replaces the coding-agent `oldText/newText` input contract. Extensions that construct edit arguments must migrate to snapshots and ranges. Historical results continue to render. The independent experimental durable tools retain their own documented contract.
+
 ## Examples
 
 | Example | Purpose |

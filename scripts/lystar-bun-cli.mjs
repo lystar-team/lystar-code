@@ -22,7 +22,7 @@ const foreground = args.includes("--foreground");
 if (args[0] === "web") {
 	if (args.includes("--help") || args.includes("-h")) {
 		process.stdout.write(
-			"用法：lc web\n\n首次运行会依次配置监听 IP、白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：1420；Runtime 默认端口：1422。\n默认启动为后台模式；需要前台运行时使用：lc web --foreground。\n\n组件命令：\n  lc web gateway status|stop|start|restart\n  lc web runtime status|stop|start|restart\n\n服务命令：\n  lc web service install\n  lc web service status\n  lc web service restart\n  lc web service uninstall\n\nmacOS 授权：\n  lc web permissions status\n  lc web permissions setup\n",
+			"用法：lc web\n\n首次运行会依次配置白名单 IP、Web 端口、Runtime 端口和连接密码。\nWeb 默认端口：1420；Runtime 默认端口：1422。\n默认启动为后台模式；需要前台运行时使用：lc web --foreground。\n\n组件命令：\n  lc web gateway status|stop|start|restart\n  lc web runtime status|stop|start|restart\n\n服务命令：\n  lc web service install\n  lc web service status\n  lc web service restart\n  lc web service uninstall\n\nmacOS 授权：\n  lc web permissions status\n  lc web permissions setup\n",
 		);
 	} else if (args.length > 1 && !foreground) {
 		if (args[1] === "service") {

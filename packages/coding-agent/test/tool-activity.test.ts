@@ -129,6 +129,130 @@ describe("ToolActivityTracker", () => {
 		});
 	});
 
+	it("新编辑参数按目标范围预览内容，不显示未读取的原文", () => {
+		const tracker = new ToolActivityTracker();
+		const update = (args: unknown, type: "toolcall_start" | "toolcall_delta") =>
+			tracker.apply(
+				event({
+					type: "message_update",
+					message: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "range-edit", name: "edit", arguments: args }],
+					},
+					assistantMessageEvent: { type, contentIndex: 0 },
+				}),
+			)[0];
+
+		const start = update({}, "toolcall_start");
+		const preparing = update(
+			{
+				path: "src/app.ts",
+				snapshot: "snapshot-token",
+				plan: "replace and insert",
+				edits: [
+					{ startLine: 2, endLine: 3, newText: "replacement\n" },
+					{ startLine: 5, endLine: 4, newText: "inserted\n" },
+					{ startLine: 7, endLine: 8, newText: "" },
+				],
+			},
+			"toolcall_delta",
+		);
+
+		expect(start?.summary).toBe("edit");
+		expect(preparing).toMatchObject({
+			state: "preparing",
+			summary: "src/app.ts",
+			inputPreview: true,
+			diff: {
+				files: [
+					{
+						path: "src/app.ts",
+						diff: "@@ lines 2-3 @@\n+replacement\n@@ insert before line 5 @@\n+inserted\n@@ delete lines 7-8 @@",
+					},
+				],
+			},
+		});
+		expect(preparing?.diff?.files[0]).not.toHaveProperty("additions");
+		expect(preparing?.diff?.files[0]).not.toHaveProperty("deletions");
+		expect(preparing?.diff?.files[0]?.diff).not.toContain("snapshot-token");
+		expect(preparing?.diff?.files[0]?.diff).not.toContain("-old");
+	});
+
+	it("执行结果的真实 diff 覆盖输入预览", () => {
+		const tracker = new ToolActivityTracker();
+		const args = {
+			path: "src/app.ts",
+			edits: [{ startLine: 2, endLine: 3, newText: "input preview\n" }],
+		};
+		tracker.apply(event({ type: "tool_execution_start", toolCallId: "range-success", toolName: "edit", args }));
+
+		const success = tracker.apply(
+			event({
+				type: "tool_execution_end",
+				toolCallId: "range-success",
+				toolName: "edit",
+				result: toolResult("已更新", {
+					operation: "updated",
+					additions: 2,
+					deletions: 1,
+					diff: "-actual old\n+actual new\n+second line",
+				}),
+				isError: false,
+			}),
+		)[0];
+
+		expect(success).toMatchObject({
+			state: "success",
+			diff: {
+				files: [
+					{
+						path: "src/app.ts",
+						operation: "updated",
+						additions: 2,
+						deletions: 1,
+						diff: "-actual old\n+actual new\n+second line",
+					},
+				],
+			},
+		});
+		expect(success?.diff?.files[0]?.diff).not.toContain("input preview");
+	});
+
+	it("冲突终态不保留输入预览为已写 diff", () => {
+		const tracker = new ToolActivityTracker();
+		const args = {
+			path: "src/app.ts",
+			edits: [{ startLine: 2, endLine: 3, newText: "input preview\n" }],
+		};
+		tracker.apply(event({ type: "tool_execution_start", toolCallId: "range-conflict", toolName: "edit", args }));
+
+		const conflict = tracker.apply(
+			event({
+				type: "tool_execution_end",
+				toolCallId: "range-conflict",
+				toolName: "edit",
+				result: toolResult("编辑冲突，未写入", {
+					path: "src/app.ts",
+					operation: "conflict",
+					status: "conflict",
+					plan: "replace lines 2-3",
+					issues: ["snapshot changed"],
+					writeState: "not_written",
+				}),
+				isError: true,
+			}),
+		)[0];
+
+		expect(conflict).toMatchObject({
+			state: "error",
+			output: "编辑冲突，未写入",
+			diff: { files: [{ path: "src/app.ts", operation: "conflict" }] },
+		});
+		expect(conflict?.diff?.files[0]).not.toHaveProperty("diff");
+		expect(conflict?.diff?.files[0]).not.toHaveProperty("additions");
+		expect(conflict?.diff?.files[0]).not.toHaveProperty("deletions");
+	});
+
 	it("文件路径出现后，后续不完整参数不会抹掉流式编辑的目标", () => {
 		const tracker = new ToolActivityTracker();
 		const update = (args: unknown, type: "toolcall_start" | "toolcall_delta") =>

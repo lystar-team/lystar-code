@@ -5,14 +5,21 @@ import type { SettingsManager } from "../../core/settings-manager.ts";
 import { loadSkills, type Skill } from "../../core/skills.ts";
 import { buildSystemPromptSections } from "../../core/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../../core/tools/bash.ts";
-import { editToolSystemPromptContribution } from "../../core/tools/edit.ts";
-import { readToolSystemPromptContribution } from "../../core/tools/read.ts";
 import { writeToolSystemPromptContribution } from "../../core/tools/write.ts";
 
 const CONTRIBUTIONS = {
-	read: readToolSystemPromptContribution,
+	read: {
+		snippet: "Read text file contents",
+		guidelines: ["Use read to inspect text files; use offset and limit to continue through large files."],
+	},
 	bash: bashToolSystemPromptContribution,
-	edit: editToolSystemPromptContribution,
+	edit: {
+		snippet: "Edit files using exact oldText/newText replacements",
+		guidelines: [
+			"Use exact oldText and replacement newText values; oldText must match one unique region of the current file.",
+			"Batch disjoint edits against the original file. Do not overlap edits or include large unchanged regions.",
+		],
+	},
 	write: writeToolSystemPromptContribution,
 };
 

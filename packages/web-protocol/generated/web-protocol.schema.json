@@ -5028,6 +5028,139 @@
                 "inputPreview": {
                   "type": "boolean"
                 },
+                "codemode": {
+                  "type": "object",
+                  "required": [
+                    "calls"
+                  ],
+                  "properties": {
+                    "calls": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "name",
+                          "args",
+                          "status"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "args": {
+                            "type": "string",
+                            "maxLength": 16384
+                          },
+                          "summary": {
+                            "type": "string",
+                            "maxLength": 16384
+                          },
+                          "diff": {
+                            "type": "object",
+                            "required": [
+                              "files"
+                            ],
+                            "properties": {
+                              "files": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 16384
+                                    },
+                                    "operation": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 256
+                                    },
+                                    "additions": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    },
+                                    "deletions": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    },
+                                    "diff": {
+                                      "type": "string",
+                                      "maxLength": 16384
+                                    },
+                                    "truncated": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "minItems": 1,
+                                "maxItems": 128
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "progress": {
+                            "type": "string",
+                            "maxLength": 16384
+                          },
+                          "result": {
+                            "type": "string",
+                            "maxLength": 16384
+                          },
+                          "status": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "running"
+                              },
+                              {
+                                "type": "string",
+                                "const": "ok"
+                              },
+                              {
+                                "type": "string",
+                                "const": "error"
+                              },
+                              {
+                                "type": "string",
+                                "const": "cancelled"
+                              }
+                            ]
+                          },
+                          "durationMs": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "error": {
+                            "type": "string",
+                            "maxLength": 16384
+                          },
+                          "cost": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "maxItems": 128
+                    },
+                    "fullOutputPath": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "diff": {
                   "type": "object",
                   "required": [
@@ -6544,6 +6677,139 @@
                               "inputPreview": {
                                 "type": "boolean"
                               },
+                              "codemode": {
+                                "type": "object",
+                                "required": [
+                                  "calls"
+                                ],
+                                "properties": {
+                                  "calls": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "id",
+                                        "name",
+                                        "args",
+                                        "status"
+                                      ],
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 4096
+                                        },
+                                        "name": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 256
+                                        },
+                                        "args": {
+                                          "type": "string",
+                                          "maxLength": 16384
+                                        },
+                                        "summary": {
+                                          "type": "string",
+                                          "maxLength": 16384
+                                        },
+                                        "diff": {
+                                          "type": "object",
+                                          "required": [
+                                            "files"
+                                          ],
+                                          "properties": {
+                                            "files": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "path": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 16384
+                                                  },
+                                                  "operation": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 256
+                                                  },
+                                                  "additions": {
+                                                    "type": "integer",
+                                                    "minimum": 0
+                                                  },
+                                                  "deletions": {
+                                                    "type": "integer",
+                                                    "minimum": 0
+                                                  },
+                                                  "diff": {
+                                                    "type": "string",
+                                                    "maxLength": 16384
+                                                  },
+                                                  "truncated": {
+                                                    "type": "boolean"
+                                                  }
+                                                },
+                                                "additionalProperties": false
+                                              },
+                                              "minItems": 1,
+                                              "maxItems": 128
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "progress": {
+                                          "type": "string",
+                                          "maxLength": 16384
+                                        },
+                                        "result": {
+                                          "type": "string",
+                                          "maxLength": 16384
+                                        },
+                                        "status": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "const": "running"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "ok"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "error"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "cancelled"
+                                            }
+                                          ]
+                                        },
+                                        "durationMs": {
+                                          "type": "number",
+                                          "minimum": 0
+                                        },
+                                        "error": {
+                                          "type": "string",
+                                          "maxLength": 16384
+                                        },
+                                        "cost": {
+                                          "type": "number",
+                                          "minimum": 0
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "maxItems": 128
+                                  },
+                                  "fullOutputPath": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
                               "diff": {
                                 "type": "object",
                                 "required": [
@@ -7775,6 +8041,63 @@
                                               "maxLength": 256
                                             },
                                             "args": {
+                                              "type": "string",
+                                              "maxLength": 16384
+                                            },
+                                            "summary": {
+                                              "type": "string",
+                                              "maxLength": 16384
+                                            },
+                                            "diff": {
+                                              "type": "object",
+                                              "required": [
+                                                "files"
+                                              ],
+                                              "properties": {
+                                                "files": {
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "path": {
+                                                        "type": "string",
+                                                        "minLength": 1,
+                                                        "maxLength": 16384
+                                                      },
+                                                      "operation": {
+                                                        "type": "string",
+                                                        "minLength": 1,
+                                                        "maxLength": 256
+                                                      },
+                                                      "additions": {
+                                                        "type": "integer",
+                                                        "minimum": 0
+                                                      },
+                                                      "deletions": {
+                                                        "type": "integer",
+                                                        "minimum": 0
+                                                      },
+                                                      "diff": {
+                                                        "type": "string",
+                                                        "maxLength": 16384
+                                                      },
+                                                      "truncated": {
+                                                        "type": "boolean"
+                                                      }
+                                                    },
+                                                    "additionalProperties": false
+                                                  },
+                                                  "minItems": 1,
+                                                  "maxItems": 128
+                                                }
+                                              },
+                                              "additionalProperties": false
+                                            },
+                                            "progress": {
+                                              "type": "string",
+                                              "maxLength": 16384
+                                            },
+                                            "result": {
                                               "type": "string",
                                               "maxLength": 16384
                                             },
@@ -12511,6 +12834,139 @@
               "inputPreview": {
                 "type": "boolean"
               },
+              "codemode": {
+                "type": "object",
+                "required": [
+                  "calls"
+                ],
+                "properties": {
+                  "calls": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "args",
+                        "status"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "args": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "summary": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "diff": {
+                          "type": "object",
+                          "required": [
+                            "files"
+                          ],
+                          "properties": {
+                            "files": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 16384
+                                  },
+                                  "operation": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "additions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "deletions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "diff": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "truncated": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "minItems": 1,
+                              "maxItems": 128
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "progress": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "result": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "running"
+                            },
+                            {
+                              "type": "string",
+                              "const": "ok"
+                            },
+                            {
+                              "type": "string",
+                              "const": "error"
+                            },
+                            {
+                              "type": "string",
+                              "const": "cancelled"
+                            }
+                          ]
+                        },
+                        "durationMs": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "error": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "cost": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "maxItems": 128
+                  },
+                  "fullOutputPath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "additionalProperties": false
+              },
               "diff": {
                 "type": "object",
                 "required": [
@@ -13031,6 +13487,139 @@
               "inputPreview": {
                 "type": "boolean"
               },
+              "codemode": {
+                "type": "object",
+                "required": [
+                  "calls"
+                ],
+                "properties": {
+                  "calls": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "args",
+                        "status"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "args": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "summary": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "diff": {
+                          "type": "object",
+                          "required": [
+                            "files"
+                          ],
+                          "properties": {
+                            "files": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 16384
+                                  },
+                                  "operation": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "additions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "deletions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "diff": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "truncated": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "minItems": 1,
+                              "maxItems": 128
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "progress": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "result": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "running"
+                            },
+                            {
+                              "type": "string",
+                              "const": "ok"
+                            },
+                            {
+                              "type": "string",
+                              "const": "error"
+                            },
+                            {
+                              "type": "string",
+                              "const": "cancelled"
+                            }
+                          ]
+                        },
+                        "durationMs": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "error": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "cost": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "maxItems": 128
+                  },
+                  "fullOutputPath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "additionalProperties": false
+              },
               "diff": {
                 "type": "object",
                 "required": [
@@ -13550,6 +14139,139 @@
               },
               "inputPreview": {
                 "type": "boolean"
+              },
+              "codemode": {
+                "type": "object",
+                "required": [
+                  "calls"
+                ],
+                "properties": {
+                  "calls": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "args",
+                        "status"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "args": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "summary": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "diff": {
+                          "type": "object",
+                          "required": [
+                            "files"
+                          ],
+                          "properties": {
+                            "files": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 16384
+                                  },
+                                  "operation": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "additions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "deletions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "diff": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "truncated": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "minItems": 1,
+                              "maxItems": 128
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "progress": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "result": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "running"
+                            },
+                            {
+                              "type": "string",
+                              "const": "ok"
+                            },
+                            {
+                              "type": "string",
+                              "const": "error"
+                            },
+                            {
+                              "type": "string",
+                              "const": "cancelled"
+                            }
+                          ]
+                        },
+                        "durationMs": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "error": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "cost": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "maxItems": 128
+                  },
+                  "fullOutputPath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "additionalProperties": false
               },
               "diff": {
                 "type": "object",
@@ -14078,6 +14800,139 @@
                   },
                   "inputPreview": {
                     "type": "boolean"
+                  },
+                  "codemode": {
+                    "type": "object",
+                    "required": [
+                      "calls"
+                    ],
+                    "properties": {
+                      "calls": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "name",
+                            "args",
+                            "status"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "args": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "summary": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "diff": {
+                              "type": "object",
+                              "required": [
+                                "files"
+                              ],
+                              "properties": {
+                                "files": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 16384
+                                      },
+                                      "operation": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      "additions": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "deletions": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "diff": {
+                                        "type": "string",
+                                        "maxLength": 16384
+                                      },
+                                      "truncated": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "additionalProperties": false
+                                  },
+                                  "minItems": 1,
+                                  "maxItems": 128
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "progress": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "result": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "status": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "running"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "ok"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "error"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "cancelled"
+                                }
+                              ]
+                            },
+                            "durationMs": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "error": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "cost": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "maxItems": 128
+                      },
+                      "fullOutputPath": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      }
+                    },
+                    "additionalProperties": false
                   },
                   "diff": {
                     "type": "object",
@@ -14616,6 +15471,139 @@
                   "inputPreview": {
                     "type": "boolean"
                   },
+                  "codemode": {
+                    "type": "object",
+                    "required": [
+                      "calls"
+                    ],
+                    "properties": {
+                      "calls": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "name",
+                            "args",
+                            "status"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "args": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "summary": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "diff": {
+                              "type": "object",
+                              "required": [
+                                "files"
+                              ],
+                              "properties": {
+                                "files": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 16384
+                                      },
+                                      "operation": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      "additions": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "deletions": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "diff": {
+                                        "type": "string",
+                                        "maxLength": 16384
+                                      },
+                                      "truncated": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "additionalProperties": false
+                                  },
+                                  "minItems": 1,
+                                  "maxItems": 128
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "progress": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "result": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "status": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "running"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "ok"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "error"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "cancelled"
+                                }
+                              ]
+                            },
+                            "durationMs": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "error": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "cost": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "maxItems": 128
+                      },
+                      "fullOutputPath": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "diff": {
                     "type": "object",
                     "required": [
@@ -15144,6 +16132,139 @@
               },
               "inputPreview": {
                 "type": "boolean"
+              },
+              "codemode": {
+                "type": "object",
+                "required": [
+                  "calls"
+                ],
+                "properties": {
+                  "calls": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "args",
+                        "status"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "args": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "summary": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "diff": {
+                          "type": "object",
+                          "required": [
+                            "files"
+                          ],
+                          "properties": {
+                            "files": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 16384
+                                  },
+                                  "operation": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "additions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "deletions": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "diff": {
+                                    "type": "string",
+                                    "maxLength": 16384
+                                  },
+                                  "truncated": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "minItems": 1,
+                              "maxItems": 128
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "progress": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "result": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "running"
+                            },
+                            {
+                              "type": "string",
+                              "const": "ok"
+                            },
+                            {
+                              "type": "string",
+                              "const": "error"
+                            },
+                            {
+                              "type": "string",
+                              "const": "cancelled"
+                            }
+                          ]
+                        },
+                        "durationMs": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "error": {
+                          "type": "string",
+                          "maxLength": 16384
+                        },
+                        "cost": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "maxItems": 128
+                  },
+                  "fullOutputPath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "additionalProperties": false
               },
               "diff": {
                 "type": "object",
@@ -15899,6 +17020,139 @@
                   },
                   "inputPreview": {
                     "type": "boolean"
+                  },
+                  "codemode": {
+                    "type": "object",
+                    "required": [
+                      "calls"
+                    ],
+                    "properties": {
+                      "calls": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "name",
+                            "args",
+                            "status"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 4096
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "args": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "summary": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "diff": {
+                              "type": "object",
+                              "required": [
+                                "files"
+                              ],
+                              "properties": {
+                                "files": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 16384
+                                      },
+                                      "operation": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      "additions": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "deletions": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "diff": {
+                                        "type": "string",
+                                        "maxLength": 16384
+                                      },
+                                      "truncated": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "additionalProperties": false
+                                  },
+                                  "minItems": 1,
+                                  "maxItems": 128
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "progress": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "result": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "status": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "running"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "ok"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "error"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "cancelled"
+                                }
+                              ]
+                            },
+                            "durationMs": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "error": {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            "cost": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "maxItems": 128
+                      },
+                      "fullOutputPath": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      }
+                    },
+                    "additionalProperties": false
                   },
                   "diff": {
                     "type": "object",

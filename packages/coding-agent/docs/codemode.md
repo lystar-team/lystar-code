@@ -47,6 +47,10 @@ What a call resolves to depends on the tool:
 
 A call that fails, is blocked, or gets invalid arguments rejects with an `Error` that carries the tool's error text. Use `Promise.allSettled()` to keep the results of the calls that succeed.
 
+Text reads include a `[snapshot ...]` reference and numbered source lines. Call `tools.edit()` with that reference and inclusive `startLine`/`endLine` ranges; do not reconstruct `oldText` or put the displayed line prefixes in `newText`. Empty text deletes the range; `endLine = startLine - 1` inserts before a line. A rejected batch retains a `plan`; correct only its failed item indexes using current snapshots. The same protocol is used for direct calls; see [File edits in the SDK](sdk.md#file-edits).
+
+Nested edit rows preserve structured diagnostics in `details.calls[].diagnostics`, including file revisions, retained plan, write outcome, failed indexes, and recovery budget. A nested terminal failure also marks the enclosing codemode result as terminal, so wrapping a repeated failed edit in a new script does not restart automatic recovery.
+
 The `codemode` description lists tools with their TypeScript declarations, grouped by namespace (for example one MCP server). Tools with `deferred` exposure, which includes MCP tools with the default `codemode` exposure, are not listed, so the description stays the same while MCP servers connect. Listed declarations share a budget of 3000 estimated tokens (`codemode.inlineBudget` in [settings](settings.md#tools)). Scripts find the other tools with `searchTools()`, `describeTool()`, `describeNamespace()`, or by filtering `ALL_TOOLS`.
 
 While `codemode` is active, `codemode.mode` in [settings](settings.md#tools) decides how the other tools are presented. With `on` (default) declared tools stay declared, and their descriptions say how to call them from scripts. With `only` they are hidden from the model and listed in the `codemode` description instead, so the model calls them through scripts. Tool declarations in the `codemode` description, `describeTool()`, and `ALL_TOOLS` carry the tools' prompt guidelines, since the system prompt rules only cover declared tools.

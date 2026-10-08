@@ -368,6 +368,32 @@ export const AgentStepSchema = StrictObject({
 	summary: Type.Optional(Type.String({ maxLength: 4096 })),
 });
 export type AgentStep = Static<typeof AgentStepSchema>;
+const TranscriptCodemodeCallStatusSchema = Type.Union([
+	Type.Literal("running"),
+	Type.Literal("ok"),
+	Type.Literal("error"),
+	Type.Literal("cancelled"),
+]);
+const TranscriptCodemodeCallSchema = StrictObject({
+	id: Id,
+	name: Type.String({ minLength: 1, maxLength: 256 }),
+	args: ProgressTextSchema,
+	summary: Type.Optional(ProgressTextSchema),
+	diff: Type.Optional(ToolDiffSchema),
+	progress: Type.Optional(ProgressTextSchema),
+	result: Type.Optional(ProgressTextSchema),
+	status: TranscriptCodemodeCallStatusSchema,
+	durationMs: Type.Optional(Type.Number({ minimum: 0 })),
+	error: Type.Optional(ProgressTextSchema),
+	cost: Type.Optional(Type.Number({ minimum: 0 })),
+});
+export type TranscriptCodemodeCall = Static<typeof TranscriptCodemodeCallSchema>;
+const TranscriptCodemodeDetailsSchema = StrictObject({
+	calls: Type.Array(TranscriptCodemodeCallSchema, { maxItems: 128 }),
+	fullOutputPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+});
+export type TranscriptCodemodeDetails = Static<typeof TranscriptCodemodeDetailsSchema>;
+
 export const ToolActivitySchema = StrictObject({
 	activityEpoch: Id,
 	revision: Type.Integer({ minimum: 0 }),
@@ -377,6 +403,7 @@ export const ToolActivitySchema = StrictObject({
 	state: ToolActivityStateSchema,
 	summary: ProgressTextSchema,
 	inputPreview: Type.Optional(Type.Boolean()),
+	codemode: Type.Optional(TranscriptCodemodeDetailsSchema),
 	diff: Type.Optional(ToolDiffSchema),
 	progress: Type.Optional(ProgressTextSchema),
 	output: Type.Optional(ProgressTextSchema),
@@ -596,27 +623,6 @@ const TranscriptToolCallSchema = StrictObject({
 	summary: TranscriptViewTextSchema,
 	href: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 });
-const TranscriptCodemodeCallStatusSchema = Type.Union([
-	Type.Literal("running"),
-	Type.Literal("ok"),
-	Type.Literal("error"),
-	Type.Literal("cancelled"),
-]);
-const TranscriptCodemodeCallSchema = StrictObject({
-	id: Id,
-	name: Type.String({ minLength: 1, maxLength: 256 }),
-	args: TranscriptViewTextSchema,
-	status: TranscriptCodemodeCallStatusSchema,
-	durationMs: Type.Optional(Type.Number({ minimum: 0 })),
-	error: Type.Optional(TranscriptViewTextSchema),
-	cost: Type.Optional(Type.Number({ minimum: 0 })),
-});
-export type TranscriptCodemodeCall = Static<typeof TranscriptCodemodeCallSchema>;
-const TranscriptCodemodeDetailsSchema = StrictObject({
-	calls: Type.Array(TranscriptCodemodeCallSchema, { maxItems: 128 }),
-	fullOutputPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
-});
-export type TranscriptCodemodeDetails = Static<typeof TranscriptCodemodeDetailsSchema>;
 const TranscriptWebSearchSourceSchema = StrictObject({
 	url: Type.String({ minLength: 1, maxLength: 4096 }),
 	title: Type.Optional(TranscriptViewTextSchema),

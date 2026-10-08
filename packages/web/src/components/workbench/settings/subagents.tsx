@@ -1,4 +1,4 @@
-import { FileText, Layers3, Pencil, Plus, RefreshCw, Trash2, UploadCloud, UserRound, Wrench, X } from "lucide-react";
+import { Ban, Check, FileText, Layers3, Pencil, Plus, RefreshCw, Trash2, UploadCloud, UserRound, Wrench, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
 import type { SubagentConfig, WebThinkingLevel } from "../../../types";
@@ -9,7 +9,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { Input } from "../../ui/input";
 import { Spinner } from "../../ui/spinner";
 import { DEFAULT_ROOM_NICKNAMES, readRoomNicknamePool, saveRoomNicknamePool } from "../room-agent-identity";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/tabs";
+import { Tabs, TabsContent } from "../../ui/tabs";
+import { WorkbenchTabBar } from "../workbench-tab-bar";
 import type { WorkbenchActions } from "../types";
 import { AgentIdentityIcon, AGENT_ICON_OPTIONS } from "../collaboration-session";
 import { AgentTagList } from "../agent-profile-card";
@@ -251,19 +252,16 @@ export function AgentToolPermissions({
 		<SettingSection id="agent-config-tools" title="工具权限">
 			<div className="space-y-4">
 				<div className="flex flex-wrap items-center justify-between gap-3">
-					<div aria-label="工具权限模式" className="inline-flex rounded-md border border-border bg-muted/40 p-0.5" role="group">
-						{(["allow", "deny"] as const).map((mode) => (
-							<button
-								key={mode}
-								aria-pressed={draft.toolMode === mode}
-								className={cn("min-h-9 rounded px-4 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", draft.toolMode === mode && "bg-background text-foreground shadow-sm")}
-								onClick={() => onChange({ ...draft, toolMode: mode })}
-								type="button"
-							>
-								{mode === "allow" ? "允许使用" : "禁止使用"}
-							</button>
-						))}
-					</div>
+					<Tabs value={draft.toolMode} onValueChange={(value) => onChange({ ...draft, toolMode: value as "allow" | "deny" })} className="min-w-0 gap-0">
+						<WorkbenchTabBar
+							activeId={draft.toolMode}
+							tabs={[
+								{ icon: Check, label: "允许使用", value: "allow" },
+								{ icon: Ban, label: "禁止使用", value: "deny" },
+							]}
+							label="工具权限模式"
+						/>
+					</Tabs>
 					<span className="text-xs text-muted-foreground">已选择 {selectedCount} / {toolOptions.length}</span>
 				</div>
 				<p className="text-xs text-muted-foreground">
@@ -489,12 +487,10 @@ const AGENT_EDITOR_SECTIONS: Array<{ id: AgentEditorSection; label: string; icon
 function AgentEditorSidebar({
 	draft,
 	activeSection,
-	onNavigate,
 	onIconChange,
 }: {
 	draft: AgentDraft;
 	activeSection: AgentEditorSection;
-	onNavigate: (section: AgentEditorSection) => void;
 	onIconChange: (icon: string) => void;
 }) {
 	return (
@@ -511,21 +507,13 @@ function AgentEditorSidebar({
 				</div>
 				<AgentTagList className="mt-3" tags={draft.tags} />
 			</div>
-			<nav className="mt-4 grid gap-1" aria-label="智能体配置分区" role="tablist" aria-orientation="vertical">
-				{AGENT_EDITOR_SECTIONS.map(({ id, label, icon: Icon }) => (
-					<Button
-						aria-selected={activeSection === id}
-						className={cn("justify-start gap-2 px-3 text-sm", activeSection === id && "bg-muted text-foreground")}
-						key={id}
-						onClick={() => onNavigate(id)}
-						role="tab"
-						variant="ghost"
-					>
-						<Icon className="size-4 text-muted-foreground" aria-hidden="true" />
-						{label}
-					</Button>
-				))}
-			</nav>
+			<WorkbenchTabBar
+				activeId={activeSection}
+				tabs={AGENT_EDITOR_SECTIONS.map(({ id, ...tab }) => ({ ...tab, value: id }))}
+				label="智能体配置分区"
+				orientation="vertical"
+				className="mt-4"
+			/>
 		</aside>
 	);
 }
@@ -754,14 +742,11 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 								value={editorSection}
 							onValueChange={(value) => setEditorSection(value as AgentEditorSection)}
 							>
-								<TabsList className="w-full justify-start overflow-x-auto" variant="line">
-									{AGENT_EDITOR_SECTIONS.map(({ id, label, icon: Icon }) => (
-										<TabsTrigger className="min-w-max px-3" key={id} value={id}>
-											<Icon className="size-4" aria-hidden="true" />
-											{label}
-										</TabsTrigger>
-									))}
-								</TabsList>
+								<WorkbenchTabBar
+									activeId={editorSection}
+									tabs={AGENT_EDITOR_SECTIONS.map(({ id, ...tab }) => ({ ...tab, value: id }))}
+									label="智能体配置分区"
+								/>
 								{AGENT_EDITOR_SECTIONS.map(({ id }) => (
 									<TabsContent className="min-h-0 overflow-y-auto pr-1" key={id} value={id}>
 										{id === "content" ? (
@@ -788,14 +773,18 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 								))}
 							</Tabs>
 
-							<div className="hidden h-full min-h-0 gap-0 lg:grid lg:grid-cols-[280px_minmax(0,1fr)]">
+							<Tabs
+								className="hidden h-full min-h-0 gap-0 lg:grid lg:grid-cols-[280px_minmax(0,1fr)]"
+								orientation="vertical"
+								value={editorSection}
+								onValueChange={(value) => setEditorSection(value as AgentEditorSection)}
+							>
 								<AgentEditorSidebar
 									activeSection={editorSection}
 									draft={draft}
 									onIconChange={(icon) => setDraft((current) => current ? { ...current, icon } : current)}
-									onNavigate={setEditorSection}
 								/>
-								<div className="min-h-0 overflow-y-auto pl-6 pr-2">
+								<TabsContent value={editorSection} className="min-h-0 overflow-y-auto pl-6 pr-2">
 									{editorSection === "content" ? (
 										<AgentMarkdownPanel
 											draft={draft}
@@ -816,8 +805,8 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 											onChange={setDraft}
 										/>
 									)}
-								</div>
-							</div>
+								</TabsContent>
+							</Tabs>
 						</div>
 					) : null}
 					<DialogFooter className="shrink-0 border-t border-border/60 px-6 py-4">

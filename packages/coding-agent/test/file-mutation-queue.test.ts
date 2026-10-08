@@ -1,9 +1,12 @@
 import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEditTool } from "../src/core/tools/edit.ts";
+import { normalizeToLF } from "../src/core/tools/edit-diff.ts";
+import { FileEditState } from "../src/core/tools/file-edit-state.ts";
 import { withFileMutationQueue } from "../src/core/tools/file-mutation-queue.ts";
+import { splitBom } from "../src/utils/text.ts";
 import { createWriteTool } from "../src/core/tools/write.ts";
 
 function delay(ms: number): Promise<void> {
@@ -28,6 +31,11 @@ async function createTempDir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "pi-file-mutation-queue-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function captureSnapshot(state: FileEditState, path: string, content: string): string {
+	const totalLines = normalizeToLF(splitBom(content).text).split("\n").length;
+	return state.capture(resolve(path), content, 1, totalLines).id;
 }
 
 afterEach(async () => {
@@ -114,9 +122,13 @@ describe("built-in edit and write tools", () => {
 	it("preserves both parallel edits on the same file", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "parallel-edit.txt");
-		await writeFile(filePath, "alpha\nbeta\ngamma\n", "utf8");
+		const original = "alpha\nbeta\ngamma\n";
+		await writeFile(filePath, original, "utf8");
+		const state = new FileEditState();
+		const snapshot = captureSnapshot(state, filePath, original);
 
 		const editTool = createEditTool(dir, {
+			fileEditState: state,
 			operations: {
 				access,
 				readFile: async (path) => {
@@ -132,8 +144,16 @@ describe("built-in edit and write tools", () => {
 		});
 
 		await Promise.all([
-			editTool.execute("call-1", { path: filePath, edits: [{ oldText: "alpha", newText: "ALPHA" }] }),
-			editTool.execute("call-2", { path: filePath, edits: [{ oldText: "beta", newText: "BETA" }] }),
+			editTool.execute("call-1", {
+				path: filePath,
+				snapshot,
+				edits: [{ startLine: 1, endLine: 1, newText: "ALPHA\n" }],
+			}),
+			editTool.execute("call-2", {
+				path: filePath,
+				snapshot,
+				edits: [{ startLine: 2, endLine: 2, newText: "BETA\n" }],
+			}),
 		]);
 
 		const content = await readFile(filePath, "utf8");
@@ -143,9 +163,13 @@ describe("built-in edit and write tools", () => {
 	it("shares the queue between edit and write", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "mixed.txt");
-		await writeFile(filePath, "original\n", "utf8");
+		const original = "original\n";
+		await writeFile(filePath, original, "utf8");
+		const state = new FileEditState();
+		const snapshot = captureSnapshot(state, filePath, original);
 
 		const editTool = createEditTool(dir, {
+			fileEditState: state,
 			operations: {
 				access,
 				readFile: async (path) => {
@@ -171,7 +195,8 @@ describe("built-in edit and write tools", () => {
 
 		const editPromise = editTool.execute("call-1", {
 			path: filePath,
-			edits: [{ oldText: "original", newText: "edited" }],
+			snapshot,
+			edits: [{ startLine: 1, endLine: 1, newText: "edited\n" }],
 		});
 		await delay(5);
 		const writePromise = writeTool.execute("call-2", {
@@ -233,13 +258,17 @@ describe("built-in edit and write tools", () => {
 	it("keeps edit queue locked while an aborted edit write is still in flight", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "abort-edit.txt");
-		await writeFile(filePath, "alpha\nbeta\n", "utf8");
+		const original = "alpha\nbeta\n";
+		await writeFile(filePath, original, "utf8");
+		const state = new FileEditState();
+		const snapshot = captureSnapshot(state, filePath, original);
 		const firstWriteStarted = createDeferred();
 		const finishFirstWrite = createDeferred();
 		const secondWriteStarted = createDeferred();
 		let firstWriteSettled = false;
 
 		const editTool = createEditTool(dir, {
+			fileEditState: state,
 			operations: {
 				access,
 				readFile,
@@ -264,7 +293,7 @@ describe("built-in edit and write tools", () => {
 		const controller = new AbortController();
 		const firstEdit = editTool.execute(
 			"call-1",
-			{ path: filePath, edits: [{ oldText: "alpha", newText: "ALPHA" }] },
+			{ path: filePath, snapshot, edits: [{ startLine: 1, endLine: 1, newText: "ALPHA\n" }] },
 			controller.signal,
 		);
 		await firstWriteStarted.promise;
@@ -272,7 +301,8 @@ describe("built-in edit and write tools", () => {
 
 		const secondEdit = editTool.execute("call-2", {
 			path: filePath,
-			edits: [{ oldText: "beta", newText: "BETA" }],
+			snapshot,
+			edits: [{ startLine: 2, endLine: 2, newText: "BETA\n" }],
 		});
 		expect(await resolvesWithin(secondWriteStarted.promise, 20)).toBe(false);
 

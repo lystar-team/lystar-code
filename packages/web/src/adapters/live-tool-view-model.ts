@@ -22,6 +22,7 @@ export function toLiveToolViewModel(tool: LiveTool): ToolBatchTool {
 									? "input-queued"
 									: "input-available",
 		detail: tool.result,
+		codemode: tool.codemode,
 		inputPreview: tool.inputPreview,
 		preparing: tool.state === "preparing",
 		webSearch: tool.webSearch,

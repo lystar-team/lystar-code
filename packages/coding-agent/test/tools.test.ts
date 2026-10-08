@@ -1,7 +1,7 @@
 import { applyPatch } from "diff";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
@@ -11,8 +11,9 @@ import {
 	createBashToolDefinition,
 	createLocalBashOperations,
 } from "../src/core/tools/bash.ts";
-import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
+import { createEditToolDefinition, type EditToolOptions } from "../src/core/tools/edit.ts";
+import { normalizeToLF } from "../src/core/tools/edit-diff.ts";
+import { FileEditState, type SnapshotRangeEdit } from "../src/core/tools/file-edit-state.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
@@ -27,10 +28,12 @@ import {
 	createWriteTool,
 } from "../src/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { splitBom } from "../src/utils/text.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 const readTool = createReadTool(process.cwd());
 const writeTool = createWriteTool(process.cwd());
-const editTool = createEditTool(process.cwd());
 const bashTool = createBashTool(process.cwd());
 const grepTool = createGrepTool(process.cwd());
 const findTool = createFindTool(process.cwd());
@@ -44,6 +47,24 @@ function getTextOutput(result: any): string {
 			.map((c: any) => c.text)
 			.join("\n") || ""
 	);
+}
+
+async function executeSnapshotEdit(
+	cwd: string,
+	callId: string,
+	path: string,
+	rawContent: string,
+	edits: SnapshotRangeEdit[],
+	options?: EditToolOptions,
+	signal?: AbortSignal,
+	context?: ExtensionToolContext,
+) {
+	const state = new FileEditState();
+	const effectiveCwd = context?.cwd || cwd;
+	const totalLines = normalizeToLF(splitBom(rawContent).text).split("\n").length;
+	const snapshot = state.capture(resolve(effectiveCwd, path), rawContent, 1, totalLines);
+	const tool = createEditTool(cwd, { ...options, fileEditState: state });
+	return tool.execute(callId, { path, snapshot: snapshot.id, edits }, signal, undefined, context);
 }
 
 function createTinyBmp1x1Red24bpp(): Buffer {
@@ -85,11 +106,20 @@ describe("Coding Agent Tools", () => {
 
 			const result = await readTool.execute("test-call-1", { path: testFile });
 
-			expect(getTextOutput(result)).toBe(content);
-			// No truncation message since file fits within limits
-			expect(getTextOutput(result)).not.toContain("Use offset=");
-			expect(result.details).toBeUndefined();
-			expect(result.structuredContent).toBe(content);
+			const output = getTextOutput(result);
+			expect(output).toMatch(/^\[snapshot [^;]+; lines 1-3[^\]]*\]\n1\| Hello, world!\n2\| Line 2\n3\| Line 3$/);
+			// No continuation message since the complete file was displayed.
+			expect(output).not.toContain("Use offset=");
+			expect(result.details?.source).toMatchObject({
+				snapshot: expect.any(String),
+				absolutePath: testFile,
+				startLine: 1,
+				endLine: 3,
+				totalLines: 3,
+				revision: expect.any(String),
+				outputHash: expect.any(String),
+			});
+			expect(result.structuredContent).toBe(output);
 		});
 
 		it("should handle non-existent files", async () => {
@@ -106,10 +136,10 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-3", { path: testFile });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("Line 1");
-			expect(output).toContain("Line 2000");
-			expect(output).not.toContain("Line 2001");
-			expect(output).toContain("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]");
+			expect(output).toContain("1| Line 1");
+			expect(output).toContain("2000| Line 2000");
+			expect(output).not.toContain("2001| Line 2001");
+			expect(output).toContain("[500 more lines in file. Use offset=2001 to continue.]");
 		});
 
 		it("should truncate when byte limit exceeded", async () => {
@@ -121,9 +151,9 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-4", { path: testFile });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("Line 1:");
-			// Should show byte limit message
-			expect(output).toMatch(/\[Showing lines 1-\d+ of 500 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+			expect(output).toContain("1| Line 1:");
+			// The displayed source is numbered and the remaining range is explicit.
+			expect(output).toMatch(/\[\d+ more lines in file\. Use offset=\d+ to continue\.\]/);
 		});
 
 		it("should handle offset parameter", async () => {
@@ -134,9 +164,9 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-5", { path: testFile, offset: 51 });
 			const output = getTextOutput(result);
 
-			expect(output).not.toContain("Line 50");
-			expect(output).toContain("Line 51");
-			expect(output).toContain("Line 100");
+			expect(output).not.toContain("50| Line 50");
+			expect(output).toContain("51| Line 51");
+			expect(output).toContain("100| Line 100");
 			// No truncation message since file fits within limits
 			expect(output).not.toContain("Use offset=");
 		});
@@ -149,9 +179,9 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-6", { path: testFile, limit: 10 });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("Line 1");
-			expect(output).toContain("Line 10");
-			expect(output).not.toContain("Line 11");
+			expect(output).toContain("1| Line 1");
+			expect(output).toContain("10| Line 10");
+			expect(output).not.toContain("11| Line 11");
 			expect(output).toContain("[90 more lines in file. Use offset=11 to continue.]");
 		});
 
@@ -167,10 +197,10 @@ describe("Coding Agent Tools", () => {
 			});
 			const output = getTextOutput(result);
 
-			expect(output).not.toContain("Line 40");
-			expect(output).toContain("Line 41");
-			expect(output).toContain("Line 60");
-			expect(output).not.toContain("Line 61");
+			expect(output).not.toContain("40| Line 40");
+			expect(output).toContain("41| Line 41");
+			expect(output).toContain("60| Line 60");
+			expect(output).not.toContain("61| Line 61");
 			expect(output).toContain("[40 more lines in file. Use offset=61 to continue.]");
 		});
 
@@ -266,7 +296,7 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
 			expect(getTextOutput(result)).toContain(testFile);
-			expect(result.details).toEqual({ operation: "created", additions: 1, deletions: 0 });
+			expect(result.details).toEqual({ path: testFile, operation: "created", additions: 1, deletions: 0 });
 		});
 
 		it("should report line changes when overwriting a file", async () => {
@@ -278,7 +308,7 @@ describe("Coding Agent Tools", () => {
 				content: "one\nthree\nfour\n",
 			});
 
-			expect(result.details).toEqual({ operation: "updated", additions: 2, deletions: 1 });
+			expect(result.details).toEqual({ path: testFile, operation: "updated", additions: 2, deletions: 1 });
 		});
 
 		it("should create parent directories", async () => {
@@ -297,23 +327,19 @@ describe("Coding Agent Tools", () => {
 			const originalContent = "Hello, world!";
 			writeFileSync(testFile, originalContent);
 
-			const result = await editTool.execute("test-call-5", {
-				path: testFile,
-				edits: [{ oldText: "world", newText: "testing" }],
-			});
+			const result = await executeSnapshotEdit(process.cwd(), "test-call-5", testFile, originalContent, [
+				{ startLine: 1, endLine: 1, newText: "Hello, testing!" },
+			]);
 
-			expect(getTextOutput(result)).toContain("Successfully replaced");
-			expect(result.details).toBeDefined();
-			expect(result.details.diff).toBeDefined();
-			expect(typeof result.details.diff).toBe("string");
-			expect(result.details.diff).toContain("testing");
-			expect(result.details.patch).toContain("--- ");
-			expect(result.details.patch).toContain("+++ ");
-			expect(result.details.patch).toContain("@@");
-			expect(result.details.patch).toContain("-Hello, world!");
-			expect(result.details.patch).toContain("+Hello, testing!");
-			expect(result.details).toMatchObject({ additions: 1, deletions: 1 });
-			expect(applyPatch(originalContent, result.details.patch)).toBe("Hello, testing!");
+			expect(getTextOutput(result)).toContain("Successfully edited");
+			expect(result.details).toMatchObject({ path: testFile, status: "written", additions: 1, deletions: 1 });
+			expect(result.details?.diff).toContain("testing");
+			expect(result.details?.patch).toContain("--- ");
+			expect(result.details?.patch).toContain("+++ ");
+			expect(result.details?.patch).toContain("@@");
+			expect(result.details?.patch).toContain("-Hello, world!");
+			expect(result.details?.patch).toContain("+Hello, testing!");
+			expect(applyPatch(originalContent, result.details?.patch ?? "")).toBe("Hello, testing!");
 		});
 
 		it("should treat a validated no-op edit as an idempotent success", async () => {
@@ -321,153 +347,148 @@ describe("Coding Agent Tools", () => {
 			const originalContent = "already final\n";
 			writeFileSync(testFile, originalContent);
 
-			const result = await editTool.execute("test-call-no-op", {
-				path: testFile,
-				edits: [{ oldText: "already final", newText: "already final" }],
-			});
+			const result = await executeSnapshotEdit(process.cwd(), "test-call-no-op", testFile, originalContent, [
+				{ startLine: 1, endLine: 1, newText: "already final\n" },
+			]);
 
-			expect(getTextOutput(result)).toBe(
-				`No changes needed for ${testFile}; the requested content is already present.`,
-			);
-			expect(result.details).toMatchObject({ additions: 0, deletions: 0 });
+			expect(getTextOutput(result)).toContain("No changes needed");
+			expect(result.details).toMatchObject({ status: "unchanged", additions: 0, deletions: 0 });
 			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
 		});
 
 		it("should reject an edit when the target changes before write", async () => {
 			const testFile = join(testDir, "edit-write-conflict.txt");
-			writeFileSync(testFile, "alpha\nbeta\n");
+			const original = "alpha\nbeta\n";
+			writeFileSync(testFile, original);
 			let readCount = 0;
 			let writeCount = 0;
-			const conflictTool = createEditTool(testDir, {
-				operations: {
-					access: async () => {},
-					readFile: async (path) => {
-						readCount++;
-						if (readCount === 2) writeFileSync(path, "changed\n");
-						return readFileSync(path);
-					},
-					writeFile: async (path, content) => {
-						writeCount++;
-						writeFileSync(path, content);
-					},
+			const operations = {
+				access: async () => {},
+				readFile: async (path: string) => {
+					readCount++;
+					if (readCount === 2) writeFileSync(path, "changed\n");
+					return readFileSync(path);
 				},
-			});
+				writeFile: async (path: string, content: string) => {
+					writeCount++;
+					writeFileSync(path, content);
+				},
+			};
 
 			await expect(
-				conflictTool.execute("test-call-write-conflict", {
-					path: testFile,
-					edits: [{ oldText: "alpha", newText: "ALPHA" }],
-				}),
+				executeSnapshotEdit(testDir, "test-call-write-conflict", testFile, original, [
+					{ startLine: 1, endLine: 1, newText: "ALPHA\n" },
+				], { operations }),
 			).rejects.toMatchObject({
-				code: "WRITE_CONFLICT",
+				code: "SOURCE_CHANGED",
 				category: "stale_state",
 				retryable: false,
 				details: {
-					expectedContentHash: expect.any(String),
-					actualContentHash: expect.any(String),
+					path: testFile,
+					plan: expect.any(String),
+					writeState: "not_written",
+					issues: expect.arrayContaining([expect.objectContaining({ code: "SOURCE_CHANGED" })]),
 				},
-				fingerprintConstraint: { kind: "edit_write_conflict" },
+				fingerprintConstraint: { kind: "edit_snapshot", revision: expect.any(String) },
 			});
 			expect(writeCount).toBe(0);
 			expect(readFileSync(testFile, "utf-8")).toBe("changed\n");
 		});
 
-		it("should not apply stale oldText after a prior edit changes the file", async () => {
-			const testFile = join(testDir, "edit-stale-old-text.txt");
-			writeFileSync(testFile, "alpha\nbeta\n");
+		it("should reject a reused snapshot after a prior edit changes the file", async () => {
+			const testFile = join(testDir, "edit-stale-snapshot.txt");
+			const original = "alpha\nbeta\n";
+			writeFileSync(testFile, original);
+			const state = new FileEditState();
+			const totalLines = normalizeToLF(splitBom(original).text).split("\n").length;
+			const snapshot = state.capture(resolve(testFile), original, 1, totalLines);
+			const tool = createEditTool(process.cwd(), { fileEditState: state });
 
-			await editTool.execute("test-call-stale-first", {
+			await tool.execute("test-call-stale-first", {
 				path: testFile,
-				edits: [{ oldText: "alpha", newText: "ALPHA" }],
+				snapshot: snapshot.id,
+				edits: [{ startLine: 1, endLine: 1, newText: "ALPHA\n" }],
 			});
 			await expect(
-				editTool.execute("test-call-stale-second", {
+				tool.execute("test-call-stale-second", {
 					path: testFile,
-					edits: [{ oldText: "alpha", newText: "changed" }],
+					snapshot: snapshot.id,
+					edits: [{ startLine: 1, endLine: 1, newText: "changed\n" }],
 				}),
-			).rejects.toThrow(/Could not find the exact text/);
+			).rejects.toMatchObject({
+				code: "SOURCE_CHANGED",
+				category: "stale_state",
+				details: { writeState: "not_written" },
+			});
 			expect(readFileSync(testFile, "utf-8")).toBe("ALPHA\nbeta\n");
 		});
 
-		it("should include ENOENT when the edit target does not exist", async () => {
+		it("should report a missing edit target without writing", async () => {
 			const missingFile = join(testDir, "missing.txt");
-
+			const tool = createEditTool(testDir);
 			await expect(
-				editTool.execute("test-call-6b", {
+				tool.execute("test-call-missing", {
 					path: missingFile,
-					edits: [{ oldText: "hello", newText: "world" }],
+					snapshot: "unavailable-snapshot",
+					edits: [{ startLine: 1, endLine: 1, newText: "world" }],
 				}),
-			).rejects.toThrow(`Could not edit file: ${missingFile}. Error code: ENOENT.`);
+			).rejects.toMatchObject({ code: "TARGET_NOT_FOUND", details: { path: missingFile, writeState: "not_written" } });
 		});
 
-		it("should fail if text appears multiple times", async () => {
-			const testFile = join(testDir, "edit-test.txt");
-			const originalContent = "foo foo foo";
-			writeFileSync(testFile, originalContent);
-
-			await expect(
-				editTool.execute("test-call-7", {
-					path: testFile,
-					edits: [{ oldText: "foo", newText: "bar" }],
-				}),
-			).rejects.toThrow(/Found 3 occurrences/);
+		it("should select one repeated source line by its exact range", async () => {
+			const testFile = join(testDir, "edit-repeated-lines.txt");
+			const original = "foo\nfoo\nfoo\n";
+			writeFileSync(testFile, original);
+			await executeSnapshotEdit(process.cwd(), "test-call-repeated-lines", testFile, original, [
+				{ startLine: 2, endLine: 2, newText: "bar\n" },
+			]);
+			expect(readFileSync(testFile, "utf-8")).toBe("foo\nbar\nfoo\n");
 		});
 
-		it("should report exact duplicate candidate lines without writing the file", async () => {
+		it("should replace the requested occurrence among duplicate source lines", async () => {
 			const testFile = join(testDir, "edit-duplicate-lines.txt");
 			const original = "\uFEFFbefore\r\nrepeat\r\nmiddle\r\nrepeat\r\nafter\r\nrepeat\r\n";
 			writeFileSync(testFile, original);
-
-			await expect(
-				editTool.execute("test-call-duplicate-lines", {
-					path: testFile,
-					edits: [{ oldText: "repeat", newText: "changed" }],
-				}),
-			).rejects.toThrow(
-				`Found 3 occurrences of edits[0] in ${testFile} at lines 2, 4, 6.\nInclude one stable unchanged line before or after the intended block, then retry.\nNo changes were written.`,
-			);
-			expect(readFileSync(testFile, "utf-8")).toBe(original);
+			await executeSnapshotEdit(process.cwd(), "test-call-duplicate-lines", testFile, original, [
+				{ startLine: 4, endLine: 4, newText: "changed\n" },
+			]);
+			expect(readFileSync(testFile, "utf-8")).toBe("\uFEFFbefore\r\nrepeat\r\nmiddle\r\nchanged\r\nafter\r\nrepeat\r\n");
 		});
 
-		it("should report fuzzy duplicate candidate lines without writing the file", async () => {
+		it("should select a Unicode-equivalent duplicate only by its requested line range", async () => {
 			const testFile = join(testDir, "edit-fuzzy-duplicate-lines.txt");
 			const original = "header\n\u201ctarget\u201d\nbody\n\u201etarget\u201f\n";
 			writeFileSync(testFile, original);
-
-			await expect(
-				editTool.execute("test-call-fuzzy-duplicate-lines", {
-					path: testFile,
-					edits: [{ oldText: '"target"', newText: "changed" }],
-				}),
-			).rejects.toThrow(`Found 2 occurrences of edits[0] in ${testFile} at lines 2, 4.`);
-			expect(readFileSync(testFile, "utf-8")).toBe(original);
+			await executeSnapshotEdit(process.cwd(), "test-call-fuzzy-duplicate-lines", testFile, original, [
+				{ startLine: 4, endLine: 4, newText: "changed\n" },
+			]);
+			expect(readFileSync(testFile, "utf-8")).toBe("header\n\u201ctarget\u201d\nbody\nchanged\n");
 		});
 
-		it("should limit duplicate candidate lines to five", async () => {
+		it("should address a repeated source line beyond the former candidate display limit", async () => {
 			const testFile = join(testDir, "edit-many-duplicates.txt");
-			writeFileSync(testFile, Array.from({ length: 101 }, () => "target").join("\n"));
-
-			await expect(
-				editTool.execute("test-call-many-duplicates", {
-					path: testFile,
-					edits: [{ oldText: "target", newText: "changed" }],
-				}),
-			).rejects.toThrow(`Found 101 occurrences of edits[0] in ${testFile} at lines 1, 2, 3, 4, 5 +96 more.`);
+			const original = Array.from({ length: 101 }, () => "target").join("\n");
+			writeFileSync(testFile, original);
+			await executeSnapshotEdit(process.cwd(), "test-call-many-duplicates", testFile, original, [
+				{ startLine: 101, endLine: 101, newText: "changed" },
+			]);
+			const lines = readFileSync(testFile, "utf-8").split("\n");
+			expect(lines).toHaveLength(101);
+			expect(lines.slice(0, 100)).toEqual(Array.from({ length: 100 }, () => "target"));
+			expect(lines[100]).toBe("changed");
 		});
 
 		it("should replace multiple disjoint regions in one call", async () => {
 			const testFile = join(testDir, "edit-multi.txt");
-			writeFileSync(testFile, "alpha\nbeta\ngamma\ndelta\n");
+			const original = "alpha\nbeta\ngamma\ndelta\n";
+			writeFileSync(testFile, original);
 
-			const result = await editTool.execute("test-call-8", {
-				path: testFile,
-				edits: [
-					{ oldText: "alpha\n", newText: "ALPHA\n" },
-					{ oldText: "gamma\n", newText: "GAMMA\n" },
-				],
-			});
+			const result = await executeSnapshotEdit(process.cwd(), "test-call-8", testFile, original, [
+				{ startLine: 1, endLine: 1, newText: "ALPHA\n" },
+				{ startLine: 3, endLine: 3, newText: "GAMMA\n" },
+			]);
 
-			expect(getTextOutput(result)).toContain("Successfully replaced 2 block(s)");
+			expect(getTextOutput(result)).toContain("Successfully edited");
 			expect(readFileSync(testFile, "utf-8")).toBe("ALPHA\nbeta\nGAMMA\ndelta\n");
 			expect(result.details?.diff).toContain("ALPHA");
 			expect(result.details?.diff).toContain("GAMMA");
@@ -476,16 +497,14 @@ describe("Coding Agent Tools", () => {
 		it("should collapse large unchanged gaps in multi-edit diffs", async () => {
 			const testFile = join(testDir, "edit-multi-large-gap.txt");
 			const lines = Array.from({ length: 600 }, (_, i) => `line ${String(i + 1).padStart(3, "0")}`);
-			writeFileSync(testFile, `${lines.join("\n")}\n`);
+			const original = `${lines.join("\n")}\n`;
+			writeFileSync(testFile, original);
 
-			const result = await editTool.execute("test-call-8b", {
-				path: testFile,
-				edits: [
-					{ oldText: "line 100\n", newText: "LINE 100\n" },
-					{ oldText: "line 300\n", newText: "LINE 300\n" },
-					{ oldText: "line 500\n", newText: "LINE 500\n" },
-				],
-			});
+			const result = await executeSnapshotEdit(process.cwd(), "test-call-8b", testFile, original, [
+				{ startLine: 100, endLine: 100, newText: "LINE 100\n" },
+				{ startLine: 300, endLine: 300, newText: "LINE 300\n" },
+				{ startLine: 500, endLine: 500, newText: "LINE 500\n" },
+			]);
 
 			const diff = result.details?.diff ?? "";
 			expect(diff).toContain("LINE 100");
@@ -498,15 +517,13 @@ describe("Coding Agent Tools", () => {
 
 		it("should match edits against the original file, not incrementally", async () => {
 			const testFile = join(testDir, "edit-multi-original.txt");
-			writeFileSync(testFile, "foo\nbar\nbaz\n");
+			const original = "foo\nbar\nbaz\n";
+			writeFileSync(testFile, original);
 
-			await editTool.execute("test-call-9", {
-				path: testFile,
-				edits: [
-					{ oldText: "foo\n", newText: "foo bar\n" },
-					{ oldText: "bar\n", newText: "BAR\n" },
-				],
-			});
+			await executeSnapshotEdit(process.cwd(), "test-call-9", testFile, original, [
+				{ startLine: 1, endLine: 1, newText: "foo bar\n" },
+				{ startLine: 2, endLine: 2, newText: "BAR\n" },
+			]);
 
 			expect(readFileSync(testFile, "utf-8")).toBe("foo bar\nBAR\nbaz\n");
 		});
@@ -515,76 +532,68 @@ describe("Coding Agent Tools", () => {
 			const testFile = join(testDir, "edit-empty-edits.txt");
 			writeFileSync(testFile, "hello\nworld\n");
 
-			await expect(
-				editTool.execute("test-call-11", {
-					path: testFile,
-					edits: [],
-				}),
-			).rejects.toThrow(/edits must contain at least one replacement/);
+			await expect(executeSnapshotEdit(process.cwd(), "test-call-11", testFile, "hello\nworld\n", [])).rejects.toThrow(
+				/at least one/i,
+			);
 		});
 
 		it("should fail when multi-edit regions overlap", async () => {
 			const testFile = join(testDir, "edit-overlap.txt");
-			writeFileSync(testFile, "one\ntwo\nthree\n");
+			const original = "one\ntwo\nthree\n";
+			writeFileSync(testFile, original);
 
 			await expect(
-				editTool.execute("test-call-12", {
-					path: testFile,
-					edits: [
-						{ oldText: "one\ntwo\n", newText: "ONE\nTWO\n" },
-						{ oldText: "two\nthree\n", newText: "TWO\nTHREE\n" },
-					],
-				}),
-			).rejects.toThrow(/overlap/);
+				executeSnapshotEdit(process.cwd(), "test-call-12", testFile, original, [
+					{ startLine: 1, endLine: 2, newText: "ONE\nTWO\n" },
+					{ startLine: 2, endLine: 3, newText: "TWO\nTHREE\n" },
+				]),
+			).rejects.toThrow(/overlap/i);
 		});
 
 		it("should classify overlapping edits with stable recovery metadata", async () => {
 			const testFile = join(testDir, "edit-overlap-metadata.txt");
-			writeFileSync(testFile, "one\ntwo\nthree\n");
+			const original = "one\ntwo\nthree\n";
+			writeFileSync(testFile, original);
 
 			await expect(
-				editTool.execute("test-call-overlap-metadata", {
-					path: testFile,
-					edits: [
-						{ oldText: "one\ntwo\n", newText: "ONE\nTWO\n" },
-						{ oldText: "two\nthree\n", newText: "TWO\nTHREE\n" },
-					],
-				}),
+				executeSnapshotEdit(process.cwd(), "test-call-overlap-metadata", testFile, original, [
+					{ startLine: 1, endLine: 2, newText: "ONE\nTWO\n" },
+					{ startLine: 2, endLine: 3, newText: "TWO\nTHREE\n" },
+				]),
 			).rejects.toMatchObject({
 				code: "EDIT_OVERLAP",
 				category: "precondition",
 				retryable: false,
-				details: { overlapEditIndexes: [0, 1] },
-				fingerprintConstraint: { kind: "edit_overlap", editIndexes: [0, 1] },
+				details: {
+							issues: expect.arrayContaining([
+								expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 1, startLine: 2, endLine: 3 }),
+							]),
+					writeState: "not_written",
+				},
+				fingerprintConstraint: { kind: "edit_snapshot", revision: expect.any(String) },
 			});
 		});
 
-		it("should keep failed edit fingerprints distinct by oldText", async () => {
+		it("should keep failed edit fingerprints stable for the same source revision", async () => {
 			const testFile = join(testDir, "edit-fingerprint.txt");
-			writeFileSync(testFile, "current\n");
+			const original = "current";
+			writeFileSync(testFile, original);
+			const firstError = await executeSnapshotEdit(process.cwd(), "test-call-fingerprint-1", testFile, original, [
+				{ startLine: 2, endLine: 2, newText: "a" },
+			]).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			const secondError = await executeSnapshotEdit(process.cwd(), "test-call-fingerprint-2", testFile, original, [
+				{ startLine: 3, endLine: 3, newText: "b" },
+			]).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
 
-			const firstError = await editTool
-				.execute("test-call-fingerprint-1", {
-					path: testFile,
-					edits: [{ oldText: "missing-a", newText: "a" }],
-				})
-				.then(
-					() => undefined,
-					(error: unknown) => error,
-				);
-			const secondError = await editTool
-				.execute("test-call-fingerprint-2", {
-					path: testFile,
-					edits: [{ oldText: "missing-b", newText: "b" }],
-				})
-				.then(
-					() => undefined,
-					(error: unknown) => error,
-				);
-
-			expect(firstError).toMatchObject({ code: "MATCH_NOT_FOUND" });
-			expect(secondError).toMatchObject({ code: "MATCH_NOT_FOUND" });
-			expect((firstError as { fingerprintConstraint?: unknown }).fingerprintConstraint).not.toEqual(
+			expect(firstError).toMatchObject({ code: expect.any(String) });
+			expect(secondError).toMatchObject({ code: expect.any(String) });
+			expect((firstError as { fingerprintConstraint?: unknown }).fingerprintConstraint).toEqual(
 				(secondError as { fingerprintConstraint?: unknown }).fingerprintConstraint,
 			);
 		});
@@ -595,33 +604,35 @@ describe("Coding Agent Tools", () => {
 			writeFileSync(testFile, originalContent);
 
 			await expect(
-				editTool.execute("test-call-13", {
-					path: testFile,
-					edits: [
-						{ oldText: "alpha\n", newText: "ALPHA\n" },
-						{ oldText: "missing\n", newText: "MISSING\n" },
-					],
-				}),
-			).rejects.toThrow(/Could not find/);
+				executeSnapshotEdit(process.cwd(), "test-call-13", testFile, originalContent, [
+					{ startLine: 1, endLine: 1, newText: "ALPHA\n" },
+					{ startLine: 8, endLine: 8, newText: "MISSING\n" },
+				]),
+			).rejects.toMatchObject({
+				details: {
+					writeState: "not_written",
+					issues: expect.arrayContaining([expect.objectContaining({ editIndex: 1 })]),
+				},
+			});
 
 			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
 		});
 
 		it("should include EACCES for read-only files", async () => {
 			const testFile = join(testDir, "edit-readonly.txt");
-			writeFileSync(testFile, "hello\n");
+			const original = "hello\n";
+			writeFileSync(testFile, original);
 			chmodSync(testFile, 0o444);
 
 			await expect(
-				editTool.execute("test-call-14", {
-					path: testFile,
-					edits: [{ oldText: "hello", newText: "world" }],
-				}),
-			).rejects.toThrow(`Could not edit file: ${testFile}. Error code: EACCES.`);
+				executeSnapshotEdit(process.cwd(), "test-call-14", testFile, original, [
+					{ startLine: 1, endLine: 1, newText: "world\n" },
+				]),
+			).rejects.toMatchObject({ code: "PERMISSION_DENIED", details: { path: testFile, writeState: "not_written" } });
 		});
 
 		it("should include the original error message for unknown edit access errors", async () => {
-			const genericFailureTool = createEditTool(testDir, {
+			const genericFailureOptions: EditToolOptions = {
 				operations: {
 					access: async () => {
 						throw new Error("disk offline");
@@ -629,31 +640,67 @@ describe("Coding Agent Tools", () => {
 					readFile: async () => Buffer.from("hello\n", "utf-8"),
 					writeFile: async () => {},
 				},
-			});
+			};
 
 			await expect(
-				genericFailureTool.execute("test-call-16", {
-					path: "broken.txt",
-					edits: [{ oldText: "hello", newText: "world" }],
+				executeSnapshotEdit(testDir, "test-call-16", "broken.txt", "hello\n", [
+					{ startLine: 1, endLine: 1, newText: "world\n" },
+				], genericFailureOptions),
+			).rejects.toMatchObject({ code: "UNCLASSIFIED", message: "disk offline" });
+		});
+
+		it("should render only supplied ranges before execution and return the real diff after execution", async () => {
+			initTheme("dark");
+			const testFile = join(testDir, "preview-range.txt");
+			const original = "first\nsecond\nthird\nfourth\n";
+			const state = new FileEditState();
+			const snapshot = state.capture(resolve(testFile), original, 1, 5);
+			let current = Buffer.from(original, "utf-8");
+			const operations = {
+				access: vi.fn(async () => {}),
+				readFile: vi.fn(async () => current),
+				writeFile: vi.fn(async (_path: string, content: string) => {
+					current = Buffer.from(content, "utf-8");
 				}),
-			).rejects.toThrow("Could not edit file: broken.txt. Error: disk offline.");
-		});
+			};
+			const definition = createEditToolDefinition(testDir, { fileEditState: state, operations });
+			const args = {
+				path: testFile,
+				snapshot: snapshot.id,
+				edits: [{ startLine: 2, endLine: 3, newText: "replacement\n" }],
+			};
+			const preview = definition.renderCall!(args as never, theme, {
+				args,
+				toolCallId: "preview",
+				invalidate: () => {},
+				lastComponent: undefined,
+				state: {},
+				cwd: testDir,
+				executionStarted: false,
+				argsComplete: true,
+				isPartial: true,
+				expanded: true,
+				showImages: false,
+				isError: false,
+			} as never);
+			const previewText = stripAnsi(preview.render(120).join("\n"));
+			expect(previewText).toContain("@@ read lines 2-3 @@");
+			expect(previewText).toContain("replacement");
+			expect(previewText).not.toContain("second");
+			expect(previewText).not.toContain("third");
+			expect(operations.access).not.toHaveBeenCalled();
+			expect(operations.readFile).not.toHaveBeenCalled();
 
-		it("should include ENOENT in diff preview for missing files", async () => {
-			const missingFile = join(testDir, "missing-preview.txt");
-			const result = await computeEditsDiff(missingFile, [{ oldText: "hello", newText: "world" }], testDir);
-
-			expect(result).toEqual({ error: `Could not edit file: ${missingFile}. Error code: ENOENT.` });
-		});
-
-		it("should include EACCES in diff preview for unreadable files", async () => {
-			const unreadableFile = join(testDir, "unreadable-preview.txt");
-			writeFileSync(unreadableFile, "hello\n");
-			chmodSync(unreadableFile, 0o222);
-
-			const result = await computeEditsDiff(unreadableFile, [{ oldText: "hello", newText: "world" }], testDir);
-
-			expect(result).toEqual({ error: `Could not edit file: ${unreadableFile}. Error code: EACCES.` });
+			const result = await definition.execute(
+				"preview-execute",
+				args as never,
+				undefined,
+				undefined,
+				{ cwd: testDir } as ExtensionToolContext,
+			);
+			expect(result.details?.diff).toContain("-2 second");
+			expect(result.details?.diff).toContain("-3 third");
+			expect(result.details?.diff).toContain("+2 replacement");
 		});
 	});
 
@@ -1239,9 +1286,12 @@ describe("tool cwd resolution", () => {
 		const testFile = join(testDir, "ctx-cwd-edit.txt");
 		writeFileSync(testFile, "old text");
 		const tool = createEditToolDefinition("/");
-		await tool.execute(
+		await executeSnapshotEdit(
+			"/",
 			"test-edit-ctx-cwd",
-			{ path: "ctx-cwd-edit.txt", edits: [{ oldText: "old text", newText: "new text" }] },
+			"ctx-cwd-edit.txt",
+			"old text",
+			[{ startLine: 1, endLine: 1, newText: "new text" }],
 			undefined,
 			undefined,
 			fakeCtx(testDir),
@@ -1301,7 +1351,7 @@ describe("tool cwd resolution", () => {
 	});
 });
 
-describe("edit tool fuzzy matching", () => {
+describe("edit tool explicit line ranges", () => {
 	let testDir: string;
 
 	beforeEach(() => {
@@ -1313,227 +1363,201 @@ describe("edit tool fuzzy matching", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("should match text with trailing whitespace stripped", async () => {
+	it("should preserve whitespace outside the selected line range", async () => {
 		const testFile = join(testDir, "trailing-ws.txt");
-		// File has trailing spaces on lines
-		writeFileSync(testFile, "line one   \nline two  \nline three\n");
+		const original = "line one   \nline two  \nline three\n";
+		writeFileSync(testFile, original);
+		const result = await executeSnapshotEdit(process.cwd(), "range-ws", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "replaced\n" },
+		]);
 
-		// oldText without trailing whitespace should still match
-		const result = await editTool.execute("test-fuzzy-1", {
-			path: testFile,
-			edits: [{ oldText: "line one\nline two\n", newText: "replaced\n" }],
-		});
-
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toBe("replaced\nline three\n");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("replaced\nline two  \nline three\n");
 	});
 
-	it("should match fullwidth punctuation in Chinese text", async () => {
+	it("should replace explicitly selected Chinese source lines", async () => {
 		const testFile = join(testDir, "chinese-punctuation.txt");
-		writeFileSync(testFile, "你好，世界\n你好（世界）\n");
+		const original = "你好，世界\n你好（世界）\n";
+		writeFileSync(testFile, original);
 
-		const result = await editTool.execute("test-fuzzy-chinese", {
-			path: testFile,
-			edits: [{ oldText: "你好,世界\n你好(世界)\n", newText: "你好，pi\n你好(pi)\n" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-chinese", testFile, original, [
+			{ startLine: 1, endLine: 2, newText: "你好，pi\n你好(pi)\n" },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toBe("你好，pi\n你好(pi)\n");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("你好，pi\n你好(pi)\n");
 	});
 
-	it("should match compatibility-equivalent Unicode forms", async () => {
+	it("should replace Unicode source lines by their snapshot range", async () => {
 		const testFile = join(testDir, "unicode-compatibility.txt");
-		writeFileSync(testFile, "ＡＢＣ１２３\ncafe\u0301\n");
+		const original = "ＡＢＣ１２３\ncafe\u0301\n";
+		writeFileSync(testFile, original);
 
-		const result = await editTool.execute("test-fuzzy-unicode", {
-			path: testFile,
-			edits: [{ oldText: "ABC123\ncafé\n", newText: "XYZ789\ncoffee\n" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-unicode", testFile, original, [
+			{ startLine: 1, endLine: 2, newText: "XYZ789\ncoffee\n" },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toBe("XYZ789\ncoffee\n");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("XYZ789\ncoffee\n");
 	});
 
-	it("should match smart single quotes to ASCII quotes", async () => {
+	it("should replace the selected line containing smart single quotes", async () => {
 		const testFile = join(testDir, "smart-quotes.txt");
-		// File has smart/curly single quotes (U+2018, U+2019)
-		writeFileSync(testFile, "console.log(\u2018hello\u2019);\n");
+		const original = "console.log(\u2018hello\u2019);\n";
+		writeFileSync(testFile, original);
 
-		// oldText with ASCII quotes should match
-		const result = await editTool.execute("test-fuzzy-2", {
-			path: testFile,
-			edits: [{ oldText: "console.log('hello');", newText: "console.log('world');" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-smart-single-quotes", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "console.log('world');\n" },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toContain("world");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("console.log('world');\n");
 	});
 
-	it("should match smart double quotes to ASCII quotes", async () => {
+	it("should replace the selected line containing smart double quotes", async () => {
 		const testFile = join(testDir, "smart-double-quotes.txt");
-		// File has smart/curly double quotes (U+201C, U+201D)
-		writeFileSync(testFile, "const msg = \u201CHello World\u201D;\n");
+		const original = "const msg = \u201CHello World\u201D;\n";
+		writeFileSync(testFile, original);
 
-		// oldText with ASCII quotes should match
-		const result = await editTool.execute("test-fuzzy-3", {
-			path: testFile,
-			edits: [{ oldText: 'const msg = "Hello World";', newText: 'const msg = "Goodbye";' }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-smart-double-quotes", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: 'const msg = "Goodbye";\n' },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toContain("Goodbye");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe('const msg = "Goodbye";\n');
 	});
 
-	it("should match Unicode dashes to ASCII hyphen", async () => {
+	it("should replace explicitly selected lines containing Unicode dashes", async () => {
 		const testFile = join(testDir, "unicode-dashes.txt");
-		// File has en-dash (U+2013) and em-dash (U+2014)
-		writeFileSync(testFile, "range: 1\u20135\nbreak\u2014here\n");
+		const original = "range: 1\u20135\nbreak\u2014here\n";
+		writeFileSync(testFile, original);
 
-		// oldText with ASCII hyphens should match
-		const result = await editTool.execute("test-fuzzy-4", {
-			path: testFile,
-			edits: [{ oldText: "range: 1-5\nbreak-here", newText: "range: 10-50\nbreak--here" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-unicode-dashes", testFile, original, [
+			{ startLine: 1, endLine: 2, newText: "range: 10-50\nbreak--here\n" },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toContain("10-50");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("range: 10-50\nbreak--here\n");
 	});
 
-	it("should match non-breaking space to regular space", async () => {
+	it("should replace the selected line containing a non-breaking space", async () => {
 		const testFile = join(testDir, "nbsp.txt");
-		// File has non-breaking space (U+00A0)
-		writeFileSync(testFile, "hello\u00A0world\n");
+		const original = "hello\u00A0world\n";
+		writeFileSync(testFile, original);
 
-		// oldText with regular space should match
-		const result = await editTool.execute("test-fuzzy-5", {
-			path: testFile,
-			edits: [{ oldText: "hello world", newText: "hello universe" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-nbsp", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "hello universe\n" },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toContain("universe");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("hello universe\n");
 	});
 
-	it("should prefer exact match over fuzzy match", async () => {
+	it("should edit only the explicitly selected line when another line is similar", async () => {
 		const testFile = join(testDir, "exact-preferred.txt");
-		// File has both exact and fuzzy-matchable content
-		writeFileSync(testFile, "const x = 'exact';\nconst y = 'other';\n");
+		const original = "const x = 'exact';\nconst y = 'other';\n";
+		writeFileSync(testFile, original);
 
-		const result = await editTool.execute("test-fuzzy-6", {
-			path: testFile,
-			edits: [{ oldText: "const x = 'exact';", newText: "const x = 'changed';" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-exact-line", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "const x = 'changed';\n" },
+		]);
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
-		const content = readFileSync(testFile, "utf-8");
-		expect(content).toBe("const x = 'changed';\nconst y = 'other';\n");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("const x = 'changed';\nconst y = 'other';\n");
 	});
 
-	it("should still fail when text is not found even with fuzzy matching", async () => {
-		const testFile = join(testDir, "no-match.txt");
-		writeFileSync(testFile, "completely different content\n");
+	it("should reject a range outside the returned snapshot", async () => {
+		const testFile = join(testDir, "invalid-range.txt");
+		const original = "completely different content";
+		writeFileSync(testFile, original);
 
 		await expect(
-			editTool.execute("test-fuzzy-7", {
-				path: testFile,
-				edits: [{ oldText: "this does not exist", newText: "replacement" }],
-			}),
-		).rejects.toThrow(/Could not find the exact text/);
+			executeSnapshotEdit(process.cwd(), "invalid-range", testFile, original, [
+				{ startLine: 2, endLine: 2, newText: "replacement" },
+			]),
+		).rejects.toMatchObject({
+			details: { writeState: "not_written", issues: expect.arrayContaining([expect.objectContaining({ editIndex: 0 })]) },
+		});
+		expect(readFileSync(testFile, "utf-8")).toBe(original);
 	});
 
-	it("should detect duplicates after fuzzy normalization", async () => {
+	it("should select one similar line without changing its duplicate", async () => {
 		const testFile = join(testDir, "fuzzy-dups.txt");
-		// Two lines that are identical after trailing whitespace is stripped
-		writeFileSync(testFile, "hello world   \nhello world\n");
+		const original = "hello world   \nhello world\n";
+		writeFileSync(testFile, original);
 
-		await expect(
-			editTool.execute("test-fuzzy-8", {
-				path: testFile,
-				edits: [{ oldText: "hello world", newText: "replaced" }],
-			}),
-		).rejects.toThrow(/Found 2 occurrences/);
+		await executeSnapshotEdit(process.cwd(), "range-similar-line", testFile, original, [
+			{ startLine: 2, endLine: 2, newText: "replaced\n" },
+		]);
+		expect(readFileSync(testFile, "utf-8")).toBe("hello world   \nreplaced\n");
 	});
 
-	it("should support fuzzy matching in multi-edit mode", async () => {
+	it("should apply multiple explicit ranges to Unicode source lines", async () => {
 		const testFile = join(testDir, "fuzzy-multi.txt");
-		writeFileSync(testFile, "console.log(\u2018hello\u2019);\nhello\u00A0world\n");
+		const original = "console.log(\u2018hello\u2019);\nhello\u00A0world\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-fuzzy-9", {
-			path: testFile,
-			edits: [
-				{ oldText: "console.log('hello');\n", newText: "console.log('world');\n" },
-				{ oldText: "hello world\n", newText: "hello universe\n" },
-			],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-unicode-multi", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "console.log('world');\n" },
+			{ startLine: 2, endLine: 2, newText: "hello universe\n" },
+		]);
 
 		expect(readFileSync(testFile, "utf-8")).toBe("console.log('world');\nhello universe\n");
 	});
 
-	it("should choose the matching tier independently for each edit", async () => {
+	it("should apply disjoint ranges independently when lines have similar text", async () => {
 		const testFile = join(testDir, "fuzzy-independent-tiers.txt");
-		writeFileSync(testFile, '\u201ctarget\u201d\n"exact"\n\u201cexact\u201d\n');
+		const original = '\u201ctarget\u201d\n"exact"\n\u201cexact\u201d\n';
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-fuzzy-independent-tiers", {
-			path: testFile,
-			edits: [
-				{ oldText: '"target"', newText: '"changed"' },
-				{ oldText: "\u201cexact\u201d", newText: "precise" },
-			],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-independent-lines", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: '"changed"\n' },
+			{ startLine: 3, endLine: 3, newText: "precise\n" },
+		]);
 
 		expect(readFileSync(testFile, "utf-8")).toBe('"changed"\n"exact"\nprecise\n');
 	});
 
-	it("should consume explicit indentation without damaging the next line", async () => {
+	it("should replace one indented source line without changing the next line", async () => {
 		const testFile = join(testDir, "fuzzy-indent-boundary.txt");
-		writeFileSync(testFile, "\tfoo();\n\tbar();\n");
+		const original = "\tfoo();\n\tbar();\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-fuzzy-indent-boundary", {
-			path: testFile,
-			edits: [{ oldText: "  foo();\n", newText: "  baz();\n" }],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-indent-boundary", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "  baz();\n" },
+		]);
 
 		expect(readFileSync(testFile, "utf-8")).toBe("  baz();\n\tbar();\n");
 	});
 
-	it("should not report adjacent fuzzy edits as overlapping", async () => {
+	it("should accept adjacent but disjoint source ranges", async () => {
 		const testFile = join(testDir, "fuzzy-adjacent-edits.txt");
-		writeFileSync(testFile, "\tfoo();\n\tbar();\n");
+		const original = "\tfoo();\n\tbar();\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-fuzzy-adjacent-edits", {
-			path: testFile,
-			edits: [
-				{ oldText: "  foo();\n", newText: "  baz();\n" },
-				{ oldText: "\tbar();\n", newText: "\tqux();\n" },
-			],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-adjacent-edits", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "  baz();\n" },
+			{ startLine: 2, endLine: 2, newText: "\tqux();\n" },
+		]);
 
 		expect(readFileSync(testFile, "utf-8")).toBe("  baz();\n\tqux();\n");
 	});
 
-	it("should preserve the correct occurrence when fuzzy replacement equals a nearby line", async () => {
+	it("should keep the selected range distinct from a nearby identical replacement", async () => {
 		const testFile = join(testDir, "fuzzy-preserve-duplicate-line.txt");
-		const originalContent = ["replace me\u0020\u0020\u0020", "after\u0020\u0020\u0020", ""].join("\n");
-		writeFileSync(testFile, originalContent);
+		const original = ["replace me\u0020\u0020\u0020", "after\u0020\u0020\u0020", ""].join("\n");
+		writeFileSync(testFile, original);
 
-		const result = await editTool.execute("test-fuzzy-preserve-duplicate-line", {
-			path: testFile,
-			edits: [{ oldText: "replace me\n", newText: "after\n" }],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-preserve-duplicate-line", testFile, original, [
+			{ startLine: 1, endLine: 1, newText: "after\n" },
+		]);
 
 		const expectedContent = ["after", "after\u0020\u0020\u0020", ""].join("\n");
 		expect(readFileSync(testFile, "utf-8")).toBe(expectedContent);
-		expect(applyPatch(originalContent, result.details?.patch ?? "")).toBe(expectedContent);
+		expect(applyPatch(original, result.details?.patch ?? "")).toBe(expectedContent);
 	});
 
-	it("should preserve untouched lines and produce an applicable patch for fuzzy multi-edits", async () => {
+	it("should preserve untouched lines and produce an applicable patch for explicit multi-ranges", async () => {
 		const testFile = join(testDir, "fuzzy-preserve-multi.txt");
 		const originalContent = [
 			"keep before\u0020\u0020",
@@ -1547,13 +1571,10 @@ describe("edit tool fuzzy matching", () => {
 		].join("\n");
 		writeFileSync(testFile, originalContent);
 
-		const result = await editTool.execute("test-fuzzy-preserve-multi", {
-			path: testFile,
-			edits: [
-				{ oldText: "first target\nfirst after", newText: "FIRST\nFIRST2" },
-				{ oldText: "second target\nsecond after", newText: "SECOND\nSECOND2" },
-			],
-		});
+		const result = await executeSnapshotEdit(process.cwd(), "range-preserve-multi", testFile, originalContent, [
+			{ startLine: 2, endLine: 3, newText: "FIRST\nFIRST2\n" },
+			{ startLine: 5, endLine: 6, newText: "SECOND\nSECOND2\n" },
+		]);
 
 		const expectedContent = [
 			"keep before\u0020\u0020",
@@ -1582,27 +1603,27 @@ describe("edit tool CRLF handling", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("should match LF oldText against CRLF file content", async () => {
+	it("should edit a selected line in CRLF content and preserve its line endings", async () => {
 		const testFile = join(testDir, "crlf-test.txt");
+		const original = "line one\r\nline two\r\nline three\r\n";
+		writeFileSync(testFile, original);
 
-		writeFileSync(testFile, "line one\r\nline two\r\nline three\r\n");
+		const result = await executeSnapshotEdit(process.cwd(), "range-crlf-one", testFile, original, [
+			{ startLine: 2, endLine: 2, newText: "replaced line\n" },
+		]);
 
-		const result = await editTool.execute("test-crlf-1", {
-			path: testFile,
-			edits: [{ oldText: "line two\n", newText: "replaced line\n" }],
-		});
-
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("Successfully edited");
+		expect(readFileSync(testFile, "utf-8")).toBe("line one\r\nreplaced line\r\nline three\r\n");
 	});
 
 	it("should preserve CRLF line endings after edit", async () => {
 		const testFile = join(testDir, "crlf-preserve.txt");
-		writeFileSync(testFile, "first\r\nsecond\r\nthird\r\n");
+		const original = "first\r\nsecond\r\nthird\r\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-crlf-2", {
-			path: testFile,
-			edits: [{ oldText: "second\n", newText: "REPLACED\n" }],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-crlf-preserve", testFile, original, [
+			{ startLine: 2, endLine: 2, newText: "REPLACED\n" },
+		]);
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("first\r\nREPLACED\r\nthird\r\n");
@@ -1610,38 +1631,36 @@ describe("edit tool CRLF handling", () => {
 
 	it("should preserve LF line endings for LF files", async () => {
 		const testFile = join(testDir, "lf-preserve.txt");
-		writeFileSync(testFile, "first\nsecond\nthird\n");
+		const original = "first\nsecond\nthird\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-lf-1", {
-			path: testFile,
-			edits: [{ oldText: "second\n", newText: "REPLACED\n" }],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-lf-preserve", testFile, original, [
+			{ startLine: 2, endLine: 2, newText: "REPLACED\n" },
+		]);
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("first\nREPLACED\nthird\n");
 	});
 
-	it("should detect duplicates across CRLF/LF variants", async () => {
+	it("should edit only the selected line when CRLF and LF endings coexist", async () => {
 		const testFile = join(testDir, "mixed-endings.txt");
+		const original = "hello\r\nworld\r\n---\r\nhello\nworld\n";
+		writeFileSync(testFile, original);
 
-		writeFileSync(testFile, "hello\r\nworld\r\n---\r\nhello\nworld\n");
-
-		await expect(
-			editTool.execute("test-crlf-dup", {
-				path: testFile,
-				edits: [{ oldText: "hello\nworld\n", newText: "replaced\n" }],
-			}),
-		).rejects.toThrow(/Found 2 occurrences/);
+		await executeSnapshotEdit(process.cwd(), "range-mixed-endings", testFile, original, [
+			{ startLine: 4, endLine: 4, newText: "replaced\n" },
+		]);
+		expect(readFileSync(testFile, "utf-8")).toBe("hello\r\nworld\r\n---\r\nreplaced\nworld\n");
 	});
 
 	it("should preserve UTF-8 BOM after edit", async () => {
 		const testFile = join(testDir, "bom-test.txt");
-		writeFileSync(testFile, "\uFEFFfirst\r\nsecond\r\nthird\r\n");
+		const original = "\uFEFFfirst\r\nsecond\r\nthird\r\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-bom", {
-			path: testFile,
-			edits: [{ oldText: "second\n", newText: "REPLACED\n" }],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-bom", testFile, original, [
+			{ startLine: 2, endLine: 2, newText: "REPLACED\n" },
+		]);
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("\uFEFFfirst\r\nREPLACED\r\nthird\r\n");
@@ -1649,15 +1668,13 @@ describe("edit tool CRLF handling", () => {
 
 	it("should preserve CRLF line endings and BOM in multi-edit mode", async () => {
 		const testFile = join(testDir, "bom-crlf-multi.txt");
-		writeFileSync(testFile, "\uFEFFfirst\r\nsecond\r\nthird\r\nfourth\r\n");
+		const original = "\uFEFFfirst\r\nsecond\r\nthird\r\nfourth\r\n";
+		writeFileSync(testFile, original);
 
-		await editTool.execute("test-crlf-multi", {
-			path: testFile,
-			edits: [
-				{ oldText: "second\n", newText: "SECOND\n" },
-				{ oldText: "fourth\n", newText: "FOURTH\n" },
-			],
-		});
+		await executeSnapshotEdit(process.cwd(), "range-crlf-multi", testFile, original, [
+			{ startLine: 2, endLine: 2, newText: "SECOND\n" },
+			{ startLine: 4, endLine: 4, newText: "FOURTH\n" },
+		]);
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("\uFEFFfirst\r\nSECOND\r\nthird\r\nFOURTH\r\n");

@@ -17,6 +17,15 @@ export {
 	type EditToolInput,
 	type EditToolOptions,
 } from "./edit.ts";
+export {
+	FileEditState,
+	type FileSnapshot,
+	type PreparedSnapshotEdit,
+	SnapshotEditError,
+	type SnapshotEditInput,
+	type SnapshotEditIssue,
+	type SnapshotRangeEdit,
+} from "./file-edit-state.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
 export {
 	createFindTool,

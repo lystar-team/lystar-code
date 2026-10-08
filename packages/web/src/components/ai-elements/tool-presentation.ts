@@ -1,5 +1,11 @@
 import type { ToolBatchTool } from "../../types.ts";
-import { isSessionTool, sessionToolAgent, sessionToolTask, sessionToolAction } from "../../state/tool-batching.ts";
+import {
+	isSessionTool,
+	parseSessionToolInput,
+	parseSessionToolResult,
+	sessionToolAgent,
+	sessionToolAction,
+} from "../../state/tool-batching.ts";
 import { commandRowLabel } from "./command-presentation.ts";
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -23,6 +29,14 @@ function stringList(value: unknown): string[] {
 		const text = stringValue(entry);
 		return text ? [text] : [];
 	}) : [];
+}
+
+export function filePathFromTool(tool: ToolBatchTool): string | undefined {
+	const input = inputRecord(tool.summary);
+	const path = stringValue(input?.path) ?? stringValue(input?.file_path) ?? stringValue(input?.filename) ?? tool.diff?.files[0]?.path;
+	if (path) return path;
+	if (tool.name !== "read" && tool.name !== "edit" && tool.name !== "write") return undefined;
+	return !input && tool.summary !== tool.name ? stringValue(tool.summary) : undefined;
 }
 
 export function commandFromToolSummary(summary: string): string {
@@ -53,8 +67,8 @@ function webTitle(tool: ToolBatchTool, input: Record<string, unknown> | undefine
 }
 
 function sessionTitle(tool: ToolBatchTool, input: Record<string, unknown> | undefined): string {
-	const nickname = sessionToolAgent(tool.summary, tool.detail)?.nickname;
-	const agent = nickname ?? "智能体";
+	const nickname = sessionToolAgent(tool.summary, tool.detail)?.nickname ?? sessionToolAgent(tool.summary, tool.progress)?.nickname;
+	const agent = nickname ?? stringValue(input?.profileName) ?? "智能体";
 	if (tool.name === "session_create") return `派发任务给 ${agent}`;
 	if (tool.name === "session_send") {
 		if (input?.mode === "steer") return `调整 ${agent} 的任务`;
@@ -62,10 +76,46 @@ function sessionTitle(tool: ToolBatchTool, input: Record<string, unknown> | unde
 		return `向 ${agent} 发送消息`;
 	}
 	if (tool.name === "session_wait") {
-		const count = stringList(input?.sessionIds).length;
-		return `等待${nickname ? ` ${nickname} ` : count > 1 ? ` ${count} 个智能体` : "智能体"}返回结果`;
+		const count = Array.isArray(input?.sessionIds) ? input.sessionIds.length : 0;
+		return `等待${count > 1 ? ` ${count} 个智能体` : nickname ? ` ${nickname} ` : "智能体"}返回结果`;
 	}
 	if (tool.name === "session_stop") return `停止 ${agent} 的任务`;
+	return sessionToolAction(tool.name) ?? tool.name;
+}
+
+function collaborationRoomTitle(tool: ToolBatchTool, input: Record<string, unknown> | undefined): string | undefined {
+	const result = record(parseSessionToolResult(tool.detail));
+	const room = record(result?.room);
+	return (tool.name === "room_create" ? stringValue(input?.title) : undefined) ??
+		stringValue(input?.roomTitle) ?? stringValue(room?.title) ?? stringValue(result?.title);
+}
+
+function roomToolTitle(tool: ToolBatchTool, input: Record<string, unknown> | undefined): string {
+	const roomTitle = collaborationRoomTitle(tool, input);
+	const room = roomTitle ? `「${roomTitle}」` : "协作空间";
+	if (tool.name === "room_create") return `创建协作空间${roomTitle ? ` ${room}` : ""}`;
+	if (tool.name === "room_join") return `加入${room}`;
+	if (tool.name === "room_leave") return `退出${room}`;
+	if (tool.name === "room_list") return "查看协作空间";
+	if (tool.name === "room_send") return `向${room}发送协作消息`;
+	if (tool.name === "room_read") return `读取${room}消息`;
+	if (tool.name === "room_task_list") return `查看${room}任务`;
+	if (tool.name === "room_task_create") {
+		const title = stringValue(input?.title);
+		return title ? `创建协作任务「${title}」` : `在${room}创建任务`;
+	}
+	if (tool.name === "room_task_update") {
+		const result = record(parseSessionToolResult(tool.detail));
+		const task = record(result?.task);
+		const title = stringValue(input?.taskTitle) ?? stringValue(task?.title) ?? stringValue(result?.title);
+		return title ? `更新协作任务「${title}」` : `更新${room}任务`;
+	}
+	if (tool.name === "room_claim") {
+		const result = record(parseSessionToolResult(tool.detail));
+		const task = record(result?.task);
+		const title = stringValue(task?.title) ?? stringValue(result?.title);
+		return title ? `领取协作任务「${title}」` : `领取${room}任务`;
+	}
 	return sessionToolAction(tool.name) ?? tool.name;
 }
 
@@ -78,7 +128,10 @@ export function toolPresentationTitle(tool: ToolBatchTool): string {
 		return command ? commandRowLabel(command, "input-available") : tool.preparing ? "生成命令参数" : "命令内容未记录";
 	}
 	if (tool.name === "web_search") return webTitle(tool, input);
-	if (isSessionTool(tool.name)) return sessionTitle(tool, input);
+	if (isSessionTool(tool.name)) {
+		const collaborationInput = parseSessionToolInput(tool.summary) ?? input;
+		return tool.name.startsWith("room_") ? roomToolTitle(tool, collaborationInput) : sessionTitle(tool, collaborationInput);
+	}
 	if (tool.name === "subagent" && tool.subagents?.length) {
 		return `派发任务给 ${tool.subagents.map((agent) => agent.agent).join("、")}`;
 	}
@@ -102,7 +155,7 @@ export function toolPresentationTitle(tool: ToolBatchTool): string {
 	}
 	if (tool.name === "edit" || tool.name === "write") {
 		const action = tool.name === "edit" ? "编辑" : "写入";
-		const file = path ?? (!input && tool.summary !== tool.name ? tool.summary : undefined);
+		const file = filePathFromTool(tool);
 		return file ? `${action} ${file}` : `${action}文件`;
 	}
 	if (tool.name === "apply_patch") {
@@ -129,7 +182,7 @@ export function toolPresentationTitle(tool: ToolBatchTool): string {
 
 export function toolPresentationContext(tool: ToolBatchTool): string | undefined {
 	const input = inputRecord(tool.summary);
-	if (isSessionTool(tool.name)) return sessionToolTask(tool.summary) ?? stringValue(input?.text) ?? stringValue(input?.body) ?? stringValue(input?.description);
+	if (isSessionTool(tool.name)) return undefined;
 	if (tool.name === "subagent") return tool.subagents?.map((agent) => agent.task).join("；");
 	if (tool.name === "mcp") {
 		const args = record(input?.args);

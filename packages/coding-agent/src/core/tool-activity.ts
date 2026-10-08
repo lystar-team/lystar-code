@@ -30,6 +30,8 @@ export interface ToolActivitySnapshot {
 	state: ToolActivityState;
 	summary: string;
 	inputPreview?: boolean;
+	/** codemode 子调用的结构化进度，由展示适配层投影。 */
+	details?: unknown;
 	diff?: ToolActivityDiff;
 	progress?: string;
 	output?: string;
@@ -160,16 +162,33 @@ function countPatchLines(value: string): { additions: number; deletions: number 
 	return { additions, deletions };
 }
 
-function editEntries(value: Record<string, unknown> | undefined): Array<{ oldText: string; newText: string }> {
+type EditPreviewEntry = { oldText: string; newText: string } | { startLine: number; endLine: number; newText: string };
+
+function editEntries(value: Record<string, unknown> | undefined): EditPreviewEntry[] {
 	if (!value) return [];
 	const edits = value.edits;
 	if (Array.isArray(edits)) {
 		if (edits.length > MAX_PREVIEW_EDIT_ENTRIES) return [];
-		const entries: Array<{ oldText: string; newText: string }> = [];
+		const entries: EditPreviewEntry[] = [];
 		for (const entry of edits) {
 			const item = toolRecord(entry);
-			if (typeof item?.oldText === "string" && typeof item.newText === "string") {
+			if (typeof item?.newText !== "string") continue;
+			if (typeof item.oldText === "string") {
 				entries.push({ oldText: item.oldText, newText: item.newText });
+				continue;
+			}
+			const startLine = item.startLine;
+			const endLine = item.endLine;
+			if (
+				typeof startLine === "number" &&
+				Number.isSafeInteger(startLine) &&
+				startLine >= 1 &&
+				typeof endLine === "number" &&
+				Number.isSafeInteger(endLine) &&
+				endLine >= 0 &&
+				(endLine >= startLine || endLine === startLine - 1)
+			) {
+				entries.push({ startLine, endLine, newText: item.newText });
 			}
 		}
 		return entries;
@@ -210,15 +229,31 @@ function previewEditDiff(path: string | undefined, args: Record<string, unknown>
 	if (edits.length === 0) return path ? { files: [{ path }] } : undefined;
 
 	const buffer: PreviewBuffer = { lines: [], length: 0, truncated: false };
-	const deletions = edits.reduce((total, edit) => total + appendPrefixedLines(buffer, edit.oldText, "-"), 0);
-	const additions = edits.reduce((total, edit) => total + appendPrefixedLines(buffer, edit.newText, "+"), 0);
+	let additions = 0;
+	let deletions = 0;
+	let hasRangeEdit = false;
+	for (const edit of edits) {
+		if ("oldText" in edit) {
+			deletions += appendPrefixedLines(buffer, edit.oldText, "-");
+			additions += appendPrefixedLines(buffer, edit.newText, "+");
+			continue;
+		}
+		hasRangeEdit = true;
+		const header =
+			edit.endLine === edit.startLine - 1
+				? `@@ insert before line ${edit.startLine} @@`
+				: edit.newText
+					? `@@ lines ${edit.startLine}-${edit.endLine} @@`
+					: `@@ delete lines ${edit.startLine}-${edit.endLine} @@`;
+		appendPrefixedLines(buffer, header, "");
+		appendPrefixedLines(buffer, edit.newText, "+");
+	}
 	const preview = finishPreview(buffer);
 	return {
 		files: [
 			{
 				...(path ? { path } : {}),
-				additions,
-				deletions,
+				...(hasRangeEdit ? {} : { additions, deletions }),
 				...(preview.text ? { diff: preview.text } : {}),
 				...(preview.truncated ? { truncated: true } : {}),
 			},
@@ -302,7 +337,7 @@ export function toolProgressDiff(name: string, args: unknown, result?: unknown):
 		return files.length > 0 ? { files } : undefined;
 	}
 
-	const path = toolPath(args);
+	const path = toolPath(args) ?? toolPath(details);
 	const additions = toolNumber(details.additions);
 	const deletions = toolNumber(details.deletions);
 	const operation = typeof details.operation === "string" ? details.operation : undefined;
@@ -404,6 +439,7 @@ interface InternalToolActivity {
 	name: string;
 	state: ToolActivityState;
 	args?: unknown;
+	details?: unknown;
 	summary: string;
 	diff?: ToolActivityDiff;
 	progress?: string;
@@ -513,7 +549,9 @@ export class ToolActivityTracker {
 			activity.args = event.args;
 			activity.summary = this.summary(event.toolName, event.args, activity.summary);
 			activity.progress =
-				textFromResult(event.partialResult) ?? toolOutputSummary(event.partialResult, event.toolName);
+				textFromResult(event.partialResult) ??
+				(event.toolName === "codemode" ? undefined : toolOutputSummary(event.partialResult, event.toolName));
+			if (event.toolName === "codemode") activity.details = event.partialResult.details;
 			activity.diff = toolProgressDiff(event.toolName, event.args, event.partialResult) ?? activity.diff;
 			activity.startedAt ??= Date.now();
 			return [this.touch(activity)];
@@ -525,8 +563,12 @@ export class ToolActivityTracker {
 			activity.state = cancelled ? "cancelled" : event.isError ? "error" : "success";
 			// 终态摘要继续表示工具输入，结果单独放在 output，避免文件内容或命令输出替换标题。
 			activity.output = output;
+			if (event.toolName === "codemode") activity.details = event.result.details ?? activity.details;
 			activity.error = event.isError ? output || "工具调用失败" : undefined;
 			const terminalDiff = toolProgressDiff(event.toolName, activity.args, event.result);
+			if (activity.summary === event.toolName) {
+				activity.summary = this.summary(event.toolName, toolRecord(event.result)?.details, activity.summary);
+			}
 			activity.diff = activity.state === "success" ? mergeToolDiff(activity.diff, terminalDiff) : terminalDiff;
 			activity.args = undefined;
 			activity.startedAt ??= Date.now();
@@ -545,6 +587,11 @@ export class ToolActivityTracker {
 			activity.state = "preparing";
 			activity.args = args;
 			activity.summary = this.summary(name, args, activity.summary);
+			// 文件身份不受内容预览节流影响：路径到达后立即补入已有预览。
+			const path = toolPath(args);
+			if (path && (name === "edit" || name === "write")) {
+				activity.diff = { files: [{ ...activity.diff?.files[0], path }] };
+			}
 			const now = Date.now();
 			if (
 				includeDiff ||
@@ -609,6 +656,7 @@ export class ToolActivityTracker {
 			state: activity.state,
 			summary: activity.summary,
 			...(!isTerminal(activity.state) ? { inputPreview: true } : {}),
+			...(activity.details !== undefined ? { details: activity.details } : {}),
 			...(activity.diff ? { diff: activity.diff } : {}),
 			...(activity.progress ? { progress: activity.progress } : {}),
 			...(activity.output ? { output: activity.output } : {}),

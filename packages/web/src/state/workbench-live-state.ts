@@ -279,6 +279,7 @@ export function liveToolFromActivity(activity: ToolActivity, previous: LiveTool 
 		stepId: activity.stepId ?? previous?.stepId,
 		inputPreview: activity.inputPreview,
 		result: activity.output ?? activity.progress ?? activity.error ?? previous?.result,
+		codemode: activity.codemode ?? previous?.codemode,
 		...(webSearch ? { webSearch } : {}),
 		...(terminal ? { diff: activity.diff } : { diff: mergeToolDiff(previous?.diff, activity.diff) }),
 	};
@@ -304,6 +305,7 @@ export function liveToolFromUpdate(
 		state: previous?.state ?? (progress.name === "web_search" ? "running" : "preparing"),
 		status: "running",
 		result: progress.summary,
+		codemode: previous?.codemode,
 		stepId: progress.stepId ?? previous?.stepId,
 		inputPreview: previous?.inputPreview,
 		...(webSearch ? { webSearch } : {}),

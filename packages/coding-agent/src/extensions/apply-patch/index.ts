@@ -1069,7 +1069,7 @@ export function createApplyPatchToolDefinition(options?: {
 		description: "Apply a patch that adds, updates, or deletes files.",
 		promptSnippet: "Apply a *** Begin Patch block to add, update, or delete one or more files.",
 		promptGuidelines: [
-			"Use apply_patch only with the *** Begin Patch format; use edit for exact oldText/newText replacements.",
+			"Use apply_patch only with the *** Begin Patch format; use read snapshots and inclusive line ranges with edit, not oldText/newText replacements.",
 			"For update hunks, include 3 lines of unchanged context before and after each change when possible.",
 			"Use an @@ function, class, or stable section header when repeated code makes the hunk ambiguous.",
 			"Use separate hunks for distant changes, and re-read the target region before retrying a failed patch.",

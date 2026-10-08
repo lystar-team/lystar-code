@@ -14,13 +14,12 @@ import {
 	parseGatewayPort,
 	type RuntimeInvocation,
 	validateAllowedHosts,
-	validateGatewayHost,
 	validateWebPassword,
 	type WebConfig,
 	WebConfigStore,
+	webAccessAddresses,
 } from "./config.ts";
 import { ensureWebServices } from "./gateway-service.ts";
-import { hostNetworkAddresses } from "./host-diagnostics.ts";
 import { GatewayAlreadyRunningError, GatewayInstanceLock } from "./instance-lock.ts";
 import { ensurePersistentRuntime } from "./runtime-client.ts";
 import { WebGatewayServer } from "./server.ts";
@@ -121,7 +120,7 @@ async function askValidated<T>(
 
 async function promptForWebConfig(
 	store: WebConfigStore,
-	initial: { host: string; allowedHosts: string[]; port: number; runtimePort: number; password?: string },
+	initial: { allowedHosts: string[]; port: number; runtimePort: number; password?: string },
 	commandName: "lc" | "lcd" = "lc",
 ): Promise<WebConfig> {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -130,17 +129,9 @@ async function promptForWebConfig(
 	const readline = createInterface({ input: process.stdin, output: process.stdout });
 	try {
 		console.log("\n欢迎使用 LYStar Code Web 工作台。请完成以下配置，按回车使用默认值。\n");
-		const host = await askValidated(
-			readline,
-			"[1/5]",
-			"监听 IP 地址",
-			"填入 0.0.0.0 表示监听本机所有网络接口。",
-			initial.host,
-			validateGatewayHost,
-		);
 		const allowedHosts = await askValidated(
 			readline,
-			"[2/5]",
+			"[1/4]",
 			"白名单 IP 地址",
 			"填入 * 表示不限制访问来源；多个地址使用英文逗号分隔。",
 			initial.allowedHosts.join(","),
@@ -148,7 +139,7 @@ async function promptForWebConfig(
 		);
 		const port = await askValidated(
 			readline,
-			"[3/5]",
+			"[2/4]",
 			"Web 监听端口",
 			"浏览器访问 Web UI 使用此端口。",
 			String(initial.port),
@@ -156,15 +147,19 @@ async function promptForWebConfig(
 		);
 		const runtimePort = await askValidated(
 			readline,
-			"[4/5]",
+			"[3/4]",
 			"Runtime 监听端口",
 			"Runtime 默认只监听本机，用于 Gateway 连接和会话运行。",
 			String(initial.runtimePort),
-			parseGatewayPort,
+			(value) => {
+				const runtimePort = parseGatewayPort(value);
+				if (runtimePort === port) throw new Error("Web 端口和 Runtime 端口不能相同");
+				return runtimePort;
+			},
 		);
 		let password = initial.password;
 		while (!password) {
-			console.log("\n[5/5] 连接密码");
+			console.log("\n[4/4] 连接密码");
 			console.log("  用于进入 Web 工作台，长度需要在 8 到 256 个字符之间。");
 			const answer = await askHidden(readline, "请输入连接密码：");
 			try {
@@ -174,7 +169,7 @@ async function promptForWebConfig(
 			}
 		}
 		console.log("\n配置已完成，正在保存……");
-		return store.save({ host, allowedHosts, port, runtimePort, password });
+		return store.save({ allowedHosts, port, runtimePort, password });
 	} finally {
 		readline.close();
 	}
@@ -191,12 +186,11 @@ async function ensureWebConfig(
 	const store = new WebConfigStore(agentDir, configPath);
 	const current = await store.loadOrMigrate();
 	const legacy = current === undefined && configFileName === undefined ? await store.loadLegacy() : {};
-	const environmentHost = environmentValue("PI_WEB_HOST");
 	const environmentAllowedHosts = environmentValue("PI_WEB_ALLOWED_HOSTS");
 	const environmentPort = environmentValue("PI_WEB_PORT");
 	const environmentRuntimePort = environmentValue("PI_WEB_RUNTIME_PORT");
 	const environmentPassword = environmentValue("PI_WEB_TOKEN");
-	const host = environmentHost ?? current?.host ?? legacy.host ?? DEFAULT_WEB_HOST;
+	const host = DEFAULT_WEB_HOST;
 	const allowedHosts =
 		environmentAllowedHosts !== undefined
 			? validateAllowedHosts(environmentAllowedHosts)
@@ -213,7 +207,6 @@ async function ensureWebConfig(
 		return await promptForWebConfig(
 			store,
 			{
-				host,
 				allowedHosts: current?.allowedHosts ?? legacy.allowedHosts ?? [...DEFAULT_ALLOWED_HOSTS],
 				port,
 				runtimePort,
@@ -245,18 +238,8 @@ async function verifyWebAssets(staticDir: string, expectedProductVersion?: strin
 		throw new Error(`Web 与 LYStar Code 版本不一致：${String(version)} != ${expectedProductVersion}`);
 }
 
-function urlHost(host: string): string {
-	return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
-function webAccessUrls(host: string, port: number): string[] {
-	const candidates =
-		host === "0.0.0.0"
-			? ["127.0.0.1", ...hostNetworkAddresses()]
-			: host === "::"
-				? ["::1", ...hostNetworkAddresses()]
-				: [host];
-	return [...new Set(candidates)].map((candidate) => `http://${urlHost(candidate)}:${port}`);
+function webAccessUrls(allowedHosts: readonly string[], port: number): string[] {
+	return webAccessAddresses(allowedHosts).map((address) => `http://${address}:${port}`);
 }
 
 function printBackgroundStartup(
@@ -267,17 +250,15 @@ function printBackgroundStartup(
 	console.log("\nLYStar Code Web 工作台已在后台启动");
 	if (status.frontend && frontendPort !== undefined) {
 		console.log(
-			`Frontend：服务已启动（监听 ${urlHost(config.host)}:${frontendPort}${status.frontend.pid ? `，PID ${status.frontend.pid}` : ""}）`,
+			`Frontend：服务已启动（端口 ${frontendPort}${status.frontend.pid ? `，PID ${status.frontend.pid}` : ""}）`,
 		);
 	}
-	console.log(
-		`Gateway：服务已启动（监听 ${urlHost(config.host)}:${config.port}${status.gateway.pid ? `，PID ${status.gateway.pid}` : ""}）`,
-	);
+	console.log(`Gateway：服务已启动（端口 ${config.port}${status.gateway.pid ? `，PID ${status.gateway.pid}` : ""}）`);
 	console.log(
 		`Runtime：服务已启动（127.0.0.1:${config.runtimePort ?? DEFAULT_RUNTIME_PORT}${status.runtime.pid ? `，PID ${status.runtime.pid}` : ""}）`,
 	);
 	console.log("\nWeb UI 访问地址：");
-	for (const url of webAccessUrls(config.host, frontendPort ?? config.port)) console.log(`  ${url}`);
+	for (const url of webAccessUrls(config.allowedHosts, frontendPort ?? config.port)) console.log(`  ${url}`);
 	if (status.frontend) console.log(`\nGateway API：http://127.0.0.1:${config.port}`);
 	console.log(`\n日志目录：${config.agentDir}/web`);
 }
@@ -288,7 +269,7 @@ function printStartupSummary(
 	commandName: "lc" | "lcd" = "lc",
 ): void {
 	console.log("\nLYStar Code Web 工作台已启动");
-	console.log(`Gateway：已启动（监听 ${urlHost(config.host)}:${config.port}）`);
+	console.log(`Gateway：已启动（端口 ${config.port}）`);
 	if (runtimeStatus) {
 		const runtimeAddress = `127.0.0.1:${config.runtimePort ?? DEFAULT_RUNTIME_PORT}`;
 		console.log(
@@ -296,7 +277,7 @@ function printStartupSummary(
 		);
 	}
 	console.log("\nWeb UI 访问地址：");
-	for (const url of webAccessUrls(config.host, config.port)) console.log(`  ${url}`);
+	for (const url of webAccessUrls(config.allowedHosts, config.port)) console.log(`  ${url}`);
 	console.log(`\n配置文件：${config.configPath ?? new WebConfigStore(config.agentDir).path}`);
 	console.log("\n服务重启命令：");
 	console.log(`  ${commandName} web gateway restart`);
@@ -356,6 +337,7 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 	let activeGateway: WebGatewayServer | undefined;
 	let activeClose: ((reason: "restart" | "shutdown") => void) | undefined;
 	let shuttingDown = false;
+	let activeRuntimeEndpoint: string | undefined;
 	const onSignal = () => {
 		shuttingDown = true;
 		activeClose?.("shutdown");
@@ -371,8 +353,15 @@ export async function runWebGatewayCli(options: WebGatewayCliOptions = {}): Prom
 				staticDir,
 				runtimeInvocation: options.runtimeInvocation,
 				configFileName: options.configFileName,
-				allowRuntimeEndpointOverride: options.allowRuntimeEndpointOverride,
+				allowRuntimeEndpointOverride:
+					options.allowRuntimeEndpointOverride ?? Boolean(environmentValue("PI_WEB_SERVICE_PROFILE")),
 			});
+			// 保存设置只重启 Gateway，继续连接仍在运行的 Runtime。
+			activeRuntimeEndpoint ??= config.runtimeEndpoint;
+			config.runtimeEndpoint = activeRuntimeEndpoint;
+			if (activeRuntimeEndpoint.startsWith("tcp://")) {
+				config.runtimePort = Number(new URL(activeRuntimeEndpoint).port);
+			}
 			if (options.runtimeInvocation && config.port === config.runtimePort) {
 				throw new Error(`Web 端口和 Runtime 端口不能相同（当前都是 ${config.port}），请修改 ${config.configPath}`);
 			}
