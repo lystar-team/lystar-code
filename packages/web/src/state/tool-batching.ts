@@ -197,10 +197,11 @@ export function sessionToolAgent(summary: string, detail?: string): SessionToolA
 			(value): value is string => typeof value === "string" && value.trim().length > 0,
 		).map((value) => value.trim()),
 	);
-	const displayName = typeof result?.name === "string" && result.name !== result.profileId && result.name !== input?.profileId
+	const displayName = typeof result?.name === "string" && result.name !== result.profileId && result.name !== input?.profileId && result.name !== result.profileName
 		? result.name
 		: undefined;
-	const candidates = [result?.nickname, result?.memberName, input?.nickname, result?.profileName, input?.profileName, displayName];
+	const profileName = result?.profileName !== result?.name ? result?.profileName : undefined;
+	const candidates = [result?.nickname, result?.memberName, input?.nickname, profileName, input?.profileName, displayName];
 	const nickname = candidates.find(
 		(value): value is string =>
 			typeof value === "string" && value.trim().length > 0 && !taskNames.has(value.trim()),

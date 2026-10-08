@@ -285,7 +285,7 @@ jobs:
               capture && /^## \[/ { exit }
               capture { print }
             ' packages/coding-agent/CHANGELOG.md
-            previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+            previous_tag="$(git describe --tags --match 'v*-lystar.*' --abbrev=0 "${tag}^" 2>/dev/null || true)"
             if [[ -n "$previous_tag" ]]; then
               printf '\n**完整提交对比**：https://github.com/%s/compare/%s...%s\n' \
                 "$GITHUB_REPOSITORY" "$previous_tag" "$tag"
@@ -325,11 +325,11 @@ jobs:
             packages/coding-agent/binaries/install.ps1
             packages/coding-agent/binaries/install.cmd
           )
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "$tag" --notes-file "$notes_path"
-            gh release upload "$tag" --clobber "${assets[@]}"
+          if gh release view "$tag" --repo lystar-team/lystar-code >/dev/null 2>&1; then
+            gh release edit "$tag" --repo lystar-team/lystar-code --title "$tag" --notes-file "$notes_path"
+            gh release upload "$tag" --repo lystar-team/lystar-code --clobber "${assets[@]}"
           else
-            gh release create "$tag" \
+            gh release create "$tag" --repo lystar-team/lystar-code \
               --verify-tag \
               --title "$tag" \
               --notes-file "$notes_path" \

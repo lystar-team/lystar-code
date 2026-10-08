@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.1.0-lystar.1] - 2026-10-08
+
+### Added
+
+- `ToolExecutionError.terminate` 可终止当前工具轮次，后续输入仍可提交修正任务。
+
+### Fixed
+
+- 工具失败结果保留结构化详情及 `code/category/retryable`，在未启用恢复控制器或恢复决策失败时也不丢失。
+
+## [1.1.0] - 2026-10-07
+
+### Added
+
+- Added `durationMs` to tool result messages, `AgentToolCallOutcome`, and `tool_execution_end` events: how long `execute()` took, measured with a monotonic clock and excluding hooks. Calls that did not run have none ([#10549](https://github.com/earendil-works/pi/issues/10549))
+
+### Changed
+
+- `streamProxy()` returns an `AssistantMessageEventStream`, so proxied responses get `durationMs` like direct ones
+
 ## [1.0.4] - 2026-10-05
 
 ## [1.0.3] - 2026-10-05

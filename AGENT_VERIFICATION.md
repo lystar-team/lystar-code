@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-10-06
+> 更新日期：2026-10-08
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -9,7 +9,17 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
-- 上游 Pi 基线为 `v1.0.4`（`7c10bd4337495ee613f2224843ecdf349b80d1df`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前为 `1.0.4-lystar.1`。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前候选版本为 `1.1.0-lystar.1`，尚未打 Tag 或发布。
+
+## 1.1.0-lystar.1 发行前验证（2026-10-08，未通过发布条件）
+
+- 当前待提交改动已保存为 `9ef54350d`；合并 Pi `v1.1.0`，保留 LYStar 的快照行范围编辑、Tool Recovery、中文全屏 TUI、Web 工作台、角色协作、Context Provider 和 `lc`/`lystar` 入口。
+- `npm run check` 通过。适配 Bedrock 的 `ultra` 思考等级和 Server 对上游 `durationMs` 字段的显式处理；协议 v1 不新增该字段。
+- Web 定向测试 6 个文件、102 项全部通过；Agent 定向测试 80 项、AI 耗时/计价/重试/分类定向测试 31 项、Web Protocol 42 项和发行 artifact/install/smoke 脚本 9 项通过。
+- `npm run release:local -- --out /tmp/lystar-1.1.0-local-release --skip-check --skip-bun-install` 完成严格模型目录生成、全量离线构建和 npm tarball 打包。随后调用隔离环境的 `./test.sh`，全量测试失败，脚本未进入 standalone 构建和外部 consumer 安装验证阶段。
+- 已确认的契约差异包括：旧测试仍断言 `read` 返回纯文本、程序状态使用 `pi` 名称、工具权限使用 `aria-pressed`、Web 默认监听旧地址。部分测试 mock 缺少 Context Provider、ProgramStatusReporter、Runtime `clearQueue` 或 DOM `querySelector`。
+- 另有并发探测、取消/压缩、TUI 输入和 Runtime/RPC 工具链路失败需要继续排查；不能将全量失败都归类为旧测试。`packages/env` 的 5 个测试套件缺少 Rust daemon 构建产物，未执行用例。
+- 完整日志：`/tmp/pi-bash-fbddaaa76bd5afd9.log`。未改写测试用例、未跳过断言失败发布；Node/Bun 真实请求和 PTY smoke、安装器、五平台正式资产验证尚未完成。需明确授权适配已有测试后继续验证。
 
 ## 1.0.4-lystar.1 发行前验证（2026-10-06）
 

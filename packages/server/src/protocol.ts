@@ -34,8 +34,8 @@ type _ProtocolModelInputsFitAi = Assert<ProtocolModelInput extends AiModelInput 
 /**
  * Enumerate mapped and intentionally omitted pi-ai fields so additions fail compilation here.
  * Provider replay metadata, diagnostics, cache-write retention splits, model transport settings,
- * model sampling defaults, pricing tiers, and deferred-tool availability remain intentionally
- * server-side.
+ * model sampling defaults, pricing tiers, response/tool duration, and deferred-tool availability remain
+ * intentionally server-side.
  */
 type _AiTextContentFieldsAccountedFor = Assert<
 	ExactKeys<AiTextContent, "type" | "text" | "textSignature" | "annotations">
@@ -111,12 +111,22 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 		| "rawStopReason"
 		| "endTurn"
 		| "timestamp"
+		| "durationMs"
 	>
 >;
 type _AiToolResultMessageFieldsAccountedFor = Assert<
 	ExactKeys<
 		ToolResultMessage,
-		"role" | "toolCallId" | "toolName" | "content" | "details" | "usage" | "nestedCalls" | "isError" | "timestamp"
+		| "role"
+		| "toolCallId"
+		| "toolName"
+		| "content"
+		| "details"
+		| "usage"
+		| "nestedCalls"
+		| "isError"
+		| "timestamp"
+		| "durationMs"
 	>
 >;
 

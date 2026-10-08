@@ -6,7 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
-import type { TuiMode } from "../core/settings-manager.ts";
+import { getToolListError, type TuiMode } from "../core/settings-manager.ts";
 import { t } from "../locales/zh-CN.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -153,10 +153,16 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
 			result.noBuiltinTools = true;
 		} else if ((arg === "--tools" || arg === "-t") && i + 1 < args.length) {
-			result.tools = args[++i]
+			const tools = args[++i]
 				.split(",")
 				.map((s) => s.trim())
 				.filter((name) => name.length > 0);
+			const error = getToolListError(tools);
+			if (error) {
+				result.diagnostics.push({ type: "error", message: `${arg}: ${error}` });
+			} else {
+				result.tools = tools;
+			}
 		} else if ((arg === "--exclude-tools" || arg === "-xt") && i + 1 < args.length) {
 			result.excludeTools = args[++i]
 				.split(",")
@@ -341,6 +347,7 @@ ${chalk.bold("选项：")}
   --no-builtin-tools, -nbt       默认禁用内置工具，保留 Extension 和自定义工具
   --tools, -t <tools>            启用的工具名称或 * 模式，逗号分隔
                                  默认保留 MCP 工具，除非包含 mcp__ 开头的条目
+                                 仅 +name/-name 条目会增加或移除默认工具
   --exclude-tools, -xt <tools>   禁用的工具名称或 * 模式，包含 MCP 工具
   --thinking <level>             思考强度：off、minimal、low、medium、high、xhigh、max
   --extension, -e <path>         加载 Extension 文件，可重复使用
@@ -355,7 +362,7 @@ ${chalk.bold("选项：")}
   --no-themes                    关闭 Theme 自动发现和加载
   --no-context-files, -nc        关闭 AGENTS.md 和 CLAUDE.md 自动发现
   --export <file>                导出会话为 HTML 后退出
-  --list-models [search]         列出可用模型，可附带模糊搜索词
+  --list-models [search]         列出可用模型，可附带模糊搜索
   --verbose                      强制显示详细启动信息
   --tui-mode <mode>              TUI 模式：fullscreen（默认）或 regular
   --alt-screen <mode>            兼容选项：auto、always 或 never
@@ -431,6 +438,10 @@ ${chalk.bold("示例：")}
   ${APP_NAME} --tools read,grep,find,ls -p "Review the code in src/"
 
   # Codemode 仅使用指定 MCP 服务器的工具
+  ${APP_NAME} --tools read,bash,codemode,'mcp__radius__*'
+
+  # 在默认工具中加入 Codemode
+  ${APP_NAME} --tools +codemode
   ${APP_NAME} --tools read,bash,codemode,'mcp__radius__*'
 
   # 禁用一个工具，保留其余工具

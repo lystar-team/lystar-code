@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
+import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { type AssistantMessage, createAssistantMessageEventStream, getModel } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -10,19 +11,6 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
-
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
 
 function createAssistantMessage(text: string, overrides?: Partial<AssistantMessage>): AssistantMessage {
 	return {
@@ -86,7 +74,7 @@ describe("AgentSession retry", () => {
 			initialState: { model, systemPrompt: "Test", tools: [] },
 			streamFn: () => {
 				callCount++;
-				const stream = new MockAssistantStream();
+				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					if (callCount <= failCount) {
 						const msg = createAssistantMessage("", {
@@ -220,7 +208,7 @@ describe("AgentSession retry", () => {
 		let callCount = 0;
 		const streamFn = () => {
 			callCount++;
-			const stream = new MockAssistantStream();
+			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
 				if (callCount === 1) {
 					const msg = createAssistantMessage("", {
@@ -271,5 +259,92 @@ describe("AgentSession retry", () => {
 
 		expect(callCount).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
+	});
+	it("prompt waits for full agent loop when retry produces tool calls", async () => {
+		// Regression: when auto-retry fires and the retry response includes tool_use,
+		// session.prompt() must wait for the entire tool loop to finish before returning.
+		// Previously, _resolveRetry() on the first successful message_end would unblock
+		// waitForRetry() while the agent was still executing tools.
+		let callCount = 0;
+		const toolExecuted = { value: false };
+
+		const echoTool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo text back",
+			parameters: Type.Object({ text: Type.String() }),
+			execute: async () => {
+				toolExecuted.value = true;
+				return { content: [{ type: "text", text: "echoed" }], details: undefined };
+			},
+		};
+
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn: () => {
+				callCount++;
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					if (callCount === 1) {
+						// First call: overloaded error
+						const msg = createAssistantMessage("", {
+							stopReason: "error",
+							errorMessage: "overloaded_error",
+						});
+						stream.push({ type: "start", partial: msg });
+						stream.push({ type: "error", reason: "error", error: msg });
+					} else if (callCount === 2) {
+						// Second call (retry): text + tool_use
+						const msg: AssistantMessage = {
+							...createAssistantMessage("Looking that up now."),
+							stopReason: "toolUse",
+							content: [
+								{ type: "text", text: "Looking that up now." },
+								{ type: "toolCall", id: "call_1", name: "echo", arguments: { text: "hello" } },
+							],
+						};
+						stream.push({ type: "start", partial: msg });
+						stream.push({ type: "done", reason: "toolUse", message: msg });
+					} else {
+						// Third call (after tool result): final response
+						const msg = createAssistantMessage("Final answer.");
+						stream.push({ type: "start", partial: msg });
+						stream.push({ type: "done", reason: "stop", message: msg });
+					}
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = await createModelRegistry(authStorage, tempDir);
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRuntime: getModelRuntime(modelRegistry),
+			resourceLoader: createTestResourceLoader(),
+			baseToolsOverride: { echo: echoTool },
+		});
+
+		await session.prompt("Test");
+
+		// All three LLM calls must have completed
+		expect(callCount).toBe(3);
+		// Tool must have been executed
+		expect(toolExecuted.value).toBe(true);
+		// Agent must not be streaming after prompt returns
+		expect(session.isStreaming).toBe(false);
+		// A follow-up prompt must work (no "Agent is already processing" error)
+		await session.prompt("Follow-up");
+		expect(callCount).toBe(4);
 	});
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Context, Model } from "../src/types.ts";
+import { hasBedrockCredentials } from "./bedrock-utils.ts";
 
 interface BedrockThinkingPayload {
 	additionalModelRequestFields?: {
@@ -13,6 +14,8 @@ interface BedrockThinkingPayload {
 		};
 		output_config?: { effort?: string };
 		anthropic_beta?: string[];
+		reasoning?: { effort?: string };
+		reasoning_effort?: string;
 	};
 }
 
@@ -194,6 +197,99 @@ describe("Bedrock thinking payload", () => {
 		expect(payload.additionalModelRequestFields?.output_config).toEqual({ effort: "high" });
 		expect(payload.additionalModelRequestFields?.anthropic_beta).toBeUndefined();
 	});
+});
+
+describe("Bedrock OpenAI reasoning payload", () => {
+	// Regression for #9331: the configured thinking level never reached OpenAI models on Bedrock.
+	it.each([
+		["minimal", "low"],
+		["low", "low"],
+		["medium", "medium"],
+		["high", "high"],
+		["xhigh", "xhigh"],
+		["max", "max"],
+	] as const)("sends reasoning=%s as reasoning.effort=%s for GPT-6 and GPT-5.6", async (reasoning, effort) => {
+		for (const id of ["global.openai.gpt-6-sol", "us.openai.gpt-6-luna", "global.openai.gpt-5.6-sol"] as const) {
+			const payload = await capturePayload(getModel("amazon-bedrock", id), { reasoning });
+
+			expect(payload.additionalModelRequestFields, id).toEqual({ reasoning: { effort } });
+		}
+	});
+
+	it("sends reasoning.effort when only model.name identifies a GPT model", async () => {
+		const model: Model<"bedrock-converse-stream"> = {
+			...getModel("amazon-bedrock", "global.openai.gpt-6-sol"),
+			id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile",
+			name: "GPT-6 Sol",
+		};
+
+		const payload = await capturePayload(model, { reasoning: "medium" });
+
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning: { effort: "medium" } });
+	});
+
+	it("sends flat reasoning_effort for gpt-oss, clamped to high", async () => {
+		const model = getModel("amazon-bedrock", "openai.gpt-oss-120b-1:0");
+
+		expect((await capturePayload(model, { reasoning: "minimal" })).additionalModelRequestFields).toEqual({
+			reasoning_effort: "low",
+		});
+		expect((await capturePayload(model, { reasoning: "medium" })).additionalModelRequestFields).toEqual({
+			reasoning_effort: "medium",
+		});
+		expect((await capturePayload(model, { reasoning: "xhigh" })).additionalModelRequestFields).toEqual({
+			reasoning_effort: "high",
+		});
+	});
+
+	it("sends no reasoning fields when reasoning is off", async () => {
+		let captured: BedrockThinkingPayload | undefined;
+		const s = streamBedrock(getModel("amazon-bedrock", "global.openai.gpt-6-sol"), normalizeContext(makeContext()), {
+			onPayload: (payload) => {
+				captured = payload as BedrockThinkingPayload;
+				throw new PayloadCaptured();
+			},
+		});
+		for await (const event of s) {
+			if (event.type === "error") break;
+		}
+
+		expect(captured).toBeDefined();
+		expect(captured?.additionalModelRequestFields).toBeUndefined();
+	});
+});
+
+describe.skipIf(!hasBedrockCredentials())("Bedrock Claude max tokens E2E", () => {
+	it(
+		"uses the model maxTokens cap instead of Bedrock's 4096-token default for adaptive Claude models",
+		{ retry: 2, timeout: 180000 },
+		async () => {
+			const baseModel = getModel("amazon-bedrock", "global.anthropic.claude-sonnet-4-6");
+			const model: Model<"bedrock-converse-stream"> = {
+				...baseModel,
+				maxTokens: 6000,
+			};
+
+			const response = await streamBedrock(
+				model,
+				normalizeContext({
+					systemPrompt: "You are a deterministic text generator. Follow the requested output format exactly.",
+					messages: [
+						{
+							role: "user",
+							content:
+								"Output exactly 5200 repetitions of the token alpha, separated by single spaces. Do not number them. Do not use markdown. Do not add any other text.",
+							timestamp: Date.now(),
+						},
+					],
+				}),
+				{ reasoning: "low" },
+			).result();
+
+			expect(response.stopReason, response.errorMessage).not.toBe("error");
+			expect(response.usage.output).toBeGreaterThan(4096);
+		},
+	);
 });
 
 describe("Application inference profile support", () => {

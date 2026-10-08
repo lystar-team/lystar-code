@@ -310,11 +310,12 @@ function buildEditCallComponent(
 	args: RenderableEditArgs | undefined,
 	theme: Theme,
 	cwd: string,
-	options: { expanded: boolean; isPartial: boolean; isError: boolean },
+	options: { expanded: boolean; isPartial: boolean; isError: boolean; outputPad: number },
 ): EditCallRenderComponent {
 	const previewIsError = component.preview && "error" in component.preview;
 	const showPreview = !options.isError && (options.expanded || Boolean(previewIsError));
 	component.setBgFn((text) => text);
+	component.setPaddingX(options.outputPad);
 	component.clear();
 	const summary = getToolSummary(undefined);
 	summary.setText(formatEditCall(args, component.preview, theme, cwd, options.isPartial, options.isError, component));
@@ -379,6 +380,7 @@ export const editRenderers: Pick<ToolDefinition, "renderCall" | "renderResult"> 
 			expanded: context.expanded,
 			isPartial: context.isPartial,
 			isError: context.isError,
+			outputPad: context.outputPad,
 		});
 	},
 	renderResult(result, _options, theme, context) {
@@ -421,6 +423,7 @@ export const editRenderers: Pick<ToolDefinition, "renderCall" | "renderResult"> 
 					expanded: context.expanded,
 					isPartial: context.isPartial,
 					isError: context.isError,
+					outputPad: context.outputPad,
 				});
 			}
 			callComponent.previewArgs = undefined;
@@ -443,7 +446,7 @@ export const editRenderers: Pick<ToolDefinition, "renderCall" | "renderResult"> 
 			return component;
 		}
 		component.addChild(new Spacer(1));
-		component.addChild(new Text(output, 1, 0));
+		component.addChild(new Text(output, context.outputPad, 0));
 		return component;
 	},
 };

@@ -16,11 +16,13 @@ export class CustomEntryComponent extends Container {
 	private customComponent?: Component;
 	private _expanded = false;
 	private lastRenderedLineCount = 0;
+	private outputPad: number;
 
-	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer) {
+	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer, outputPad = 1) {
 		super();
 		this.entry = entry;
 		this.renderer = renderer;
+		this.outputPad = outputPad;
 		this.rebuild();
 	}
 
@@ -53,6 +55,11 @@ export class CustomEntryComponent extends Container {
 		return lines;
 	}
 
+	setOutputPad(outputPad: number): void {
+		this.outputPad = outputPad;
+		this.rebuild();
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.rebuild();
@@ -67,7 +74,7 @@ export class CustomEntryComponent extends Container {
 			component = this.renderer(this.entry, { expanded: this._expanded }, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const box = new Box(1, 0, (text) => text);
+			const box = new Box(this.outputPad, 0, (text) => text);
 			box.addChild(new Text(theme.fg("error", `[${this.entry.customType}] renderer failed: ${message}`), 0, 0));
 			component = box;
 		}

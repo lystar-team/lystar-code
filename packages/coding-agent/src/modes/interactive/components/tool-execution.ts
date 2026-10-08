@@ -36,6 +36,7 @@ const FALLBACK_PREVIEW_LINES = 10;
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
+	outputPad?: number;
 }
 
 export type ToolExecutionStatus = "pending" | "running" | "success" | "error" | "cancelled";
@@ -63,6 +64,7 @@ export class ToolExecutionComponent extends Container {
 	private hovered = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
+	private outputPad: number;
 	private isPartial = true;
 	private toolDefinition?: ToolRenderers;
 	private ui: TUI;
@@ -73,6 +75,7 @@ export class ToolExecutionComponent extends Container {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError: boolean;
 		details?: any;
+		durationMs?: number;
 	};
 	private hideComponent = false;
 	private cancelled = false;
@@ -97,6 +100,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolDefinition = toolDefinition;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
+		this.outputPad = options.outputPad ?? 1;
 		this.ui = ui;
 		this.cwd = cwd;
 
@@ -153,6 +157,8 @@ export class ToolExecutionComponent extends Container {
 			showImages: this.showImages,
 			isError: this.result?.isError ?? false,
 			resultDetails: this.result?.details,
+			durationMs: this.isPartial ? undefined : this.result?.durationMs,
+			outputPad: this.outputPad,
 		};
 	}
 
@@ -273,6 +279,8 @@ export class ToolExecutionComponent extends Container {
 			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 			details?: any;
 			isError: boolean;
+			/** Execution time of a final result. */
+			durationMs?: number;
 		},
 		isPartial = false,
 	): boolean {
@@ -359,6 +367,11 @@ export class ToolExecutionComponent extends Container {
 		return this.executionStarted ? "running" : "pending";
 	}
 
+	setOutputPad(outputPad: number): void {
+		this.outputPad = outputPad;
+		this.updateDisplay();
+	}
+
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.updateDisplay();
@@ -437,6 +450,7 @@ export class ToolExecutionComponent extends Container {
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
 			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
+			if (renderContainer instanceof Box) renderContainer.setPaddingX(this.outputPad);
 			renderContainer.clear();
 
 			const callRenderer = this.getCallRenderer();
@@ -496,6 +510,7 @@ export class ToolExecutionComponent extends Container {
 				}
 			}
 		} else {
+			this.contentText.setPaddingX(this.outputPad);
 			this.contentText.setText(this.formatToolExecution());
 			hasContent = true;
 		}

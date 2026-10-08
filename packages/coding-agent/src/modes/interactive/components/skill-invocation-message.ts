@@ -16,8 +16,8 @@ export class SkillInvocationMessageComponent extends Box {
 	private markdownTheme: MarkdownTheme;
 	private lastRenderedLineCount = 0;
 
-	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
-		super(1, 0, (text) => text);
+	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme(), outputPad = 1) {
+		super(outputPad, 0, (text) => text);
 		this.skillBlock = skillBlock;
 		this.markdownTheme = markdownTheme;
 		this.updateDisplay();
@@ -40,6 +40,10 @@ export class SkillInvocationMessageComponent extends Box {
 		const lines = renderCardWithDivider(super.render(width), width, this.expanded);
 		this.lastRenderedLineCount = lines.length;
 		return lines;
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
 	}
 
 	override invalidate(): void {

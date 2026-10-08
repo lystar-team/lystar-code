@@ -508,6 +508,13 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	isError: boolean;
 	/** Structured details from the latest partial or final result, when available. */
 	resultDetails?: unknown;
+	/**
+	 * Milliseconds the tool's execution took, from the final result; `undefined` while it runs, when it did not run, or
+	 * for results stored before durations were recorded.
+	 */
+	durationMs: number | undefined;
+	/** Horizontal padding configured by the outputPad setting. Renderers with `renderShell: "self"` apply it themselves. */
+	outputPad: number;
 }
 
 /**
@@ -1039,6 +1046,8 @@ export interface AgentSettledEvent {
 	type: "agent_settled";
 	/** Structured provenance for the completed turn. */
 	turn: AgentTurnContext;
+	/** Whether the run ended because it was aborted, for example with Escape. */
+	aborted: boolean;
 }
 
 export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
@@ -1123,6 +1132,8 @@ export interface ToolExecutionEndEvent {
 	toolName: string;
 	result: any;
 	isError: boolean;
+	/** Milliseconds `execute()` took, measured with a monotonic clock; absent when the tool did not run. */
+	durationMs?: number;
 	/** Set when another tool (for example a codemode script) made this call. */
 	parentToolCallId?: string;
 }

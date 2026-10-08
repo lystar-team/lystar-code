@@ -898,6 +898,8 @@ type ImmediateToolCallOutcome = {
 type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
+	/** Milliseconds spent in tool `execute()` calls, measured with a monotonic clock. */
+	durationMs?: number;
 	error?: unknown;
 	recovery?: ToolRecoveryCall;
 	/** failure 已由 assist policy 记账时，最终 observe 不能重复写入。 */
@@ -1141,15 +1143,18 @@ async function executePreparedToolCall(
 		args: prepared.toolCall.arguments,
 	});
 
+	let durationMs = 0;
 	for (;;) {
 		if (signal?.aborted) {
 			return cancelledToolCallOutcome(recovery);
 		}
 		const updateEvents: Promise<void>[] = [];
 		let acceptingUpdates = true;
+		let executionStartedAt: number | undefined;
 		try {
-			const result = await abortable(signal, () =>
-				prepared.tool.execute(prepared.toolCall.id, prepared.args as never, signal, (partialResult) => {
+			const result = await abortable(signal, () => {
+				executionStartedAt = performance.now();
+				return prepared.tool.execute(prepared.toolCall.id, prepared.args as never, signal, (partialResult) => {
 					if (!acceptingUpdates || signal?.aborted) return;
 					updateEvents.push(Promise.resolve(onUpdate(partialResult)));
 					updateEvents.push(
@@ -1163,21 +1168,29 @@ async function executePreparedToolCall(
 							}),
 						),
 					);
-				}),
-			);
+				});
+			});
+			if (executionStartedAt !== undefined) {
+				durationMs += Math.max(0, Math.round(performance.now() - executionStartedAt));
+			}
+			executionStartedAt = undefined;
 			acceptingUpdates = false;
 			await Promise.all(updateEvents);
-			return { result, isError: result.isError === true, recovery };
+			return { result, isError: result.isError === true, recovery, durationMs };
 		} catch (error) {
+			if (executionStartedAt !== undefined) {
+				durationMs += Math.max(0, Math.round(performance.now() - executionStartedAt));
+			}
 			acceptingUpdates = false;
 			await Promise.all(updateEvents);
-			if (signal?.aborted) return cancelledToolCallOutcome(recovery);
+			if (signal?.aborted) return cancelledToolCallOutcome(recovery, durationMs);
 			if (!recovery || !controller?.decideAttempt) {
 				return {
 					result: createErrorToolResult(error),
 					isError: true,
 					error,
 					recovery,
+					durationMs,
 				};
 			}
 
@@ -1199,6 +1212,7 @@ async function executePreparedToolCall(
 					isError: true,
 					error,
 					recovery,
+					durationMs,
 				};
 			}
 			await emitRecoveryObservation(decision.observation, emit);
@@ -1210,24 +1224,34 @@ async function executePreparedToolCall(
 					error: decision.action.type === "accept_as_success" ? undefined : error,
 					recovery,
 					recoveryFinalized: true,
+					durationMs,
 				};
 			}
 			const retryDelay = decision.action.delayMs;
 			const shouldContinue = controller.waitForRetry
 				? await abortable(signal, () => controller.waitForRetry!(retryDelay, signal))
 				: !signal?.aborted;
-			if (!shouldContinue || signal?.aborted) return cancelledToolCallOutcome(recovery);
+			if (!shouldContinue || signal?.aborted) return cancelledToolCallOutcome(recovery, durationMs);
 		}
 	}
 }
 
-function cancelledToolCallOutcome(recovery: ToolRecoveryCall | undefined): ExecutedToolCallOutcome {
+function cancelledToolCallOutcome(
+	recovery: ToolRecoveryCall | undefined,
+	durationMs?: number,
+): ExecutedToolCallOutcome {
 	const error = new ToolExecutionError("Operation aborted", {
 		code: "CANCELLED",
 		category: "cancelled",
 		retryable: false,
 	});
-	return { result: createErrorToolResult(error.message), isError: true, error, recovery };
+	return {
+		result: createErrorToolResult(error.message),
+		isError: true,
+		error,
+		recovery,
+		...(durationMs === undefined ? {} : { durationMs }),
+	};
 }
 
 async function finalizeExecutedToolCall(
@@ -1291,6 +1315,7 @@ async function finalizeExecutedToolCall(
 		toolCall: prepared.toolCall,
 		result,
 		isError,
+		durationMs: executed.durationMs,
 	};
 	await observeFinalizedToolCall(
 		finalized,
@@ -1372,6 +1397,7 @@ async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: A
 		toolName: finalized.toolCall.name,
 		result: finalized.result,
 		isError: finalized.isError,
+		...(finalized.durationMs === undefined ? {} : { durationMs: finalized.durationMs }),
 	});
 }
 
@@ -1386,6 +1412,7 @@ function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResul
 		details: finalized.result.details,
 		usage: finalized.result.usage,
 		isError: finalized.isError,
+		...(finalized.durationMs === undefined ? {} : { durationMs: finalized.durationMs }),
 		timestamp: Date.now(),
 	};
 }

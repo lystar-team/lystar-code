@@ -28,10 +28,10 @@ export class BashExecutionComponent extends Container {
 	private lastRenderedLineCount = 0;
 	private renderVersion = 0;
 
-	constructor(command: string, _ui: TUI, _excludeFromContext = false) {
+	constructor(command: string, _ui: TUI, _excludeFromContext = false, outputPad = 1) {
 		super();
 		this.command = command;
-		this.contentBox = new Box(1, 0);
+		this.contentBox = new Box(outputPad, 0);
 		this.addChild(this.contentBox);
 		this.updateDisplay();
 	}
@@ -58,6 +58,11 @@ export class BashExecutionComponent extends Container {
 		const lines = renderCardWithDivider(super.render(width), width, this.expanded);
 		this.lastRenderedLineCount = lines.length;
 		return lines;
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.contentBox.setPaddingX(outputPad);
+		this.updateDisplay();
 	}
 
 	override invalidate(): void {

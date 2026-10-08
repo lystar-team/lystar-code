@@ -16,8 +16,8 @@ export class CompactionSummaryMessageComponent extends Box {
 	private lastRenderedLineCount = 0;
 	private renderVersion = 0;
 
-	constructor(message: CompactionSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
-		super(1, 0, (text) => text);
+	constructor(message: CompactionSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme(), outputPad = 1) {
+		super(outputPad, 0, (text) => text);
 		this.message = message;
 		this.markdownTheme = markdownTheme;
 		this.updateDisplay();
@@ -49,6 +49,10 @@ export class CompactionSummaryMessageComponent extends Box {
 		const lines = renderCardWithDivider(super.render(width), width, this.expanded);
 		this.lastRenderedLineCount = lines.length;
 		return lines;
+	}
+
+	setOutputPad(outputPad: number): void {
+		this.setPaddingX(outputPad);
 	}
 
 	override invalidate(): void {
