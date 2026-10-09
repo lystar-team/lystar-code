@@ -9,7 +9,7 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`，当前代码版本为 `1.1.0-lystar.3`。发行状态以对应 GitHub Release 为准。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`，当前正式版本为 `1.1.0-lystar.3`，Tag `v1.1.0-lystar.3` 和 GitHub Release 已发布。
 
 ## 1.1.0-lystar.3 发行前验证（2026-10-09，Linux x64）
 
@@ -18,6 +18,14 @@
 - `bash scripts/build-binaries.sh --offline-model-data` 生成 Linux x64 发行包；归档 SHA-256 与 `release-manifest.json` 一致。解压后 `lc --version` 返回 `1.1.0-lystar.3`，帮助和 `PI_OFFLINE=1 lc --list-models` 通过。
 - 从 `/tmp` 的独立 tmux 会话启动 Node CLI 和 Bun 发行包，分别提交真实模型请求；两者均返回 `RELEASE_SMOKE_OK`。本机现有模型筛选显示两条未匹配警告，但模型列表和请求正常，未修改用户配置。
 - 本机只验证 Linux x64。macOS、Linux ARM64 和 Windows 构建、候选资产校验及 Release 由本次 Tag 触发的原生 runner workflow 执行；本机未验证这些平台的实机交互。
+
+## 1.1.0-lystar.3 发布后验证（2026-10-09）
+
+- Annotated Tag `v1.1.0-lystar.3` 指向 `e41ea78cf4223b84ad1504025ddedcee30da5db8`。Release workflow `37883454852` 的 5 个平台构建、候选校验和发布共 7 个 job 全部成功；Release 于 `2026-10-09T04:26:05Z` 公开发布，不是 draft 或 prerelease。
+- Release 有 10 个预期资产：5 个平台归档、3 个安装器、`SHA256SUMS` 和 `release-manifest.json`。全部下载后，`generate-release-metadata.mjs --verify` 确认 manifest、归档大小与 SHA-256、校验清单和安装器内容一致。为匹配 `.gitattributes`，只在临时校验副本中把 `install.cmd` 转为 CRLF；仓库文件未修改。
+- Linux x64 归档通过 `gh attestation verify`；验证限定仓库 `lystar-team/lystar-code`、`.github/workflows/release.yml` 和来源 Tag `v1.1.0-lystar.3`，attestation 列出本版全部 10 个资产。
+- 在隔离 `/tmp` HOME 中安装 `1.1.0-lystar.2` 后执行 `lc update`，成功升级至 `.3` 且下载 SHA 校验通过；`current` 指向 `versions/1.1.0-lystar.3`，`previous` 保留 `versions/1.1.0-lystar.2`。再次执行 `lc update` 显示已是最新版本。
+- Workflow 提示 `actions/upload-artifact` 的 Node.js 20 声明已弃用并被 runner 强制使用 Node.js 24；不影响 job 成功。
 
 ## 1.1.0-lystar.1 发行前验证（2026-10-08，本机 gate 通过）
 
