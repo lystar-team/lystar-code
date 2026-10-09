@@ -11,6 +11,14 @@
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
 - 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`，当前正式版本为 `1.1.0-lystar.3`，Tag `v1.1.0-lystar.3` 和 GitHub Release 已发布。
 
+## 1.1.0-lystar.4 发行前验证（2026-10-09，Linux x64）
+
+- `npm run check` 和 `bash scripts/test-install-sh.sh` 通过。本次只移除 Web 项目栏独立的工作区管理入口，版本与内部依赖同步至 `1.1.0-lystar.4`。
+- `taskset -c 0-3 npm run release:local -- --out /tmp/lystar-1.1.0-lystar.4-local-release --force --skip-check --skip-bun-install` 通过，包含离线构建、打包、隔离 `./test.sh`、Linux x64 standalone 和 npm consumer 安装验证。静态检查单独执行；未执行另一套 Bun 包管理器安装。
+- 完整测试中 Coding Agent 3259 项、Web 452 项、Web Runtime 372 项、Web Protocol 42 项通过。此前默认并行运行分别出现压缩测试超时和协作测试清理期间的 ENOENT；对应定向测试通过，限制为 4 个 CPU 后完整发行验证通过，未修改测试或实现。
+- Node 安装包与 Bun standalone 从 `/tmp` 的独立 tmux socket 启动，版本均返回 `1.1.0-lystar.4`，离线模型列表及真实模型交互请求通过，两者收到 `RELEASE_SMOKE_OK`。本机已有 MCP 扩展命令重复警告未影响回复，未调整用户配置。
+- 发布脚本刷新出的模型数据不属于本次变更，已恢复仓库原有数据；恢复后 `npm run check` 通过。本机证据仅限 Linux x64，其他四平台由 Tag 工作流构建并验证。
+
 ## 1.1.0-lystar.3 发行前验证（2026-10-09，Linux x64）
 
 - `npm run check`、`./test.sh` 和 `npm run build:offline` 通过；Web 会话竞争定向测试 19 项、Gateway reload route 测试 3 项通过。

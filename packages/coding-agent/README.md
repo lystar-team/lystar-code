@@ -1,6 +1,6 @@
 # LYStar Code
 
-LYStar Code `1.1.0-lystar.3` 是基于 Pi `v1.1.0` 的中文编码 Agent。最终用户命令为 `lc` 和 `lystar`，两者完全等价；继续保留 Pi Runtime、Session、Skill、Extension、Package、MCP、`.pi` 数据和 `PI_*` 环境变量兼容。
+LYStar Code `1.1.0-lystar.4` 是基于 Pi `v1.1.0` 的中文编码 Agent。最终用户命令为 `lc` 和 `lystar`，两者完全等价；继续保留 Pi Runtime、Session、Skill、Extension、Package、MCP、`.pi` 数据和 `PI_*` 环境变量兼容。
 
 ## 使用
 
