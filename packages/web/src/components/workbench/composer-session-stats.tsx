@@ -81,6 +81,9 @@ export function ComposerSessionStats({
 	connected,
 	phase,
 	lastOutputSpeed,
+	lease,
+	readOnly,
+	controlPending = false,
 }: {
 	sessionId: string;
 	revision?: number;
@@ -88,6 +91,9 @@ export function ComposerSessionStats({
 	connected: boolean;
 	phase?: string;
 	lastOutputSpeed?: OutputSpeed;
+	lease?: WorkbenchState["lease"];
+	readOnly?: boolean;
+	controlPending?: boolean;
 }) {
 	const [tokens, setTokens] = useState<Tokens>();
 	const [openMetric, setOpenMetric] = useState<Metric>();
@@ -97,6 +103,9 @@ export function ComposerSessionStats({
 		if (
 			!ready ||
 			!connected ||
+			!lease ||
+			readOnly ||
+			controlPending ||
 			(phase !== "idle" && phase !== "waiting_for_input" && phase !== "interrupted")
 		)
 			return;
@@ -110,7 +119,7 @@ export function ComposerSessionStats({
 			},
 		);
 		return () => { cancelled = true; };
-	}, [connected, phase, ready, revision, sessionId]);
+	}, [connected, controlPending, lease, phase, readOnly, ready, revision, sessionId]);
 
 	const totalInput = tokens ? tokens.input + tokens.cacheRead + tokens.cacheWrite : undefined;
 	const cacheHit = totalInput ? Math.round((tokens?.cacheRead ?? 0) / totalInput * 100) : undefined;

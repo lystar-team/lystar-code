@@ -124,6 +124,8 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.liveTools === next.liveTools &&
 		previous.liveTurnActive === next.liveTurnActive &&
 		previous.lastOutputSpeed === next.lastOutputSpeed &&
+		previous.lease === next.lease &&
+		previous.pendingSessionControls === next.pendingSessionControls &&
 		previous.models === next.models &&
 		previous.modelOptions === next.modelOptions &&
 		previous.providers === next.providers &&
@@ -562,6 +564,9 @@ export const Composer = memo(function Composer({
 											ready={state.sessionReady}
 											connected={state.connected}
 											lastOutputSpeed={state.lastOutputSpeed}
+											lease={state.lease}
+											readOnly={state.readOnly}
+											controlPending={(state.pendingSessionControls?.[state.sessionId] ?? 0) > 0}
 										/>
 										</div>
 									) : null}

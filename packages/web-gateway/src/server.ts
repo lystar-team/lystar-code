@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream, type FSWatcher, watch } from "node:fs";
+import { createReadStream, createWriteStream, type FSWatcher, type Stats, watch } from "node:fs";
 import {
 	type FileHandle,
 	link,
@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Duplex, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { crc32, createDeflateRaw } from "node:zlib";
+import { crc32, createDeflateRaw, gzip } from "node:zlib";
 import {
 	type Command,
 	type CompletionResult,
@@ -133,6 +133,29 @@ const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
 const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const MAX_SESSION_DETAIL_EVENTS = 256;
 const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
+const STATIC_GZIP_CACHE_LIMIT_BYTES = 16 * 1024 * 1024;
+const STATIC_GZIP_MIN_BYTES = 1024;
+const COMPRESSIBLE_STATIC_EXTENSIONS = new Set(["css", "html", "js", "json", "map", "mjs", "svg", "txt", "xml"]);
+const BOOTSTRAP_PROJECT_REFRESH_CONCURRENCY = 3;
+
+function acceptsGzip(header: string | string[] | undefined): boolean {
+	const encodings = Array.isArray(header) ? header.join(",") : (header ?? "");
+	let wildcardAllowed = false;
+	for (const coding of encodings.split(",")) {
+		const [name, ...parameters] = coding.trim().toLowerCase().split(";");
+		let quality = 1;
+		for (const parameter of parameters) {
+			const [key, value] = parameter.trim().split("=", 2);
+			if (key === "q") {
+				const parsed = Number(value);
+				quality = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
+			}
+		}
+		if (name === "gzip") return quality > 0;
+		if (name === "*") wildcardAllowed = quality > 0;
+	}
+	return wildcardAllowed;
+}
 const PROJECT_WATCH_DEBOUNCE_MS = 150;
 const UPLOAD_EXTENSIONS: Record<string, string> = {
 	"application/pdf": ".pdf",
@@ -284,6 +307,7 @@ interface BrowserContext {
 	sockets: Set<WebSocket>;
 	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
+	pendingProjectUpdates: Map<string, { generation: number; project: WebProjectResponse }>;
 	sessionSummaryState: Map<string, { name?: string; activity: SessionActivity; operationUpdatedAt?: number }>;
 	sessionSnapshotState: Map<string, WebSessionSnapshot>;
 	sessionDetailState: Map<string, SessionDetailState>;
@@ -312,6 +336,8 @@ interface WebProjectResponse {
 	color?: WebProject["color"];
 	archived?: boolean;
 	sessions: WebSessionSummary[];
+	sessionsLoaded?: boolean;
+	sessionsError?: string;
 }
 
 interface DirectoryResponse {
@@ -432,6 +458,22 @@ interface ProjectSessionsResult {
 interface SessionListCache {
 	generation: number;
 	value: GatewaySessionSummary[];
+}
+interface BootstrapProjectRefreshJob {
+	bootstrapGeneration: number;
+	sessionListGeneration: number;
+	project: WebProject;
+}
+
+interface BootstrapProjectRefreshState {
+	activeWorkers: number;
+	jobs: BootstrapProjectRefreshJob[];
+}
+interface StaticGzipCacheEntry {
+	size: number;
+	mtimeMs: number;
+	inode: number;
+	body: Buffer;
 }
 
 interface UploadedFile {
@@ -960,6 +1002,7 @@ export class WebGatewayServer {
 	readonly registry: ProjectRegistry;
 	readonly projectGroups: ProjectGroupRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
+	private readonly bootstrapProjectRefreshes = new WeakMap<BrowserContext, BootstrapProjectRefreshState>();
 	private readonly roomMembershipCache = new Map<string, readonly RoomSessionMembership[]>();
 	private readonly roomMembershipRequests = new Map<string, Promise<ProjectSessionsResult>>();
 	private readonly roomMembershipGeneration = new Map<string, number>();
@@ -974,6 +1017,8 @@ export class WebGatewayServer {
 	private readonly stopEventLoopWatch: () => void;
 	private readonly uploadCleanupTimer: ReturnType<typeof setInterval>;
 	private readonly uploadedFiles = new Map<string, UploadedFile>();
+	private readonly staticGzipCache = new Map<string, StaticGzipCacheEntry>();
+	private staticGzipCacheBytes = 0;
 	private readonly projectWatchers = new Map<string, ProjectWatcher>();
 	private readonly productUpdate: ProductUpdateController;
 	private readonly pushNotifications: PushNotifications;
@@ -1109,6 +1154,7 @@ export class WebGatewayServer {
 			sockets: new Set(),
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
+			pendingProjectUpdates: new Map(),
 			sessionSummaryState: new Map(),
 			sessionSnapshotState: new Map(),
 			sessionDetailState: new Map(),
@@ -1206,6 +1252,7 @@ export class WebGatewayServer {
 			context.leases.clear();
 			context.leasesToRestore.clear();
 			context.sessionListPromises.clear();
+			context.pendingProjectUpdates.clear();
 			this.clearPendingProgress(context);
 			context.sessionListCache.clear();
 			context.bootstrapCache = undefined;
@@ -1221,6 +1268,7 @@ export class WebGatewayServer {
 	private invalidateBootstrap(context: BrowserContext): void {
 		context.bootstrapGeneration += 1;
 		context.sessionListGeneration += 1;
+		context.pendingProjectUpdates?.clear();
 		if (context.sockets.size === 0) this.invalidateSessionDetails(context);
 		if (context.sockets.size === 0 && context.activeRequests === 0) return;
 		context.sessionListCache.clear();
@@ -1583,7 +1631,6 @@ export class WebGatewayServer {
 		const cached = context.bootstrapCache;
 		if (cached && cached.generation === context.bootstrapGeneration) return cached.value;
 		if (context.bootstrapPromise) return context.bootstrapPromise;
-		const generation = context.bootstrapGeneration;
 		const startedAt = Date.now();
 		logGatewayConnection("bootstrap_started", {
 			clientInstanceId: context.id,
@@ -1591,28 +1638,30 @@ export class WebGatewayServer {
 		});
 		const promise = (async () => {
 			const client = await this.getClient(context);
-			const projects = await Promise.all(
-				this.registry.list().map(async (project) => {
-					try {
-						const sessions = await this.listProjectSessions(context, project);
-						return this.publicProject(project, sessions);
-					} catch {
-						// 会话目录读取短暂超时时，先返回索引中最近一次成功读取的真实会话，避免整个工作台退化为空壳。
-						return this.publicProject(project, project.recentSessions ?? []);
-					}
-				}),
-			);
 			const hello = client.getSnapshot().hello;
 			const initial = await client.request<RuntimeInitialSnapshot>({ command: "get_snapshot" });
 			if (context.client !== client || !client.getSnapshot().connected)
 				throw new Error("Web Runtime 在读取工作区时断开");
 			context.initial = initial;
+			const sessionListGeneration = context.sessionListGeneration;
+			const sessionIdsByPath = new Map(this.sessionIdsByPath);
+			const registeredProjects = this.registry.list();
+			const projects = registeredProjects.map((project) => {
+				const cachedSessions = context.sessionListCache.get(project.id);
+				const sessionsLoaded = cachedSessions?.generation === sessionListGeneration;
+				const sessions = sessionsLoaded ? cachedSessions.value : (project.recentSessions ?? []);
+				for (const session of sessions) sessionIdsByPath.set(session.path, session.id);
+				return this.publicProject(project, sessions, sessionsLoaded);
+			});
 			const operations = new Map(initial.operations.map((operation) => [operation.operationId, operation]));
 			for (const operation of client.getSnapshot().operations.values()) {
 				const previous = operations.get(operation.operationId);
 				if (!previous || operation.updatedAt > previous.updatedAt) operations.set(operation.operationId, operation);
 			}
-			for (const snapshot of initial.sessions) this.sessionIdsByPath.set(snapshot.path, snapshot.id);
+			for (const snapshot of initial.sessions) {
+				this.sessionIdsByPath.set(snapshot.path, snapshot.id);
+				sessionIdsByPath.set(snapshot.path, snapshot.id);
+			}
 			const value: BootstrapResponse = {
 				projects,
 				projectGroups: this.projectGroups.list(),
@@ -1622,16 +1671,22 @@ export class WebGatewayServer {
 					host: "Web Host",
 					...(hello?.productVersion ? { productVersion: hello.productVersion } : {}),
 				},
-				pendingUiRequests: initial?.pendingUiRequests ?? [],
+				pendingUiRequests: initial.pendingUiRequests ?? [],
 				operations: [...operations.values()].map((operation) =>
-					publicOperation(operation, this.sessionIdsByPath.get(operation.sessionPath)),
+					publicOperation(operation, sessionIdsByPath.get(operation.sessionPath)),
 				),
 				leases: [...context.leases.entries()].map(([sessionId, lease]) => ({
 					sessionId,
 					lease: publicLease(lease),
 				})),
 			};
+			const generation = context.bootstrapGeneration;
+			const currentSessionListGeneration = context.sessionListGeneration;
 			context.bootstrapCache = { generation, value };
+			const projectsToRefresh = registeredProjects.filter(
+				(project) => context.sessionListCache.get(project.id)?.generation !== currentSessionListGeneration,
+			);
+			this.refreshBootstrapProjects(context, generation, currentSessionListGeneration, projectsToRefresh);
 			return value;
 		})();
 		context.bootstrapPromise = promise;
@@ -1660,6 +1715,7 @@ export class WebGatewayServer {
 		const pending = context.sessionListPromises.get(project.id);
 		if (pending) return pending;
 		const generation = context.sessionListGeneration;
+		const bootstrapGeneration = context.bootstrapGeneration;
 		const request = (async () => {
 			const client = await this.getClient(context);
 			const cachedRooms = this.roomMembershipCache.get(project.cwd);
@@ -1724,11 +1780,19 @@ export class WebGatewayServer {
 				}
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
-			await this.registry.setRecentSessions(project.id, uniqueSessions);
-			const refreshedProject = this.registry.get(project.id);
+			if (generation === context.sessionListGeneration)
+				await this.registry.setRecentSessions(project.id, uniqueSessions);
+			const refreshedProject = this.registry.get(project.id) ?? project;
 			const roomAwareSessions = markRoomAgentSessions(uniqueSessions, rooms);
-			const orderedSessions = orderSessionSummaries(roomAwareSessions, refreshedProject?.sessionOrder);
-			context.sessionListCache.set(project.id, { generation, value: orderedSessions });
+			const orderedSessions = orderSessionSummaries(roomAwareSessions, refreshedProject.sessionOrder);
+			if (generation === context.sessionListGeneration) {
+				context.sessionListCache.set(project.id, { generation, value: orderedSessions });
+				this.updateBootstrapProject(
+					context,
+					bootstrapGeneration,
+					this.publicProject(refreshedProject, orderedSessions, true),
+				);
+			}
 			return orderedSessions;
 		})();
 		context.sessionListPromises.set(project.id, request);
@@ -1739,7 +1803,12 @@ export class WebGatewayServer {
 		}
 	}
 
-	private publicProject(project: WebProject, sessions: SessionSummary[]): WebProjectResponse {
+	private publicProject(
+		project: WebProject,
+		sessions: SessionSummary[],
+		sessionsLoaded = true,
+		sessionsError?: string,
+	): WebProjectResponse {
 		return {
 			id: project.id,
 			name: project.name,
@@ -1748,7 +1817,103 @@ export class WebGatewayServer {
 			...(project.color ? { color: project.color } : {}),
 			...(project.archived ? { archived: true } : {}),
 			sessions: sessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
+			sessionsLoaded,
+			...(sessionsError === undefined ? {} : { sessionsError }),
 		};
+	}
+
+	private refreshBootstrapProjects(
+		context: BrowserContext,
+		bootstrapGeneration: number,
+		sessionListGeneration: number,
+		projects: WebProject[],
+	): void {
+		let state = this.bootstrapProjectRefreshes.get(context);
+		if (!state) {
+			state = { activeWorkers: 0, jobs: [] };
+			this.bootstrapProjectRefreshes.set(context, state);
+		}
+		state.jobs = state.jobs.filter(
+			(job) =>
+				job.bootstrapGeneration === bootstrapGeneration && job.sessionListGeneration === sessionListGeneration,
+		);
+		const queuedProjectIds = new Set(state.jobs.map((job) => job.project.id));
+		for (const project of projects) {
+			if (queuedProjectIds.has(project.id)) continue;
+			state.jobs.push({ bootstrapGeneration, sessionListGeneration, project });
+			queuedProjectIds.add(project.id);
+		}
+		this.pumpBootstrapProjectRefresh(context, state);
+	}
+
+	private pumpBootstrapProjectRefresh(context: BrowserContext, state: BootstrapProjectRefreshState): void {
+		while (!this.closed && state.activeWorkers < BOOTSTRAP_PROJECT_REFRESH_CONCURRENCY && state.jobs.length > 0) {
+			const job = state.jobs.shift()!;
+			if (
+				context.bootstrapGeneration !== job.bootstrapGeneration ||
+				context.sessionListGeneration !== job.sessionListGeneration
+			)
+				continue;
+			state.activeWorkers += 1;
+			void this.listProjectSessions(context, job.project)
+				.then((sessions) => {
+					if (
+						context.bootstrapGeneration !== job.bootstrapGeneration ||
+						context.sessionListGeneration !== job.sessionListGeneration
+					)
+						return;
+					const currentProject = this.registry.get(job.project.id);
+					if (
+						!currentProject ||
+						context.sessionListCache.get(job.project.id)?.generation !== job.sessionListGeneration
+					)
+						return;
+					const response = this.publicProject(currentProject, sessions, true);
+					this.updateBootstrapProject(context, job.bootstrapGeneration, response);
+					this.emitProjectUpdate(context, job.bootstrapGeneration, response);
+				})
+				.catch((error: unknown) => {
+					if (
+						context.bootstrapGeneration !== job.bootstrapGeneration ||
+						context.sessionListGeneration !== job.sessionListGeneration ||
+						context.sessionListCache.get(job.project.id)?.generation === job.sessionListGeneration
+					)
+						return;
+					const currentProject = this.registry.get(job.project.id);
+					if (!currentProject) return;
+					const message = error instanceof Error ? error.message : String(error);
+					const response = this.publicProject(currentProject, currentProject.recentSessions ?? [], false, message);
+					this.updateBootstrapProject(context, job.bootstrapGeneration, response);
+					this.emitProjectUpdate(context, job.bootstrapGeneration, response);
+				})
+				.finally(() => {
+					state.activeWorkers -= 1;
+					this.pumpBootstrapProjectRefresh(context, state);
+				});
+		}
+		if (
+			state.activeWorkers === 0 &&
+			state.jobs.length === 0 &&
+			!this.closed &&
+			!context.bootstrapPromise &&
+			context.bootstrapCache?.generation !== context.bootstrapGeneration
+		)
+			void this.pushBootstrap(context);
+	}
+
+	private updateBootstrapProject(context: BrowserContext, generation: number, project: WebProjectResponse): void {
+		if (context.bootstrapGeneration !== generation) return;
+		const cached = context.bootstrapCache;
+		if (!cached || cached.generation !== generation) return;
+		const index = cached.value.projects.findIndex((candidate) => candidate.id === project.id);
+		if (index >= 0) cached.value.projects[index] = project;
+	}
+
+	private emitProjectUpdate(context: BrowserContext, generation: number, project: WebProjectResponse): void {
+		if (context.bootstrapGeneration !== generation) return;
+		const event = { type: "project_updated", project };
+		if (context.sockets.size > 0) this.broadcast(context, event);
+		else context.pendingProjectUpdates.set(project.id, { generation, project });
 	}
 
 	private async resolveSession(context: BrowserContext, sessionId: string): Promise<SessionRef> {
@@ -2162,9 +2327,10 @@ export class WebGatewayServer {
 		if (!isInside(resolve(this.config.staticDir), candidate))
 			throw new HttpError(403, "static_path_escape", "无效的静态资源路径");
 		let file = candidate;
+		let fileInfo: Stats;
 		try {
-			const info = await stat(file);
-			if (!info.isFile()) throw new Error("not a file");
+			fileInfo = await stat(file);
+			if (!fileInfo.isFile()) throw new Error("not a file");
 		} catch {
 			const acceptsHtml = String(request.headers.accept ?? "").includes("text/html");
 			const looksLikeAsset = /(?:^|\/)[^/]+\.[A-Za-z\d]+$/u.test(relativeName);
@@ -2172,12 +2338,15 @@ export class WebGatewayServer {
 				throw new HttpError(404, "static_not_found", "静态资源不存在");
 			}
 			file = join(this.config.staticDir, "index.html");
+			fileInfo = await stat(file);
+			if (!fileInfo.isFile()) throw new Error("静态入口不是文件");
 		}
 		const body = await readFile(file);
 		const extension = file.split(".").at(-1)?.toLowerCase();
 		const types: Record<string, string> = {
 			html: "text/html; charset=utf-8",
 			js: "text/javascript; charset=utf-8",
+			mjs: "text/javascript; charset=utf-8",
 			wasm: "application/wasm",
 			css: "text/css; charset=utf-8",
 			json: "application/json; charset=utf-8",
@@ -2188,6 +2357,15 @@ export class WebGatewayServer {
 			ico: "image/x-icon",
 			webp: "image/webp",
 		};
+		const compressible = COMPRESSIBLE_STATIC_EXTENSIONS.has(extension ?? "");
+		let responseBody: Buffer = body;
+		if (compressible && body.byteLength >= STATIC_GZIP_MIN_BYTES && acceptsGzip(request.headers["accept-encoding"])) {
+			try {
+				responseBody = await this.gzipStaticAsset(file, fileInfo, body);
+			} catch {
+				responseBody = body;
+			}
+		}
 		response.writeHead(200, {
 			"Content-Type": types[extension ?? ""] ?? "application/octet-stream",
 			"Cache-Control": file.endsWith("index.html")
@@ -2195,9 +2373,64 @@ export class WebGatewayServer {
 				: file.endsWith("sw.js")
 					? "no-cache"
 					: "public, max-age=31536000, immutable",
-			"Content-Length": body.byteLength,
+			...(compressible ? { Vary: "Accept-Encoding" } : {}),
+			...(responseBody === body ? {} : { "Content-Encoding": "gzip" }),
+			"Content-Length": responseBody.byteLength,
 		});
-		response.end(body);
+		response.end(responseBody);
+	}
+
+	private async gzipStaticAsset(file: string, fileInfo: Stats, body: Buffer): Promise<Buffer> {
+		const cached = this.staticGzipCache.get(file);
+		if (
+			cached &&
+			cached.size === fileInfo.size &&
+			cached.mtimeMs === fileInfo.mtimeMs &&
+			cached.inode === fileInfo.ino
+		) {
+			this.staticGzipCache.delete(file);
+			this.staticGzipCache.set(file, cached);
+			return cached.body;
+		}
+		if (cached) {
+			this.staticGzipCache.delete(file);
+			this.staticGzipCacheBytes -= cached.body.byteLength;
+		}
+		const compressed = await new Promise<Buffer>((resolve, reject) => {
+			gzip(body, { level: 1 }, (error, value) => {
+				if (error) reject(error);
+				else resolve(value);
+			});
+		});
+		const concurrent = this.staticGzipCache.get(file);
+		if (
+			concurrent &&
+			concurrent.size === fileInfo.size &&
+			concurrent.mtimeMs === fileInfo.mtimeMs &&
+			concurrent.inode === fileInfo.ino
+		)
+			return concurrent.body;
+		if (compressed.byteLength >= body.byteLength || compressed.byteLength > STATIC_GZIP_CACHE_LIMIT_BYTES)
+			return body;
+		if (concurrent) {
+			this.staticGzipCache.delete(file);
+			this.staticGzipCacheBytes -= concurrent.body.byteLength;
+		}
+		this.staticGzipCache.set(file, {
+			size: fileInfo.size,
+			mtimeMs: fileInfo.mtimeMs,
+			inode: fileInfo.ino,
+			body: compressed,
+		});
+		this.staticGzipCacheBytes += compressed.byteLength;
+		while (this.staticGzipCacheBytes > STATIC_GZIP_CACHE_LIMIT_BYTES) {
+			const oldest = this.staticGzipCache.keys().next().value;
+			if (oldest === undefined) break;
+			const removed = this.staticGzipCache.get(oldest);
+			if (removed) this.staticGzipCacheBytes -= removed.body.byteLength;
+			this.staticGzipCache.delete(oldest);
+		}
+		return compressed;
 	}
 
 	private async handleApi(
@@ -3620,11 +3853,10 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 3 && request.method === "GET") {
-			sendJson(response, 200, {
-				session: publicSessionSnapshot(
-					await client.request<SessionStateSnapshot>({ command: "inspect_session", sessionPath: session.path }),
-				),
-			});
+			const inspected = publicSessionSnapshot(
+				await client.request<SessionStateSnapshot>({ command: "inspect_session", sessionPath: session.path }),
+			);
+			sendJson(response, 200, { session: inspected, projectId: session.projectId });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "usage" && request.method === "GET") {
@@ -5272,6 +5504,14 @@ export class WebGatewayServer {
 		}
 	}
 
+	private flushPendingProjectUpdates(context: BrowserContext, socket: WebSocket): void {
+		for (const [projectId, update] of context.pendingProjectUpdates) {
+			if (update.generation === context.bootstrapGeneration)
+				this.sendWebSocket(socket, JSON.stringify({ type: "project_updated", project: update.project }));
+			context.pendingProjectUpdates.delete(projectId);
+		}
+	}
+
 	private broadcast(context: BrowserContext, value: unknown): void {
 		const payload = JSON.stringify(value);
 		for (const socket of context.sockets) this.sendWebSocket(socket, payload);
@@ -5395,6 +5635,7 @@ export class WebGatewayServer {
 					socket,
 					JSON.stringify({ type: "connection_state", connected: cached.value.connection.connected, message: "" }),
 				);
+				this.flushPendingProjectUpdates(context, socket);
 				return;
 			}
 			const runtimeRecovery = context.connectionState === "disconnected";
@@ -5406,6 +5647,7 @@ export class WebGatewayServer {
 			this.sendWebSocket(socket, JSON.stringify({ type: "connection_state", connected: true, message: "" }));
 			const bootstrap = await this.buildBootstrap(context);
 			this.sendWebSocket(socket, JSON.stringify({ type: "bootstrap", data: bootstrap }));
+			this.flushPendingProjectUpdates(context, socket);
 		} catch (error) {
 			logGatewayConnection("websocket_bootstrap_failed", {
 				clientInstanceId: context.id,

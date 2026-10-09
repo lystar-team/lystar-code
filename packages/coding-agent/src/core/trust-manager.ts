@@ -408,7 +408,7 @@ export class ProjectTrustStore {
 		return withTrustFileLock(this.trustPath, () => {
 			const entry = trustRecord(readTrustFile(this.trustPath)[normalizeCwd(cwd)]).collaborationInheritance;
 			return {
-				enabled: entry?.enabled === true,
+				enabled: entry?.enabled !== false,
 				...(entry?.enabled && entry.resourceFingerprint ? { resourceFingerprint: entry.resourceFingerprint } : {}),
 			};
 		});
@@ -432,7 +432,7 @@ export class ProjectTrustStore {
 					}
 				} else if (decision === false && existing.collaborationInheritance?.enabled) {
 					data[key] = { decision, collaborationInheritance: { enabled: false } };
-				} else if (decision === true && existing.collaborationInheritance?.enabled) {
+				} else if (decision === true && existing.collaborationInheritance) {
 					data[key] = { decision, collaborationInheritance: existing.collaborationInheritance };
 				} else {
 					data[key] = decision;

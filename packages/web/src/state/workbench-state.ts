@@ -157,11 +157,11 @@ export function operationForSessionSnapshot(
 }
 
 export function mergeSessionSummaries(
-	current: readonly WebSessionSummary[],
+	current: WebSessionSummary[],
 	incoming: readonly WebSessionSummary[],
 ): WebSessionSummary[] {
 	const currentById = new Map(current.map((session) => [session.id, session]));
-	return incoming.map((next) => {
+	const merged = incoming.map((next) => {
 		const previous = currentById.get(next.id);
 		const preservedName = !Object.hasOwn(next, "name") && previous?.name?.trim() ? { name: previous.name } : {};
 		const preservedFirstMessage =
@@ -170,8 +170,16 @@ export function mergeSessionSummaries(
 			!hasMeaningfulSessionFirstMessage(next.firstMessage)
 				? { firstMessage: previous.firstMessage }
 				: {};
-		return { ...next, ...preservedName, ...preservedFirstMessage };
+		const summary = { ...next, ...preservedName, ...preservedFirstMessage };
+		if (previous && Object.keys(summary).length === Object.keys(previous).length &&
+			Object.keys(summary).every((key) => {
+				const value = summary[key as keyof WebSessionSummary];
+				const old = previous[key as keyof WebSessionSummary];
+				return value === old || (typeof value === "object" && JSON.stringify(value) === JSON.stringify(old));
+			})) return previous;
+		return summary;
 	});
+	return merged.length === current.length && merged.every((session, index) => session === current[index]) ? current : merged;
 }
 
 export function updateSessionSummaryName(projects: WebProject[], sessionId: string, name: string | undefined): WebProject[] {
@@ -222,12 +230,24 @@ export function updateSessionSummaryFirstMessage(
 	return projects;
 }
 
-export function mergeProjectSessions(current: readonly WebProject[], incoming: readonly WebProject[]): WebProject[] {
+export function mergeProjectSessions(current: WebProject[], incoming: readonly WebProject[]): WebProject[] {
 	const currentById = new Map(current.map((project) => [project.id, project]));
-	return incoming.map((project) => {
+	const merged = incoming.map((project) => {
 		const previous = currentById.get(project.id);
-		return previous ? { ...project, sessions: mergeSessionSummaries(previous.sessions, project.sessions) } : project;
+		if (!previous) return project;
+		const incomplete = project.sessionsLoaded === false;
+		const knownIds = incomplete ? new Set(previous.sessions.map((session) => session.id)) : undefined;
+		const sessions = mergeSessionSummaries(previous.sessions, incomplete
+			? [...previous.sessions, ...project.sessions.filter((session) => !knownIds!.has(session.id))]
+			: project.sessions);
+		const next = { ...project, sessions,
+			...(incomplete && previous.sessionsLoaded !== false ? { sessionsLoaded: true } : {}),
+			...(incomplete && previous.sessionsError && !project.sessionsError ? { sessionsError: previous.sessionsError } : {}) };
+		if (Object.keys(next).every((key) => next[key as keyof WebProject] === previous[key as keyof WebProject]) &&
+			Object.keys(previous).every((key) => previous[key as keyof WebProject] === next[key as keyof WebProject])) return previous;
+		return next;
 	});
+	return merged.length === current.length && merged.every((project, index) => project === current[index]) ? current : merged;
 }
 
 export function updateSessionActivity(
@@ -442,6 +462,7 @@ export function initialState(): WorkbenchState {
 		loadingEarlier: false,
 		readOnly: false,
 		sessionReady: false,
+		pendingSessionControls: {},
 		pendingUserPrompts: [],
 		promptSendTimes: {},
 		queuedUserPrompts: [],

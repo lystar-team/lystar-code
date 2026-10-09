@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-10-08
+> 更新日期：2026-10-09
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -8,8 +8,16 @@
 
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
-- 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源，不包含额外终端前端可执行文件。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 发行版本以 `packages/coding-agent/package.json` 的 `piConfig.productVersion` 为准，当前正式版本为 `1.1.0-lystar.1`，Tag 和 GitHub Release 已发布。
+- Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`，当前代码版本为 `1.1.0-lystar.3`。发行状态以对应 GitHub Release 为准。
+
+## 1.1.0-lystar.3 发行前验证（2026-10-09，Linux x64）
+
+- `npm run check`、`./test.sh` 和 `npm run build:offline` 通过；Web 会话竞争定向测试 19 项、Gateway reload route 测试 3 项通过。
+- `bash scripts/test-install-sh.sh` 通过；`npm run check:package-install` 的 13 个隔离 package consumer 安装检查通过。
+- `bash scripts/build-binaries.sh --offline-model-data` 生成 Linux x64 发行包；归档 SHA-256 与 `release-manifest.json` 一致。解压后 `lc --version` 返回 `1.1.0-lystar.3`，帮助和 `PI_OFFLINE=1 lc --list-models` 通过。
+- 从 `/tmp` 的独立 tmux 会话启动 Node CLI 和 Bun 发行包，分别提交真实模型请求；两者均返回 `RELEASE_SMOKE_OK`。本机现有模型筛选显示两条未匹配警告，但模型列表和请求正常，未修改用户配置。
+- 本机只验证 Linux x64。macOS、Linux ARM64 和 Windows 构建、候选资产校验及 Release 由本次 Tag 触发的原生 runner workflow 执行；本机未验证这些平台的实机交互。
 
 ## 1.1.0-lystar.1 发行前验证（2026-10-08，本机 gate 通过）
 

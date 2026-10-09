@@ -1,5 +1,5 @@
 import { Copy, Download, Eye, LoaderCircle, Pencil, Save, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { isAbsoluteResourcePath } from "../../lib/resource-path.ts";
 import { cn } from "../../lib/utils.ts";
 import type { WorkbenchState } from "../../state/use-workbench.ts";
@@ -13,15 +13,19 @@ import { Tabs, TabsContent } from "../ui/tabs.tsx";
 import { WorkbenchTabBar, type WorkbenchTabOption } from "./workbench-tab-bar.tsx";
 import { FileTypeIcon } from "./file-type-icon.tsx";
 import { languageForPath, monacoLanguageForPath } from "./file-language.ts";
-import {
-	MonacoFileEditor,
-	type MonacoFileEditorHandle,
-	type MonacoFileEditorState,
-} from "./monaco-file-editor.tsx";
-import { OfficeFilePreview, downloadBinaryFile, officeFormatForPath } from "./office-file-preview.tsx";
+import { MonacoFileEditor, type MonacoFileEditorHandle, type MonacoFileEditorState } from "./monaco-file-editor.tsx";
+import type { OfficeFilePreview as OfficeFilePreviewComponent } from "./office-file-preview.tsx";
+import { downloadBinaryFile, officeFormatForPath } from "./office-file-utils.ts";
 import { preloadMonacoLanguage } from "./monaco-runtime.ts";
 import { CodeBlockView } from "./code-block-view.tsx";
 import type { WorkbenchActions } from "./types.ts";
+
+const officePreviewModules = import.meta.glob<{ OfficeFilePreview: typeof OfficeFilePreviewComponent }>(
+	"./office-file-preview.tsx",
+);
+const OfficeFilePreview = lazy(() =>
+	officePreviewModules["./office-file-preview.tsx"]!().then((module) => ({ default: module.OfficeFilePreview })),
+);
 
 function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
@@ -53,9 +57,10 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 	const open = Boolean(state.fileLoading || state.fileContent || state.fileError);
 	const imageFile = state.fileContent?.kind === "image" ? state.fileContent : undefined;
 	const imagePreviewSource = imageFile?.data ? `data:${imageFile.mimeType};base64,${imageFile.data}` : undefined;
-	const imagePreviewItem: ResourceImageItem | undefined = imageFile && imagePreviewSource
-		? { id: imageFile.path, src: imagePreviewSource, alt: imageFile.path }
-		: undefined;
+	const imagePreviewItem: ResourceImageItem | undefined =
+		imageFile && imagePreviewSource
+			? { id: imageFile.path, src: imagePreviewSource, alt: imageFile.path }
+			: undefined;
 	const binaryFile = state.fileContent?.kind === "binary" ? state.fileContent : undefined;
 	const binaryFormat = binaryFile && !binaryFile.truncated ? officeFormatForPath(binaryFile.path) : undefined;
 	const binaryPath = binaryFile?.path;
@@ -77,14 +82,17 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 	);
 	const dark =
 		state.theme === "dark" ||
-		(state.theme === "system" && typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+		(state.theme === "system" &&
+			typeof window !== "undefined" &&
+			window.matchMedia("(prefers-color-scheme: dark)").matches);
 	const filename = state.fileContent?.path.split(/[\\/]/u).at(-1) || "code.txt";
 	const markdownPreviewVirtualized = Boolean(
 		markdownFile && markdownView === "preview" && shouldVirtualizeMarkdown(markdownPreviewContent),
 	);
 
 	const downloadBinary = useCallback(() => {
-		if (binaryPath && binaryData) downloadBinaryFile(binaryPath, binaryData, binaryMimeType || "application/octet-stream");
+		if (binaryPath && binaryData)
+			downloadBinaryFile(binaryPath, binaryData, binaryMimeType || "application/octet-stream");
 	}, [binaryData, binaryMimeType, binaryPath]);
 
 	const closePreview = useCallback(() => {
@@ -135,7 +143,11 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 					showCloseButton={false}
 					className="z-[70] flex h-[min(88vh,900px)] w-[min(94vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(94vw,1200px)] max-sm:left-0 max-sm:top-0 max-sm:h-dvh max-sm:w-screen max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:border-0"
 				>
-					<Tabs value={markdownFile ? markdownView : "edit"} onValueChange={(value) => handleMarkdownViewChange(value as MarkdownView)} className="contents">
+					<Tabs
+						value={markdownFile ? markdownView : "edit"}
+						onValueChange={(value) => handleMarkdownViewChange(value as MarkdownView)}
+						className="contents"
+					>
 					<DialogHeader className="flex-row flex-wrap items-center justify-between gap-3 border-b border-border/60 px-4 py-3 text-left sm:px-5 sm:py-4 max-sm:gap-x-2 max-sm:gap-y-1">
 						<div className="order-1 min-w-0 flex-1 sm:order-none">
 							<DialogTitle className="flex min-w-0 items-center gap-2 text-sm">
@@ -196,7 +208,9 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 									<Button
 										size="icon"
 										variant="ghost"
-										onClick={() => void editorRef.current?.copy().catch((error) => actions.showToast(error.message))}
+											onClick={() =>
+												void editorRef.current?.copy().catch((error) => actions.showToast(error.message))
+											}
 										aria-label="复制文件内容"
 										disabled={!editorState.ready || !textActive}
 									>
@@ -206,11 +220,17 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 										<Button
 											size="icon"
 											variant={editorState.dirty ? "default" : "ghost"}
-											onClick={() => void editorRef.current?.save().catch((error) => actions.showToast(error.message))}
+												onClick={() =>
+													void editorRef.current?.save().catch((error) => actions.showToast(error.message))
+												}
 											aria-label="保存文件"
 											disabled={!editorState.ready || !editorState.dirty || editorState.saving}
 										>
-											{editorState.saving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+												{editorState.saving ? (
+													<LoaderCircle className="size-4 animate-spin" />
+												) : (
+													<Save className="size-4" />
+												)}
 										</Button>
 									) : null}
 								</>
@@ -245,11 +265,19 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 							</div>
 						) : state.fileError && !state.fileContent ? (
 							<div className="flex h-full min-h-48 items-center justify-center p-4">
-								<div className="w-full max-w-xl rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm" role="alert">
+									<div
+										className="w-full max-w-xl rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"
+										role="alert"
+									>
 									<p className="font-medium text-destructive">无法预览该文件</p>
 									<p className="mt-2 break-words text-muted-foreground">{state.fileError}</p>
 									{state.filePath ? (
-										<Button className="mt-4" size="sm" variant="outline" onClick={() => void actions.openResource(state.filePath!)}>
+											<Button
+												className="mt-4"
+												size="sm"
+												variant="outline"
+												onClick={() => void actions.openResource(state.filePath!)}
+											>
 											重新读取
 										</Button>
 									) : null}
@@ -277,12 +305,24 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 								/>
 							</div>
 						) : binaryFile?.data && binaryFormat ? (
+								<Suspense
+									fallback={
+										<div
+											className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"
+											role="status"
+										>
+											<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+											正在加载 Office 预览
+										</div>
+									}
+								>
 							<OfficeFilePreview
 								path={binaryFile.path}
 								data={binaryFile.data}
 								className="h-full"
 								onFallbackDownload={downloadBinary}
 							/>
+								</Suspense>
 						) : binaryFile ? (
 							<div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 text-center text-sm">
 								<p>当前格式不支持在线预览</p>
@@ -303,7 +343,10 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 										mode="static"
 										parseIncompleteMarkdown
 										linkSafety={{ enabled: true }}
-										controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
+												controls={{
+													code: { copy: true, download: true },
+													table: { copy: true, download: true },
+												}}
 										onOpenPath={(path) => void actions.openResource(path)}
 										projectId={state.currentProjectId}
 										basePath={markdownFile.path}
@@ -327,7 +370,9 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 										file={textFile}
 										modelKey={`${state.currentProjectId ?? "external"}:${textFile.path}`}
 										onContentChange={markdownFile ? setMarkdownPreviewContent : undefined}
-										onSave={(content, expectedHash) => actions.saveFile(textFile.path, content, expectedHash)}
+												onSave={(content, expectedHash) =>
+													actions.saveFile(textFile.path, content, expectedHash)
+												}
 										onStateChange={setEditorState}
 									/>
 								</div>

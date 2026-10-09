@@ -51,6 +51,9 @@ type PromiseMapRef = { current: Map<string, Promise<void>> };
 type StringSetRef = { current: Set<string> };
 type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
 
+const SESSION_CONTROL_RECOVERY_MS = 130_000;
+const SESSION_CONTROL_RETRY_MS = 1_000;
+const SESSION_CONTROL_MAX_RETRY_MS = 5_000;
 function setSessionStopping(current: WorkbenchState, sessionId: string, stopping: boolean): WorkbenchState {
 	if (stopping) {
 		if (current.stoppingSessionIds[sessionId]) return current;
@@ -60,6 +63,29 @@ function setSessionStopping(current: WorkbenchState, sessionId: string, stopping
 	const stoppingSessionIds = { ...current.stoppingSessionIds };
 	delete stoppingSessionIds[sessionId];
 	return { ...current, stoppingSessionIds };
+}
+function updatePendingSessionControl(
+	current: WorkbenchState,
+	sessionId: string,
+	delta: 1 | -1,
+	controlled?: Awaited<ReturnType<typeof webApi.control>>,
+): WorkbenchState {
+	const pendingSessionControls = { ...current.pendingSessionControls };
+	const pending = pendingSessionControls[sessionId] ?? 0;
+	if (delta > 0) {
+		pendingSessionControls[sessionId] = pending + 1;
+	} else if (pending <= 1) {
+		delete pendingSessionControls[sessionId];
+	} else {
+		pendingSessionControls[sessionId] = pending - 1;
+	}
+	return {
+		...current,
+		...(controlled && current.sessionId === sessionId
+			? { lease: controlled.lease, readOnly: controlled.owned === false }
+			: {}),
+		pendingSessionControls,
+	};
 }
 
 export interface WorkbenchSessionActionsContext {
@@ -141,6 +167,50 @@ export function useWorkbenchSessionActions({
 	loadProjectTrustRef,
 	loadSessionTreeRef,
 }: WorkbenchSessionActionsContext) {
+	const acquireSelectedSessionControl = useCallback(
+		async (sessionId: string) => {
+			const selection = selectionRef.current;
+			const deadline = Date.now() + SESSION_CONTROL_RECOVERY_MS;
+			let retryDelay = SESSION_CONTROL_RETRY_MS;
+			let pending = false;
+			try {
+				while (stateRef.current.sessionId === sessionId && selectionRef.current === selection) {
+					if (!pending) {
+						updateState((current) => updatePendingSessionControl(current, sessionId, 1));
+						pending = true;
+					}
+					try {
+						const controlled = await webApi.control(sessionId);
+						if (stateRef.current.sessionId === sessionId && selectionRef.current === selection) {
+							updateState((current) => updatePendingSessionControl(current, sessionId, -1, controlled));
+							pending = false;
+						}
+						return controlled;
+					} catch (error) {
+						if (stateRef.current.sessionId !== sessionId || selectionRef.current !== selection) return;
+						const code = error instanceof Error && "code" in error ? error.code : undefined;
+						if (
+							(code !== "session_coordination_unavailable" && code !== "session_locked") ||
+							!stateRef.current.connected ||
+							Date.now() >= deadline
+						)
+							throw error;
+						// 进程重启或交接期间继续恢复，不把临时写锁固化为只读。
+						await new Promise<void>((resolve) =>
+							window.setTimeout(resolve, Math.min(retryDelay, deadline - Date.now())),
+						);
+						retryDelay = Math.min(retryDelay * 2, SESSION_CONTROL_MAX_RETRY_MS);
+						if (!stateRef.current.connected) return;
+					}
+				}
+				return;
+			} finally {
+				if (pending) updateState((current) => updatePendingSessionControl(current, sessionId, -1));
+			}
+		},
+		[updateState],
+	);
+
 	const selectSession = useCallback(
 		async (sessionId: string) => {
 			if (selectionInFlightRef.current === sessionId) return;
@@ -286,14 +356,19 @@ export function useWorkbenchSessionActions({
 				void projectReviewRefresh.catch((error) => showToast(errorMessage(error)));
 			}
 			try {
-				const controlled = await webApi.control(sessionId);
-				if (request !== selectionRef.current) {
+				const controlled = await acquireSelectedSessionControl(sessionId);
+				if (!controlled || request !== selectionRef.current) {
 					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 					return;
 				}
 				updateState((current) => {
 					if (isOlderSessionSnapshot(current.session, controlled.snapshot))
-						return { ...current, lease: controlled.lease, sessionError: undefined };
+						return {
+							...current,
+							lease: controlled.lease,
+							readOnly: controlled.owned === false,
+							sessionError: undefined,
+						};
 					const next: WorkbenchState = {
 						...current,
 						projects: updateSessionActivity(
@@ -398,6 +473,7 @@ export function useWorkbenchSessionActions({
 			if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 		},
 		[
+			acquireSelectedSessionControl,
 			completeSessionSubscription,
 			loadSessionOperations,
 			loadSubagents,
@@ -509,7 +585,7 @@ export function useWorkbenchSessionActions({
 		const current = stateRef.current;
 		if (!current.sessionId || !current.previousCursor || current.loadingEarlier) return;
 		const sessionId = current.sessionId;
-		updateState((value) => ({ ...value, loadingEarlier: true }));
+		updateState((value) => ({ ...value, loadingEarlier: true, transcriptError: undefined }));
 		try {
 			await loadTranscript(sessionId, current.previousCursor, false, true);
 		} finally {
@@ -838,7 +914,19 @@ export function useWorkbenchSessionActions({
 			let temporaryLease = false;
 			try {
 				if (current.sessionId !== sessionId || !current.lease || current.readOnly) {
-					const controlled = await webApi.control(sessionId);
+					const trackControl = current.sessionId === sessionId;
+					if (trackControl)
+						updateState((next) => updatePendingSessionControl(next, sessionId, 1));
+					let controlled: Awaited<ReturnType<typeof webApi.control>>;
+					try {
+						controlled = await webApi.control(sessionId);
+					} catch (error) {
+						if (trackControl)
+							updateState((next) => updatePendingSessionControl(next, sessionId, -1));
+						throw error;
+					}
+					if (trackControl)
+						updateState((next) => updatePendingSessionControl(next, sessionId, -1, controlled));
 					if (!controlled.owned) {
 						showToast("当前会话暂时无法修改");
 						return;
@@ -1094,8 +1182,9 @@ export function useWorkbenchSessionActions({
 			if (current.sessionId !== sessionId) return false;
 			if (!current.readOnly && current.lease) return true;
 			try {
-				const controlled = await webApi.control(sessionId);
-				if (stateRef.current.sessionId !== sessionId) return false;
+				const selection = selectionRef.current;
+				const controlled = await acquireSelectedSessionControl(sessionId);
+				if (!controlled || stateRef.current.sessionId !== sessionId || selectionRef.current !== selection) return false;
 				updateState((next) => {
 					const updated: WorkbenchState = {
 						...next,
@@ -1115,7 +1204,7 @@ export function useWorkbenchSessionActions({
 				return false;
 			}
 		},
-		[showToast, updateState],
+		[acquireSelectedSessionControl, showToast, updateState],
 	);
 
 	const updateModel = useCallback(

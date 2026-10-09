@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.1.0-lystar.3] - 2026-10-09
+
+### Added
+
+- **Web 工作台**：项目和会话列表支持渐进加载与断线恢复；可预览和下载 DOCX、XLSX、PPTX 文件。
+
+### Changed
+
+- **协作信任继承**：协作工作区默认沿用来源项目或上级目录已有的信任决定；项目设置可关闭继承，沿用不信任决定时不重复确认。详见 [协作工作区说明](https://github.com/lystar-team/lystar-code/blob/v1.1.0-lystar.3/docs/development/collaboration-workspaces.md)。
+
+### Fixed
+
+- **会话和历史加载**：写锁内增量读取追加中的 Session 元数据；调整 Web Transcript 分页和项目会话刷新，减少首屏阻塞并避免并发更新覆盖。
+
 ## [1.1.0-lystar.2] - 2026-10-08
 
 ### New Features

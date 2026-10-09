@@ -194,6 +194,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	let processing = Promise.resolve();
 	let handshake = Promise.resolve();
 	let transcriptProcessing = Promise.resolve();
+	let updateCheckProcessing = Promise.resolve();
 	const acquisitions = new Set<Promise<void>>();
 	let queuedRequests = 0;
 	let queuedBytes = 0;
@@ -279,6 +280,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				};
 				if (message.type === "ui_response") {
 					void handle().catch(fail);
+				} else if (message.type === "request" && message.request.command === "check_for_updates") {
+					updateCheckProcessing = Promise.all([handshake, updateCheckProcessing]).then(handle).catch(fail);
 				} else if (message.type === "request" && message.request.command === "read_transcript") {
 					transcriptProcessing = Promise.all([handshake, transcriptProcessing]).then(handle).catch(fail);
 				} else if (message.type === "request" && message.request.command === "acquire_session") {
@@ -328,7 +331,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				try {
 					decoder.end();
 					sealReadBatch();
-					void Promise.all([processing, transcriptProcessing, ...acquisitions]).then(() => {
+					void Promise.all([processing, transcriptProcessing, updateCheckProcessing, ...acquisitions]).then(() => {
 						cleanup();
 						resolve();
 					}, onError);

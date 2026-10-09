@@ -93,6 +93,7 @@ const BASE_CAPABILITIES: Capability[] = [
 const SESSION_FILE_WATCH_DEBOUNCE_MS = 150;
 const PROJECT_SESSION_CACHE_TTL_MS = 2_000;
 const SESSION_FILE_FALLBACK_MIN_MS = 5_000;
+const UPDATE_CHECK_CACHE_TTL_MS = 30_000;
 const SESSION_FILE_FALLBACK_MAX_MS = 60_000;
 const CONTENT_CLEANUP_INTERVAL_MS = 60_000;
 const PROGRESS_BATCH_MS = 50;
@@ -445,6 +446,8 @@ export class WebRuntimeService {
 	private readonly roomCoordinator: SessionRoomCoordinator;
 	private readonly journal: OperationJournal;
 	private readonly adapter: RuntimeAdapter;
+	private updateCheckCache?: { expiresAt: number; value: JsonValue };
+	private updateCheckPromise?: Promise<JsonValue>;
 	private readonly runtimeSettings: SettingsManager;
 	private readonly capabilities: Capability[];
 	private readonly persistent: boolean;
@@ -1753,6 +1756,23 @@ export class WebRuntimeService {
 		this.progressTimers.clear();
 		this.pendingProgress.clear();
 		this.contentStore.clear();
+	}
+
+	private checkForUpdates(): Promise<JsonValue> {
+		const cached = this.updateCheckCache;
+		if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
+		if (this.updateCheckPromise) return this.updateCheckPromise;
+		const pending = this.adapter
+			.checkForUpdates()
+			.then((value) => {
+				this.updateCheckCache = { expiresAt: Date.now() + UPDATE_CHECK_CACHE_TTL_MS, value };
+				return value;
+			})
+			.finally(() => {
+				if (this.updateCheckPromise === pending) this.updateCheckPromise = undefined;
+			});
+		this.updateCheckPromise = pending;
+		return pending;
 	}
 
 	private async handle(connection: ClientConnection, message: ClientMessage): Promise<void> {
@@ -3085,7 +3105,7 @@ export class WebRuntimeService {
 				});
 			}
 			case "check_for_updates":
-				return this.adapter.checkForUpdates();
+				return this.checkForUpdates();
 			case "resolve_project_resource":
 				return this.adapter.resolveProjectResource(request.cwd, request.target, request.line, request.column);
 			case "resolve_external_resource":

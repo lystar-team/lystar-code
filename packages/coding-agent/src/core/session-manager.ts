@@ -31,7 +31,6 @@ import {
 } from "fs";
 import { open, readdir, stat } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
-import lockfile, { type LockOptions } from "proper-lockfile";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
@@ -42,9 +41,10 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { isSessionWriterLocked, lockSessionWriter } from "./session-writer-lock.ts";
 import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 export const CURRENT_SESSION_VERSION = 3;
-const ASYNC_SESSION_READ_BUFFER_SIZE = 64 * 1024;
+const ASYNC_SESSION_READ_BUFFER_SIZE = 512 * 1024;
 
 export type SessionRelation = "collaboration" | "fork";
 export type SessionWorkspaceMode = "shared" | "worktree" | "patch";
@@ -328,15 +328,31 @@ export interface SessionInfo {
 	collaborationResult?: SessionCollaborationResult;
 }
 
+interface SessionMetadataSummary {
+	header: SessionHeader;
+	messageCount: number;
+	firstMessage: string;
+	name?: string;
+	nameResolved: boolean;
+	lastActivityTime?: number;
+	lastOutcome?: SessionOutcome;
+	collaborationResult?: SessionCollaborationResult;
+}
+
 export interface SessionInfoCacheEntry {
 	size: number;
 	mtimeMs: number;
 	ctimeMs: number;
 	ino: number;
+	dev?: number;
+	birthtimeMs?: number;
 	includeAllMessagesText: boolean;
 	metadataOnly: boolean;
 	/** 摘要扫描是否发现名称记录（含显式清空）。 */
 	metadataNameResolved?: boolean;
+	metadataSummary?: SessionMetadataSummary;
+	/** 仅在写锁内读取到完整行边界时，允许沿用累计摘要续读。 */
+	metadataAppendSafe?: boolean;
 	info: SessionInfo | null;
 }
 
@@ -401,26 +417,12 @@ export class SessionLockCompromisedError extends Error {
 	}
 }
 
-const SESSION_LOCK_STALE_MS = 120_000;
-const SESSION_LOCK_UPDATE_MS = 10_000;
-
 function canonicalizeSessionPath(filePath: string): string {
 	const resolvedPath = resolvePath(filePath);
 	if (existsSync(resolvedPath)) {
 		return normalizePath(realpathSync(resolvedPath));
 	}
 	return join(normalizePath(realpathSync(dirname(resolvedPath))), basename(resolvedPath));
-}
-
-function createSessionLockOptions(sessionPath: string, onCompromised: (error: Error) => void): LockOptions {
-	return {
-		stale: SESSION_LOCK_STALE_MS,
-		update: SESSION_LOCK_UPDATE_MS,
-		realpath: false,
-		retries: 0,
-		lockfilePath: `${sessionPath}.lock`,
-		onCompromised,
-	};
 }
 
 function acquireSessionWriterLock(
@@ -431,7 +433,7 @@ function acquireSessionWriterLock(
 	try {
 		return {
 			sessionPath,
-			release: lockfile.lockSync(sessionPath, createSessionLockOptions(sessionPath, onCompromised)),
+			release: lockSessionWriter(sessionPath, onCompromised),
 		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
@@ -1171,8 +1173,10 @@ async function* readSessionInfoLines(
 	filePath: string,
 	signal?: AbortSignal,
 	toolResultMode: "skip" | "id" | "full" | "subagent" = "skip",
+	start = 0,
+	end?: number,
 ): AsyncGenerator<{ line: string } | { toolResult: true; id?: string }> {
-	const input = createReadStream(filePath, { signal, highWaterMark: SESSION_READ_BUFFER_SIZE });
+	const input = createReadStream(filePath, { signal, highWaterMark: SESSION_READ_BUFFER_SIZE, start, end });
 	let parts: Buffer[] = [];
 	let length = 0;
 	let prefix = "";
@@ -1228,6 +1232,59 @@ async function* readSessionInfoLines(
 		if (length > 0) yield finishLine();
 	} finally {
 		input.destroy();
+	}
+}
+
+function isSessionInfoWriterLocked(filePath: string): boolean {
+	try {
+		return isSessionWriterLocked(canonicalizeSessionPath(filePath));
+	} catch {
+		return false;
+	}
+}
+
+function sessionFileVersionMatches(left: Stats, right: Stats): boolean {
+	return (
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.birthtimeMs === right.birthtimeMs &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.ctimeMs === right.ctimeMs
+	);
+}
+
+function cachedSessionFileVersionMatches(cached: SessionInfoCacheEntry, stats: Stats): boolean {
+	return (
+		cached.dev === stats.dev &&
+		cached.ino === stats.ino &&
+		cached.birthtimeMs === stats.birthtimeMs &&
+		cached.size === stats.size &&
+		cached.mtimeMs === stats.mtimeMs &&
+		cached.ctimeMs === stats.ctimeMs
+	);
+}
+
+function sessionHeaderMatches(filePath: string, expected: SessionHeader): boolean {
+	try {
+		const header = readSessionHeader(filePath);
+		return header !== null && JSON.stringify(header) === JSON.stringify(expected);
+	} catch {
+		return false;
+	}
+}
+
+function sessionFileEndsWithNewline(filePath: string, size: number): boolean {
+	if (size === 0) return false;
+	let fd: number | undefined;
+	try {
+		fd = openSync(filePath, "r");
+		const lastByte = Buffer.allocUnsafe(1);
+		return readSync(fd, lastByte, 0, 1, size - 1) === 1 && lastByte[0] === 10;
+	} catch {
+		return false;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
 	}
 }
 
@@ -1319,36 +1376,60 @@ async function buildSessionInfo(
 	filePath: string,
 	optionsOrSignal: SessionListOptions | AbortSignal = {},
 	fileStats?: Stats,
+	retryOnChange = true,
 ): Promise<SessionInfo | null> {
 	const options = optionsOrSignal instanceof AbortSignal ? { signal: optionsOrSignal } : optionsOrSignal;
 	try {
 		options.signal?.throwIfAborted();
-		const stats = fileStats ?? (await stat(filePath));
+		let stats = fileStats ?? (await stat(filePath));
 		const metadataOnly = options.metadataOnly === true;
 		const includeAllMessagesText = !metadataOnly && options.includeAllMessagesText !== false;
 		const cached = options.cache?.entries.get(filePath);
+		const cachedMetadataHeaderMatches =
+			metadataOnly && !!cached?.metadataSummary && sessionHeaderMatches(filePath, cached.metadataSummary.header);
 		if (
 			cached &&
-			cached.size === stats.size &&
-			cached.mtimeMs === stats.mtimeMs &&
-			cached.ctimeMs === stats.ctimeMs &&
-			cached.ino === stats.ino &&
+			cachedSessionFileVersionMatches(cached, stats) &&
 			cached.includeAllMessagesText === includeAllMessagesText &&
-			cached.metadataOnly === metadataOnly
+			cached.metadataOnly === metadataOnly &&
+			(!metadataOnly || cachedMetadataHeaderMatches)
 		) {
-			return cached.info;
+			const currentStats = await stat(filePath);
+			if (cachedSessionFileVersionMatches(cached, currentStats)) return cached.info;
+			stats = currentStats;
 		}
-		let header: SessionHeader | null = null;
-		let messageCount = 0;
-		let firstMessage = "";
-		const allMessages: string[] = [];
-		let name: string | undefined;
-		let nameResolved = false;
-		let lastActivityTime: number | undefined;
-		let lastOutcome: SessionOutcome | undefined;
-		let collaborationResult: SessionCollaborationResult | undefined;
 
-		for await (const record of readSessionInfoLines(filePath, options.signal)) {
+		const writerLocked = metadataOnly && isSessionInfoWriterLocked(filePath);
+		// 持锁时，同 inode 写入只追加；完整重写通过 rename 更换文件身份。
+		const canExtendMetadata =
+			writerLocked &&
+			cached?.metadataOnly === true &&
+			cached.metadataAppendSafe === true &&
+			cached.metadataSummary !== undefined &&
+			cached.size < stats.size &&
+			cached.dev === stats.dev &&
+			cached.ino === stats.ino &&
+			cached.birthtimeMs === stats.birthtimeMs &&
+			cachedMetadataHeaderMatches;
+		let previousSummary: SessionMetadataSummary | undefined;
+		let readStart = 0;
+		if (canExtendMetadata && cached?.metadataSummary) {
+			previousSummary = cached.metadataSummary;
+			readStart = cached.size;
+		}
+		let header: SessionHeader | null = previousSummary?.header ?? null;
+		let messageCount = previousSummary?.messageCount ?? 0;
+		let firstMessage = previousSummary?.firstMessage ?? "";
+		const allMessages: string[] = [];
+		let name = previousSummary?.name;
+		let nameResolved = previousSummary?.nameResolved ?? false;
+		let lastActivityTime = previousSummary?.lastActivityTime;
+		let lastOutcome = previousSummary?.lastOutcome;
+		let collaborationResult = previousSummary?.collaborationResult;
+
+		// 持锁的摘要读取只处理起始 stat 对应的前缀；后续追加留给下一次续读。
+		const readEnd = writerLocked ? stats.size - 1 : undefined;
+		for await (const record of readSessionInfoLines(filePath, options.signal, "skip", readStart, readEnd)) {
 			if ("toolResult" in record) {
 				if (!header) return null;
 				messageCount++;
@@ -1373,7 +1454,6 @@ async function buildSessionInfo(
 				continue;
 			}
 
-			// Extract session name (use latest, including explicit clears)
 			if (entry.type === "session_info") {
 				name = entry.name?.trim() || undefined;
 				nameResolved = true;
@@ -1417,7 +1497,7 @@ async function buildSessionInfo(
 					? new Date(headerTime)
 					: stats.mtime;
 
-		const info = {
+		const info: SessionInfo = {
 			path: filePath,
 			id: header.id,
 			cwd,
@@ -1435,14 +1515,49 @@ async function buildSessionInfo(
 			...(header.collaborationTask ? { collaborationTask: header.collaborationTask } : {}),
 			...(collaborationResult ? { collaborationResult } : {}),
 		};
+		const currentStats = await stat(filePath);
+		const metadataAppendSafe =
+			metadataOnly &&
+			writerLocked &&
+			isSessionInfoWriterLocked(filePath) &&
+			sessionFileEndsWithNewline(filePath, stats.size);
+		const appendedWhileReading =
+			metadataAppendSafe &&
+			currentStats.size > stats.size &&
+			currentStats.dev === stats.dev &&
+			currentStats.ino === stats.ino &&
+			currentStats.birthtimeMs === stats.birthtimeMs &&
+			sessionHeaderMatches(filePath, header);
+		if (!sessionFileVersionMatches(stats, currentStats) && !appendedWhileReading) {
+			options.cache?.entries.delete(filePath);
+			if (retryOnChange) return await buildSessionInfo(filePath, options, currentStats, false);
+			return null;
+		}
 		options.cache?.entries.set(filePath, {
 			size: stats.size,
 			mtimeMs: stats.mtimeMs,
 			ctimeMs: stats.ctimeMs,
 			ino: stats.ino,
+			dev: stats.dev,
+			birthtimeMs: stats.birthtimeMs,
 			includeAllMessagesText,
 			metadataOnly,
 			metadataNameResolved: nameResolved,
+			...(metadataOnly
+				? {
+						metadataSummary: {
+							header,
+							messageCount,
+							firstMessage,
+							name,
+							nameResolved,
+							lastActivityTime,
+							lastOutcome,
+							collaborationResult,
+						},
+						metadataAppendSafe,
+					}
+				: {}),
 			info,
 		});
 		return info;
@@ -2759,11 +2874,7 @@ export class SessionManager {
 
 	static isWriterLocked(path: string): boolean {
 		const sessionPath = canonicalizeSessionPath(path);
-		return lockfile.checkSync(sessionPath, {
-			realpath: false,
-			stale: SESSION_LOCK_STALE_MS,
-			lockfilePath: `${sessionPath}.lock`,
-		});
+		return isSessionWriterLocked(sessionPath);
 	}
 
 	/** Create an in-memory session (no file persistence) */

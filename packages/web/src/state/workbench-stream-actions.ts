@@ -47,6 +47,7 @@ import {
 	errorMessage,
 	eventIsObject,
 	operationForSessionSnapshot,
+	mergeProjectSessions,
 	sessionActivityFromProgress,
 	shouldRefreshCompletedTurn,
 	updateSessionActivity,
@@ -225,6 +226,8 @@ export function useWorkbenchStreamActions({
 
 	const completeSessionSubscription = useCallback(
 		async (sessionId: string, result: SessionSubscriptionResult): Promise<boolean> => {
+			const subscribedSocket = socketRef.current;
+			const selection = selectionRef.current;
 			if (result === "closed") return false;
 			if (result === "timeout") {
 				const socket = socketRef.current;
@@ -255,6 +258,7 @@ export function useWorkbenchStreamActions({
 					if (gapRecoveryRef.current.get(key) === recovery) gapRecoveryRef.current.delete(key);
 				}
 			}
+			if (socketRef.current !== subscribedSocket || selectionRef.current !== selection) return false;
 			if (stateRef.current.sessionId === sessionId) {
 				const next = updateState((current) => ({
 					...current,
@@ -274,9 +278,9 @@ export function useWorkbenchStreamActions({
 				.then(async (result) => {
 					const ready = await completeSessionSubscription(sessionId, result);
 					if (ready && result !== "gap" && stateRef.current.sessionId === sessionId) {
+						if (selectionInFlightRef.current === sessionId) return;
 						const current = stateRef.current;
 						if (
-							selectionInFlightRef.current !== sessionId &&
 							current.session &&
 							current.transcriptPageLoaded &&
 							!current.transcriptLoading &&
@@ -323,8 +327,9 @@ export function useWorkbenchStreamActions({
 					for (const waiter of [...waiters]) waiter.resolve(event.gap ? "gap" : "ready");
 				}
 				if (selected) {
+					const selectionIsPending = selectionInFlightRef.current === event.sessionId;
 					const next = updateState((current) =>
-						event.gap
+						event.gap || selectionIsPending
 							? { ...current, sessionReady: false }
 							: {
 									...current,
@@ -364,6 +369,16 @@ export function useWorkbenchStreamActions({
 			}
 			if (event.type === "bootstrap") {
 				applyBootstrap(event.data);
+				return;
+			}
+			if (event.type === "project_updated") {
+				updateState((current) => {
+					const previous = current.projects.find((project) => project.id === event.project.id);
+					if (!previous) return current;
+					const project = mergeProjectSessions([previous], [event.project])[0];
+					if (project === previous) return current;
+					return { ...current, projects: current.projects.map((value) => value.id === project.id ? project : value) };
+				});
 				return;
 			}
 			if (event.type === "connection_state") {

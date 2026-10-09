@@ -266,7 +266,6 @@ export function SessionWorkspaceActions({
 
 	return (
 		<div className="flex min-w-0 items-center gap-1.5">
-			<span className="min-w-0 truncate text-[11px] text-muted-foreground">模式：{WORKSPACE_MODE_LABELS[workspace.mode]}，状态：{WORKSPACE_STATUS_LABELS[workspace.status]}</span>
 			{workspace.status !== "released" ? (
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>

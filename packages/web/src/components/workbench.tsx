@@ -1,8 +1,8 @@
-import { LoaderCircle, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { LoaderCircle, PanelRightClose, PanelRightOpen, WifiOff } from "lucide-react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
-import { connectionPresentation, type ConnectionPresentation } from "../state/connection-recovery";
+import { connectionPresentation } from "../state/connection-recovery";
 import { StabilityBoundary, StabilityFallbackPanel } from "./stability-boundary";
 import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
@@ -11,7 +11,11 @@ import { useRoomWorkspace, type RoomMemberSelection } from "../state/use-room-wo
 import { Button } from "./ui/button";
 import { GsapReveal } from "./ui/gsap-reveal";
 import { Composer } from "./workbench/composer";
-import { AgentIdentityIcon, collaborationAlias, collaborationSessionsForSession } from "./workbench/collaboration-session";
+import {
+	AgentIdentityIcon,
+	collaborationAlias,
+	collaborationSessionsForSession,
+} from "./workbench/collaboration-session";
 import {
 	INSPECTOR_DEFAULT_WIDTH,
 	INSPECTOR_MAX_WIDTH,
@@ -31,25 +35,59 @@ import {
 	Toast,
 	UiRequestDialog,
 } from "./workbench/dialogs";
-import { FilePreviewDialog } from "./workbench/file-preview-dialog";
-import { InspectorPanel } from "./workbench/inspector";
+import type { FilePreviewDialog as FilePreviewDialogComponent } from "./workbench/file-preview-dialog";
+import type { GitDiffDialog as GitDiffDialogComponent } from "./workbench/git-diff-dialog";
+import type { InspectorPanel as InspectorPanelComponent } from "./workbench/inspector";
 import { MobileProjectRailDialog } from "./workbench/mobile-project-rail-dialog";
 import { ProjectRail } from "./workbench/project-rail";
-import { RoomRail } from "./workbench/room-rail";
-import { RoomWorkspace } from "./workbench/room-workspace";
+import type { RoomRail as RoomRailComponent } from "./workbench/room-rail";
+import type { RoomWorkspace as RoomWorkspaceComponent } from "./workbench/room-workspace";
+import type { SettingsDialog as SettingsDialogComponent } from "./workbench/settings";
 import type { WorkspaceMode } from "./workbench/workspace-mode-switch";
 import { WorkspaceNavigationRail } from "./workbench/workspace-navigation-rail";
-import { SettingsDialog } from "./workbench/settings";
 import { TokenGate } from "./workbench/token-gate";
 import type { PromptEditRequest, WorkbenchActions } from "./workbench/types";
 
 export type { WorkbenchActions } from "./workbench/types";
 export { TokenGate } from "./workbench/token-gate";
 
-const GitDiffDialog = lazy(() =>
-	import("./workbench/git-diff-dialog").then((module) => ({ default: module.GitDiffDialog })),
+const filePreviewModules = import.meta.glob<{ FilePreviewDialog: typeof FilePreviewDialogComponent }>(
+	"./workbench/file-preview-dialog.tsx",
+);
+const gitDiffModules = import.meta.glob<{ GitDiffDialog: typeof GitDiffDialogComponent }>(
+	"./workbench/git-diff-dialog.tsx",
+);
+const inspectorModules = import.meta.glob<{ InspectorPanel: typeof InspectorPanelComponent }>(
+	"./workbench/inspector.tsx",
+);
+const roomRailModules = import.meta.glob<{ RoomRail: typeof RoomRailComponent }>("./workbench/room-rail.tsx");
+const roomWorkspaceModules = import.meta.glob<{ RoomWorkspace: typeof RoomWorkspaceComponent }>(
+	"./workbench/room-workspace.tsx",
+);
+const settingsModules = import.meta.glob<{ SettingsDialog: typeof SettingsDialogComponent }>(
+	"./workbench/settings/index.tsx",
 );
 
+const FilePreviewDialog = lazy(() =>
+	filePreviewModules["./workbench/file-preview-dialog.tsx"]!().then((module) => ({
+		default: module.FilePreviewDialog,
+	})),
+);
+const GitDiffDialog = lazy(() =>
+	gitDiffModules["./workbench/git-diff-dialog.tsx"]!().then((module) => ({ default: module.GitDiffDialog })),
+);
+const InspectorPanel = lazy(() =>
+	inspectorModules["./workbench/inspector.tsx"]!().then((module) => ({ default: module.InspectorPanel })),
+);
+const RoomRail = lazy(() =>
+	roomRailModules["./workbench/room-rail.tsx"]!().then((module) => ({ default: module.RoomRail })),
+);
+const RoomWorkspace = lazy(() =>
+	roomWorkspaceModules["./workbench/room-workspace.tsx"]!().then((module) => ({ default: module.RoomWorkspace })),
+);
+const SettingsDialog = lazy(() =>
+	settingsModules["./workbench/settings/index.tsx"]!().then((module) => ({ default: module.SettingsDialog })),
+);
 function useMediaQuery(query: string): boolean {
 	const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
 
@@ -62,6 +100,17 @@ function useMediaQuery(query: string): boolean {
 	}, [query]);
 
 	return matches;
+}
+function PanelLoadingStatus({ label }: { label: string }) {
+	return (
+		<div
+			className="flex min-h-0 flex-1 items-center justify-center gap-2 px-4 py-6 text-sm text-muted-foreground"
+			role="status"
+		>
+			<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+			正在加载{label}
+		</div>
+	);
 }
 
 export function Workbench({
@@ -76,6 +125,10 @@ export function Workbench({
 	currentProject?: WebProject;
 }) {
 	const [directoryOpen, setDirectoryOpen] = useState(false);
+	const [filePreviewLoaded, setFilePreviewLoaded] = useState(() =>
+		Boolean(state.fileLoading || state.fileContent || state.fileError),
+	);
+	const [settingsLoaded, setSettingsLoaded] = useState(state.settingsOpen);
 	const [editingProject, setEditingProject] = useState<WebProject>();
 	const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -84,8 +137,8 @@ export function Workbench({
 	const [workspaceWidth, setWorkspaceWidth] = useState(0);
 	const resizePointerIdRef = useRef<number | null>(null);
 	const inspectorResizePointerIdRef = useRef<number | null>(null);
-	const [panelOpen, setPanelOpen] = useState(() =>
-		typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
+	const [panelOpen, setPanelOpen] = useState(
+		() => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
 	);
 	const expandButtonRef = useRef<HTMLButtonElement>(null);
 	const mainRef = useRef<HTMLElement>(null);
@@ -136,7 +189,9 @@ export function Workbench({
 	});
 	const roomAgentSessionIds = useMemo(() => {
 		const sessionIds = new Set(
-			projects.flatMap((project) => project.sessions.filter((session) => session.roomMember).map((session) => session.id)),
+			projects.flatMap((project) =>
+				project.sessions.filter((session) => session.roomMember).map((session) => session.id),
+			),
 		);
 		for (const { rooms } of roomWorkspace.roomProjects) {
 			for (const room of rooms) {
@@ -168,7 +223,8 @@ export function Workbench({
 		? resolvedSessionTitle(state.session, currentSessionSummary)
 		: currentProject?.name || "选择会话";
 	const roomProject = projects.find((project) => project.id === roomWorkspace.selectedRoomProjectId);
-	const viewTitle = workspaceMode === "rooms" ? roomWorkspace.selectedRoom?.room.title || "智能体协作" : sessionTitleText;
+	const viewTitle =
+		workspaceMode === "rooms" ? roomWorkspace.selectedRoom?.room.title || "智能体协作" : sessionTitleText;
 	const viewSubtitle = workspaceMode === "rooms" ? roomProject?.name || "选择项目" : currentProject?.name;
 
 	const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -182,13 +238,16 @@ export function Workbench({
 	const resizeSidebar = (event: ReactPointerEvent<HTMLDivElement>) => {
 		if (resizePointerIdRef.current !== event.pointerId) return;
 		const panel = event.currentTarget.parentElement!;
-		setSidebarWidth(Math.min(sidebarMaxWidth, sidebarWidthFromPointer(event.clientX, panel.getBoundingClientRect().left)));
+		setSidebarWidth(
+			Math.min(sidebarMaxWidth, sidebarWidthFromPointer(event.clientX, panel.getBoundingClientRect().left)),
+		);
 	};
 
 	const stopSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
 		if (resizePointerIdRef.current !== event.pointerId) return;
 		resizePointerIdRef.current = null;
-		if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+		if (event.currentTarget.hasPointerCapture(event.pointerId))
+			event.currentTarget.releasePointerCapture(event.pointerId);
 		setIsResizingSidebar(false);
 	};
 
@@ -224,7 +283,8 @@ export function Workbench({
 	const stopInspectorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
 		if (inspectorResizePointerIdRef.current !== event.pointerId) return;
 		inspectorResizePointerIdRef.current = null;
-		if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+		if (event.currentTarget.hasPointerCapture(event.pointerId))
+			event.currentTarget.releasePointerCapture(event.pointerId);
 		setIsResizingInspector(false);
 	};
 
@@ -239,6 +299,13 @@ export function Workbench({
 			document.body.style.userSelect = previousUserSelect;
 		};
 	}, [isResizingInspector, isResizingSidebar]);
+	useEffect(() => {
+		if (state.fileLoading || state.fileContent || state.fileError) setFilePreviewLoaded(true);
+	}, [state.fileContent, state.fileError, state.fileLoading]);
+
+	useEffect(() => {
+		if (state.settingsOpen) setSettingsLoaded(true);
+	}, [state.settingsOpen]);
 
 	useEffect(() => {
 		setPromptEditRequest(undefined);
@@ -287,6 +354,16 @@ export function Workbench({
 		setDirectoryOpen(true);
 		if (desktopLayout && !wideLayout) setPanelOpen(false);
 	}, [desktopLayout, wideLayout]);
+	const retryProjectSessions = useCallback(
+		async (projectId: string) => {
+			try {
+				await actions.refreshProjectSessions(projectId);
+			} catch (error) {
+				actions.showToast(error instanceof Error ? error.message : String(error));
+			}
+		},
+		[actions.refreshProjectSessions, actions.showToast],
+	);
 	const beginPromptEdit = useCallback(
 		(request: PromptEditRequest) => {
 			if (request.sessionId === state.sessionId) setPromptEditRequest(request);
@@ -294,10 +371,13 @@ export function Workbench({
 		[state.sessionId],
 	);
 	const closePromptEdit = useCallback(() => setPromptEditRequest(undefined), []);
-	const handleWorkspaceModeChange = useCallback((mode: WorkspaceMode) => {
+	const handleWorkspaceModeChange = useCallback(
+		(mode: WorkspaceMode) => {
 		setWorkspaceMode(mode);
 		if (desktopLayout) setPanelOpen(true);
-	}, [desktopLayout]);
+		},
+		[desktopLayout],
+	);
 	const handleSelectRoom = useCallback(
 		(projectId: string, roomId: string) => {
 			const summary = roomWorkspace.roomProjects
@@ -308,7 +388,8 @@ export function Workbench({
 		[roomWorkspace.roomProjects, roomWorkspace.selectRoom],
 	);
 	const handleCreateRoom = useCallback(
-		(projectId: string, title: string, member: RoomMemberSelection) => roomWorkspace.createRoom(projectId, title, member),
+		(projectId: string, title: string, member: RoomMemberSelection) =>
+			roomWorkspace.createRoom(projectId, title, member),
 		[roomWorkspace.createRoom],
 	);
 
@@ -328,7 +409,13 @@ export function Workbench({
 					{panelOpen ? (
 						<>
 							{!wideLayout && !state.inspectorOpen ? (
-								<button type="button" tabIndex={-1} aria-hidden="true" className="fixed inset-0 z-30 cursor-default bg-black/30" onClick={closeSidebar} />
+								<button
+									type="button"
+									tabIndex={-1}
+									aria-hidden="true"
+									className="fixed inset-0 z-30 cursor-default bg-black/30"
+									onClick={closeSidebar}
+								/>
 							) : null}
 							<aside
 								aria-label={workspaceMode === "rooms" ? "智能体协作导航" : "项目与会话"}
@@ -360,21 +447,23 @@ export function Workbench({
 									)}
 								>
 									{workspaceMode === "rooms" ? (
-										<RoomRail
-											state={state}
-											actions={actions}
-											projects={projects}
-											roomProjects={roomWorkspace.roomProjects}
-											roomsLoading={roomWorkspace.roomsLoading}
-											roomsError={roomWorkspace.roomsError}
-											selectedRoomId={roomWorkspace.selectedRoom?.room.id}
-											onSelectRoom={(projectId, summary) => handleSelectRoom(projectId, summary.room.id)}
-											onCreateRoom={handleCreateRoom}
-											onModeChange={handleWorkspaceModeChange}
-											onNavigate={wideLayout ? undefined : closeSidebar}
-											withNavigationRail
-											onCollapse={closeSidebar}
-										/>
+										<Suspense fallback={<PanelLoadingStatus label="协作导航" />}>
+											<RoomRail
+												state={state}
+												actions={actions}
+												projects={projects}
+												roomProjects={roomWorkspace.roomProjects}
+												roomsLoading={roomWorkspace.roomsLoading}
+												roomsError={roomWorkspace.roomsError}
+												selectedRoomId={roomWorkspace.selectedRoom?.room.id}
+												onSelectRoom={(projectId, summary) => handleSelectRoom(projectId, summary.room.id)}
+												onCreateRoom={handleCreateRoom}
+												onModeChange={handleWorkspaceModeChange}
+												onNavigate={wideLayout ? undefined : closeSidebar}
+												withNavigationRail
+												onCollapse={closeSidebar}
+											/>
+										</Suspense>
 									) : (
 										<ProjectRail
 											state={state}
@@ -385,6 +474,7 @@ export function Workbench({
 											onAddProject={openDirectory}
 											onEditProject={setEditingProject}
 											onNavigate={wideLayout ? undefined : closeSidebar}
+											onRetryProjectSessions={retryProjectSessions}
 											workspaceMode={workspaceMode}
 											onWorkspaceModeChange={handleWorkspaceModeChange}
 											withNavigationRail
@@ -439,9 +529,15 @@ export function Workbench({
 								selectedRoomId={roomWorkspace.selectedRoom?.room.id}
 								onSelectRoom={handleSelectRoom}
 								onCreateRoom={handleCreateRoom}
+								onRetryProjectSessions={retryProjectSessions}
 							/>
 						)}
-						<GsapReveal animationKey={state.sessionId ?? "empty"} className="min-w-0" distance={8} duration={0.24}>
+						<GsapReveal
+							animationKey={state.sessionId ?? "empty"}
+							className="min-w-0"
+							distance={8}
+							duration={0.24}
+						>
 							<h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">{viewTitle}</h1>
 							{viewSubtitle ? <p className="truncate text-xs text-muted-foreground">{viewSubtitle}</p> : null}
 						</GsapReveal>
@@ -454,15 +550,24 @@ export function Workbench({
 										.filter((member) => !member.leftAt)
 										.slice(0, 4)
 										.map((member) => {
-											const session = roomProject?.sessions.find((candidate) => candidate.id === member.sessionId);
-											const nickname = member.role === "owner" ? "你" : member.nickname?.trim() || collaborationAlias(member.sessionId);
+											const session = roomProject?.sessions.find(
+												(candidate) => candidate.id === member.sessionId,
+											);
+											const nickname =
+												member.role === "owner"
+													? "你"
+													: member.nickname?.trim() || collaborationAlias(member.sessionId);
 											return (
 												<span
 													className="grid size-6 place-items-center overflow-hidden rounded-full border-2 border-background bg-muted text-muted-foreground"
 													key={member.sessionId}
 													title={member.profileName ? `${nickname} · ${member.profileName}` : nickname}
 												>
-													<AgentIdentityIcon member={member} session={session} className="size-3.5 object-contain" />
+													<AgentIdentityIcon
+														member={member}
+														session={session}
+														className="size-3.5 object-contain"
+													/>
 												</span>
 											);
 										})}
@@ -493,9 +598,31 @@ export function Workbench({
 					</div>
 					<Toast message={state.toast} />
 				</header>
+				{connection.blocking ? (
+					<div
+						className="flex shrink-0 items-center gap-3 border-b border-border/60 bg-muted/25 px-4 py-2.5"
+						role="status"
+						aria-live="polite"
+					>
+						{connection.tone === "reconnecting" ? (
+							<LoaderCircle className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+						) : (
+							<WifiOff className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+						)}
+						<div className="min-w-0">
+							<p className="text-sm font-medium">{connection.title}</p>
+							<p className="truncate text-xs text-muted-foreground">{connection.description}</p>
+						</div>
+					</div>
+				) : null}
 
 				<div ref={workspaceAreaRef} className="relative flex min-h-0 flex-1 overflow-hidden">
-					<div className={cn("flex min-w-0 flex-1 flex-col overflow-hidden", state.inspectorOpen && !desktopLayout && "hidden")}>
+					<div
+						className={cn(
+							"flex min-w-0 flex-1 flex-col overflow-hidden",
+							state.inspectorOpen && !desktopLayout && "hidden",
+						)}
+					>
 						<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
 							<StabilityBoundary
 								scope="conversation"
@@ -520,20 +647,22 @@ export function Workbench({
 									duration={0.34}
 								>
 									{workspaceMode === "rooms" ? (
-										<RoomWorkspace
-											state={state}
-											controller={roomWorkspace}
-											onModeChange={() => setWorkspaceMode("sessions")}
-											openResource={actions.openResource}
-											onOpenSession={(sessionId) => {
-												setWorkspaceMode("sessions");
-												void actions.selectSession(sessionId);
-											}}
-											onRefreshSessions={actions.refreshProjectSessions}
-											onToast={actions.showToast}
-											section={roomSection}
-											onSectionChange={setRoomSection}
-										/>
+										<Suspense fallback={<PanelLoadingStatus label="协作工作区" />}>
+											<RoomWorkspace
+												state={state}
+												controller={roomWorkspace}
+												onModeChange={() => setWorkspaceMode("sessions")}
+												openResource={actions.openResource}
+												onOpenSession={(sessionId) => {
+													setWorkspaceMode("sessions");
+													void actions.selectSession(sessionId);
+												}}
+												onRefreshSessions={actions.refreshProjectSessions}
+												onToast={actions.showToast}
+												section={roomSection}
+												onSectionChange={setRoomSection}
+											/>
+										</Suspense>
 									) : (
 										<ConversationView
 											state={state}
@@ -562,7 +691,12 @@ export function Workbench({
 								/>
 							)}
 						>
-							<GsapReveal animationKey={state.sessionId ?? "empty"} className="w-full shrink-0" distance={8} duration={0.26}>
+							<GsapReveal
+								animationKey={state.sessionId ?? "empty"}
+								className="w-full shrink-0"
+								distance={8}
+								duration={0.26}
+							>
 								{workspaceMode === "rooms" ? (
 									roomWorkspace.selectedRoom && roomSection === "chat" ? (
 										<Composer
@@ -598,7 +732,11 @@ export function Workbench({
 								"relative flex min-h-0 shrink-0 border-l border-border/60",
 								desktopLayout ? "min-w-[280px]" : "min-w-0 flex-1",
 							)}
-							style={desktopLayout ? { width: `${visibleInspectorWidth}px`, minWidth: INSPECTOR_MIN_WIDTH } : undefined}
+							style={
+								desktopLayout
+									? { width: `${visibleInspectorWidth}px`, minWidth: INSPECTOR_MIN_WIDTH }
+									: undefined
+							}
 						>
 							{desktopLayout ? (
 								<div
@@ -635,7 +773,9 @@ export function Workbench({
 									/>
 								)}
 							>
+								<Suspense fallback={<PanelLoadingStatus label="审阅工作区" />}>
 								<InspectorPanel state={state} actions={actions} />
+								</Suspense>
 							</StabilityBoundary>
 						</aside>
 					) : null}
@@ -660,14 +800,35 @@ export function Workbench({
 					</div>
 				)}
 			>
-				<FilePreviewDialog state={state} actions={actions} />
+				{filePreviewLoaded || state.fileLoading || state.fileContent || state.fileError ? (
+					<Suspense fallback={null}>
+						<FilePreviewDialog state={state} actions={actions} />
+					</Suspense>
+				) : null}
 			</StabilityBoundary>
 			{state.gitDiffLoading || state.gitDiff ? (
 				<Suspense fallback={null}>
 					<GitDiffDialog state={state} actions={actions} />
 				</Suspense>
 			) : null}
-			<SettingsDialog state={state} actions={actions} />
+			{settingsLoaded || state.settingsOpen ? (
+				<Suspense
+					fallback={
+						<div
+							className="fixed inset-0 z-[60] grid place-items-center bg-background"
+							role="status"
+							aria-live="polite"
+						>
+							<div className="flex items-center gap-2 text-sm text-muted-foreground">
+								<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+								正在加载设置
+							</div>
+						</div>
+					}
+				>
+					<SettingsDialog state={state} actions={actions} />
+				</Suspense>
+			) : null}
 			<DirectoryDialog
 				open={directoryOpen}
 				state={state}
@@ -677,26 +838,6 @@ export function Workbench({
 			<ProjectRenameDialog project={editingProject} actions={actions} onClose={() => setEditingProject(undefined)} />
 			<GitCredentialAuthorizationDialog state={state} actions={actions} />
 			<UiRequestDialog state={state} actions={actions} />
-			{connection.blocking ? <ConnectionRecoveryOverlay presentation={connection} /> : null}
-		</div>
-	);
-}
-
-function ConnectionRecoveryOverlay({ presentation }: { presentation: ConnectionPresentation }) {
-	return (
-		<div className="fixed inset-0 z-[120] grid place-items-center bg-background/85 p-6 backdrop-blur-sm">
-			<div
-				className="flex max-w-sm flex-col items-center text-center"
-				role="status"
-				aria-live="assertive"
-				aria-busy="true"
-			>
-				<div className="grid size-12 place-items-center rounded-full bg-muted text-foreground">
-					<LoaderCircle className="size-5 animate-spin" aria-hidden="true" />
-				</div>
-				<h2 className="mt-4 text-base font-semibold tracking-tight">{presentation.title}</h2>
-				<p className="mt-1 text-sm text-muted-foreground">{presentation.description}</p>
-			</div>
 		</div>
 	);
 }

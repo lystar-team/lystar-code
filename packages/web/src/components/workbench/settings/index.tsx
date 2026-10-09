@@ -1,4 +1,19 @@
-import { ArrowDownToLine, ArrowLeft, BookOpen, Bot, BrainCircuit, CircleHelp, KeyRound, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, WandSparkles } from "lucide-react";
+import {
+	ArrowDownToLine,
+	ArrowLeft,
+	BookOpen,
+	Bot,
+	BrainCircuit,
+	CircleHelp,
+	KeyRound,
+	RefreshCw,
+	Search,
+	Settings2,
+	ShieldCheck,
+	Sparkles,
+	SunMoon,
+	WandSparkles,
+} from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { webApi } from "../../../adapters/host-protocol/api";
 import { cn } from "../../../lib/utils";
@@ -19,11 +34,15 @@ import { SecuritySettings } from "./security";
 import { SkillsSettings } from "./skills";
 import { SubagentSettings } from "./subagents";
 import { SystemSettings } from "./system";
+import type { DiagnosticsSettings as DiagnosticsSettingsComponent } from "./diagnostics";
 import type { WorkbenchActions } from "../types";
 import { WorkbenchTabBar, type WorkbenchTabOption } from "../workbench-tab-bar";
 
+const diagnosticsModules = import.meta.glob<{ DiagnosticsSettings: typeof DiagnosticsSettingsComponent }>(
+	"./diagnostics.tsx",
+);
 const DiagnosticsSettings = lazy(() =>
-	import("./diagnostics").then((module) => ({ default: module.DiagnosticsSettings })),
+	diagnosticsModules["./diagnostics.tsx"]!().then((module) => ({ default: module.DiagnosticsSettings })),
 );
 
 export function SettingsDialog({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
@@ -121,18 +140,42 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							className="mx-4 mb-3 !w-auto min-w-0 md:mx-5 md:mb-5 md:flex-1"
 						/>
 					</aside>
-					<section data-settings-content className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto">
+					<section
+						data-settings-content
+						className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto"
+					>
 						<GsapReveal animationKey={state.settingsTab} className="min-h-0 w-full" distance={16} duration={0.32}>
-							<div className={cn("mx-auto w-full min-w-0 p-5 sm:p-8 lg:p-12 xl:p-16", state.settingsTab === "subagents" ? "max-w-[1680px]" : "max-w-[1120px]")}>
-							<div className={state.settingsTab === "instructions" || state.settingsTab === "skills" ? "mb-5 sm:mb-6" : "mb-8 sm:mb-12"}>
+							<div
+								className={cn(
+									"mx-auto w-full min-w-0 p-5 sm:p-8 lg:p-12 xl:p-16",
+									state.settingsTab === "subagents" ? "max-w-[1680px]" : "max-w-[1120px]",
+								)}
+							>
+								<div
+									className={
+										state.settingsTab === "instructions" || state.settingsTab === "skills"
+											? "mb-5 sm:mb-6"
+											: "mb-8 sm:mb-12"
+									}
+								>
 								<div className="flex items-center justify-between gap-4">
 									<div className="min-w-0">
 										<div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-											<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{currentLabel}</h1>
+												<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">
+													{currentLabel}
+												</h1>
 											{state.settingsTab === "instructions" ? (
 												<>
-													<span className="font-mono text-sm font-medium text-muted-foreground">AGENTS.md</span>
-													<span className={hostInstructionFile?.active ? "text-xs font-medium text-emerald-600 dark:text-emerald-400" : "text-xs text-muted-foreground"}>
+														<span className="font-mono text-sm font-medium text-muted-foreground">
+															AGENTS.md
+														</span>
+														<span
+															className={
+																hostInstructionFile?.active
+																	? "text-xs font-medium text-emerald-600 dark:text-emerald-400"
+																	: "text-xs text-muted-foreground"
+															}
+														>
 														{hostInstructionFile?.active ? "生效中" : "未创建"}
 													</span>
 												</>
@@ -161,7 +204,12 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 										</p>
 									</div>
 								{state.settingsTab === "diagnostics" ? (
-									<Button className="shrink-0 self-center" variant="outline" size="sm" onClick={() => void actions.refreshDiagnostics()}>
+											<Button
+												className="shrink-0 self-center"
+												variant="outline"
+												size="sm"
+												onClick={() => void actions.refreshDiagnostics()}
+											>
 										<RefreshCw className="size-4" aria-hidden="true" />
 										刷新
 									</Button>
@@ -190,7 +238,13 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 								<HarnessImportsSettings state={state} actions={actions} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="diagnostics">
-								<Suspense fallback={<p role="status" className="text-sm text-muted-foreground">正在加载诊断…</p>}>
+									<Suspense
+										fallback={
+											<p role="status" className="text-sm text-muted-foreground">
+												正在加载诊断…
+											</p>
+										}
+									>
 									<DiagnosticsSettings state={state} actions={actions} />
 								</Suspense>
 							</TabsContent>

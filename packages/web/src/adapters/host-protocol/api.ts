@@ -594,8 +594,8 @@ export class WebApi {
 		});
 	}
 
-	async session(sessionId: string, signal?: AbortSignal): Promise<{ session: WebSessionSnapshot }> {
-		return this.request<{ session: WebSessionSnapshot }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
+	async session(sessionId: string, signal?: AbortSignal): Promise<{ session: WebSessionSnapshot; projectId?: string }> {
+		return this.request<{ session: WebSessionSnapshot; projectId?: string }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
 	}
 
 	async sessionUsage(sessionId: string): Promise<Pick<SessionInfoResult, "tokens">> {

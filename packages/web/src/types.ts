@@ -110,6 +110,8 @@ export interface WebProject {
 	color?: "red" | "orange" | "green" | "blue" | "purple" | "gray";
 	archived?: boolean;
 	sessions: WebSessionSummary[];
+	sessionsLoaded?: boolean;
+	sessionsError?: string;
 }
 
 export type WebRoomMode = "direct" | "group";
@@ -331,6 +333,7 @@ export interface UiRequestEvent {
 export type GatewayEvent =
 	| { type: "session_stream"; sessionId: string; text: string; thinking: string; blocks: Array<{ blockId: string; kind: "text" | "thinking"; text: string } | { blockId: string; kind: "tool"; toolCallId: string }>; stepId?: string; seq?: number }
 	| { type: "bootstrap"; data: BootstrapResponse }
+	| { type: "project_updated"; project: WebProject }
 	| { type: "connection_state"; connected: boolean; message?: string }
 	| { type: "session_lease"; sessionId: string; lease: WebLease }
 	| { type: "model_catalog_changed"; revision: number }

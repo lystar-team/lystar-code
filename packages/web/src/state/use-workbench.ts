@@ -157,10 +157,13 @@ export function useWorkbench() {
 	const refreshModelOptionsRef = useRef<() => Promise<void>>(async () => {});
 	const refreshModelSettingsRef = useRef<() => Promise<void>>(async () => {});
 	const sessionReadControllersRef = useRef(new Set<AbortController>());
+	const transcriptReadsRef = useRef(new Map<string, Promise<TranscriptResponse | undefined>>());
+	const streamConnectStartedAtRef = useRef(0);
 
 	const cancelSessionReads = useCallback(() => {
 		for (const controller of sessionReadControllersRef.current) controller.abort();
 		sessionReadControllersRef.current.clear();
+		transcriptReadsRef.current.clear();
 		for (const timer of subagentTranscriptTimerRef.current.values()) window.clearTimeout(timer);
 		subagentTranscriptTimerRef.current.clear();
 	}, []);
@@ -323,11 +326,11 @@ export function useWorkbench() {
 					refreshState.rerun = false;
 					const result = await webApi.projectSessions(projectId);
 					updateState((current) => {
-						const projects = current.projects.map((project) =>
+						const projects = mergeProjectSessions(current.projects, current.projects.map((project) =>
 							project.id === projectId
-								? { ...project, sessions: mergeSessionSummaries(project.sessions, result.sessions) }
+								? { ...project, sessions: result.sessions, sessionsLoaded: true, sessionsError: undefined }
 								: project,
-						);
+						));
 						const sessionStillExists = result.sessions.some((session) => session.id === current.sessionId);
 						return {
 							...current,
@@ -363,10 +366,16 @@ export function useWorkbench() {
 					});
 				} while (refreshState.rerun);
 			};
+			updateState((current) => ({ ...current, projects: current.projects.map((project) =>
+				project.id === projectId && project.sessionsError ? { ...project, sessionsError: undefined } : project) }));
 			refreshState.promise = run();
 			projectRefreshRef.current.set(projectId, refreshState);
 			try {
 				await refreshState.promise;
+			} catch (error) {
+				updateState((current) => ({ ...current, projects: current.projects.map((project) =>
+					project.id === projectId ? { ...project, sessionsError: errorMessage(error) } : project) }));
+				throw error;
 			} finally {
 				if (projectRefreshRef.current.get(projectId) === refreshState) projectRefreshRef.current.delete(projectId);
 			}
@@ -395,165 +404,177 @@ export function useWorkbench() {
 				);
 			}
 			try {
-				const response = await readSelectedSession(sessionId, (signal) =>
-					webApi.transcript(sessionId, { cursor, limit: MAX_TRANSCRIPT_PAGE_SIZE, signal }),
-				);
+				const readPage = (pageCursor?: string) => {
+					const limit = pageCursor || stateRef.current.transcriptPageLoaded ? MAX_TRANSCRIPT_PAGE_SIZE : 120;
+					const key = JSON.stringify([historySelection, sessionId, pageCursor, limit,
+						stateRef.current.transcriptGeneration, stateRef.current.transcriptRevision]);
+					const pending = transcriptReadsRef.current.get(key);
+					if (pending) return pending;
+					const request = readSelectedSession(sessionId, (signal) =>
+						webApi.transcript(sessionId, { cursor: pageCursor, limit, signal }));
+					const tracked = request.finally(() => {
+						if (transcriptReadsRef.current.get(key) === tracked) transcriptReadsRef.current.delete(key);
+					});
+					transcriptReadsRef.current.set(key, tracked);
+					return tracked;
+				};
+				const response = await readPage(cursor);
 				if (!response) return;
-				let result: TranscriptResponse = response;
-				if (cursor && completeTurn) {
-					const pages = [result];
-					const firstPage = result;
-					const visitedCursors = new Set([cursor]);
-					const userIds = new Set(result.items.filter((item) => item.view?.type === "user").map((item) => item.entryId));
-					const requiredUsers = stateRef.current.transcript.some((item) => item.view?.type === "user") ? 1 : 2;
-					while (result.hasMorePrevious && userIds.size < requiredUsers) {
-						if (!historyStillCurrent()) {
-							if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
-							return;
-						}
-						if (!result.previousCursor || visitedCursors.has(result.previousCursor)) throw new Error("历史游标未前进");
-						visitedCursors.add(result.previousCursor);
-						const previousCursor = result.previousCursor;
-						const older = await readSelectedSession(sessionId, (signal) =>
-							webApi.transcript(sessionId, { cursor: previousCursor, limit: MAX_TRANSCRIPT_PAGE_SIZE, signal }),
-						);
-						if (!older) return;
-						if (older.transcriptGeneration !== firstPage.transcriptGeneration || older.leafId !== firstPage.leafId)
-							throw new Error("历史记录发生变化，请重新打开会话");
-						pages.push(older);
-						for (const item of older.items) if (item.view?.type === "user") userIds.add(item.entryId);
-						result = older;
-					}
-					result = {
-						...result,
-						items: pages.slice().reverse().flatMap((page) => page.items),
-						agentSteps: pages.flatMap((page) => page.agentSteps ?? []),
-					};
-				}
-				if (cursor && !historyStillCurrent()) {
+			let result: TranscriptResponse = response;
+			const pages = [response];
+			const visitedCursors = new Set(cursor ? [cursor] : []);
+			const userIds = new Set(result.items.filter((item) => item.view?.type === "user").map((item) => item.entryId));
+			const requiredUsers = stateRef.current.transcript.some((item) => item.view?.type === "user") ? 1 : 2;
+			while (cursor && completeTurn && result.hasMorePrevious && userIds.size < requiredUsers) {
+				if (!historyStillCurrent()) {
 					if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
 					return;
 				}
-				(deferCommit && !cursor ? transitionState : updateState)((current) => {
-					if (current.sessionId !== sessionId) return current;
-					const currentHistoryChangedSinceRequest = cursor
-						? requestedHistory.generation !== current.transcriptGeneration ||
-							(requestedHistory.leafId !== current.transcriptLeafId &&
-								!current.transcript.some((item) => item.entryId === requestedHistory.leafId))
-						: isTranscriptResponseObsolete(
-								requestedHistory,
-								{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
-								result,
-							);
-					const sameHistory =
-						(isSameTranscriptHistory(
+				if (stateRef.current.transcriptError) throw new Error(stateRef.current.transcriptError);
+				if (!result.previousCursor || visitedCursors.has(result.previousCursor)) throw new Error("历史游标未前进");
+				visitedCursors.add(result.previousCursor);
+				const older = await readPage(result.previousCursor);
+				if (!older) return;
+				if (older.transcriptGeneration !== response.transcriptGeneration || older.leafId !== response.leafId)
+					throw new Error("历史记录发生变化，请重新打开会话");
+				pages.push(older);
+				for (const item of older.items) if (item.view?.type === "user") userIds.add(item.entryId);
+				result = older;
+			}
+			if (pages.length > 1) {
+				result = {
+					...result,
+					items: pages
+						.slice()
+						.reverse()
+						.flatMap((page) => page.items),
+					agentSteps: pages.flatMap((page) => page.agentSteps ?? []),
+				};
+			}
+			if (cursor && !historyStillCurrent()) {
+				if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
+				return;
+			}
+			(deferCommit && !cursor ? transitionState : updateState)((current) => {
+				if (current.sessionId !== sessionId) return current;
+				const currentHistoryChangedSinceRequest = cursor
+					? requestedHistory.generation !== current.transcriptGeneration ||
+						(requestedHistory.leafId !== current.transcriptLeafId &&
+							!current.transcript.some((item) => item.entryId === requestedHistory.leafId))
+					: isTranscriptResponseObsolete(
+							requestedHistory,
 							{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
 							result,
-						) ||
-							(current.transcriptGeneration === result.transcriptGeneration &&
-								(!cursor || current.transcript.some((item) => item.entryId === result.leafId)))) &&
-						!(
-							current.transcriptPageLoaded &&
-							current.transcriptGeneration === undefined &&
-							current.transcript.length > 0
 						);
-					const staleRevision =
-						sameHistory &&
-						current.transcriptGeneration === result.transcriptGeneration &&
-						current.transcriptRevision !== undefined &&
-						current.transcriptRevision > result.transcriptRevision;
-					const incomingAgentStepsChanged = agentStepIndexChanged(current.agentSteps, result.agentSteps);
-					if (currentHistoryChangedSinceRequest)
-						return cursor ? { ...current, transcriptError: "历史记录已更新，请重新打开会话" } : { ...current, transcriptLoading: false };
-					if (cursor && !sameHistory) return { ...current, transcriptError: "历史记录已更新，请重新打开会话" };
-					if (staleRevision && !cursor) {
-						return cursor
-							? current
-							: {
-									...current,
-									transcriptLoading: false,
-									...(shouldClearLiveTurn(current) ? { liveTools: {}, liveTurnItems: [] } : {}),
-								};
-					}
-					if (
-						!cursor &&
-						sameHistory &&
-						current.transcriptPageLoaded &&
-						current.transcriptRevision === result.transcriptRevision &&
-						!shouldClearLiveTurn(current) &&
-						!incomingAgentStepsChanged
-					) {
-						const pendingUserPrompts = reconcilePendingUserPrompts(current.pendingUserPrompts, current.transcript);
-						const liveTurnItems = reconcileLiveUserPrompts(current.liveTurnItems, current.transcript);
-						if (
-							pendingUserPrompts.length === current.pendingUserPrompts.length &&
-							liveTurnItems.length === current.liveTurnItems.length
-						)
-							return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
-						return {
-							...current,
-							agentSteps: mergeAgentStepIndex(current.agentSteps, result.agentSteps),
-							transcriptLoading: false,
-							pendingUserPrompts,
-							promptSendTimes: withPromptSendTimes(current, current.transcript),
-							liveTurnItems,
-						};
-					}
-					const renderIdOverrides =
-						!cursor && sameHistory
-							? transcriptRenderIdOverrides(
-									current.liveTurnItems,
-									current.liveCompaction ? `live-compaction:${current.liveTurnId}` : undefined,
-									result.items,
-								)
-							: undefined;
-					const transcriptWindow = mergeTranscriptPage(
-						current,
+				const sameHistory =
+					(isSameTranscriptHistory(
+						{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
 						result,
-						// 有游标的是补更早历史，放前面；无游标的首屏在未加载过时放前面，已加载过是尾页更新放后面。
-						Boolean(cursor) || !current.transcriptPageLoaded,
-						sameHistory,
-						renderIdOverrides,
+					) ||
+						(current.transcriptGeneration === result.transcriptGeneration &&
+							(!cursor || current.transcript.some((item) => item.entryId === result.leafId)))) &&
+					!(
+						current.transcriptPageLoaded &&
+						current.transcriptGeneration === undefined &&
+						current.transcript.length > 0
 					);
-					const pendingUserPrompts = cursor
-						? current.pendingUserPrompts
-						: reconcilePendingUserPrompts(current.pendingUserPrompts, transcriptWindow.transcript);
-					const promptSendTimes = cursor
-						? current.promptSendTimes
-						: withPromptSendTimes(current, transcriptWindow.transcript);
-					const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
-					const knownIds = new Set(current.transcript.map((item) => item.entryId));
-					const next =
-						!cursor && sameHistory
-							? reconcileCommittedTurn(
-									current,
-									result.items.filter((item) => !knownIds.has(item.entryId)),
-									result.transcriptRevision,
-								)
-							: current;
-					const updated = {
-						...next,
-						...transcriptWindow,
-						agentSteps: mergeAgentStepIndex(sameHistory ? current.agentSteps : {}, result.agentSteps),
-						transcriptLoading: false,
-						transcriptError: undefined,
-						pendingUserPrompts,
-						promptSendTimes,
-						liveTurnItems: cursor
-							? next.liveTurnItems
-							: reconcileLiveUserPrompts(next.liveTurnItems, transcriptWindow.transcript),
-						transcriptGeneration: result.transcriptGeneration,
-						transcriptRevision: sameHistory
-							? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
-							: result.transcriptRevision,
-						transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
-						...(completedTurnSynced ? { liveTools: {}, liveSteps: {}, liveTurnItems: [] } : {}),
-					};
+				const staleRevision =
+					sameHistory &&
+					current.transcriptGeneration === result.transcriptGeneration &&
+					current.transcriptRevision !== undefined &&
+					current.transcriptRevision > result.transcriptRevision;
+				const incomingAgentStepsChanged = agentStepIndexChanged(current.agentSteps, result.agentSteps);
+				if (currentHistoryChangedSinceRequest)
+					return cursor ? { ...current, transcriptError: "历史记录已更新，请重新打开会话" } : { ...current, transcriptLoading: false };
+				if (cursor && !sameHistory) return { ...current, transcriptError: "历史记录已更新，请重新打开会话" };
+				if (staleRevision && !cursor) {
+					return cursor
+						? current
+						: {
+								...current,
+								transcriptLoading: false,
+								...(shouldClearLiveTurn(current) ? { liveTools: {}, liveTurnItems: [] } : {}),
+							};
+				}
+				if (
+					!cursor &&
+					sameHistory &&
+					current.transcriptPageLoaded &&
+					current.transcriptRevision === result.transcriptRevision &&
+					!shouldClearLiveTurn(current) &&
+					!incomingAgentStepsChanged
+				) {
+					const pendingUserPrompts = reconcilePendingUserPrompts(current.pendingUserPrompts, current.transcript);
+					const liveTurnItems = reconcileLiveUserPrompts(current.liveTurnItems, current.transcript);
+					if (
+						pendingUserPrompts.length === current.pendingUserPrompts.length &&
+						liveTurnItems.length === current.liveTurnItems.length
+					)
+						return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
 					return {
-						...updated,
-						liveCompaction: reconcileCompactionState(updated.liveCompaction, updated.transcript),
+						...current,
+						agentSteps: mergeAgentStepIndex(current.agentSteps, result.agentSteps),
+						transcriptLoading: false,
+						pendingUserPrompts,
+						promptSendTimes: withPromptSendTimes(current, current.transcript),
+						liveTurnItems,
 					};
-				});
+				}
+				const renderIdOverrides =
+					!cursor && sameHistory
+						? transcriptRenderIdOverrides(
+								current.liveTurnItems,
+								current.liveCompaction ? `live-compaction:${current.liveTurnId}` : undefined,
+								result.items,
+							)
+						: undefined;
+				const transcriptWindow = mergeTranscriptPage(
+					current,
+					result,
+					// 有游标的是补更早历史，放前面；无游标的首屏在未加载过时放前面，已加载过是尾页更新放后面。
+					Boolean(cursor) || !current.transcriptPageLoaded,
+					sameHistory,
+					renderIdOverrides,
+				);
+				const pendingUserPrompts = cursor
+					? current.pendingUserPrompts
+					: reconcilePendingUserPrompts(current.pendingUserPrompts, transcriptWindow.transcript);
+				const promptSendTimes = cursor
+					? current.promptSendTimes
+					: withPromptSendTimes(current, transcriptWindow.transcript);
+				const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
+				const knownIds = new Set(current.transcript.map((item) => item.entryId));
+				const next =
+					!cursor && sameHistory
+						? reconcileCommittedTurn(
+								current,
+								result.items.filter((item) => !knownIds.has(item.entryId)),
+								result.transcriptRevision,
+							)
+						: current;
+				const updated = {
+					...next,
+					...transcriptWindow,
+					agentSteps: mergeAgentStepIndex(sameHistory ? current.agentSteps : {}, result.agentSteps),
+					transcriptLoading: false,
+					transcriptError: undefined,
+					pendingUserPrompts,
+					promptSendTimes,
+					liveTurnItems: cursor
+						? next.liveTurnItems
+						: reconcileLiveUserPrompts(next.liveTurnItems, transcriptWindow.transcript),
+					transcriptGeneration: result.transcriptGeneration,
+					transcriptRevision: sameHistory
+						? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
+						: result.transcriptRevision,
+					transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
+					...(completedTurnSynced ? { liveTools: {}, liveSteps: {}, liveTurnItems: [] } : {}),
+				};
+				return {
+					...updated,
+					liveCompaction: reconcileCompactionState(updated.liveCompaction, updated.transcript),
+				};
+			});
 			} catch (error) {
 				if ((cursor ? historyRequestIsActive() : requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId)) {
 					updateState((current) => ({
@@ -875,7 +896,7 @@ export function useWorkbench() {
 			reconnectTimerRef.current ||
 			!mountedRef.current ||
 			!webApi.hasToken() ||
-			!browserNetworkOnline()
+			!browserNetworkOnline() || document.visibilityState === "hidden"
 		)
 			return;
 		const attempt = reconnectAttemptRef.current;
@@ -900,6 +921,7 @@ export function useWorkbench() {
 			}));
 			return;
 		}
+		streamConnectStartedAtRef.current = Date.now();
 		const generation = streamGenerationRef.current + 1;
 		streamGenerationRef.current = generation;
 		console.info("Web 实时连接开始", { generation, sessionId: stateRef.current.sessionId, time: new Date().toISOString() });
@@ -1064,48 +1086,54 @@ export function useWorkbench() {
 				connectStream();
 				void refreshGitCredentialAuthorization();
 				void refreshModelOptions().catch(() => undefined);
+				const initialSelection = selectionRef.current;
 				const lastSession = readLastSession();
-				const lastSessionProject = lastSession
-					? data.projects.find(
-							(project) =>
-								!project.archived &&
-								project.id === lastSession.projectId &&
-								project.sessions.some((session) => session.id === lastSession.sessionId),
-						)
-					: undefined;
 				const requestedSessionId = new URLSearchParams(window.location.search).get("sessionId");
-				const requestedProject = requestedSessionId
+				let requestedProject = requestedSessionId
 					? data.projects.find((project) => project.sessions.some((session) => session.id === requestedSessionId))
 					: undefined;
-				const firstProject =
-					requestedProject ??
-					data.projects.find((project) => project.id === stateRef.current.currentProjectId && !project.archived) ??
-					lastSessionProject ??
-					data.projects
-						.filter((project) => !project.archived)
-						.slice()
-						.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
-				if (firstProject) {
-					updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
-					const socket = socketRef.current;
-					if (socket) webApi.subscribeProject(socket, firstProject.id);
-					void loadProjectTreeRef.current().catch((error) => showToast(errorMessage(error)));
-					const sessions =
-						stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ??
-						firstProject.sessions;
-					const rememberedSession =
-						firstProject.id === lastSessionProject?.id
-							? sessions.find((session) => session.id === lastSession?.sessionId)
-							: undefined;
-					const firstSession =
-						sessions.find((session) => session.id === requestedSessionId) ??
-						sessions.find((session) => session.id === stateRef.current.sessionId) ??
-						rememberedSession ??
-						sessions[0];
-					if (firstSession)
-						void selectSessionRef.current(firstSession.id).catch((error) => showToast(errorMessage(error)));
+				if (requestedSessionId && !requestedProject) {
+					try {
+						const target = await webApi.session(requestedSessionId);
+						requestedProject = data.projects.find((project) => project.id === target.projectId);
+					} catch (error) {
+						if (error instanceof UnauthorizedError) throw error;
+						showToast(errorMessage(error));
+					}
 				}
-				if (requestedSessionId) {
+				if (!mountedRef.current || !webApi.hasToken() || initialSelection !== selectionRef.current) return;
+				const lastSessionProject = lastSession
+					? data.projects.find((project) => !project.archived && project.id === lastSession.projectId &&
+						(project.sessionsLoaded === false || project.sessions.some((session) => session.id === lastSession.sessionId)))
+					: undefined;
+				const firstProject = requestedProject ??
+					data.projects.find((project) => project.id === stateRef.current.currentProjectId && !project.archived) ??
+					lastSessionProject ?? data.projects.filter((project) => !project.archived).slice()
+						.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
+				if (!firstProject) return;
+				updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
+				const socket = socketRef.current;
+				if (socket) webApi.subscribeProject(socket, firstProject.id);
+				const preferredSessionId = requestedProject?.id === firstProject.id ? requestedSessionId :
+					stateRef.current.sessionId ?? (lastSessionProject?.id === firstProject.id ? lastSession?.sessionId : undefined);
+				let sessions = stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ?? firstProject.sessions;
+				let firstSessionId = preferredSessionId && (preferredSessionId === requestedSessionId || firstProject.sessionsLoaded === false ||
+					sessions.some((session) => session.id === preferredSessionId)) ? preferredSessionId : sessions[0]?.id;
+				if (firstSessionId) void selectSessionRef.current(firstSessionId).catch((error) => showToast(errorMessage(error)));
+				if (firstProject.sessionsLoaded === false) {
+					const refresh = refreshProjectSessions(firstProject.id);
+					if (firstSessionId) void refresh.catch((error) => showToast(errorMessage(error)));
+					else {
+						await refresh.catch((error) => showToast(errorMessage(error)));
+						if (!mountedRef.current || initialSelection !== selectionRef.current) return;
+						sessions = stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ?? [];
+						firstSessionId = sessions[0]?.id;
+						if (firstSessionId) void selectSessionRef.current(firstSessionId).catch((error) => showToast(errorMessage(error)));
+					}
+				}
+				if (stateRef.current.inspectorOpen && stateRef.current.inspectorMode === "files")
+					void loadProjectTreeRef.current().catch((error) => showToast(errorMessage(error)));
+				if (requestedSessionId && firstSessionId === requestedSessionId) {
 					const url = new URL(window.location.href);
 					url.searchParams.delete("sessionId");
 					window.history.replaceState(window.history.state, "", url);
@@ -1149,6 +1177,7 @@ export function useWorkbench() {
 		refreshBranding,
 		refreshGitCredentialAuthorization,
 		refreshModelOptions,
+		refreshProjectSessions,
 		scheduleReconnect,
 		showToast,
 		updateState,
@@ -1156,19 +1185,29 @@ export function useWorkbench() {
 	initializeRef.current = initialize;
 
 	const resumeConnection = useCallback(() => {
-		if (!mountedRef.current || !webApi.hasToken() || !browserNetworkOnline()) return;
+		if (!mountedRef.current || !webApi.hasToken() || !browserNetworkOnline() || document.visibilityState === "hidden") return;
 		if (reconnectTimerRef.current) {
 			window.clearTimeout(reconnectTimerRef.current);
 			reconnectTimerRef.current = undefined;
 		}
 		const socket = socketRef.current;
-		if (socket && socket.readyState !== WebSocket.CLOSED) return;
+		if (socket?.readyState === WebSocket.OPEN) {
+			const { sessionId, currentProjectId, connected } = stateRef.current;
+			if (currentProjectId) webApi.subscribeProject(socket, currentProjectId);
+			if (!connected || !sessionId) void refreshBootstrap().catch(() => socket.close(4002, "连接核对失败"));
+			if (sessionId && !sessionSubscriptionWaitersRef.current.has(sessionId)) {
+				updateState((current) => ({ ...current, sessionReady: false, reconnecting: true }));
+				restoreSelectedSessionSubscription(sessionId);
+			}
+			return;
+		}
+		if (socket?.readyState === WebSocket.CONNECTING && Date.now() - streamConnectStartedAtRef.current < 1500) return;
 		if (bootstrapLoadedRef.current) {
 			connectStream();
 			return;
 		}
 		void initializeRef.current();
-	}, [connectStream]);
+	}, [connectStream, refreshBootstrap, restoreSelectedSessionSubscription, updateState]);
 	resumeConnectionRef.current = resumeConnection;
 
 	const submitToken = useCallback(
@@ -1632,6 +1671,7 @@ export function useWorkbench() {
 			runtimeRecoverySessionRef.current = undefined;
 			return;
 		}
+		if (!state.sessionReady) return;
 		if (!state.readOnly) {
 			runtimeRecoverySessionRef.current = undefined;
 			return;
@@ -1641,7 +1681,7 @@ export function useWorkbench() {
 		const sessionId = state.sessionId;
 		runtimeRecoverySessionRef.current = sessionId;
 		void ensureSessionControl(sessionId).catch(() => {});
-	}, [ensureSessionControl, state.connected, state.readOnly, state.sessionId]);
+	}, [ensureSessionControl, state.connected, state.readOnly, state.sessionId, state.sessionReady]);
 
 	useEffect(() => {
 		const handleOffline = () => {
@@ -1692,8 +1732,15 @@ export function useWorkbench() {
 			if (stateRef.current === previous) setState(stateRef.current);
 			resumeConnectionRef.current();
 		};
+		const handlePageShow = (event: PageTransitionEvent) => {
+			if (event.persisted) handleVisibilityChange();
+		};
 		document.addEventListener("visibilitychange", handleVisibilityChange);
-		return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+		window.addEventListener("pageshow", handlePageShow);
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+			window.removeEventListener("pageshow", handlePageShow);
+		};
 	}, [flushPendingTextProgress]);
 
 	useEffect(() => {

@@ -497,9 +497,17 @@ export class TranscriptReader {
 				cachedAgentSteps?.generation === generation &&
 				cachedAgentSteps.revision === completeSize &&
 				cachedAgentSteps.leafId === leafId;
-			const latestAgentSteps = new Map(
-				(sameAgentStepIndex ? cachedAgentSteps.steps : []).map((step) => [step.id, step]),
-			);
+			const reusableAgentStepIndex =
+				cachedAgentSteps &&
+				(sameAgentStepIndex ||
+					(appendOnly &&
+						previous !== undefined &&
+						cachedAgentSteps.generation === generation &&
+						cachedAgentSteps.revision === previous.size &&
+						cachedAgentSteps.leafId === leafId))
+					? cachedAgentSteps
+					: undefined;
+			const latestAgentSteps = new Map((reusableAgentStepIndex?.steps ?? []).map((step) => [step.id, step]));
 			const rememberAgentStep = (entry: RawEntry): AgentStep | undefined => {
 				if (entry.type !== "custom") return undefined;
 				const step = projectedAgentStepFromItem({
@@ -512,7 +520,7 @@ export class TranscriptReader {
 				if (step && !latestAgentSteps.has(step.id)) latestAgentSteps.set(step.id, step);
 				return step;
 			};
-			if (cursor && !sameAgentStepIndex) {
+			if (cursor && !reusableAgentStepIndex) {
 				let indexWantedId: string | null = leafId;
 				await scanReverse(handle, completeSize, this.maxJsonlLineBytes, (line) => {
 					if (indexWantedId === null || indexWantedId === cursor.wantedId) return true;

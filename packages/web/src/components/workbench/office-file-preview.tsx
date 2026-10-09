@@ -4,8 +4,9 @@ import { XlsxViewer } from "@silurus/ooxml/xlsx";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
+import { base64ToArrayBuffer, officeFormatForPath } from "./office-file-utils";
 
-export type OfficeFileFormat = "docx" | "xlsx" | "pptx";
+export type { OfficeFileFormat } from "./office-file-utils";
 
 interface OfficeFilePreviewProps {
 	path: string;
@@ -18,18 +19,6 @@ function fileName(path: string): string {
 	return path.split(/[\\/]/u).at(-1) || "文件";
 }
 
-export function officeFormatForPath(path: string): OfficeFileFormat | undefined {
-	const extension = path.split(".").at(-1)?.toLowerCase();
-	return extension === "docx" || extension === "xlsx" || extension === "pptx" ? extension : undefined;
-}
-
-function base64ToArrayBuffer(value: string): ArrayBuffer {
-	const binary = atob(value);
-	const bytes = new Uint8Array(binary.length);
-	for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-	return bytes.buffer;
-}
-
 function isZipContainer(source: ArrayBuffer): boolean {
 	const bytes = new Uint8Array(source);
 	if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) return false;
@@ -38,15 +27,6 @@ function isZipContainer(source: ArrayBuffer): boolean {
 		(bytes[2] === 0x05 && bytes[3] === 0x06) ||
 		(bytes[2] === 0x07 && bytes[3] === 0x08)
 	);
-}
-
-export function downloadBinaryFile(path: string, data: string, mimeType: string): void {
-	const url = URL.createObjectURL(new Blob([base64ToArrayBuffer(data)], { type: mimeType }));
-	const link = document.createElement("a");
-	link.href = url;
-	link.download = fileName(path);
-	link.click();
-	window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function workerMode(): "main" | "worker" {
@@ -159,7 +139,10 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 
 	return (
 		<div
-			className={cn("relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border/60 bg-muted/10", className)}
+			className={cn(
+				"relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border border-border/60 bg-muted/10",
+				className,
+			)}
 			aria-busy={status === "loading"}
 		>
 			{status === "loading" ? (
@@ -171,12 +154,17 @@ export function OfficeFilePreview({ path, data, className, onFallbackDownload }:
 			{status === "error" ? (
 				<div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 p-6 text-center text-sm">
 					<p className="text-foreground">文件暂时无法预览</p>
-					<p className="max-w-md text-xs text-muted-foreground">{error || "浏览器端解析失败，请下载原文件查看。"}</p>
+					<p className="max-w-md text-xs text-muted-foreground">
+						{error || "浏览器端解析失败，请下载原文件查看。"}
+					</p>
 				</div>
 			) : null}
 			<div ref={containerRef} className="min-h-0 min-w-0 flex-1" aria-label={`${fileName(path)}预览`} />
 			{format !== "xlsx" && status === "ready" && pageCount > 0 ? (
-				<p className="shrink-0 border-t border-border/60 px-3 py-2 text-center text-xs tabular-nums text-muted-foreground" role="status">
+				<p
+					className="shrink-0 border-t border-border/60 px-3 py-2 text-center text-xs tabular-nums text-muted-foreground"
+					role="status"
+				>
 					共 {pageCount} {format === "pptx" ? "张幻灯片" : "页"}
 				</p>
 			) : null}

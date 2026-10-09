@@ -165,6 +165,7 @@ import {
 	AgentStepController,
 	createAgentStepTools,
 } from "./agent-steps.ts";
+import { logRuntimeConnection } from "./connection-log.ts";
 import {
 	EXTENSION_ACTIVITY_CUSTOM_TYPE,
 	type ExtensionActivityRecord,
@@ -3015,6 +3016,15 @@ export function getRuntimeAgentDir(): string {
 	return getAgentDir();
 }
 
+type SessionRestorePhaseTimings = {
+	runtimeFactoryPreparationMs?: number;
+	createAgentSessionServicesMs?: number;
+	createAgentSessionFromServicesMs?: number;
+	createAgentSessionRuntimeMs?: number;
+	wrapRuntimeMs?: number;
+	runtimeBindMs?: number;
+};
+
 export interface CodingAgentRuntimeAdapterOptions {
 	agentDir?: string;
 	initialRuntime?: AgentSessionRuntime;
@@ -3103,15 +3113,24 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			await migrateLegacyWebAttachments(initialRuntime.session.sessionManager).catch(() => false);
 			return this.wrapRuntime(initialRuntime, onUiRequest);
 		}
-		try {
+		const openSessionManager = async () => {
+			const startedAt = performance.now();
 			const manager = await SessionManager.openAsync(sessionPath);
-			await migrateLegacyWebAttachments(manager).catch(() => false);
-			return this.createRuntime(
-				manager.getCwd(),
+			return {
 				manager,
+				sessionManagerOpenMs: Math.round(performance.now() - startedAt),
+				restoreStartedAt: startedAt,
+			};
+		};
+		try {
+			const opened = await openSessionManager();
+			return this.createRestoredRuntime(
+				sessionPath,
+				opened.manager,
+				opened.sessionManagerOpenMs,
+				opened.restoreStartedAt,
 				onUiRequest,
-				sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
-				options.deferExtensionLifecycle === true,
+				options,
 			);
 		} catch (error) {
 			if (!(error instanceof SessionLockedError)) throw error;
@@ -3120,14 +3139,14 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				try {
 					if (await requestWebSessionHandoff(this.agentDir, sessionPath)) {
 						try {
-							const manager = await SessionManager.openAsync(sessionPath);
-							await migrateLegacyWebAttachments(manager).catch(() => false);
-							return this.createRuntime(
-								manager.getCwd(),
-								manager,
+							const opened = await openSessionManager();
+							return this.createRestoredRuntime(
+								sessionPath,
+								opened.manager,
+								opened.sessionManagerOpenMs,
+								opened.restoreStartedAt,
 								onUiRequest,
-								sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
-								options.deferExtensionLifecycle === true,
+								options,
 							);
 						} catch (takeoverError) {
 							if (!(takeoverError instanceof SessionLockedError)) throw takeoverError;
@@ -3148,6 +3167,49 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					retryable: true,
 				});
 			}
+		}
+	}
+
+	private async createRestoredRuntime(
+		sessionPath: string,
+		manager: SessionManager,
+		sessionManagerOpenMs: number,
+		restoreStartedAt: number,
+		onUiRequest: UiRequestHandler,
+		options: { deferExtensionLifecycle?: boolean },
+	): Promise<RuntimeSession> {
+		const attachmentMigrationStartedAt = performance.now();
+		await migrateLegacyWebAttachments(manager).catch(() => false);
+		const attachmentMigrationMs = Math.round(performance.now() - attachmentMigrationStartedAt);
+		let createAgentSessionMs = 0;
+		const phaseTimings: SessionRestorePhaseTimings = {};
+		let outcome: "succeeded" | "failed" = "failed";
+		try {
+			const createAgentSessionStartedAt = performance.now();
+			try {
+				const runtime = await this.createRuntime(
+					manager.getCwd(),
+					manager,
+					onUiRequest,
+					sessionProfileFromHeader(manager, manager.getCwd(), this.agentDir),
+					options.deferExtensionLifecycle === true,
+					phaseTimings,
+				);
+				outcome = "succeeded";
+				return runtime;
+			} finally {
+				createAgentSessionMs = Math.round(performance.now() - createAgentSessionStartedAt);
+			}
+		} finally {
+			logRuntimeConnection("session_restore_timing", {
+				sessionPath,
+				sessionManagerOpenMs,
+				attachmentMigrationMs,
+				createAgentSessionMs,
+				...phaseTimings,
+				totalMs: Math.round(performance.now() - restoreStartedAt),
+				outcome,
+			});
 		}
 	}
 
@@ -4730,10 +4792,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const root = canonicalDirectory(cwd);
 		const trustStore = new ProjectTrustStore(this.agentDir);
 		const trusted = trustStore.get(root);
-		const directEntry = trustStore.getEntry(root);
-		const explicitlyTrusted = directEntry?.path === root && directEntry.decision === true;
 		const inheritance = trustStore.getCollaborationInheritance(root);
-		const inheritanceEnabled = inheritance.enabled && explicitlyTrusted;
+		const inheritanceEnabled =
+			inheritance.enabled &&
+			(trusted === true || (trusted === null && this.settingsForCwd(root).getDefaultProjectTrust() === "always"));
 		const resourceRisk = hasTrustRequiringProjectResources(root);
 		return {
 			cwd: root,
@@ -4751,10 +4813,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				inherited: false,
 				...(inheritanceEnabled ? { sourceCwd: root } : {}),
 				reason: inheritanceEnabled
-					? "已启用；协作工作区仍会核验来源项目、同仓库关系和资源指纹"
+					? "协作工作区默认沿用来源项目的信任决定"
 					: inheritance.enabled
-						? "来源项目没有有效的明确授权，继承已停用"
-						: "尚未启用项目内协作信任继承",
+						? "来源项目尚未信任"
+						: "已关闭项目内协作信任继承",
 			},
 		};
 	}
@@ -4802,7 +4864,16 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		sessionManager: SessionManager,
 		runtimeCwd: string,
 		trustStore: ProjectTrustStore,
-	): Promise<{ sourceCwd: string; inherited: boolean; forcePrompt: boolean; reason: string } | undefined> {
+	): Promise<
+		| {
+				sourceCwd: string;
+				inherited: boolean;
+				forcePrompt: boolean;
+				trustOverride?: boolean;
+				reason: string;
+		  }
+		| undefined
+	> {
 		const header = sessionManager.getHeader();
 		const workspace = header?.collaborationWorkspace;
 		if (!header || header.relation !== "collaboration" || !workspace) return undefined;
@@ -4836,13 +4907,23 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		}
 		const inheritance = trustStore.getCollaborationInheritance(sourceCwd);
 		if (!inheritance.enabled) {
-			return { sourceCwd, inherited: false, forcePrompt: false, reason: "来源项目尚未启用协作信任继承。" };
+			return { sourceCwd, inherited: false, forcePrompt: false, reason: "来源项目已关闭协作信任继承。" };
 		}
-		const sourceTrust = trustStore.getEntry(sourceCwd);
-		if (sourceTrust?.path !== sourceCwd || sourceTrust.decision !== true) {
-			return invalid(sourceCwd, "来源项目没有有效的明确授权，需重新确认。");
+		const sourceTrust = trustStore.get(sourceCwd);
+		const sourceDefaultTrust =
+			sourceTrust === null ? this.settingsForCwd(sourceCwd).getDefaultProjectTrust() : undefined;
+		if (sourceTrust === false || sourceDefaultTrust === "never") {
+			return {
+				sourceCwd,
+				inherited: false,
+				forcePrompt: false,
+				trustOverride: false,
+				reason: "沿用来源项目的不信任决定。",
+			};
 		}
-		if (!inheritance.resourceFingerprint) return invalid(sourceCwd, "来源项目缺少资源授权记录，需重新确认。");
+		if (sourceTrust !== true && sourceDefaultTrust !== "always") {
+			return invalid(sourceCwd, "来源项目尚未选择信任，需先确认来源项目。");
+		}
 		if (workspace.status === "released") return invalid(sourceCwd, "工作区已释放，需重新确认后才能加载项目资源。");
 
 		let runtimeRoot: string;
@@ -4854,6 +4935,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			runtimeRoot = canonicalDirectory(runtimeCwd);
 			if (canonicalDirectory(workspace.cwd) !== runtimeRoot) {
 				return invalid(sourceCwd, "协作工作区 cwd 与会话 cwd 不匹配，需重新确认。");
+			}
+			if (workspace.mode === "shared" && !inheritance.resourceFingerprint) {
+				if (runtimeRoot !== sourceCwd) return invalid(sourceCwd, "共享工作区路径与来源项目不一致，需重新确认。");
+				return { sourceCwd, inherited: true, forcePrompt: false, reason: "已继承来源项目的协作信任。" };
 			}
 			sourceRepositoryRoot = await this.gitRepositoryRoot(sourceCwd);
 			targetRepositoryRoot = await this.gitRepositoryRoot(runtimeRoot);
@@ -4900,7 +4985,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		} catch {
 			return invalid(sourceCwd, "协作工作区资源无法核验，需重新确认。");
 		}
-		if (sourceFingerprint !== inheritance.resourceFingerprint) {
+		if (inheritance.resourceFingerprint && sourceFingerprint !== inheritance.resourceFingerprint) {
 			return invalid(sourceCwd, "来源项目资源自授权后已变化，需重新确认。");
 		}
 		if (workspaceFingerprint !== sourceFingerprint) {
@@ -5026,6 +5111,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		onUiRequest: UiRequestHandler,
 		sessionProfile?: SessionProfile,
 		deferExtensionLifecycle = false,
+		restorePhaseTimings?: SessionRestorePhaseTimings,
 	): Promise<RuntimeSession> {
 		const trustStore = new ProjectTrustStore(this.agentDir);
 		const stepController = new AgentStepController(sessionManager);
@@ -5038,6 +5124,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			sessionProfile: runtimeSessionProfile,
 			deferExtensionLifecycle: deferRuntimeExtensionLifecycle,
 		}) => {
+			const runtimeFactoryStartedAt = performance.now();
 			const effectiveProfile =
 				runtimeSessionProfile ?? sessionProfileFromHeader(runtimeSessionManager, runtimeCwd, agentDir);
 			const workspaceTrust = await this.resolveCollaborationWorkspaceTrust(
@@ -5058,8 +5145,14 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			const trusted =
 				!hasTrustResources ||
 				workspaceTrust?.inherited === true ||
-				(!workspaceTrust?.forcePrompt && trustStore.get(runtimeCwd) === true);
+				(!workspaceTrust?.forcePrompt &&
+					workspaceTrust?.trustOverride !== false &&
+					trustStore.get(runtimeCwd) === true);
 			const settingsManager = SettingsManager.create(runtimeCwd, agentDir, { projectTrusted: trusted });
+			if (restorePhaseTimings) {
+				restorePhaseTimings.runtimeFactoryPreparationMs = Math.round(performance.now() - runtimeFactoryStartedAt);
+			}
+			const createAgentSessionServicesStartedAt = performance.now();
 			const services = await createAgentSessionServices({
 				cwd: runtimeCwd,
 				agentDir,
@@ -5107,7 +5200,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 									resolveProjectTrusted({
 										cwd: runtimeCwd,
 										trustStore,
-										defaultProjectTrust: workspaceTrust ? "ask" : settingsManager.getDefaultProjectTrust(),
+										trustOverride: workspaceTrust?.trustOverride,
+										defaultProjectTrust: settingsManager.getDefaultProjectTrust(),
 										extensionsResult,
 										projectTrustContext: projectTrustContext ?? {
 											cwd: runtimeCwd,
@@ -5120,8 +5214,15 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 									}),
 							}
 						: undefined,
+			}).finally(() => {
+				if (restorePhaseTimings) {
+					restorePhaseTimings.createAgentSessionServicesMs = Math.round(
+						performance.now() - createAgentSessionServicesStartedAt,
+					);
+				}
 			});
 			let runtimeSession: AgentSession;
+			const createAgentSessionFromServicesStartedAt = performance.now();
 			const result = await createAgentSessionFromServices({
 				services,
 				sessionManager: runtimeSessionManager,
@@ -5142,6 +5243,12 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 						save: (input) => this.saveSubagentConfig(runtimeCwd, input, onUiRequest),
 					}),
 				],
+			}).finally(() => {
+				if (restorePhaseTimings) {
+					restorePhaseTimings.createAgentSessionFromServicesMs = Math.round(
+						performance.now() - createAgentSessionFromServicesStartedAt,
+					);
+				}
 			});
 			runtimeSession = result.session;
 			return { ...result, services, diagnostics: services.diagnostics };
@@ -5152,6 +5259,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			hasUI: true,
 			ui: createUiContext(onUiRequest),
 		};
+		const createAgentSessionRuntimeStartedAt = performance.now();
 		const runtime = await createAgentSessionRuntime(this.createRuntimeFactory ?? defaultCreateRuntime, {
 			cwd,
 			agentDir: this.agentDir,
@@ -5159,9 +5267,20 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			projectTrustContext,
 			sessionProfile,
 			deferExtensionLifecycle,
+		}).finally(() => {
+			if (restorePhaseTimings) {
+				restorePhaseTimings.createAgentSessionRuntimeMs = Math.round(
+					performance.now() - createAgentSessionRuntimeStartedAt,
+				);
+			}
 		});
 		this.stepControllers.set(runtime, stepController);
-		return this.wrapRuntime(runtime, onUiRequest);
+		const wrapRuntimeStartedAt = performance.now();
+		return this.wrapRuntime(runtime, onUiRequest, restorePhaseTimings).finally(() => {
+			if (restorePhaseTimings) {
+				restorePhaseTimings.wrapRuntimeMs = Math.round(performance.now() - wrapRuntimeStartedAt);
+			}
+		});
 	}
 
 	private takeInitialRuntime(sessionPath: string): AgentSessionRuntime | undefined {
@@ -5173,12 +5292,23 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return runtime;
 	}
 
-	private async wrapRuntime(runtime: AgentSessionRuntime, onUiRequest: UiRequestHandler): Promise<RuntimeSession> {
+	private async wrapRuntime(
+		runtime: AgentSessionRuntime,
+		onUiRequest: UiRequestHandler,
+		restorePhaseTimings?: SessionRestorePhaseTimings,
+	): Promise<RuntimeSession> {
 		const stepController =
 			this.stepControllers.get(runtime) ?? new AgentStepController(runtime.session.sessionManager);
 		const wrapped = new CoreRuntimeSession(runtime, onUiRequest, this.agentDir, stepController);
 		try {
-			await wrapped.bind();
+			const bindStartedAt = performance.now();
+			try {
+				await wrapped.bind();
+			} finally {
+				if (restorePhaseTimings) {
+					restorePhaseTimings.runtimeBindMs = Math.round(performance.now() - bindStartedAt);
+				}
+			}
 			return wrapped;
 		} catch (error) {
 			try {

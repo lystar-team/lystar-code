@@ -1,15 +1,18 @@
 import { gsap } from "gsap";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Menu, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { RoomMemberSelection, RoomProjectList } from "../../state/use-room-workspace";
 import type { WebProject } from "../../types";
 import { StabilityBoundary, StabilityFallbackPanel } from "../stability-boundary";
 import { Button } from "../ui/button";
 import { ProjectRail } from "./project-rail";
-import { RoomRail } from "./room-rail";
+import type { RoomRail as RoomRailComponent } from "./room-rail";
 import type { WorkspaceMode } from "./workspace-mode-switch";
 import type { WorkbenchActions } from "./types";
+
+const roomRailModules = import.meta.glob<{ RoomRail: typeof RoomRailComponent }>("./room-rail.tsx");
+const RoomRail = lazy(() => roomRailModules["./room-rail.tsx"]!().then((module) => ({ default: module.RoomRail })));
 
 export function MobileProjectRailDialog({
 	actions,
@@ -27,6 +30,7 @@ export function MobileProjectRailDialog({
 	selectedRoomId,
 	onSelectRoom,
 	onCreateRoom,
+	onRetryProjectSessions,
 }: {
 	actions: WorkbenchActions;
 	currentProject?: WebProject;
@@ -43,6 +47,7 @@ export function MobileProjectRailDialog({
 	selectedRoomId?: string;
 	onSelectRoom: (projectId: string, roomId: string) => void;
 	onCreateRoom: (projectId: string, title: string, member: RoomMemberSelection) => Promise<void>;
+	onRetryProjectSessions: (projectId: string) => Promise<void>;
 }) {
 	const [open, setOpen] = useState(false);
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -204,6 +209,16 @@ export function MobileProjectRailDialog({
 					)}
 				>
 					{workspaceMode === "rooms" ? (
+						<Suspense
+							fallback={
+								<div
+									className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground"
+									role="status"
+								>
+									正在加载协作导航
+								</div>
+							}
+						>
 						<RoomRail
 							state={state}
 							actions={actions}
@@ -217,6 +232,7 @@ export function MobileProjectRailDialog({
 							onModeChange={onWorkspaceModeChange}
 							onNavigate={close}
 						/>
+						</Suspense>
 					) : (
 						<ProjectRail
 							state={state}
@@ -227,6 +243,7 @@ export function MobileProjectRailDialog({
 							onAddProject={onAddProject}
 							onEditProject={onEditProject}
 							onNavigate={close}
+							onRetryProjectSessions={onRetryProjectSessions}
 							workspaceMode={workspaceMode}
 							onWorkspaceModeChange={onWorkspaceModeChange}
 						/>

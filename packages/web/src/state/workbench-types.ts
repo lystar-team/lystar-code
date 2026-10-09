@@ -121,6 +121,7 @@ export interface WorkbenchState {
 	lease?: { leaseId: string; leaseGeneration: number; createdAt: number; updatedAt: number };
 	readOnly: boolean;
 	sessionReady: boolean;
+	pendingSessionControls?: Record<string, number>;
 	pendingUserPrompts: PendingUserPrompt[];
 	/** 已落盘用户消息 entryId → 客户端按下发送的时刻，使「已处理」和「本次耗时」同一起点。 */
 	promptSendTimes: Record<string, number>;
