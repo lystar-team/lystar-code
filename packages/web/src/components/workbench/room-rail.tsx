@@ -129,7 +129,7 @@ export function RoomRail({
 			await onCreateRoom(createProjectId, createTitle.trim(), member);
 			setCreateOpen(false);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setCreating(false);
 		}

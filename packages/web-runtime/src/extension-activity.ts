@@ -1,4 +1,5 @@
 export const EXTENSION_ACTIVITY_CUSTOM_TYPE = "lystar.web.extension-activity";
+export const EXTENSION_NOTIFICATION_CUSTOM_TYPE = "lystar.web.extension-notification";
 
 export type ExtensionActivityStatus = "running" | "completed" | "failed" | "interrupted";
 

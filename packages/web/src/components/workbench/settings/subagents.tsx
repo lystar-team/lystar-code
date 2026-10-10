@@ -595,6 +595,8 @@ function draftFor(config?: SubagentConfig): AgentDraft {
 export function SubagentSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [draft, setDraft] = useState<AgentDraft>();
 	const [editorSection, setEditorSection] = useState<AgentEditorSection>("basic");
+	const [validationError, setValidationError] = useState<string>();
+	const [saveAttempted, setSaveAttempted] = useState(false);
 	const providers = useMemo(() => {
 		const names = new Map(state.modelOptionProviders.map((provider) => [provider.id, provider.name]));
 		for (const model of state.modelOptions) if (!names.has(model.provider)) names.set(model.provider, model.provider);
@@ -628,20 +630,24 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 	const openDraft = (config?: SubagentConfig) => {
 		setDraft(draftFor(config));
 		setEditorSection("basic");
+		setValidationError(undefined);
+		setSaveAttempted(false);
 	};
 
 	const save = async () => {
 		if (!draft) return;
+		setValidationError(undefined);
 		const name = draft.name.trim();
 		const description = draft.description.trim();
 		if (!name || !description) {
-			actions.showToast("名称和描述不能为空");
+			setValidationError("名称和描述不能为空");
 			return;
 		}
 		if (draft.provider && !draft.model) {
-			actions.showToast("选择供应商后需要选择模型");
+			setValidationError("选择供应商后需要选择模型");
 			return;
 		}
+		setSaveAttempted(true);
 		const saved = await actions.saveSubagentConfig({
 			scope: draft.scope,
 			...(draft.source ? { id: draft.source.id } : {}),
@@ -683,8 +689,8 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 				</div>
 			</div>
 
-			{state.subagentConfigsError ? (
-				<div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{state.subagentConfigsError}</div>
+			{state.subagentConfigsError && !draft ? (
+				<p className="break-words text-sm text-destructive" role="alert">{state.subagentConfigsError}</p>
 			) : null}
 
 			{state.subagentConfigsLoading && state.subagentConfigs.length === 0 ? (
@@ -735,6 +741,11 @@ export function SubagentSettings({ state, actions }: { state: WorkbenchState; ac
 						<DialogTitle>{draft?.source ? `${draft.source.name} 配置` : "新建智能体"}</DialogTitle>
 						<DialogDescription>配置名称、擅长标签、运行模型、工具权限和智能体正文。</DialogDescription>
 					</DialogHeader>
+					{validationError || (saveAttempted && state.subagentConfigsError) ? (
+						<p className="shrink-0 break-words px-6 pt-4 text-sm text-destructive" role="alert">
+							{validationError || state.subagentConfigsError}
+						</p>
+					) : null}
 					{draft ? (
 						<div className="min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
 							<Tabs

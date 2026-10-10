@@ -1,4 +1,4 @@
-import { CircleHelp } from "lucide-react";
+import { CircleAlert, CircleHelp, Info, TriangleAlert } from "lucide-react";
 import { memo } from "react";
 import { type TranscriptToolViewModel, toSessionItemViewModel } from "../../adapters/session-view-model";
 import type { WorkbenchState } from "../../state/use-workbench";
@@ -51,6 +51,21 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 }) {
 	const viewModel = toSessionItemViewModel(item, toolStatuses);
 	if (viewModel.kind === "extension_entry") {
+		if (viewModel.notification) {
+			const notification = viewModel.notification;
+			const presentation = {
+				info: { icon: Info, label: "扩展提示", className: "text-muted-foreground" },
+				warning: { icon: TriangleAlert, label: "扩展警告", className: "text-[var(--warning)]" },
+				error: { icon: CircleAlert, label: "扩展错误", className: "text-destructive" },
+			}[notification.type];
+			const Icon = presentation.icon;
+			return (
+				<div className={`flex min-w-0 items-start gap-2 py-1 text-sm ${presentation.className}`}>
+					<Icon className="mt-0.5 size-4 shrink-0" aria-label={presentation.label} />
+					<p className="min-w-0 whitespace-pre-wrap break-words">{notification.message}</p>
+				</div>
+			);
+		}
 		return <ExtensionEntryCard customType={viewModel.customType} details={viewModel.details} />;
 	}
 	if (viewModel.kind === "extension_activity") {

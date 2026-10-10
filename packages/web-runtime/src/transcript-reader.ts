@@ -102,7 +102,7 @@ function toTranscriptItem(entry: RawEntry): TranscriptItem {
 		parentId: typeof entry.parentId === "string" ? entry.parentId : null,
 		timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
 		kind: entry.type,
-		payload: structuredClone(entry) as JsonValue,
+		payload: entry as JsonValue,
 	};
 }
 

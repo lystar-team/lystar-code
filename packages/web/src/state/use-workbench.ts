@@ -60,7 +60,7 @@ import { useWorkbenchFileActions } from "./workbench-file-actions.ts";
 import { useWorkbenchSessionActions } from "./workbench-session-actions.ts";
 import { useWorkbenchProjectActions } from "./workbench-project-actions.ts";
 import { useWorkbenchStreamActions } from "./workbench-stream-actions.ts";
-import type { SubagentConversationState, WorkbenchState } from "./workbench-types.ts";
+import type { ShowToast, SubagentConversationState, WorkbenchState } from "./workbench-types.ts";
 
 export {
 	applySubagentProgress,
@@ -136,6 +136,7 @@ export function useWorkbench() {
 	const pendingUserPromptRef = useRef(0);
 	const projectRefreshRef = useRef(new Map<string, { promise: Promise<void>; rerun: boolean }>());
 	const toastTimerRef = useRef<number | undefined>(undefined);
+	const toastIdRef = useRef(0);
 	const handledNotifyIdsRef = useRef(new Set<string>());
 	const selectionRef = useRef(0);
 	const selectionInFlightRef = useRef<string | undefined>(undefined);
@@ -250,9 +251,10 @@ export function useWorkbench() {
 		[state.projects],
 	);
 
-	const showToast = useCallback(
-		(message: string) => {
-			updateState((current) => ({ ...current, toast: message }));
+	const showToast = useCallback<ShowToast>(
+		(message, type = "info") => {
+			const toast = { id: ++toastIdRef.current, message, type };
+			updateState((current) => ({ ...current, toast }));
 			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
 			toastTimerRef.current = window.setTimeout(
 				() => updateState((current) => ({ ...current, toast: undefined })),
@@ -1098,7 +1100,7 @@ export function useWorkbench() {
 						requestedProject = data.projects.find((project) => project.id === target.projectId);
 					} catch (error) {
 						if (error instanceof UnauthorizedError) throw error;
-						showToast(errorMessage(error));
+						showToast(errorMessage(error), "error");
 					}
 				}
 				if (!mountedRef.current || !webApi.hasToken() || initialSelection !== selectionRef.current) return;
@@ -1119,20 +1121,20 @@ export function useWorkbench() {
 				let sessions = stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ?? firstProject.sessions;
 				let firstSessionId = preferredSessionId && (preferredSessionId === requestedSessionId || firstProject.sessionsLoaded === false ||
 					sessions.some((session) => session.id === preferredSessionId)) ? preferredSessionId : sessions[0]?.id;
-				if (firstSessionId) void selectSessionRef.current(firstSessionId).catch((error) => showToast(errorMessage(error)));
+				if (firstSessionId) void selectSessionRef.current(firstSessionId).catch((error) => showToast(errorMessage(error), "error"));
 				if (firstProject.sessionsLoaded === false) {
 					const refresh = refreshProjectSessions(firstProject.id);
-					if (firstSessionId) void refresh.catch((error) => showToast(errorMessage(error)));
+					if (firstSessionId) void refresh.catch((error) => showToast(errorMessage(error), "error"));
 					else {
-						await refresh.catch((error) => showToast(errorMessage(error)));
+						await refresh.catch((error) => showToast(errorMessage(error), "error"));
 						if (!mountedRef.current || initialSelection !== selectionRef.current) return;
 						sessions = stateRef.current.projects.find((project) => project.id === firstProject.id)?.sessions ?? [];
 						firstSessionId = sessions[0]?.id;
-						if (firstSessionId) void selectSessionRef.current(firstSessionId).catch((error) => showToast(errorMessage(error)));
+						if (firstSessionId) void selectSessionRef.current(firstSessionId).catch((error) => showToast(errorMessage(error), "error"));
 					}
 				}
 				if (stateRef.current.inspectorOpen && stateRef.current.inspectorMode === "files")
-					void loadProjectTreeRef.current().catch((error) => showToast(errorMessage(error)));
+					void loadProjectTreeRef.current().catch((error) => showToast(errorMessage(error), "error"));
 				if (requestedSessionId && firstSessionId === requestedSessionId) {
 					const url = new URL(window.location.href);
 					url.searchParams.delete("sessionId");
@@ -1650,7 +1652,7 @@ export function useWorkbench() {
 			const data = event.data;
 			if (!data || typeof data !== "object" || !("type" in data) || data.type !== "open_session" ||
 				!("sessionId" in data) || typeof data.sessionId !== "string") return;
-			void selectSessionRef.current(data.sessionId).catch((error) => showToast(errorMessage(error)));
+			void selectSessionRef.current(data.sessionId).catch((error) => showToast(errorMessage(error), "error"));
 		};
 		navigator.serviceWorker.addEventListener("message", handleNotificationClick);
 		return () => navigator.serviceWorker.removeEventListener("message", handleNotificationClick);

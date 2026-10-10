@@ -359,7 +359,7 @@ export function Workbench({
 			try {
 				await actions.refreshProjectSessions(projectId);
 			} catch (error) {
-				actions.showToast(error instanceof Error ? error.message : String(error));
+				actions.showToast(error instanceof Error ? error.message : String(error), "error");
 			}
 		},
 		[actions.refreshProjectSessions, actions.showToast],
@@ -596,7 +596,7 @@ export function Workbench({
 							<span className="hidden text-xs sm:inline">审阅工作区</span>
 						</Button>
 					</div>
-					<Toast message={state.toast} />
+					<Toast toast={state.toast} />
 				</header>
 				{connection.blocking ? (
 					<div

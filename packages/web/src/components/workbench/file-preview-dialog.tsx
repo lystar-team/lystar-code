@@ -209,7 +209,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 										size="icon"
 										variant="ghost"
 											onClick={() =>
-												void editorRef.current?.copy().catch((error) => actions.showToast(error.message))
+												void editorRef.current?.copy().catch((error) => actions.showToast(error.message, "error"))
 											}
 										aria-label="复制文件内容"
 										disabled={!editorState.ready || !textActive}
@@ -221,7 +221,7 @@ export function FilePreviewDialog({ state, actions }: { state: WorkbenchState; a
 											size="icon"
 											variant={editorState.dirty ? "default" : "ghost"}
 												onClick={() =>
-													void editorRef.current?.save().catch((error) => actions.showToast(error.message))
+													void editorRef.current?.save().catch((error) => actions.showToast(error.message, "error"))
 												}
 											aria-label="保存文件"
 											disabled={!editorState.ready || !editorState.dirty || editorState.saving}

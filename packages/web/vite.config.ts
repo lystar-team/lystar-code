@@ -44,6 +44,8 @@ const gatewayWebSocketProxy: ProxyOptions = {
 };
 
 export default defineConfig({
+	// 开发服务与测试不能共用依赖缓存，否则测试重建缓存会使运行中的懒加载失效。
+	cacheDir: process.env.VITEST ? "node_modules/.vite-test" : "node_modules/.vite-web",
 	plugins: [
 		react(),
 		tailwindcss(),

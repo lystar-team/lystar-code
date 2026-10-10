@@ -3,7 +3,7 @@ import { webApi } from "../adapters/host-protocol/api.ts";
 import { clearUncommittedUserPrompts } from "./chat-lifecycle.ts";
 import type { WebProject } from "../types.ts";
 import { errorMessage } from "./workbench-state.ts";
-import type { WorkbenchState } from "./workbench-types.ts";
+import type { ShowToast, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
@@ -13,7 +13,7 @@ type NumberRef = { current: number };
 export interface WorkbenchProjectActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 	loadTranscript: () => Promise<void>;
 	selectProject: (projectId: string) => Promise<void>;
 	sessionTreeRequestRef: NumberRef;
@@ -117,7 +117,7 @@ export function useWorkbenchProjectActions({
 				updateState((current) => ({ ...current, projectGroups: result.groups }));
 				return true;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
@@ -131,7 +131,7 @@ export function useWorkbenchProjectActions({
 				updateState((current) => ({ ...current, projectGroups: result.groups }));
 				return true;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
@@ -145,7 +145,7 @@ export function useWorkbenchProjectActions({
 				updateState((current) => ({ ...current, projectGroups: result.groups }));
 				return true;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
@@ -159,7 +159,7 @@ export function useWorkbenchProjectActions({
 				updateState((current) => ({ ...current, projectGroups: result.groups }));
 				return true;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
@@ -172,7 +172,7 @@ export function useWorkbenchProjectActions({
 				const result = await webApi.reorderProjectGroups(groupIds);
 				updateState((current) => ({ ...current, projectGroups: result.groups }));
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[showToast, updateState],
@@ -202,7 +202,7 @@ export function useWorkbenchProjectActions({
 					],
 				}));
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[showToast, updateState],
@@ -219,7 +219,7 @@ export function useWorkbenchProjectActions({
 					),
 				}));
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[showToast, updateState],

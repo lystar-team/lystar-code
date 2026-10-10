@@ -405,7 +405,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 		selectedPaths.size === 1 ? entryForPath(selectedPaths.values().next().value ?? "") : undefined;
 	const buttonUploadPath = selectedUploadEntry?.kind === "directory" ? selectedUploadEntry.path : "";
 
-	const handleError = (error: unknown) => actions.showToast(error instanceof Error ? error.message : String(error));
+	const handleError = (error: unknown) => actions.showToast(error instanceof Error ? error.message : String(error), "error");
 
 	const openFile = (path: string) => {
 		void actions.openFile(path).catch(handleError);
@@ -416,7 +416,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			if (!currentProject) throw new Error("当前项目不可用");
 			if (!navigator.clipboard?.writeText) throw new Error("当前浏览器不支持复制路径");
 			await navigator.clipboard.writeText(absoluteProjectPath(currentProject.path, path));
-			actions.showToast("路径已复制");
+			actions.showToast("路径已复制", "success");
 		})().catch(handleError);
 	};
 
@@ -432,7 +432,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			link.click();
 			link.remove();
 			window.setTimeout(() => URL.revokeObjectURL(url), 0);
-			actions.showToast("已开始下载");
+			actions.showToast("已开始下载", "info");
 		})().catch(handleError);
 	};
 
@@ -449,14 +449,14 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			await actions.loadProjectTree(targetPath, tree?.path !== targetPath);
 			setSearchRevision((current) => current + 1);
 			const targetLabel = targetPath ? `目录“${fileName(targetPath)}”` : "项目根目录";
-			actions.showToast(`已上传 ${uploadedCount} 个文件到${targetLabel}`);
+			actions.showToast(`已上传 ${uploadedCount} 个文件到${targetLabel}`, "success");
 		} catch (error) {
 			if (uploadedCount > 0) {
 				await actions.loadProjectTree(targetPath, tree?.path !== targetPath).catch(() => {});
 				setSearchRevision((current) => current + 1);
 			}
 			const message = error instanceof Error ? error.message : String(error);
-			actions.showToast(uploadedCount > 0 ? `已上传 ${uploadedCount} 个文件；${message}` : message);
+			actions.showToast(uploadedCount > 0 ? `已上传 ${uploadedCount} 个文件；${message}` : message, uploadedCount > 0 ? "warning" : "error");
 		} finally {
 			setUploadBusy(false);
 		}
@@ -517,7 +517,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 		if (!renameTarget || !state.currentProjectId) return;
 		const name = renameDraft.trim();
 		if (!validFileName(name)) {
-			actions.showToast("请输入不含路径分隔符的文件名");
+			actions.showToast("请输入不含路径分隔符的文件名", "warning");
 			return;
 		}
 		if (name === renameTarget.name) {
@@ -559,7 +559,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			setSearchRevision((current) => current + 1);
 			setRenameTarget(undefined);
 			setRenameDraft("");
-			actions.showToast(`${renameTarget.kind === "directory" ? "目录" : "文件"}已重命名`);
+			actions.showToast(`${renameTarget.kind === "directory" ? "目录" : "文件"}已重命名`, "success");
 		} catch (error) {
 			handleError(error);
 		} finally {
@@ -583,7 +583,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 		event.preventDefault();
 		if (!state.currentProjectId || archivePaths.length === 0) return;
 		if (!validFileName(archiveDraft.trim())) {
-			actions.showToast("请输入不含路径分隔符的 ZIP 文件名");
+			actions.showToast("请输入不含路径分隔符的 ZIP 文件名", "warning");
 			return;
 		}
 		const name = archiveFileName(archiveDraft);
@@ -596,7 +596,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			setSelectionAnchor(undefined);
 			setArchivePaths([]);
 			setArchiveDraft("");
-			actions.showToast(`已生成 ${result.path}`);
+			actions.showToast(`已生成 ${result.path}`, "success");
 		} catch (error) {
 			handleError(error);
 		} finally {
@@ -665,7 +665,7 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			setSelectedPaths(new Set());
 			setSelectionAnchor(undefined);
 			setDeleteTargets([]);
-			actions.showToast(result.paths.length > 1 ? `已删除 ${result.paths.length} 项` : "已删除");
+			actions.showToast(result.paths.length > 1 ? `已删除 ${result.paths.length} 项` : "已删除", "success");
 		} catch (error) {
 			handleError(error);
 		} finally {

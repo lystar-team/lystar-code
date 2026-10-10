@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, realpathSync, statSync, watch } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import {
 	discoverSessionProfiles,
@@ -134,20 +134,6 @@ const ROOM_ALLOWED_TOOL_NAMES = new Set([
 	"room_task_list",
 	"room_task_update",
 ]);
-const ROOM_WRITE_TOOL_NAMES = new Set(["edit", "write"]);
-
-function resolveCapabilityPath(candidate: string): string {
-	const resolved = resolve(candidate);
-	let existing = resolved;
-	while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
-	if (!existsSync(existing)) return resolved;
-	return join(realpathSync(existing), relative(existing, resolved));
-}
-
-function isPathWithin(root: string, candidate: string): boolean {
-	const suffix = relative(resolveCapabilityPath(root), resolveCapabilityPath(candidate));
-	return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`));
-}
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const BOOTSTRAP_OPERATION_LIMIT = 200;
@@ -381,6 +367,9 @@ function canonicalProjectCwd(cwd: string): string {
 
 function jsonValue(value: unknown): JsonValue {
 	return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+function runtimeReadState(runtime: RuntimeSession): SessionStateSnapshot {
+	return runtime.getReadState?.() ?? runtime.getSnapshot("available");
 }
 
 function projectFileCompletion(text: string, cursor: number): { prefixStart: number; query: string } | undefined {
@@ -624,7 +613,7 @@ export class WebRuntimeService {
 		sessionId: string,
 	): Promise<{ base: Awaited<ReturnType<RuntimeAdapter["listSessions"]>>[number]; path: string }> {
 		const sessions = await this.adapter.listSessions(cwd);
-		const live = [...this.runtimes.values()].find((runtime) => runtime.getSnapshot("available").id === sessionId);
+		const live = [...this.runtimes.values()].find((runtime) => runtimeReadState(runtime).id === sessionId);
 		const session =
 			sessions.find((item) => item.id === sessionId) ?? (live ? this.runtimeCoordinatorBase(live) : undefined);
 		if (!session) throw Object.assign(new Error(`未找到会话：${sessionId}`), { code: "session_not_found" });
@@ -673,13 +662,6 @@ export class WebRuntimeService {
 						},
 						activeToolNames:
 							workspace?.mode === "shared" ? ["read", "grep", "find", "ls"] : ROOM_EXECUTION_TOOL_NAMES,
-						capabilities: {
-							allowedTools:
-								workspace?.mode === "shared" ? ["read", "grep", "find", "ls"] : ROOM_EXECUTION_TOOL_NAMES,
-							readRoots: [snapshot.cwd],
-							writeRoots: workspace?.mode === "shared" ? [] : [snapshot.cwd],
-							shell: workspace?.mode === "shared" ? "disabled" : "sandboxed",
-						},
 					}),
 				);
 			} else if (workspace?.mode === "shared") {
@@ -688,12 +670,6 @@ export class WebRuntimeService {
 					inputId: randomUUID(),
 					origin: { type: "user", channel: "rpc" },
 					activeToolNames: ["read", "grep", "find", "ls"],
-					capabilities: {
-						allowedTools: ["read", "grep", "find", "ls"],
-						readRoots: [snapshot.cwd],
-						writeRoots: [],
-						shell: "disabled",
-					},
 				});
 			} else await runtime.prompt(text);
 			promptSucceeded = true;
@@ -756,14 +732,14 @@ export class WebRuntimeService {
 		const live = this.runtimes.get(found.path);
 		// 任务记录缺失不代表任务已停止；活跃 Runtime 或外部 Writer 仍是执行事实源。
 		if (
-			(live?.isConnected?.() !== false && live && isActiveSessionActivity(live.getSnapshot("available").activity)) ||
+			(live?.isConnected?.() !== false && live && isActiveSessionActivity(runtimeReadState(live).activity)) ||
 			this.adapter.isSessionWriterLocked(found.path)
 		)
 			return;
 		const runtime = await this.ensureRuntime(found.path, this.coordinatorUiHandler(found.path), {
 			deferExtensionLifecycle: true,
 		});
-		if (isActiveSessionActivity(runtime.getSnapshot("available").activity)) return;
+		if (isActiveSessionActivity(runtimeReadState(runtime).activity)) return;
 		const outcome: SessionCoordinatorResult["outcome"] =
 			found.base.activity === "completed" ||
 			found.base.activity === "failed" ||
@@ -821,7 +797,7 @@ export class WebRuntimeService {
 				if (runtime) {
 					await this.sendSessionSnapshots(runtime);
 					await this.broadcast({ type: "transcript_changed", sessionPath });
-					await this.broadcast({ type: "sessions_changed", cwd: runtime.getSnapshot("available").cwd });
+					await this.broadcast({ type: "sessions_changed", cwd: runtimeReadState(runtime).cwd });
 				}
 				await this.disposeRuntimeIfUnused(sessionPath);
 			});
@@ -915,7 +891,7 @@ export class WebRuntimeService {
 	}
 
 	private async runRoomModelTurn<T>(runtime: RuntimeSession, run: () => Promise<T>): Promise<T> {
-		const provider = runtime.getSnapshot("available").model?.provider ?? "default";
+		const provider = runtimeReadState(runtime).model?.provider ?? "default";
 		const turns = this.roomModelTurns.get(provider) ?? new Set<Promise<void>>();
 		this.roomModelTurns.set(provider, turns);
 		while (turns.size >= 2) await Promise.race(turns);
@@ -1313,7 +1289,7 @@ export class WebRuntimeService {
 					code: "room_structured_input_unsupported",
 					retryable: false,
 				});
-			const runtimeCwd = runtime.getSnapshot("available").cwd;
+			const runtimeCwd = runtimeReadState(runtime).cwd;
 			const capabilities = message.capabilities ?? {
 				allowedTools: ROOM_DISCUSSION_TOOL_NAMES,
 				readRoots: [runtimeCwd],
@@ -1323,23 +1299,6 @@ export class WebRuntimeService {
 			if (capabilities.allowedTools.some((tool) => !ROOM_ALLOWED_TOOL_NAMES.has(tool)))
 				throw Object.assign(new Error("智能体协作任务只能使用受控文件工具"), {
 					code: "room_tool_not_allowed",
-					retryable: false,
-				});
-			if (capabilities.readRoots?.some((root) => !isPathWithin(runtimeCwd, resolve(runtimeCwd, root))))
-				throw Object.assign(new Error("智能体协作任务的读取根目录超出成员会话工作区"), {
-					code: "room_read_capability_requires_workspace",
-					retryable: false,
-				});
-			if (
-				capabilities.allowedTools.some((tool) => ROOM_WRITE_TOOL_NAMES.has(tool)) &&
-				(!found.base.workspace?.cwd ||
-					!capabilities.writeRoots?.length ||
-					!capabilities.writeRoots.every((root) =>
-						isPathWithin(found.base.workspace!.cwd, resolve(found.base.workspace!.cwd, root)),
-					))
-			)
-				throw Object.assign(new Error("智能体协作任务的写能力必须绑定隔离工作区和写入根目录"), {
-					code: "room_write_capability_requires_workspace",
 					retryable: false,
 				});
 			const options = {
@@ -1354,7 +1313,6 @@ export class WebRuntimeService {
 					...(message.taskId ? { taskId: message.taskId } : {}),
 				},
 				activeToolNames: capabilities.allowedTools,
-				capabilities,
 			};
 			const reservation = runtime.reservePromptWithOrigin?.(options);
 			try {
@@ -1427,15 +1385,11 @@ export class WebRuntimeService {
 			input.onProgress?.(this.coordinatorSummary(found.base, runtime));
 			const mode: SessionSendMode = input.mode ?? "auto";
 			const active = this.isRuntimeActive(runtime) || this.coordinatorTasks.has(found.path);
-			if (
-				active &&
-				(mode === "steer" || (mode === "auto" && runtime.getSnapshot("available").activity === "running"))
-			) {
+			if (active && (mode === "steer" || (mode === "auto" && runtimeReadState(runtime).activity === "running"))) {
 				await runtime.steer(input.text);
 			} else if (
 				active &&
-				(mode === "follow_up" ||
-					(mode === "auto" && runtime.getSnapshot("available").activity === "waiting_for_input"))
+				(mode === "follow_up" || (mode === "auto" && runtimeReadState(runtime).activity === "waiting_for_input"))
 			) {
 				await runtime.followUp(input.text);
 			} else {
@@ -1458,7 +1412,7 @@ export class WebRuntimeService {
 
 	private async waitForRuntimeIdle(runtime: RuntimeSession, timeoutMs: number): Promise<void> {
 		const terminal = new Set(["idle", "completed", "failed", "aborted", "interrupted"]);
-		if (terminal.has(runtime.getSnapshot("available").activity)) return;
+		if (terminal.has(runtimeReadState(runtime).activity)) return;
 		await new Promise<void>((resolvePromise, rejectPromise) => {
 			let settled = false;
 			const finish = (error?: Error) => {
@@ -1470,7 +1424,7 @@ export class WebRuntimeService {
 				else resolvePromise();
 			};
 			const unsubscribe = runtime.onEvent(() => {
-				if (terminal.has(runtime.getSnapshot("available").activity)) finish();
+				if (terminal.has(runtimeReadState(runtime).activity)) finish();
 			});
 			const timer = setTimeout(
 				() =>
@@ -1532,7 +1486,7 @@ export class WebRuntimeService {
 							base?.taskId &&
 							!base.collaborationResult &&
 							!this.coordinatorTasks.has(item.path) &&
-							(!runtime || !isActiveSessionActivity(runtime.getSnapshot("available").activity)) &&
+							(!runtime || !isActiveSessionActivity(runtimeReadState(runtime).activity)) &&
 							!this.adapter.isSessionWriterLocked(item.path)
 						) {
 							await this.recoverCoordinatorTask({ base, path: item.path });
@@ -1756,6 +1710,7 @@ export class WebRuntimeService {
 		this.progressTimers.clear();
 		this.pendingProgress.clear();
 		this.contentStore.clear();
+		await this.adapter.dispose?.();
 	}
 
 	private checkForUpdates(): Promise<JsonValue> {
@@ -1830,11 +1785,11 @@ export class WebRuntimeService {
 		let afterResponse: (() => void) | undefined;
 		let result: JsonValue;
 		try {
-			result = jsonValue(
-				await this.executeCommand(connection, message.request, (action) => {
-					afterResponse = action;
-				}),
-			);
+			const value = await this.executeCommand(connection, message.request, (action) => {
+				afterResponse = action;
+			});
+			// transcript 在分页边界完成规范化，不再把整页转成 JSON 重建一次。
+			result = message.request.command === "read_transcript" ? (value as JsonValue) : jsonValue(value);
 			if (message.request.command in WORKSPACE_COMMANDS) {
 				assertWorkspaceCommandResult(
 					message.request.command as Parameters<typeof assertWorkspaceCommandResult>[0],
@@ -2082,31 +2037,32 @@ export class WebRuntimeService {
 				);
 			case "read_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				const emptyGeneration = runtime ? runtimeReadState(runtime).transcriptGeneration : undefined;
 				return readTranscriptPageWithinFrameBudget(request.limit, async (limit, byteBudget) => {
 					const page = await this.transcriptReader.read(sessionPath, {
 						...request,
 						limit,
 						byteBudget,
-						emptyGeneration: this.runtimes
-							.get(sessionPath)
-							?.getSnapshot(this.writeAccess(sessionPath, connection)).transcriptGeneration,
+						emptyGeneration,
 					});
 					const { contextCalls, ...transcriptPage } = page;
 					return {
 						...transcriptPage,
 						requestContext: request.context,
-						items: this.projectTranscriptItems(sessionPath, page.items, page.agentSteps, contextCalls),
+						items: this.projectTranscriptItems(sessionPath, page.items, page.agentSteps, contextCalls).map(
+							({ payload: _payload, ...item }) => item,
+						),
 					};
 				});
 			}
 			case "search_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
 				return jsonValue(
 					await this.transcriptReader.search(sessionPath, {
 						...request,
-						emptyGeneration: this.runtimes
-							.get(sessionPath)
-							?.getSnapshot(this.writeAccess(sessionPath, connection)).transcriptGeneration,
+						emptyGeneration: runtime ? runtimeReadState(runtime).transcriptGeneration : undefined,
 					}),
 				);
 			}
@@ -2363,7 +2319,7 @@ export class WebRuntimeService {
 			}
 			case "stop_session": {
 				const matches = [...this.runtimes.values()].filter(
-					(runtime) => runtime.getSnapshot("available").id === request.sessionId,
+					(runtime) => runtimeReadState(runtime).id === request.sessionId,
 				);
 				if (matches.length === 0)
 					throw Object.assign(new Error(`未找到正在运行的会话：${request.sessionId}`), {
@@ -3050,7 +3006,7 @@ export class WebRuntimeService {
 			case "get_diagnostics": {
 				const cwd = request.cwd ? canonicalProjectCwd(request.cwd) : undefined;
 				const runtime = [...this.runtimes.values()].find(
-					(candidate) => !cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd,
+					(candidate) => !cwd || canonicalProjectCwd(runtimeReadState(candidate).cwd) === cwd,
 				);
 				const diagnostics = await this.adapter.getDiagnostics(cwd, runtime?.getToolRecoveryDiagnostics());
 				const diagnosticsObject =
@@ -3194,7 +3150,7 @@ export class WebRuntimeService {
 				const scope =
 					setting?.scope === "global"
 						? "host:settings"
-						: `project:${canonicalProjectCwd(runtime.getSnapshot("available").cwd)}`;
+						: `project:${canonicalProjectCwd(runtimeReadState(runtime).cwd)}`;
 				return this.executeJournaledWrite(connection, {
 					command: request.command,
 					clientInstanceId: request.clientInstanceId,
@@ -3231,7 +3187,7 @@ export class WebRuntimeService {
 						const { runtime } = this.assertExtensionSession(connection, request);
 						const projectCwd =
 							readSessionHeader(sessionPath)?.collaborationWorkspace?.projectCwd ??
-							runtime.getSnapshot("available").cwd;
+							runtimeReadState(runtime).cwd;
 						if (canonicalProjectCwd(projectCwd) !== cwd) {
 							throw Object.assign(new Error("项目信任目录与当前会话不一致"), {
 								code: "project_trust_session_mismatch",
@@ -3246,7 +3202,7 @@ export class WebRuntimeService {
 							for (const runtime of this.runtimes.values()) {
 								const sourceCwd =
 									readSessionHeader(runtime.sessionPath)?.collaborationWorkspace?.projectCwd ??
-									runtime.getSnapshot("available").cwd;
+									runtimeReadState(runtime).cwd;
 								if (canonicalProjectCwd(sourceCwd) === cwd) await runtime.reloadResources();
 							}
 						};
@@ -3479,7 +3435,10 @@ export class WebRuntimeService {
 		const runtime = this.runtimes.get(sessionPath);
 		if (runtime) {
 			try {
-				return runtime.getSnapshot(connection ? this.writeAccess(sessionPath, connection) : "available").activity;
+				return (
+					runtime.getReadState?.() ??
+					runtime.getSnapshot(connection ? this.writeAccess(sessionPath, connection) : "available")
+				).activity;
 			} catch {
 				return undefined;
 			}
@@ -3650,7 +3609,7 @@ export class WebRuntimeService {
 		for (const runtime of this.runtimes.values()) {
 			const sessionPath = canonicalSessionPath(runtime.sessionPath);
 			if (listedPaths.has(sessionPath)) continue;
-			const snapshot = this.runtimeSnapshot(runtime, "available");
+			const snapshot = runtimeReadState(runtime);
 			if (canonicalProjectCwd(snapshot.cwd) !== cwd) continue;
 			const latestOperation = this.latestOperation(sessionPath);
 			summaries.push({
@@ -3853,7 +3812,7 @@ export class WebRuntimeService {
 				observedTranscript !== undefined &&
 				(old.transcriptGeneration !== observedTranscript.transcriptGeneration ||
 					old.transcriptRevision !== observedTranscript.transcriptRevision);
-			const runtimeSnapshot = runtime?.getSnapshot?.("available");
+			const runtimeSnapshot = runtime ? runtimeReadState(runtime) : undefined;
 			const known = runtime ? this.runtimeTranscriptFacts.get(sessionPath) : undefined;
 			const runtimeTranscriptChanged =
 				runtimeSnapshot !== undefined &&
@@ -3896,9 +3855,10 @@ export class WebRuntimeService {
 			}
 		}
 		for (const runtime of this.runtimes.values()) {
-			const snapshot = runtime.getSnapshot("available");
 			const sessionPath = canonicalSessionPath(runtime.sessionPath);
-			if (canonicalProjectCwd(snapshot.cwd) !== cwd || next.has(sessionPath)) continue;
+			if (next.has(sessionPath)) continue;
+			const snapshot = runtimeReadState(runtime);
+			if (canonicalProjectCwd(snapshot.cwd) !== cwd) continue;
 			const fact: SessionFileFact = {
 				updatedAt: snapshot.updatedAt,
 				messageCount: 0,
@@ -4625,7 +4585,7 @@ export class WebRuntimeService {
 			this.snapshotTimers.delete(sessionPath);
 		}
 		this.rememberRuntimeTranscriptFact(runtime);
-		const runtimeRevision = runtime.getSnapshot("available").revision;
+		const runtimeRevision = runtimeReadState(runtime).revision;
 		const revision = Math.max(runtimeRevision, (this.snapshotRevisions.get(sessionPath) ?? -1) + 1);
 		this.snapshotRevisions.set(sessionPath, revision);
 		await Promise.allSettled(
@@ -4995,7 +4955,7 @@ export class WebRuntimeService {
 			leaseId: request.leaseId,
 			clientInstanceId: request.clientInstanceId,
 		});
-		if (cwd && canonicalProjectCwd(runtime.getSnapshot("available").cwd) !== cwd) {
+		if (cwd && canonicalProjectCwd(runtimeReadState(runtime).cwd) !== cwd) {
 			throw Object.assign(new Error("资源目录与当前会话不一致"), {
 				code: "resource_session_mismatch",
 				retryable: false,
@@ -5006,7 +4966,7 @@ export class WebRuntimeService {
 
 	private async reloadMutationResources(runtime: RuntimeSession | undefined, cwd?: string): Promise<void> {
 		for (const candidate of this.runtimes.values()) {
-			if ((!cwd || canonicalProjectCwd(candidate.getSnapshot("available").cwd) === cwd) && candidate !== runtime) {
+			if ((!cwd || canonicalProjectCwd(runtimeReadState(candidate).cwd) === cwd) && candidate !== runtime) {
 				await candidate.reloadResources();
 			}
 		}

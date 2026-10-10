@@ -91,6 +91,14 @@ export interface GitFileDiffStats {
 	deletions: number;
 }
 
+export interface WorkbenchToast {
+	id: number;
+	message: string;
+	type: "success" | "info" | "warning" | "error";
+}
+
+export type ShowToast = (message: string, type?: WorkbenchToast["type"]) => void;
+
 export interface WorkbenchState {
 	loading: boolean;
 	networkOnline: boolean;
@@ -278,7 +286,7 @@ export interface WorkbenchState {
 	about?: Record<string, unknown>;
 	diagnostics?: Record<string, unknown>;
 	projectTrust?: { cwd: string; trusted: boolean | null; reason: string; resourceRisk: boolean };
-	toast?: string;
+	toast?: WorkbenchToast;
 	theme: ThemeMode;
 	composerMode: ComposerMode;
 	subagents: SubagentSnapshot[];

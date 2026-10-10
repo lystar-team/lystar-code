@@ -61,6 +61,7 @@ import {
 } from "./transcript-state.ts";
 import type {
 	LiveTurnItem,
+	ShowToast,
 	WorkbenchState,
 } from "./workbench-types.ts";
 
@@ -75,12 +76,13 @@ type SessionSubscriptionWaiter = {
 	resolve: (result: SessionSubscriptionResult) => void;
 	timeoutId: number;
 };
+const SESSION_SUBSCRIPTION_RETRY_MS = 1500;
 const MAX_HANDLED_NOTIFY_IDS = 256;
 
 export interface WorkbenchStreamActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 	applyBootstrap: (data: {
 		projects: WebProject[];
 		projectGroups: ProjectGroup[];
@@ -155,7 +157,7 @@ export function useWorkbenchStreamActions({
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			transcriptTimerRef.current = window.setTimeout(() => {
 				transcriptTimerRef.current = undefined;
-				void loadTranscript(sessionId).catch((error) => showToast(errorMessage(error)));
+				void loadTranscript(sessionId).catch((error) => showToast(errorMessage(error), "error"));
 			}, 140);
 		},
 		[loadTranscript, showToast],
@@ -198,13 +200,19 @@ export function useWorkbenchStreamActions({
 			const startTimeout = () => {
 				const startedAt = Date.now();
 				waiter.timeoutId = window.setTimeout(() => {
-					console.warn("Web 会话订阅超时", {
+					if (!waiters.has(waiter)) return;
+					if (socket.readyState !== WebSocket.OPEN) {
+						waiter.resolve("closed");
+						return;
+					}
+					console.warn("Web 会话订阅确认延迟，正在重试", {
 						sessionId,
 						elapsedMs: Date.now() - startedAt,
 						socketState: socket.readyState,
 					});
-					waiter.resolve("timeout");
-				}, 1500);
+					webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
+					startTimeout();
+				}, SESSION_SUBSCRIPTION_RETRY_MS);
 			};
 			waiter = {
 				timeoutId: 0,
@@ -229,16 +237,7 @@ export function useWorkbenchStreamActions({
 			const subscribedSocket = socketRef.current;
 			const selection = selectionRef.current;
 			if (result === "closed") return false;
-			if (result === "timeout") {
-				const socket = socketRef.current;
-				if (
-					stateRef.current.sessionId === sessionId &&
-					!stateRef.current.sessionReady &&
-					socket?.readyState === WebSocket.OPEN
-				)
-					socket.close(4002, "会话订阅确认超时");
-				return false;
-			}
+			if (result === "timeout") return false;
 			if (result === "gap") {
 				const key = `${sessionId}:${sessionDetailSeqRef.current.get(sessionId) ?? ""}`;
 				let recovery = gapRecoveryRef.current.get(key);
@@ -289,7 +288,7 @@ export function useWorkbenchStreamActions({
 							!current.subagentsLoading &&
 							!current.subagentsError
 						) {
-							void loadSessionOperations(sessionId).catch((error) => showToast(errorMessage(error)));
+							void loadSessionOperations(sessionId).catch((error) => showToast(errorMessage(error), "error"));
 							return;
 						}
 						void Promise.all([
@@ -297,11 +296,11 @@ export function useWorkbenchStreamActions({
 							loadSessionOperations(sessionId),
 							loadTranscript(sessionId),
 							loadSubagents(sessionId),
-						]).catch((error) => showToast(errorMessage(error)));
+						]).catch((error) => showToast(errorMessage(error), "error"));
 					}
 				})
 				.catch((error) => {
-					showToast(errorMessage(error));
+					showToast(errorMessage(error), "error");
 					socketRef.current?.close(4002, "会话状态恢复失败");
 				});
 		},
@@ -340,7 +339,7 @@ export function useWorkbenchStreamActions({
 				}
 				if (event.gap && selected && !waiters && selectionInFlightRef.current !== event.sessionId)
 					void completeSessionSubscription(event.sessionId, "gap").catch((error) => {
-						showToast(errorMessage(error));
+						showToast(errorMessage(error), "error");
 						socketRef.current?.close(4002, "会话断档恢复失败");
 					});
 				return;
@@ -424,9 +423,9 @@ export function useWorkbenchStreamActions({
 			}
 			if (event.type === "model_catalog_changed") {
 				if (event.revision === stateRef.current.modelCatalogRevision) return;
-				void refreshModelOptionsRef.current().catch((error) => showToast(errorMessage(error)));
+				void refreshModelOptionsRef.current().catch((error) => showToast(errorMessage(error), "error"));
 				if (stateRef.current.settingsOpen && stateRef.current.settingsTab === "models") {
-					void refreshModelSettingsRef.current().catch((error) => showToast(errorMessage(error)));
+					void refreshModelSettingsRef.current().catch((error) => showToast(errorMessage(error), "error"));
 				}
 				return;
 			}
@@ -438,9 +437,9 @@ export function useWorkbenchStreamActions({
 			}
 			if (event.type === "sessions_changed") {
 				if (event.projectId) {
-					void refreshProjectSessions(event.projectId).catch((error) => showToast(errorMessage(error)));
+					void refreshProjectSessions(event.projectId).catch((error) => showToast(errorMessage(error), "error"));
 				} else {
-					void refreshBootstrap().catch((error) => showToast(errorMessage(error)));
+					void refreshBootstrap().catch((error) => showToast(errorMessage(error), "error"));
 				}
 				return;
 			}
@@ -849,13 +848,10 @@ export function useWorkbenchStreamActions({
 						if (oldestId !== undefined) handledNotifyIdsRef.current.delete(oldestId);
 					}
 					const payload = eventIsObject(event.payload) ? event.payload : undefined;
-					const message =
-						typeof payload?.message === "string"
-							? payload.message.trim()
-							: typeof payload?.text === "string"
-								? payload.text.trim()
-								: event.title.trim();
-					if (message) showToast(message);
+					// 扩展提示由 Runtime 写入所属会话；终端状态更新不触发全局提示。
+					if (payload?.method !== "auth_auth_url" && payload?.method !== "auth_device_code" && payload?.method !== "auth_progress") return;
+					const message = typeof payload.message === "string" ? payload.message.trim() : event.title.trim();
+					if (message) showToast(message, "info");
 					return;
 				}
 				updateState((current) =>

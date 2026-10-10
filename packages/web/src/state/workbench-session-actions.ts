@@ -41,7 +41,7 @@ import {
 	withPromptSendTimes,
 } from "./workbench-live-state.ts";
 import { isOlderSessionSnapshot } from "./session-sync.ts";
-import type { ComposerMode, WorkbenchState } from "./workbench-types.ts";
+import type { ShowToast, ComposerMode, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
@@ -92,7 +92,7 @@ export interface WorkbenchSessionActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
 	transitionState: (update: StateUpdate | ((current: WorkbenchState) => WorkbenchState)) => void;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 	onSessionRead: (sessionId: string) => void;
 	refreshProjectSessions: (projectId: string) => Promise<void>;
 	loadTranscript: (sessionId?: string, cursor?: string, deferCommit?: boolean, completeTurn?: boolean) => Promise<void>;
@@ -353,7 +353,7 @@ export function useWorkbenchSessionActions({
 						: previous.inspectorMode === "files"
 							? loadProjectTreeRef.current()
 							: Promise.resolve();
-				void projectReviewRefresh.catch((error) => showToast(errorMessage(error)));
+				void projectReviewRefresh.catch((error) => showToast(errorMessage(error), "error"));
 			}
 			try {
 				const controlled = await acquireSelectedSessionControl(sessionId);
@@ -419,7 +419,7 @@ export function useWorkbenchSessionActions({
 						};
 						return restoreRuntimeActivities(next, snapshot);
 					});
-					showToast(errorMessage(error));
+					showToast(errorMessage(error), "error");
 				} catch (snapshotError) {
 					if (request !== selectionRef.current) {
 						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
@@ -435,7 +435,6 @@ export function useWorkbenchSessionActions({
 						sessionError: message,
 						statusText: "",
 					}));
-					showToast(message);
 					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 					return;
 				}
@@ -447,7 +446,7 @@ export function useWorkbenchSessionActions({
 			try {
 				await transcriptPromise;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 			const subscriptionResult = await subscriptionPromise;
 			if (request !== selectionRef.current) {
@@ -459,7 +458,7 @@ export function useWorkbenchSessionActions({
 				subscriptionReady = await completeSessionSubscription(sessionId, subscriptionResult);
 				if (subscriptionResult !== "gap") await loadSessionOperations(sessionId);
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				socketRef.current?.close(4002, "会话状态对账失败");
 			}
 			const supplementalLoads = [loadProjectTrustRef.current()];
@@ -571,7 +570,7 @@ export function useWorkbenchSessionActions({
 			try {
 				await refreshProjectSessions(projectId);
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 			if (request !== selectionRef.current) return;
 			await loadProjectTreeRef.current();
@@ -671,7 +670,7 @@ export function useWorkbenchSessionActions({
 		}));
 		const subscriptionResult = await subscribeSessionAndWait(result.session.id);
 		await completeSessionSubscription(result.session.id, subscriptionResult).catch((error) =>
-			showToast(errorMessage(error)),
+			showToast(errorMessage(error), "error"),
 		);
 	}, [completeSessionSubscription, showToast, subscribeSessionAndWait, updateState]);
 
@@ -904,7 +903,7 @@ export function useWorkbenchSessionActions({
 			scheduleTranscriptRefresh(sessionId);
 		} catch (error) {
 			updateState((next) => setSessionStopping(next, sessionId, false));
-			showToast(errorMessage(error));
+			showToast(errorMessage(error), "error");
 		}
 	}, [scheduleTranscriptRefresh, showToast, updateState]);
 
@@ -928,7 +927,7 @@ export function useWorkbenchSessionActions({
 					if (trackControl)
 						updateState((next) => updatePendingSessionControl(next, sessionId, -1, controlled));
 					if (!controlled.owned) {
-						showToast("当前会话暂时无法修改");
+						showToast("当前会话暂时无法修改", "warning");
 						return;
 					}
 					temporaryLease = current.sessionId !== sessionId;
@@ -950,7 +949,7 @@ export function useWorkbenchSessionActions({
 				}));
 				if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			} finally {
 				if (temporaryLease) await webApi.release(sessionId).catch(() => {});
 			}
@@ -974,7 +973,7 @@ export function useWorkbenchSessionActions({
 					),
 				}));
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[showToast, updateState],
@@ -1044,13 +1043,13 @@ export function useWorkbenchSessionActions({
 						else await loadProjectTreeRef.current();
 					}
 				}
-				if (result.failures.length === 1) showToast(result.failures[0]!.message);
+				if (result.failures.length === 1) showToast(result.failures[0]!.message, "error");
 				else if (result.failures.length > 1) {
-					showToast(`${result.failures.length} 个会话删除失败：${result.failures[0]!.message}`);
+					showToast(`${result.failures.length} 个会话删除失败：${result.failures[0]!.message}`, "error");
 				}
 				return deletedIds;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				return [];
 			}
 		},
@@ -1118,13 +1117,11 @@ export function useWorkbenchSessionActions({
 			}
 			await loadTranscript(result.session.id);
 			await loadSessionTreeRef.current();
-			if (oldSessionId !== result.session.id) showToast("已创建新的会话分支");
 		},
 		[
 			completeSessionSubscription,
 			loadTranscript,
 			refreshProjectSessions,
-			showToast,
 			subscribeSessionAndWait,
 			updateState,
 		],
@@ -1133,7 +1130,7 @@ export function useWorkbenchSessionActions({
 	const reloadResources = useCallback(async () => {
 		const { sessionId, currentProjectId, readOnly } = stateRef.current;
 		if (!sessionId || readOnly) throw new Error("当前会话不可写");
-		showToast("正在重新加载会话资源…");
+		showToast("正在重新加载会话资源…", "info");
 		const result = await webApi.reloadResources(sessionId);
 		if (stateRef.current.sessionId !== sessionId) return;
 		updateState((current) => ({ ...current, session: result.session }));
@@ -1149,9 +1146,9 @@ export function useWorkbenchSessionActions({
 				hostInstructionsError: undefined,
 				...(skills ? { skills: skills.skills, skillDiagnostics: skills.diagnostics, skillsError: undefined } : {}),
 			}));
-			showToast("会话资源已重新加载，后续消息使用更新后的 AGENTS.md 和 Skill");
+			showToast("会话资源已重新加载，后续消息使用更新后的 AGENTS.md 和 Skill", "success");
 		} catch (error) {
-			showToast(`会话资源已重新加载，但资源列表刷新失败：${errorMessage(error)}`);
+			showToast(`会话资源已重新加载，但资源列表刷新失败：${errorMessage(error)}`, "warning");
 		}
 	}, [showToast, updateState]);
 
@@ -1173,7 +1170,7 @@ export function useWorkbenchSessionActions({
 		const current = stateRef.current;
 		if (!current.sessionId || current.readOnly) return;
 		const result = await webApi.exportSession(current.sessionId);
-		showToast(`会话已导出：${result.path.split(/[\\/]/).at(-1) ?? "文件"}`);
+		showToast(`会话已导出：${result.path.split(/[\\/]/).at(-1) ?? "文件"}`, "success");
 	}, [showToast]);
 
 	const ensureSessionControl = useCallback(
@@ -1197,10 +1194,10 @@ export function useWorkbenchSessionActions({
 					return restoreRuntimeActivities(updated, controlled.snapshot);
 				});
 				if (controlled.owned) return true;
-				showToast("当前会话暂时无法修改");
+				showToast("当前会话暂时无法修改", "warning");
 				return false;
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
@@ -1221,7 +1218,7 @@ export function useWorkbenchSessionActions({
 					readOnly: result.session.writeAccess !== "owned",
 				}));
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[ensureSessionControl, showToast, updateState],
@@ -1241,7 +1238,7 @@ export function useWorkbenchSessionActions({
 					readOnly: result.session.writeAccess !== "owned",
 				}));
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[ensureSessionControl, showToast, updateState],
@@ -1260,9 +1257,9 @@ export function useWorkbenchSessionActions({
 					session: result.session,
 					readOnly: result.session.writeAccess !== "owned",
 				}));
-				showToast(enabled ? "已切换至快速模式" : "已切换至普通模式");
+				showToast(enabled ? "已切换至快速模式" : "已切换至普通模式", "success");
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[ensureSessionControl, showToast, updateState],

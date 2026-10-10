@@ -431,7 +431,7 @@ function RuntimeReadConcurrencyPanel({
 		try {
 			await webApi.setSetting(state.sessionId!, "runtime-read-concurrency", Number(nextValue));
 			await actions.refreshDiagnostics();
-			actions.showToast("Runtime 读取并发已更新");
+			actions.showToast("Runtime 读取并发已更新", "success");
 		} catch (updateError) {
 			setError(updateError instanceof Error ? updateError.message : String(updateError));
 		} finally {

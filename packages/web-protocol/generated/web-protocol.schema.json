@@ -8374,6 +8374,36 @@
                                   "details": {
                                     "type": "string",
                                     "maxLength": 16384
+                                  },
+                                  "notification": {
+                                    "type": "object",
+                                    "required": [
+                                      "message",
+                                      "type"
+                                    ],
+                                    "properties": {
+                                      "message": {
+                                        "type": "string",
+                                        "maxLength": 16384
+                                      },
+                                      "type": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "const": "info"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "warning"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "error"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "additionalProperties": false
                                   }
                                 },
                                 "additionalProperties": false

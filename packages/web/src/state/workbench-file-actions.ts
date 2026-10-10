@@ -3,7 +3,7 @@ import { webApi } from "../adapters/host-protocol/api.ts";
 import { isAbsoluteResourcePath } from "../lib/resource-path.ts";
 import { errorMessage, normalizedProjectFilePath, parentProjectPath, sameProjectTree } from "./workbench-state.ts";
 import type { FileResponse } from "../types.ts";
-import type { InspectorMode, WorkbenchState } from "./workbench-types.ts";
+import type { ShowToast, InspectorMode, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
@@ -14,7 +14,7 @@ type PromiseMapRef = { current: Map<string, Promise<void>> };
 export interface WorkbenchFileActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 	fileRequestRef: RequestRef;
 	fileMetadataPromisesRef: PromiseMapRef;
 	projectTreeRefreshPromisesRef: PromiseMapRef;
@@ -248,7 +248,7 @@ export function useWorkbenchFileActions({
 					updateState((value) => ({ ...value, fileContent: result, fileError: undefined }));
 				}
 				await refreshProjectFiles([path], false);
-				showToast("文件已保存");
+				showToast("文件已保存", "success");
 				return result;
 			} catch (error) {
 				if ((error as { code?: string }).code === "project_file_conflict") void refreshOpenFile(path, true);

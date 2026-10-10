@@ -298,13 +298,14 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 				} catch (error) {
 					actions.showToast(
 						`供应商已保存，模型自动同步失败：${error instanceof Error ? error.message : String(error)}`,
+						"warning",
 					);
 				}
 			}
 			setSelectedProvider(providerId);
 			setProviderDraft(null);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setSubmitting(false);
 		}
@@ -332,7 +333,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			});
 			setModelDraft(null);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setSubmitting(false);
 		}
@@ -350,7 +351,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			});
 			setModelDraft(null);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setSubmitting(false);
 		}
@@ -361,7 +362,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		try {
 			await actions.syncModelProvider(providerId);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setSyncingProvider(null);
 		}
@@ -375,7 +376,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			setRemoveTarget(null);
 			if (modelListProviderId === removeTarget.id) setModelListProviderId(null);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setRemovingProvider(null);
 		}
@@ -386,7 +387,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		try {
 			await actions.setProviderModelEnabled(providerId, modelId, enabled);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setTogglingModel(null);
 		}

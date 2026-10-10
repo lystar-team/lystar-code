@@ -696,6 +696,12 @@ const TranscriptSubagentRefSchema = StrictObject({
 });
 export type TranscriptSubagentRef = Static<typeof TranscriptSubagentRefSchema>;
 
+const ExtensionNotificationSchema = StrictObject({
+	message: TranscriptViewTextSchema,
+	type: Type.Union([Type.Literal("info"), Type.Literal("warning"), Type.Literal("error")]),
+});
+export type ExtensionNotification = Static<typeof ExtensionNotificationSchema>;
+
 // Web Runtime 投影是 Web client 的 transcript 输入；payload 用于协议内部完整回放。
 export const TranscriptViewItemSchema = Type.Union([
 	StrictObject({
@@ -745,6 +751,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		type: Type.Literal("extension_entry"),
 		customType: Type.String({ minLength: 1, maxLength: 16_384 }),
 		details: Type.Optional(TranscriptViewTextSchema),
+		notification: Type.Optional(ExtensionNotificationSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("extension_activity"),

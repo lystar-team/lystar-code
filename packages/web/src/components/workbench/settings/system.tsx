@@ -26,19 +26,19 @@ export function SystemSettings({ state, actions }: { state: WorkbenchState; acti
 	const selectLogo = (file: File | undefined) => {
 		if (!file) return;
 		if (!LOGO_TYPES.has(file.type)) {
-			actions.showToast("Logo 只支持 PNG、JPEG、GIF 或 WebP 图片");
+			actions.showToast("Logo 只支持 PNG、JPEG、GIF 或 WebP 图片", "warning");
 			return;
 		}
 		if (file.size > MAX_LOGO_BYTES) {
-			actions.showToast("Logo 图片不能超过 1 MB");
+			actions.showToast("Logo 图片不能超过 1 MB", "warning");
 			return;
 		}
 		const reader = new FileReader();
 		reader.addEventListener("load", () => {
 			if (typeof reader.result === "string") setLogo(reader.result);
-			else actions.showToast("Logo 图片读取失败");
+			else actions.showToast("Logo 图片读取失败", "error");
 		});
-		reader.addEventListener("error", () => actions.showToast("Logo 图片读取失败"));
+		reader.addEventListener("error", () => actions.showToast("Logo 图片读取失败", "error"));
 		reader.readAsDataURL(file);
 	};
 	const save = async (event: FormEvent<HTMLFormElement>) => {

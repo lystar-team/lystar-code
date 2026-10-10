@@ -147,7 +147,9 @@ GSAP，动效曲线集中在 `src/lib/ease.ts` 与 `src/lib/gsap-motion.ts`。
 
 设置是全屏对话框（`inset-0 h-dvh w-screen`），左侧分类导航在 `md` 以上竖排，以下为横向滚动标签；内容区最大宽度 1120px，智能体页放宽到 1680px。
 
-Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5rem)]`、`right-4`、宽 `min(420px, 100vw-2rem)`，`rounded-xl` 并带阴影。它低于模态和菜单层级，不承载当前任务的唯一错误——重要错误留在对应工具、会话或连接区域。
+Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5rem)]`、`right-4`、宽 `min(420px, 100vw-2rem)`，`rounded-xl` 并带阴影。它低于模态和菜单层级，区分成功、信息、警告和错误；只有明确成功才显示勾。未指定类型按信息处理。重要错误留在对应工具、会话、编辑器或连接区域，已有局部反馈时不重复弹 Toast。
+
+会话初始化与 TUI 状态栏、工作提示、窗口标题和小部件更新不弹 Toast。扩展的 `notify` 保存为所属会话的扩展记录，按需展开，并显示警告和错误类型。后台会话的扩展输出不触发全局提示。
 
 ### 4.4 页面与路由
 

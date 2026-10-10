@@ -105,7 +105,7 @@ export function SessionTreePanel({
 			await actions.fork(pendingTurn.forkEntryId);
 			setPendingTurnId(undefined);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setForkingTurnId(undefined);
 		}

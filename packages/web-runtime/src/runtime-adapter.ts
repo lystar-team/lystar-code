@@ -95,7 +95,6 @@ import {
 	type SessionCollaborationTask,
 	type SessionCoordinator,
 	type SessionEntry,
-	type SessionInfoCache,
 	SessionLockedError,
 	SessionManager,
 	type SessionProfile,
@@ -168,6 +167,7 @@ import {
 import { logRuntimeConnection } from "./connection-log.ts";
 import {
 	EXTENSION_ACTIVITY_CUSTOM_TYPE,
+	EXTENSION_NOTIFICATION_CUSTOM_TYPE,
 	type ExtensionActivityRecord,
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
@@ -178,6 +178,7 @@ import {
 	rebindSessionAttachments,
 	sessionAttachmentDirectory,
 } from "./session-attachments.ts";
+import { SessionReadIndex } from "./session-read-index.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import { projectedToolActivity } from "./transcript-projection.ts";
 import type {
@@ -1079,7 +1080,11 @@ function recoverInterruptedExtensionActivities(
 			openActivities.delete(activity.activityId);
 			continue;
 		}
-		if (entry.type === "custom" && entry.customType !== AGENT_STEP_CUSTOM_TYPE) {
+		if (
+			entry.type === "custom" &&
+			entry.customType !== AGENT_STEP_CUSTOM_TYPE &&
+			entry.customType !== EXTENSION_NOTIFICATION_CUSTOM_TYPE
+		) {
 			[...openActivities.values()].at(-1)?.relatedEntryIds.push(entry.id);
 		}
 	}
@@ -1118,7 +1123,7 @@ function sessionGeneration(
 	};
 }
 
-function createUiContext(onUiRequest: UiRequestHandler): ExtensionUIContext {
+function createUiContext(onUiRequest: UiRequestHandler, onNotify?: ExtensionUIContext["notify"]): ExtensionUIContext {
 	const request = async (
 		kind: UiRequest["kind"],
 		title: string,
@@ -1144,32 +1149,20 @@ function createUiContext(onUiRequest: UiRequestHandler): ExtensionUIContext {
 			return result.cancelled ? undefined : typeof result.value === "string" ? result.value : undefined;
 		},
 		notify: (message, type = "info") => {
+			onNotify?.(message, type);
 			void request("notify", message, { method: "notify", type });
 		},
 		onTerminalInput: () => () => {},
-		setStatus: (key, text) => {
-			void request("notify", key, { method: "setStatus", key, text: text ?? null });
-		},
-		setWorkingMessage: (message) => {
-			void request("notify", "working", { method: "setWorkingMessage", message: message ?? null });
-		},
-		setWorkingVisible: (visible) => {
-			void request("notify", "working", { method: "setWorkingVisible", visible });
-		},
+		// 终端展示状态不进入网页通知通道。
+		setStatus: () => {},
+		setWorkingMessage: () => {},
+		setWorkingVisible: () => {},
 		setWorkingIndicator: () => {},
-		setHiddenThinkingLabel: (label) => {
-			void request("notify", "thinking", { method: "setHiddenThinkingLabel", label: label ?? null });
-		},
-		setWidget: (key, content, options) => {
+		setHiddenThinkingLabel: () => {},
+		setWidget: (_key, content) => {
 			if (content !== undefined && !Array.isArray(content)) {
 				throw new Error("LYStar Web Runtime不支持 TUI 组件式小部件");
 			}
-			void request("notify", key, {
-				method: "setWidget",
-				key,
-				lines: content ?? null,
-				placement: options?.placement ?? "aboveEditor",
-			});
 		},
 		setFooter: (factory) => {
 			if (factory) throw new Error("LYStar Web Runtime不支持自定义 TUI 页脚");
@@ -1177,9 +1170,7 @@ function createUiContext(onUiRequest: UiRequestHandler): ExtensionUIContext {
 		setHeader: (factory) => {
 			if (factory) throw new Error("LYStar Web Runtime不支持自定义 TUI 页眉");
 		},
-		setTitle: (title) => {
-			void request("notify", title, { method: "setTitle", title });
-		},
+		setTitle: () => {},
 		custom: async () => {
 			throw new Error("LYStar Web Runtime不支持自定义 TUI 组件");
 		},
@@ -1853,6 +1844,14 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly activeBashOperations = new Set<Promise<JsonValue>>();
 	private readonly outputSpeed = new OutputSpeedTracker();
 	private turnAssistantText?: string;
+	private contextUsageSnapshot?: {
+		manager: AgentSession["sessionManager"];
+		leafId: string | null;
+		model: AgentSession["model"];
+		contextWindow?: number;
+		fileVersion: string;
+		usage: ReturnType<AgentSession["getContextUsage"]>;
+	};
 
 	constructor(
 		runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>,
@@ -1907,11 +1906,48 @@ class CoreRuntimeSession implements RuntimeSession {
 		await this.bindCurrentSession();
 	}
 
+	getReadState(): SessionStateSnapshot {
+		return this.buildSnapshot("available", false);
+	}
+
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot {
+		return this.buildSnapshot(writeAccess, true);
+	}
+
+	private buildSnapshot(
+		writeAccess: SessionStateSnapshot["writeAccess"],
+		includeContext: boolean,
+	): SessionStateSnapshot {
 		const session = this.runtime.session;
 		const header = session.sessionManager.getHeader();
 		const storage = sessionGeneration(this.sessionPath, session.sessionId);
-		const contextUsage = session.getContextUsage();
+		let contextUsage: ReturnType<AgentSession["getContextUsage"]>;
+		if (includeContext) {
+			const manager = session.sessionManager;
+			const leafId = manager.getLeafId();
+			const model = session.routedModel?.model ?? session.model;
+			const contextWindow = model?.contextWindow;
+			const fileVersion = `${storage.generation}:${storage.revision}:${storage.updatedAt}`;
+			const cached = this.contextUsageSnapshot;
+			if (
+				!cached ||
+				cached.manager !== manager ||
+				cached.leafId !== leafId ||
+				cached.model !== model ||
+				cached.contextWindow !== contextWindow ||
+				cached.fileVersion !== fileVersion
+			) {
+				this.contextUsageSnapshot = {
+					manager,
+					leafId,
+					model,
+					contextWindow,
+					fileVersion,
+					usage: session.getContextUsage(),
+				};
+			}
+			contextUsage = this.contextUsageSnapshot?.usage;
+		}
 		const toolActivityEpoch =
 			typeof session.getToolActivityEpoch === "function" ? session.getToolActivityEpoch() : undefined;
 		const toolActivityRevision =
@@ -2657,7 +2693,13 @@ class CoreRuntimeSession implements RuntimeSession {
 			reload: () => session.reload(),
 		};
 		await session.bindExtensions({
-			uiContext: createUiContext(this.onUiRequest),
+			uiContext: createUiContext(this.onUiRequest, (message, type = "info") => {
+				if (this.disposed || this.runtime.session !== session || !message.trim()) return;
+				session.sessionManager.appendCustomEntry(EXTENSION_NOTIFICATION_CUSTOM_TYPE, { message, type });
+				queueMicrotask(() => {
+					if (!this.disposed && this.runtime.session === session) this.emitCommittedEntries();
+				});
+			}),
 			mode: "rpc",
 			commandContextActions,
 			abortHandler: () => void this.abort(),
@@ -2740,7 +2782,8 @@ class CoreRuntimeSession implements RuntimeSession {
 				event.type === "entry_appended" &&
 				event.entry.type === "custom" &&
 				event.entry.customType !== EXTENSION_ACTIVITY_CUSTOM_TYPE &&
-				event.entry.customType !== AGENT_STEP_CUSTOM_TYPE
+				event.entry.customType !== AGENT_STEP_CUSTOM_TYPE &&
+				event.entry.customType !== EXTENSION_NOTIFICATION_CUSTOM_TYPE
 			) {
 				this.activeExtensionActivities.at(-1)?.relatedEntryIds.push(event.entry.id);
 				const toolCallId = toolRecord(event.entry.data)?.toolCallId;
@@ -2891,7 +2934,10 @@ class CoreRuntimeSession implements RuntimeSession {
 				entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "bashExecution"),
 		);
 		const hasTranscriptBeforeCommit = entries.slice(0, this.committedEntryCount).some(isTranscriptEntry);
-		if (!hasTranscriptBeforeCommit && !hasCompletedEntry && activityMarkers.length === 0) return;
+		const hasNotification = transcriptEntries.some(
+			(entry) => entry.type === "custom" && entry.customType === EXTENSION_NOTIFICATION_CUSTOM_TYPE,
+		);
+		if (!hasTranscriptBeforeCommit && !hasCompletedEntry && activityMarkers.length === 0 && !hasNotification) return;
 
 		const activityMarkersById = new Map<
 			string,
@@ -3037,8 +3083,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	private readonly agentDir: string;
 	private readonly createRuntimeFactory?: CreateAgentSessionRuntimeFactory;
 	private readonly externalResourceGrants = new Map<string, { path: string; expiresAt: number }>();
-	private readonly sessionSummaryCache: SessionInfoCache = { entries: new Map() };
-	private readonly sessionMetadataCache: SessionInfoCache = { entries: new Map() };
+	private sessionReadIndex?: SessionReadIndex;
 	private readonly sessionListPromises = new Map<string, Promise<SessionSummaryBase[]>>();
 	private readonly gitRepositoryRootsCache = new Map<string, { rootRepository?: string; repositoryRoots: string[] }>();
 	private readonly nodeToolchain = probeUserNodeToolchain();
@@ -3060,6 +3105,14 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		this.createRuntimeFactory = options.createRuntime;
 		this.preferSessionOwnership = options.preferSessionOwnership === true;
 		this.sessionCoordinator = options.sessionCoordinator;
+	}
+	private getSessionReadIndex(): SessionReadIndex {
+		this.sessionReadIndex ??= new SessionReadIndex(this.agentDir);
+		return this.sessionReadIndex;
+	}
+
+	async dispose(): Promise<void> {
+		await this.sessionReadIndex?.dispose();
 	}
 
 	setSessionCoordinator(coordinator: SessionCoordinator): void {
@@ -3238,14 +3291,18 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			}
 		} finally {
 			manager.dispose();
-			this.sessionSummaryCache.entries.clear();
-			this.sessionMetadataCache.entries.clear();
+			await this.sessionReadIndex?.remove(sessionPath);
 		}
 	}
 
 	async inspectSession(sessionPath: string): Promise<SessionStateSnapshot> {
-		const inspection = await readSessionInspection(sessionPath);
-		const storage = sessionGeneration(sessionPath, inspection.header.id);
+		const header = readSessionHeader(sessionPath);
+		const indexed =
+			header && (header.version ?? 1) < 2
+				? undefined
+				: await this.getSessionReadIndex().inspect(sessionPath, this.isSessionWriterLocked(sessionPath));
+		const inspection = indexed ?? (await readSessionInspection(sessionPath));
+		const storage = indexed?.snapshot ?? sessionGeneration(sessionPath, inspection.header.id);
 		const thinkingLevel =
 			inspection.thinkingLevel &&
 			["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(inspection.thinkingLevel)
@@ -3298,6 +3355,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				rmSync(sessionAttachmentDirectory(sessionPath), { recursive: true, force: true });
 			}),
 		);
+		await this.sessionReadIndex?.remove(sessionPath);
 	}
 
 	getSessionDirectory(cwd: string): string {
@@ -3309,16 +3367,8 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const key = `${resolve(cwd)}:${metadataOnly ? "metadata" : "full"}`;
 		const pending = this.sessionListPromises.get(key);
 		if (pending) return pending;
-		const request: Promise<SessionSummaryBase[]> = SessionManager.list(
-			cwd,
-			getDefaultSessionDir(cwd, this.agentDir),
-			undefined,
-			{
-				cache: metadataOnly ? this.sessionMetadataCache : this.sessionSummaryCache,
-				includeAllMessagesText: false,
-				metadataOnly,
-			},
-		)
+		const request: Promise<SessionSummaryBase[]> = this.getSessionReadIndex()
+			.list(getDefaultSessionDir(cwd, this.agentDir), (path) => this.isSessionWriterLocked(path), metadataOnly)
 			.then((sessions) => {
 				const idsByPath = new Map(sessions.map((session) => [resolve(session.path), session.id]));
 				return sessions.map<SessionSummaryBase>((session) => {
@@ -3363,9 +3413,6 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 						...(collaborationResult ? { collaborationResult } : {}),
 					};
 				});
-			})
-			.then((sessions) => {
-				return sessions;
 			});
 		this.sessionListPromises.set(key, request);
 		try {
@@ -4769,18 +4816,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async listSubagents(sessionPath: string): Promise<SubagentSnapshot[]> {
-		const snapshots: SubagentSnapshot[] = [];
-		for await (const entry of streamSessionEntries(sessionPath, "subagent")) {
-			if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent") {
-				snapshots.push(...transcriptSubagents([entry]));
-			}
-		}
-		return snapshots.sort(
-			(left, right) =>
-				right.updatedAt - left.updatedAt ||
-				left.runId.localeCompare(right.runId) ||
-				left.agentId.localeCompare(right.agentId),
-		);
+		return this.getSessionReadIndex().listSubagents(sessionPath, this.isSessionWriterLocked(sessionPath));
 	}
 
 	async readSubagent(sessionPath: string, agentId: string): Promise<{ transcript?: SubagentSnapshot }> {

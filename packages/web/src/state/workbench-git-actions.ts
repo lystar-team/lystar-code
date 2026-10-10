@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import type { GitMutation } from "@lystar/code-web-protocol";
 import { webApi } from "../adapters/host-protocol/api.ts";
 import { errorMessage, gitCredentialAuthorizationMessage, gitFileStatsKey, sameGitStatus } from "./workbench-state.ts";
-import type { GitFileDiffStats, WorkbenchState } from "./workbench-types.ts";
+import type { ShowToast, GitFileDiffStats, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
@@ -15,7 +15,7 @@ type StringSetRef = { current: Set<string> };
 export interface WorkbenchGitActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 	gitStatusRequestRef: RequestRef;
 	gitBranchesRequestRef: RequestRef;
 	gitHistoryRequestRef: RequestRef;
@@ -213,14 +213,14 @@ export function useWorkbenchGitActions({
 					loadGitBranches(repositoryPath),
 					loadGitHistory(repositoryPath),
 				]);
-				showToast(result.message);
+				showToast(result.message, "success");
 				return true;
 			} catch (error) {
 				const authorizationMessage = gitCredentialAuthorizationMessage(error);
 				if (authorizationMessage) {
 					updateState((current) => ({ ...current, gitCredentialAuthorizationMessage: authorizationMessage }));
 				} else {
-					showToast(errorMessage(error));
+					showToast(errorMessage(error), "error");
 				}
 				await loadGitStatusRef.current(true).catch(() => {});
 				return false;

@@ -1,3 +1,4 @@
+import type { ShowToast } from "./workbench-types.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../adapters/host-protocol/api";
 import { roomAgentMentions } from "../components/workbench/collaboration-session";
@@ -15,7 +16,7 @@ interface UseRoomWorkspaceOptions {
 	projects: readonly WebProject[];
 	sessionId?: string;
 	refreshProjectSessions: (projectId: string) => Promise<void>;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 }
 
 export interface RoomProjectList {
@@ -191,7 +192,7 @@ export function useRoomWorkspace({
 		} catch (error) {
 			if (requestId === profileRequestIdRef.current) {
 				setAgentProfiles([]);
-				showToast(error instanceof Error ? error.message : String(error));
+				showToast(error instanceof Error ? error.message : String(error), "error");
 			}
 		} finally {
 			if (requestId === profileRequestIdRef.current) setAgentProfilesLoading(false);
@@ -212,7 +213,7 @@ export function useRoomWorkspace({
 				project?.sessions[0]?.id ??
 				roomSessionId(summary, sessionId);
 			if (!senderSessionId) {
-				showToast("智能体协作没有关联可用会话");
+				showToast("智能体协作没有关联可用会话", "warning");
 				return;
 			}
 			const key = roomKey(projectId, summary.room.id);
@@ -242,7 +243,6 @@ export function useRoomWorkspace({
 				if (requestId !== selectionRequestIdRef.current) return;
 				const message = error instanceof Error ? error.message : String(error);
 				setRoomMessagesError(message);
-				showToast(message);
 			} finally {
 				if (requestId === selectionRequestIdRef.current) setRoomMessagesLoading(false);
 			}
@@ -569,7 +569,7 @@ export function useRoomWorkspace({
 					);
 				}
 				if (result.errors.length) {
-					showToast(`部分 Agent 未响应：${result.errors.map((error) => error.message).join("；")}`);
+					showToast(`部分 Agent 未响应：${result.errors.map((error) => error.message).join("；")}`, "warning");
 				}
 				void refreshRooms();
 			} finally {

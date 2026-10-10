@@ -125,6 +125,7 @@ export interface RuntimePromptReservation {
 
 export interface RuntimeSession extends RuntimeSessionAsyncControls {
 	readonly sessionPath: string;
+	getReadState?(): SessionStateSnapshot;
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot;
 	listSettings(): SettingSummary[];
 	setSetting(
@@ -280,6 +281,7 @@ export interface SkillSummary {
 }
 
 export interface RuntimeAdapter {
+	dispose?(): Promise<void>;
 	createSession(
 		cwd: string,
 		onUiRequest: UiRequestHandler,

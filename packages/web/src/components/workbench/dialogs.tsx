@@ -1,7 +1,8 @@
 import { gsap } from "gsap";
-import { ArrowLeft, Check, ChevronRight, Folder, HardDrive, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleAlert, Folder, HardDrive, Info, LoaderCircle, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
+import type { WorkbenchToast } from "../../state/workbench-types";
 import type { WebProject, UiRequestEvent, WebSessionSummary } from "../../types";
 import { runGsapMotion } from "../../lib/gsap-motion";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -321,7 +322,7 @@ export function UiRequestDialog({ state, actions }: { state: WorkbenchState; act
 	const finish = (response: { value?: unknown; confirmed?: boolean; cancelled?: boolean }) =>
 		void actions
 			.respondUiRequest(request, response)
-			.catch((error) => actions.showToast(error instanceof Error ? error.message : String(error)));
+			.catch((error) => actions.showToast(error instanceof Error ? error.message : String(error), "error"));
 	return (
 		<Dialog open onOpenChange={() => undefined}>
 			<DialogContent className="max-w-md">
@@ -379,21 +380,21 @@ export function UiRequestDialog({ state, actions }: { state: WorkbenchState; act
 	);
 }
 
-export function Toast({ message }: { message?: string }) {
-	const [displayMessage, setDisplayMessage] = useState(message);
-	const [dismissedMessage, setDismissedMessage] = useState<string>();
+export function Toast({ toast }: { toast?: WorkbenchToast }) {
+	const [displayToast, setDisplayToast] = useState(toast);
+	const [dismissedId, setDismissedId] = useState<number>();
 	const toastRef = useRef<HTMLDivElement>(null);
-	const isDismissed = Boolean(message && dismissedMessage === message);
-	const displayed = Boolean(displayMessage);
-	const visible = Boolean(message && !isDismissed);
+	const isDismissed = Boolean(toast && dismissedId === toast.id);
+	const displayed = Boolean(displayToast);
+	const visible = Boolean(toast && !isDismissed);
 
 	useEffect(() => {
-		if (!message && !displayMessage) setDismissedMessage(undefined);
-	}, [displayMessage, message]);
+		if (!toast && !displayToast) setDismissedId(undefined);
+	}, [displayToast, toast]);
 
 	useLayoutEffect(() => {
-		if (visible && displayMessage !== message) setDisplayMessage(message);
-	}, [displayMessage, message, visible]);
+		if (visible && displayToast !== toast) setDisplayToast(toast);
+	}, [displayToast, toast, visible]);
 
 	useLayoutEffect(() => {
 		const element = toastRef.current;
@@ -404,7 +405,7 @@ export function Toast({ message }: { message?: string }) {
 			cancelMotion = runGsapMotion(element, (reducedMotion) => {
 				if (!visible) {
 					if (reducedMotion) {
-						setDisplayMessage(undefined);
+						setDisplayToast(undefined);
 						return;
 					}
 					gsap.to(element, {
@@ -413,7 +414,7 @@ export function Toast({ message }: { message?: string }) {
 						duration: 0.18,
 						ease: "power2.in",
 						overwrite: "auto",
-						onComplete: () => setDisplayMessage(undefined),
+						onComplete: () => setDisplayToast(undefined),
 					});
 					return;
 				}
@@ -440,7 +441,14 @@ export function Toast({ message }: { message?: string }) {
 		};
 	}, [displayed, visible]);
 
-	if (!displayMessage) return null;
+	if (!displayToast) return null;
+	const presentation = {
+		success: { icon: Check, className: "text-[var(--success)]", label: "成功" },
+		info: { icon: Info, className: "text-muted-foreground", label: "提示" },
+		warning: { icon: TriangleAlert, className: "text-[var(--warning)]", label: "警告" },
+		error: { icon: CircleAlert, className: "text-destructive", label: "错误" },
+	}[displayToast.type];
+	const Icon = presentation.icon;
 	return (
 		<div
 			ref={toastRef}
@@ -448,15 +456,16 @@ export function Toast({ message }: { message?: string }) {
 		>
 			<Alert
 				className="pointer-events-auto w-full rounded-xl border border-border/70 bg-card pr-12 shadow-[0_12px_32px_rgb(0_0_0/0.14)]"
-				role="status"
+				role={displayToast.type === "error" || displayToast.type === "warning" ? "alert" : "status"}
+				data-toast-type={displayToast.type}
 			>
-				<Check className="size-4 text-emerald-600" />
-				<AlertDescription className="min-w-0 break-words">{displayMessage}</AlertDescription>
+				<Icon className={`size-4 ${presentation.className}`} aria-label={presentation.label} />
+				<AlertDescription className="min-w-0 break-words">{displayToast.message}</AlertDescription>
 				<Button
 					aria-label="关闭提示"
 					className="absolute top-2 right-2 text-muted-foreground"
 					onClick={() => {
-						if (message) setDismissedMessage(message);
+						if (toast) setDismissedId(toast.id);
 					}}
 					size="icon-sm"
 					variant="ghost"

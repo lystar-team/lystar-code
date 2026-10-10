@@ -12,7 +12,7 @@ import type {
 } from "../types.ts";
 import { applyTheme, errorMessage, MODEL_PROVIDER_VISIBILITY_KEY, savedModelProviderVisibilityOverrides } from "./workbench-state.ts";
 import { createSubagentConversationState } from "./workbench-live-state.ts";
-import type { ComposerMode, SettingsTab, ThemeMode, WorkbenchState } from "./workbench-types.ts";
+import type { ComposerMode, SettingsTab, ShowToast, ThemeMode, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
@@ -21,7 +21,7 @@ type UpdateState = (update: StateUpdate) => WorkbenchState;
 export interface WorkbenchSettingsActionsContext {
 	stateRef: StateRef;
 	updateState: UpdateState;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 	refreshModelOptions: () => Promise<void>;
 	refreshModelOptionsRef: { current: () => Promise<void> };
 	refreshModelSettings: () => Promise<void>;
@@ -62,7 +62,7 @@ export function useWorkbenchSettingsActions({
 		async (input: WebModelProviderInput) => {
 			await webApi.modelProvider(input);
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
-			showToast("Provider 配置已保存");
+			showToast("Provider 配置已保存", "success");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
@@ -83,7 +83,7 @@ export function useWorkbenchSettingsActions({
 				}));
 			}
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
-			showToast(removed ? "Provider 已删除" : "Provider 自定义配置已清除");
+			showToast(removed ? "Provider 已删除" : "Provider 自定义配置已清除", "success");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast, updateState],
 	);
@@ -92,7 +92,7 @@ export function useWorkbenchSettingsActions({
 		async (providers: Record<string, string>) => {
 			await webApi.imageModelProviders(providers);
 			await refreshModelSettings();
-			showToast("生图模型 Provider 配置已保存");
+			showToast("生图模型 Provider 配置已保存", "success");
 		},
 		[refreshModelSettings, showToast],
 	);
@@ -100,7 +100,7 @@ export function useWorkbenchSettingsActions({
 		async (provider: string, input: WebProviderModelInput) => {
 			await webApi.providerModel(provider, input);
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
-			showToast("模型配置已保存");
+			showToast("模型配置已保存", "success");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
@@ -110,7 +110,7 @@ export function useWorkbenchSettingsActions({
 		async (provider: string, modelId: string, enabled: boolean) => {
 			await webApi.setProviderModelEnabled(provider, modelId, enabled);
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
-			showToast(enabled ? "模型已启用" : "模型已禁用");
+			showToast(enabled ? "模型已启用" : "模型已禁用", "success");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
@@ -119,7 +119,7 @@ export function useWorkbenchSettingsActions({
 		async (provider: string) => {
 			await webApi.syncModelProvider(provider);
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
-			showToast("模型目录已同步");
+			showToast("模型目录已同步", "success");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
 	);
@@ -143,9 +143,8 @@ export function useWorkbenchSettingsActions({
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, skillsLoading: false, skillsError: message }));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const refreshDiagnostics = useCallback(async () => {
 		const result = (await webApi.diagnostics(stateRef.current.currentProjectId)) as Record<string, unknown>;
@@ -156,10 +155,10 @@ export function useWorkbenchSettingsActions({
 		async (service: "gateway" | "runtime") => {
 			try {
 				await webApi.restartDiagnosticService(service);
-				showToast(service === "gateway" ? "Gateway 重启请求已发送" : "Runtime 已重启");
+				showToast(service === "gateway" ? "Gateway 重启请求已发送" : "Runtime 已重启", service === "gateway" ? "info" : "success");
 				if (service === "runtime") await refreshDiagnostics();
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 				throw error;
 			}
 		},
@@ -171,7 +170,7 @@ export function useWorkbenchSettingsActions({
 			if (skill.scope === "temporary") return;
 			const projectId = stateRef.current.currentProjectId;
 			if (!projectId) {
-				showToast("请先选择一个项目");
+				showToast("请先选择一个项目", "warning");
 				return;
 			}
 			updateState((current) => ({ ...current, skillUpdatingPath: skill.path, skillsError: undefined }));
@@ -186,7 +185,6 @@ export function useWorkbenchSettingsActions({
 			} catch (error) {
 				const message = errorMessage(error);
 				updateState((current) => ({ ...current, skillUpdatingPath: undefined, skillsError: message }));
-				showToast(message);
 			}
 		},
 		[showToast, updateState],
@@ -219,9 +217,8 @@ export function useWorkbenchSettingsActions({
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, harnessImportsLoading: false, harnessImportsError: message }));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const refreshSubagentConfigs = useCallback(async () => {
 		const projectId = stateRef.current.currentProjectId;
@@ -248,9 +245,8 @@ export function useWorkbenchSettingsActions({
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, subagentConfigsLoading: false, subagentConfigsError: message }));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const saveSubagentConfig = useCallback(
 		async (input: {
@@ -280,13 +276,12 @@ export function useWorkbenchSettingsActions({
 					subagentConfigsSaving: false,
 					subagentConfigsError: undefined,
 				}));
-				showToast("智能体已保存");
+				showToast("智能体已保存", "success");
 				return true;
 			} catch (error) {
 				const message = errorMessage(error);
 				if ((error as { code?: string }).code === "subagent_conflict") await refreshSubagentConfigs();
 				updateState((current) => ({ ...current, subagentConfigsSaving: false, subagentConfigsError: message }));
-				showToast(message);
 				return false;
 			}
 		},
@@ -310,13 +305,12 @@ export function useWorkbenchSettingsActions({
 					subagentConfigsSaving: false,
 					subagentConfigsError: undefined,
 				}));
-				showToast("智能体已删除");
+				showToast("智能体已删除", "success");
 				return true;
 			} catch (error) {
 				const message = errorMessage(error);
 				if ((error as { code?: string }).code === "subagent_conflict") await refreshSubagentConfigs();
 				updateState((current) => ({ ...current, subagentConfigsSaving: false, subagentConfigsError: message }));
-				showToast(message);
 				return false;
 			}
 		},
@@ -339,11 +333,10 @@ export function useWorkbenchSettingsActions({
 				await refreshHarnessImports();
 				await refreshSkills();
 				await refreshSubagentConfigs();
-				showToast(result.imported > 0 ? `已迁移 ${result.imported} 项资源` : "没有可迁移的资源");
+				showToast(result.imported > 0 ? `已迁移 ${result.imported} 项资源` : "没有可迁移的资源", result.imported > 0 ? "success" : "info");
 			} catch (error) {
 				const message = errorMessage(error);
 				updateState((current) => ({ ...current, harnessImporting: false, harnessImportsError: message }));
-				showToast(message);
 			}
 		},
 		[refreshHarnessImports, refreshSkills, refreshSubagentConfigs, showToast, updateState],
@@ -362,9 +355,8 @@ export function useWorkbenchSettingsActions({
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, securitySettingsLoading: false, securitySettingsError: message }));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const saveSecuritySettings = useCallback(
 		async (input: { host: string; allowedHosts: string[]; port: number; runtimePort: number; password?: string }) => {
@@ -378,11 +370,10 @@ export function useWorkbenchSettingsActions({
 					securitySettingsSaving: false,
 					securitySettingsError: undefined,
 				}));
-				showToast("安全与访问设置已保存，Gateway 正在重启；Runtime 会话不会停止");
+				showToast("安全与访问设置已保存，Gateway 正在重启；Runtime 会话不会停止", "success");
 			} catch (error) {
 				const message = errorMessage(error);
 				updateState((current) => ({ ...current, securitySettingsSaving: false, securitySettingsError: message }));
-				showToast(message);
 			}
 		},
 		[showToast, updateState],
@@ -399,11 +390,10 @@ export function useWorkbenchSettingsActions({
 					brandingSaving: false,
 					brandingError: undefined,
 				}));
-				showToast("系统设置已保存");
+				showToast("系统设置已保存", "success");
 			} catch (error) {
 				const message = errorMessage(error);
 				updateState((current) => ({ ...current, brandingSaving: false, brandingError: message }));
-				showToast(message);
 			}
 		},
 		[showToast, updateState],
@@ -422,9 +412,8 @@ export function useWorkbenchSettingsActions({
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, hostInstructionsLoading: false, hostInstructionsError: message }));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const saveHostInstruction = useCallback(
 		async (content: string, expectedHash?: string) => {
@@ -436,13 +425,12 @@ export function useWorkbenchSettingsActions({
 					hostInstructions: result.instructions,
 					hostInstructionSaving: false,
 					hostInstructionsError: undefined,
-					toast: "全局 AGENTS.md 已保存",
 				}));
+				showToast("全局 AGENTS.md 已保存", "success");
 			} catch (error) {
 				const message = errorMessage(error);
 				if ((error as { code?: string }).code === "instruction_conflict") await refreshHostInstructions();
 				updateState((current) => ({ ...current, hostInstructionSaving: false, hostInstructionsError: message }));
-				showToast(message);
 			}
 		},
 		[refreshHostInstructions, showToast, updateState],
@@ -465,9 +453,8 @@ export function useWorkbenchSettingsActions({
 				sessionNameSettingsLoading: false,
 				sessionNameSettingsError: message,
 			}));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const saveSessionNameSettings = useCallback(
 		async (input: { model?: string; thinkingLevel: WebThinkingLevel }) => {
@@ -480,7 +467,7 @@ export function useWorkbenchSettingsActions({
 					sessionNameSettingsSaving: false,
 					sessionNameSettingsError: undefined,
 				}));
-				showToast("会话标题设置已保存");
+				showToast("会话标题设置已保存", "success");
 			} catch (error) {
 				const message = errorMessage(error);
 				updateState((current) => ({
@@ -488,7 +475,6 @@ export function useWorkbenchSettingsActions({
 					sessionNameSettingsSaving: false,
 					sessionNameSettingsError: message,
 				}));
-				showToast(message);
 			}
 		},
 		[showToast, updateState],
@@ -507,9 +493,8 @@ export function useWorkbenchSettingsActions({
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, toolRecoverySettingsLoading: false, toolRecoverySettingsError: message }));
-			showToast(message);
 		}
-	}, [showToast, updateState]);
+	}, [updateState]);
 
 	const saveToolRecoverySettings = useCallback(async (input: { model?: string; thinkingLevel: WebThinkingLevel }) => {
 		updateState((current) => ({ ...current, toolRecoverySettingsSaving: true, toolRecoverySettingsError: undefined }));
@@ -521,11 +506,10 @@ export function useWorkbenchSettingsActions({
 				toolRecoverySettingsSaving: false,
 				toolRecoverySettingsError: undefined,
 			}));
-			showToast("错题本设置已保存");
+			showToast("错题本设置已保存", "success");
 		} catch (error) {
 			const message = errorMessage(error);
 			updateState((current) => ({ ...current, toolRecoverySettingsSaving: false, toolRecoverySettingsError: message }));
-			showToast(message);
 		}
 	}, [showToast, updateState]);
 
@@ -607,7 +591,7 @@ export function useWorkbenchSettingsActions({
 			try {
 				await loadSubagent(agentId, sessionId);
 			} catch (error) {
-				showToast(errorMessage(error));
+				showToast(errorMessage(error), "error");
 			}
 		},
 		[loadSubagent, showToast, updateState],

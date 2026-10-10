@@ -14,6 +14,7 @@ import type {
 import { AGENT_STEP_CUSTOM_TYPE, AGENT_STEP_TOOL_NAMES } from "./agent-steps.ts";
 import {
 	EXTENSION_ACTIVITY_CUSTOM_TYPE,
+	EXTENSION_NOTIFICATION_CUSTOM_TYPE,
 	type ExtensionActivityRecord,
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
@@ -958,6 +959,21 @@ function projectTranscriptViews(
 			const activity = parseExtensionActivityRecord(payload?.data);
 			if (activity) return [extensionActivityView(activity, [])];
 		}
+		if (customType === EXTENSION_NOTIFICATION_CUSTOM_TYPE) {
+			const notification = record(payload?.data);
+			if (
+				typeof notification?.message !== "string" ||
+				(notification.type !== "info" && notification.type !== "warning" && notification.type !== "error")
+			)
+				return [];
+			return [
+				{
+					type: "extension_entry",
+					customType,
+					notification: { message: bounded(notification.message), type: notification.type },
+				},
+			];
+		}
 		const data = payload?.data;
 		const details = data === undefined ? undefined : bounded(JSON.stringify(data, null, 2));
 		return [{ type: "extension_entry", customType: bounded(customType), ...(details ? { details } : {}) }];
@@ -1038,7 +1054,12 @@ function extensionActivityBatchProjection(items: readonly TranscriptItem[]): {
 		const activeActivityId = activeActivityIds.at(-1);
 		const group = activeActivityId ? groups.get(activeActivityId) : undefined;
 		const payload = record(item.payload);
-		if (group && item.kind === "custom" && payload?.customType !== AGENT_STEP_CUSTOM_TYPE) {
+		if (
+			group &&
+			item.kind === "custom" &&
+			payload?.customType !== AGENT_STEP_CUSTOM_TYPE &&
+			payload?.customType !== EXTENSION_NOTIFICATION_CUSTOM_TYPE
+		) {
 			group.relatedEntries.push(item);
 		}
 	}

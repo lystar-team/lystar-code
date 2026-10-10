@@ -202,7 +202,7 @@ export function useConversationScroll({
 			void loadEarlier()
 				.catch((error: unknown) => {
 					if (activeSessionIdRef.current === sessionId)
-						showToast(error instanceof Error ? error.message : String(error));
+						showToast(error instanceof Error ? error.message : String(error), "error");
 				})
 				.finally(() => {
 					if (historyLoadInFlightRef.current === request) historyLoadInFlightRef.current = undefined;

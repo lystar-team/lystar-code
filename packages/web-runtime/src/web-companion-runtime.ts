@@ -491,6 +491,9 @@ export class WebCompanionRuntime implements RuntimeSession {
 		return this.capabilities;
 	}
 
+	getReadState(): SessionStateSnapshot {
+		return this.getSnapshot("available");
+	}
 	getSnapshot(writeAccess: SessionStateSnapshot["writeAccess"]): SessionStateSnapshot {
 		return snapshot(this.snapshotValue, writeAccess, this.revision);
 	}

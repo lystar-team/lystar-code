@@ -97,7 +97,7 @@ export function SubagentPanel({ state, actions }: { state: WorkbenchState; actio
 		try {
 			await actions.abortSubagent();
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setBusy(undefined);
 		}
@@ -110,7 +110,7 @@ export function SubagentPanel({ state, actions }: { state: WorkbenchState; actio
 			await actions.continueSubagent(text);
 			setContinuation("");
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setBusy(undefined);
 		}

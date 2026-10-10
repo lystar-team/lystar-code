@@ -1,3 +1,4 @@
+import type { ShowToast } from "../../state/workbench-types";
 import { Archive, CircleAlert, HardDrive, LoaderCircle, MoreHorizontal, PackageCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
@@ -243,7 +244,7 @@ export function SessionWorkspaceActions({
 	session: WebSessionSummary;
 	sessions: readonly WebSessionSummary[];
 	onRefresh: (projectId: string) => Promise<void>;
-	onToast: (message: string) => void;
+	onToast: ShowToast;
 }) {
 	const [manageOpen, setManageOpen] = useState(false);
 	const [accepting, setAccepting] = useState(false);
@@ -256,9 +257,9 @@ export function SessionWorkspaceActions({
 		try {
 			await webApi.acceptSessionResult(session.id);
 			await onRefresh(projectId);
-			onToast("协作结果已接收");
+			onToast("协作结果已接收", "success");
 		} catch (cause) {
-			onToast(cause instanceof Error ? cause.message : String(cause));
+			onToast(cause instanceof Error ? cause.message : String(cause), "error");
 		} finally {
 			setAccepting(false);
 		}

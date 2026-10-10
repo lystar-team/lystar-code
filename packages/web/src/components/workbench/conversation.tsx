@@ -608,7 +608,7 @@ function ConversationBody({
 						entry.queueId
 							? () => {
 									void actions.queueAction(entry.queueId!, "remove").catch((error: unknown) => {
-										actions.showToast(error instanceof Error ? error.message : String(error));
+										actions.showToast(error instanceof Error ? error.message : String(error), "error");
 									});
 								}
 							: undefined

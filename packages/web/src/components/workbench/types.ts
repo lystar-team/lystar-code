@@ -1,5 +1,6 @@
 import type { GitMutation } from "@lystar/code-web-protocol";
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../../state/use-workbench";
+import type { ShowToast } from "../../state/workbench-types";
 import type {
 	FileResponse,
 	PromptAttachment,
@@ -142,5 +143,5 @@ export interface WorkbenchActions {
 		request: UiRequestEvent,
 		response: { value?: unknown; confirmed?: boolean; cancelled?: boolean },
 	) => Promise<void>;
-	showToast: (message: string) => void;
+	showToast: ShowToast;
 }

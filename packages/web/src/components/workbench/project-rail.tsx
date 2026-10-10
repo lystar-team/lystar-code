@@ -472,7 +472,7 @@ export const ProjectRail = memo(function ProjectRail({
 			return;
 		}
 		if (sourceProject.pinned !== targetProject.pinned) {
-			actions.showToast("置顶项目与普通项目分别调整顺序");
+			actions.showToast("置顶项目与普通项目分别调整顺序", "warning");
 			resetProjectDrag();
 			return;
 		}
@@ -628,7 +628,7 @@ export const ProjectRail = memo(function ProjectRail({
 				return;
 			}
 			if (sourceSession.pinned !== targetSession.pinned) {
-				actions.showToast("置顶会话与普通会话分别调整顺序");
+				actions.showToast("置顶会话与普通会话分别调整顺序", "warning");
 				resetSessionDrag();
 				return;
 			}
@@ -653,7 +653,7 @@ export const ProjectRail = memo(function ProjectRail({
 		try {
 			await actions.updateProject(project.id, { name });
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setProjectActionId(undefined);
 		}

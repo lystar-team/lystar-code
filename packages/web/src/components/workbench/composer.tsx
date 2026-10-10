@@ -288,7 +288,7 @@ export const Composer = memo(function Composer({
 		try {
 			await actions.queueAction(queueId, action);
 		} catch (error) {
-			actions.showToast(error instanceof Error ? error.message : String(error));
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setQueueActionId(undefined);
 		}
@@ -339,7 +339,7 @@ export const Composer = memo(function Composer({
 					<PromptCompletionProvider
 						disabled={disabled}
 						getCompletions={roomMode ? getPromptCompletions : undefined}
-						onError={(error) => actions.showToast(error instanceof Error ? error.message : String(error))}
+						onError={(error) => actions.showToast(error instanceof Error ? error.message : String(error), "error")}
 						projectId={state.currentProjectId}
 						sessionId={state.sessionId}
 					>
@@ -425,9 +425,9 @@ export const Composer = memo(function Composer({
 								multiple
 								maxFileSize={1024 * 1024 * 1024}
 								onError={(error) => {
-									if (error.code === "max_file_size") actions.showToast("单个附件不能超过 1 GB");
-									else if (error.code === "accept") actions.showToast("不支持的文件类型");
-									else actions.showToast("附件类型不受支持");
+									if (error.code === "max_file_size") actions.showToast("单个附件不能超过 1 GB", "warning");
+									else if (error.code === "accept") actions.showToast("不支持的文件类型", "warning");
+									else actions.showToast("附件类型不受支持", "warning");
 								}}
 								onSubmit={async ({ text, files, submitMode }) => {
 									const submissionSessionId = state.sessionId;
@@ -512,7 +512,7 @@ export const Composer = memo(function Composer({
 										);
 										if (submissionEditRequest) onEditComplete();
 									} catch (error) {
-										actions.showToast(error instanceof Error ? error.message : String(error));
+										actions.showToast(error instanceof Error ? error.message : String(error), "error");
 										throw error;
 									} finally {
 										submittingSessionIdsRef.current.delete(submissionSessionId);
