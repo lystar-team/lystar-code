@@ -1,13 +1,13 @@
 {
 	"name": "@earendil-works/pi-coding-agent",
-	"version": "1.1.0-lystar.5",
+	"version": "1.1.0-lystar.6",
 	"description": "LYStar Code 中文编码助手，兼容 Pi Runtime、Session、Skill 和 Extension",
 	"type": "module",
 	"piConfig": {
 		"commandName": "lc",
 		"displayName": "LYStar Code",
 		"envPrefix": "PI",
-		"productVersion": "1.1.0-lystar.4",
+		"productVersion": "1.1.0-lystar.6",
 		"configDir": ".pi",
 		"releaseRepository": "lystar-team/lystar-code"
 	},
@@ -62,12 +62,12 @@
 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
 	},
 	"dependencies": {
-		"@earendil-works/chord": "^1.1.0-lystar.5",
-		"@earendil-works/pi-agent-core": "^1.1.0-lystar.5",
-		"@earendil-works/pi-ai": "^1.1.0-lystar.5",
-		"@earendil-works/pi-codemode": "^1.1.0-lystar.5",
-		"@earendil-works/pi-mcp": "^1.1.0-lystar.5",
-		"@earendil-works/pi-tui": "^1.1.0-lystar.5",
+		"@earendil-works/chord": "^1.1.0-lystar.6",
+		"@earendil-works/pi-agent-core": "^1.1.0-lystar.6",
+		"@earendil-works/pi-ai": "^1.1.0-lystar.6",
+		"@earendil-works/pi-codemode": "^1.1.0-lystar.6",
+		"@earendil-works/pi-mcp": "^1.1.0-lystar.6",
+		"@earendil-works/pi-tui": "^1.1.0-lystar.6",
 		"@silvia-odwyer/photon-node": "0.3.4",
 		"@xterm/addon-fit": "0.10.0",
 		"@xterm/xterm": "5.5.0",
@@ -94,10 +94,10 @@
 		"protobufjs": "7.6.6"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-client": "^1.1.0-lystar.5",
-		"@earendil-works/pi-durable": "^1.1.0-lystar.5",
-		"@earendil-works/pi-protocol": "^1.1.0-lystar.5",
-		"@earendil-works/pi-server": "^1.1.0-lystar.5",
+		"@earendil-works/pi-client": "^1.1.0-lystar.6",
+		"@earendil-works/pi-durable": "^1.1.0-lystar.6",
+		"@earendil-works/pi-protocol": "^1.1.0-lystar.6",
+		"@earendil-works/pi-server": "^1.1.0-lystar.6",
 		"@types/cross-spawn": "6.0.6",
 		"@types/hosted-git-info": "3.0.5",
 		"@types/node": "22.19.19",
