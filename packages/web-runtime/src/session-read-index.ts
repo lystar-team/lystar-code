@@ -12,7 +12,6 @@ import {
 
 export class SessionReadIndex {
 	private worker?: Worker;
-	private workerSourceUrl?: string;
 	private nextId = 0;
 	private disposed = false;
 	private readonly pending = new Map<
@@ -98,12 +97,13 @@ import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 (${runSessionReadIndexWorker.toString()})(fs, crypto, path, DatabaseSync, parentPort, workerData);`;
-			let specifier: URL;
-			if (process.versions.bun) {
-				this.workerSourceUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-				specifier = new URL(this.workerSourceUrl);
-			} else specifier = new URL(`data:text/javascript,${encodeURIComponent(source)}`);
-			const worker = new Worker(specifier, { workerData: { databasePath: this.databasePath } });
+			const isBun = Boolean(process.versions.bun);
+			// Bun 的 Worker 不接受 blob: 地址，通过 eval 加载内存入口。
+			const specifier = isBun ? source : new URL(`data:text/javascript,${encodeURIComponent(source)}`);
+			const worker = new Worker(specifier, {
+				eval: isBun,
+				workerData: { databasePath: this.databasePath },
+			});
 			this.worker = worker;
 			worker.on("message", (response: SessionIndexResponse) => {
 				const pending = this.pending.get(response.id);
@@ -134,8 +134,6 @@ import { parentPort, workerData } from "node:worker_threads";
 	private fail(worker: Worker, error: Error): void {
 		if (this.worker !== worker) return;
 		this.worker = undefined;
-		if (this.workerSourceUrl) URL.revokeObjectURL(this.workerSourceUrl);
-		this.workerSourceUrl = undefined;
 		for (const pending of this.pending.values()) pending.reject(error);
 		this.pending.clear();
 	}

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.1.0-lystar.7] - 2026-10-10
+
+### Fixed
+
+- 修复独立发行包加载项目会话时出现 `The URL must be of scheme file` 的错误，恢复后台会话索引与子代理记录读取。
+
 ## [1.1.0-lystar.6] - 2026-10-10
 
 ### Added
