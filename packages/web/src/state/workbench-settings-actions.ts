@@ -108,11 +108,31 @@ export function useWorkbenchSettingsActions({
 
 	const setProviderModelEnabled = useCallback(
 		async (provider: string, modelId: string, enabled: boolean) => {
-			await webApi.setProviderModelEnabled(provider, modelId, enabled);
-			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
+			const result = await webApi.setProviderModelEnabled(provider, modelId, enabled);
+			updateState((current) => {
+				const models = current.models.filter(
+					(model) => model.provider !== provider || model.id !== modelId,
+				);
+				const enabledModel = enabled
+					? result.models.find((model) => model.provider === provider && model.id === modelId)
+					: undefined;
+				if (enabledModel) models.push(enabledModel);
+				const providers = current.providers.map((currentProvider) => {
+					if (currentProvider.id !== provider) return currentProvider;
+					const disabledModels = new Set(currentProvider.disabledModels);
+					if (enabled) disabledModels.delete(modelId);
+					else disabledModels.add(modelId);
+					return {
+						...currentProvider,
+						disabledModels: [...disabledModels],
+						modelCount: models.filter((model) => model.provider === provider).length,
+					};
+				});
+				return { ...current, models, providers };
+			});
 			showToast(enabled ? "模型已启用" : "模型已禁用", "success");
 		},
-		[refreshModelOptions, refreshModelSettings, showToast],
+		[showToast, updateState],
 	);
 
 	const syncModelProvider = useCallback(

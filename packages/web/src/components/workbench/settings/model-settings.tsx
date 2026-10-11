@@ -106,7 +106,8 @@ function editableThinkingLevelMap(
 	model?: WorkbenchState["models"][number],
 ): Record<string, string | null> {
 	const supported = new Set(model?.supportedThinkingLevels ?? ["off", "low", "medium", "high"]);
-	const mapping: Record<string, string | null> = { ...(model?.thinkingLevelMap ?? {}), minimal: null };
+	const mapping: Record<string, string | null> = { ...(model?.thinkingLevelMap ?? {}) };
+	if (mapping.minimal === undefined) mapping.minimal = supported.has("minimal") ? "minimal" : null;
 	for (const level of VISIBLE_THINKING_LEVELS) {
 		if (mapping[level] === undefined) mapping[level] = supported.has(level) ? level : null;
 	}
@@ -139,7 +140,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
 	const [removingProvider, setRemovingProvider] = useState<string | null>(null);
 	const [removeTarget, setRemoveTarget] = useState<WorkbenchState["providers"][number] | null>(null);
-	const [togglingModel, setTogglingModel] = useState<string | null>(null);
+	const [pendingModelToggles, setPendingModelToggles] = useState<Record<string, boolean>>({});
 	const [providerTab, setProviderTab] = useState<"custom" | "builtin">("custom");
 	const [modelListProviderId, setModelListProviderId] = useState<string | null>(null);
 	const [imageProviderMode, setImageProviderMode] = useState<"shared" | "per-model">("shared");
@@ -383,13 +384,18 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	};
 
 	const toggleModelEnabled = async (providerId: string, modelId: string, enabled: boolean) => {
-		setTogglingModel(`${providerId}/${modelId}`);
+		const modelKey = titleModelReference({ provider: providerId, id: modelId });
+		setPendingModelToggles((current) => ({ ...current, [modelKey]: enabled }));
 		try {
 			await actions.setProviderModelEnabled(providerId, modelId, enabled);
 		} catch (error) {
 			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
-			setTogglingModel(null);
+			setPendingModelToggles((current) => {
+				const next = { ...current };
+				delete next[modelKey];
+				return next;
+			});
 		}
 	};
 
@@ -870,8 +876,8 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 												<div className="flex items-center gap-1 px-1" title="启用后显示在模型选择器">
 													<Switch
 														className="h-5 w-10"
-														checked
-														disabled={togglingModel === `${model.provider}/${model.id}`}
+														checked={pendingModelToggles[titleModelReference(model)] ?? true}
+														disabled={pendingModelToggles[titleModelReference(model)] !== undefined}
 														onCheckedChange={(checked) => void toggleModelEnabled(model.provider, model.id, checked)}
 														aria-label={`禁用 ${model.id}`}
 													/>
@@ -896,8 +902,8 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 												<div className="flex items-center gap-1 px-1" title="启用后显示在模型选择器">
 													<Switch
 														className="h-5 w-10"
-														checked={false}
-														disabled={togglingModel === `${modelListProviderId}/${modelId}`}
+														checked={pendingModelToggles[titleModelReference({ provider: modelListProviderId ?? "", id: modelId })] ?? false}
+														disabled={pendingModelToggles[titleModelReference({ provider: modelListProviderId ?? "", id: modelId })] !== undefined}
 														onCheckedChange={(checked) =>
 															void toggleModelEnabled(modelListProviderId ?? "", modelId, checked)
 														}

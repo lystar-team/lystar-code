@@ -87,6 +87,28 @@ export class ContentStore {
 	compactAssistantTranscriptItem(sessionPath: string, item: TranscriptItem): TranscriptItem {
 		const view = item.view;
 		const source = item.payload;
+		if (view?.type === "extension_entry" && view.input) {
+			const payload = this.compactValue(sessionPath, source);
+			if (view.input.text.length <= 16 * 1024) return { ...item, payload };
+			const reference = this.createReference(
+				sessionPath,
+				Buffer.from(view.input.text),
+				"text/plain; charset=utf-8",
+				view.input.text,
+			);
+			return {
+				...item,
+				payload,
+				view: {
+					...view,
+					input: {
+						...view.input,
+						text: `${view.input.text.slice(0, 16 * 1024 - 1)}…`,
+						contentRef: reference.contentRef,
+					},
+				},
+			};
+		}
 		const message = source && typeof source === "object" && !Array.isArray(source) ? source.message : undefined;
 		const assistant =
 			message && typeof message === "object" && !Array.isArray(message) && message.role === "assistant";

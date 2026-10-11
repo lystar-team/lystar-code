@@ -128,6 +128,8 @@ export interface CodemodeSandboxOptions {
 
 export interface CodemodeExecuteOptions {
 	signal?: AbortSignal;
+	/** Yields control to the caller without stopping the script when aborted. */
+	steeringSignal?: AbortSignal;
 	/** Overrides the sandbox default for this execution. */
 	timeoutMs?: number;
 	/**

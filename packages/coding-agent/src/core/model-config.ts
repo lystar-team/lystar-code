@@ -475,7 +475,8 @@ export async function setModelsJsonModelDisabled(
 		const nextProvider = { ...provider };
 		if (disabledModels.size > 0) nextProvider.disabledModels = [...disabledModels];
 		else delete nextProvider.disabledModels;
-		config.providers[providerId] = nextProvider;
+		if (Object.keys(nextProvider).length === 0) delete config.providers[providerId];
+		else config.providers[providerId] = nextProvider;
 	});
 }
 

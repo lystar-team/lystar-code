@@ -52,7 +52,8 @@ export function isSameSessionSnapshot(current: WebSessionSnapshot | undefined, i
 		current.toolActivityEpoch === incoming.toolActivityEpoch &&
 		current.toolActivityRevision === incoming.toolActivityRevision &&
 		JSON.stringify(current.toolActivities ?? []) === JSON.stringify(incoming.toolActivities ?? []) &&
-		JSON.stringify(current.activeStep) === JSON.stringify(incoming.activeStep)
+		JSON.stringify(current.activeStep) === JSON.stringify(incoming.activeStep) &&
+		JSON.stringify(current.execution) === JSON.stringify(incoming.execution)
 	);
 }
 

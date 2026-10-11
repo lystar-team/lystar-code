@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.1.0-lystar.9] - 2026-10-11
+
+### Added
+
+- `CodemodeSandbox.start()` 返回执行结果、让出状态和中止控制；传入 `steeringSignal` 可让调用方让出等待，同时继续运行脚本。
+
 ## [1.1.0] - 2026-10-07
 
 ### Added

@@ -24,6 +24,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { promisify } from "node:util";
 import { type Api, type AuthResult, contentText, type Model } from "@earendil-works/pi-ai";
 import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
+import { loadModelsDevCatalog } from "@earendil-works/pi-ai/utils/models-dev";
 
 import {
 	type AgentCapabilityLease,
@@ -109,7 +110,6 @@ import {
 	saveModelsJsonModels,
 	saveModelsJsonProvider,
 	saveModelsJsonSyncedModels,
-	setModelsJsonModelDisabled,
 	streamSessionEntries,
 	subscribeSubagentRuns,
 	supportsFastMode,
@@ -1026,7 +1026,7 @@ function entryItem(entry: SessionEntry): TranscriptItem {
 
 function isTranscriptEntry(entry: SessionEntry): boolean {
 	if (["message", "custom", "compaction", "branch_summary"].includes(entry.type)) return true;
-	return entry.type === "custom_message" && entry.display === true;
+	return entry.type === "custom_message";
 }
 
 function extensionActivityRecordFromEntry(entry: SessionEntry): ExtensionActivityRecord | undefined {
@@ -1209,6 +1209,7 @@ function authMethods(runtime: ModelRuntime, providerId: string): AuthType[] {
 }
 
 type DiscoveredProviderModel = {
+	provider?: string;
 	id: string;
 	name?: string;
 	contextWindow?: number;
@@ -1309,7 +1310,6 @@ async function discoverProviderModels(
 	}
 	throw new Error(`模型目录请求失败：${failures.join("；")}`);
 }
-
 function catalogApiFamily(api: string): string {
 	switch (api) {
 		case "openai-completions":
@@ -1843,6 +1843,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly activeBashControllers = new Set<AbortController>();
 	private readonly activeBashOperations = new Set<Promise<JsonValue>>();
 	private readonly outputSpeed = new OutputSpeedTracker();
+	private publishedExecution?: SessionStateSnapshot["execution"];
 	private turnAssistantText?: string;
 	private contextUsageSnapshot?: {
 		manager: AgentSession["sessionManager"];
@@ -1978,6 +1979,8 @@ class CoreRuntimeSession implements RuntimeSession {
 			cwd: this.runtime.cwd,
 			createdAt: header ? new Date(header.timestamp).getTime() : storage.updatedAt,
 			updatedAt: storage.updatedAt,
+			observedAt: Date.now(),
+			execution: session.getExecutionStatus(),
 			phase: session.isCompacting
 				? "compaction"
 				: session.retryAttempt > 0
@@ -2762,6 +2765,17 @@ class CoreRuntimeSession implements RuntimeSession {
 		});
 		const conversationStream = getWebConversationStream(session);
 		this.unsubscribe = session.subscribe((event) => {
+			const execution = session.getExecutionStatus();
+			if (
+				execution &&
+				execution !== this.publishedExecution &&
+				(execution.phase !== this.publishedExecution?.phase ||
+					execution.toolName !== this.publishedExecution?.toolName ||
+					execution.lastProgressAt - (this.publishedExecution?.lastProgressAt ?? 0) >= 1_000)
+			) {
+				this.publishedExecution = execution;
+				this.emit({ type: "progress", payload: { type: "execution", execution } });
+			}
 			conversationStream.apply(event);
 			this.stateRevision++;
 			if (event.type === "agent_start") this.turnAssistantText = undefined;
@@ -3731,11 +3745,18 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			const modelConfig = config.getProvider(model.provider);
 			const configuredModel = modelConfig?.models?.find((candidate) => candidate.id === model.id);
 			const override = modelConfig?.modelOverrides?.[model.id];
+			const metadata = runtime.getModelMetadata(model.provider, model.id);
 			const capabilitiesPending = Boolean(
 				configuredModel &&
-					((configuredModel.contextWindow === undefined && override?.contextWindow === undefined) ||
-						(configuredModel.maxTokens === undefined && override?.maxTokens === undefined) ||
-						(configuredModel.reasoning === undefined && override?.reasoning === undefined)),
+					((configuredModel.contextWindow === undefined &&
+						override?.contextWindow === undefined &&
+						metadata?.contextWindow === undefined) ||
+						(configuredModel.maxTokens === undefined &&
+							override?.maxTokens === undefined &&
+							metadata?.maxTokens === undefined) ||
+						(configuredModel.reasoning === undefined &&
+							override?.reasoning === undefined &&
+							metadata?.reasoning === undefined)),
 			);
 			return {
 				provider: model.provider,
@@ -3923,13 +3944,24 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const providerConfig = config.getProvider(providerId);
 		const builtIn = runtime.isBuiltinProvider(providerId);
 		if (!providerConfig && !builtIn) throw new Error(`未找到 Provider：${providerId}`);
-		const catalogProvider = providerConfig?.catalogProvider ?? (builtIn ? providerId : undefined);
+
+		const catalogProvider = builtIn ? providerId : providerConfig?.catalogProvider;
+		if (catalogProvider && !runtime.getProvider(catalogProvider)) {
+			throw new Error(`未找到模型目录 Provider：${catalogProvider}`);
+		}
+		const discoveryAuth = catalogProvider ? undefined : await runtime.getAuth(providerId);
+		const modelsDevCatalog = await loadModelsDevCatalog({ force: true });
+		await runtime.applyModelMetadata(modelsDevCatalog);
+
 		if (catalogProvider) {
-			if (!runtime.getProvider(catalogProvider)) throw new Error(`未找到模型目录 Provider：${catalogProvider}`);
-			const refreshed = await runtime.refresh({ allowNetwork: true, force: true, providers: [catalogProvider] });
+			const refreshed = await runtime.refresh({
+				allowNetwork: true,
+				force: false,
+				providers: [catalogProvider],
+			});
 			const error = refreshed.errors.get(catalogProvider);
 			if (error) throw error;
-			if (catalogProvider === providerId) return this.listModels();
+			if (builtIn) return this.listModels();
 		}
 
 		const targetProvider = runtime.getProvider(providerId);
@@ -3938,6 +3970,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		const sourceModels = catalogProvider ? [...runtime.getModels(catalogProvider)] : [];
 		const discovered = catalogProvider
 			? sourceModels.map((model) => ({
+					provider: model.provider,
 					id: model.id,
 					name: model.name,
 					contextWindow: model.contextWindow,
@@ -3945,49 +3978,103 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				}))
 			: await discoverProviderModels(
 					baseUrl,
-					await runtime.getAuth(providerId),
+					discoveryAuth,
 					providerConfig?.api ?? targetProvider?.getModels()[0]?.api,
 				);
 		if (discovered.length === 0) throw new Error("没有发现可同步的模型");
-		const existingModels = new Map(runtime.getModels(providerId).map((model) => [model.id, model] as const));
+
 		const configuredModels = providerConfig?.models ?? [];
+		const configuredModelsById = new Map(configuredModels.map((model) => [model.id, model] as const));
+		const configuredModelIds = new Set(configuredModelsById.keys());
+		const previouslySyncedIds = new Set(providerConfig?.syncedModels ?? []);
+		const manualModelIds = new Set(
+			configuredModels.filter((model) => !previouslySyncedIds.has(model.id)).map((model) => model.id),
+		);
 		const providerApi = providerConfig?.api ?? targetProvider?.getModels()[0]?.api;
 		if (!providerApi) throw new Error(`Provider ${providerId} 缺少 api`);
-		const definitions = discovered.map((model) => {
+		const metadataProvider = providerConfig?.catalogProvider ?? (builtIn ? providerId : undefined);
+		const definitions = discovered.flatMap<ModelsJsonModel>((model) => {
+			if (manualModelIds.has(model.id)) return [];
 			const source =
 				sourceModels.find((candidate) => candidate.id === model.id) ??
 				findMatchingCatalogModel(runtime, providerId, model.id, providerApi);
-			if (source) return modelDefinitionFromCatalog(source, baseUrl, model, providerApi);
-			const existingDefinition = configuredModels.find((candidate) => candidate.id === model.id);
-			const existingModel = existingModels.get(model.id);
-			return {
-				...existingDefinition,
-				id: model.id,
-				name: model.name ?? existingDefinition?.name ?? existingModel?.name ?? model.id,
-				api: providerConfig?.api ?? existingDefinition?.api ?? providerApi,
-				baseUrl: providerConfig?.baseUrl ?? existingDefinition?.baseUrl ?? baseUrl,
-				input: existingDefinition?.input ?? existingModel?.input ?? ["text"],
-				...((model.contextWindow ?? existingDefinition?.contextWindow)
-					? { contextWindow: model.contextWindow ?? existingDefinition?.contextWindow }
-					: {}),
-				...((model.maxTokens ?? existingDefinition?.maxTokens)
-					? { maxTokens: model.maxTokens ?? existingDefinition?.maxTokens }
-					: {}),
+			const sourceDefinition = source
+				? modelDefinitionFromCatalog(source, baseUrl, model, providerApi)
+				: {
+						id: model.id,
+						name: model.name ?? model.id,
+						api: providerApi,
+						baseUrl,
+						...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+						...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
+					};
+			const existing = previouslySyncedIds.has(model.id) ? configuredModelsById.get(model.id) : undefined;
+			const metadata = modelsDevCatalog.find(model.id, source?.provider ?? model.provider ?? metadataProvider);
+			const mergedCost = {
+				...(sourceDefinition.cost ?? {}),
+				...(existing?.cost ?? {}),
+				...(metadata?.cost ?? {}),
 			};
+			// models.json 的 cost 必须包含四项报价，缺失值不按零保存。
+			const cost: ModelsJsonModel["cost"] =
+				mergedCost.input !== undefined &&
+				mergedCost.output !== undefined &&
+				mergedCost.cacheRead !== undefined &&
+				mergedCost.cacheWrite !== undefined
+					? {
+							...mergedCost,
+							input: mergedCost.input,
+							output: mergedCost.output,
+							cacheRead: mergedCost.cacheRead,
+							cacheWrite: mergedCost.cacheWrite,
+						}
+					: undefined;
+			const thinkingLevelMap = {
+				...(sourceDefinition.thinkingLevelMap ?? {}),
+				...(existing?.thinkingLevelMap ?? {}),
+				...(metadata?.thinkingLevelMap ?? {}),
+			};
+			const compat = {
+				...(sourceDefinition.compat ?? {}),
+				...(existing?.compat ?? {}),
+			};
+			return [
+				{
+					...sourceDefinition,
+					...existing,
+					id: model.id,
+					name: metadata?.name ?? existing?.name ?? sourceDefinition.name ?? model.name ?? model.id,
+					api: providerConfig?.api ?? existing?.api ?? sourceDefinition.api ?? providerApi,
+					baseUrl: providerConfig?.baseUrl ?? existing?.baseUrl ?? sourceDefinition.baseUrl ?? baseUrl,
+					...(metadata?.reasoning === undefined ? {} : { reasoning: metadata.reasoning }),
+					...(metadata?.input === undefined ? {} : { input: metadata.input }),
+					...(metadata?.contextWindow === undefined ? {} : { contextWindow: metadata.contextWindow }),
+					...(metadata?.maxTokens === undefined ? {} : { maxTokens: metadata.maxTokens }),
+					...(cost === undefined ? {} : { cost }),
+					...(Object.keys(thinkingLevelMap).length === 0 ? {} : { thinkingLevelMap }),
+					...(Object.keys(compat).length === 0 ? {} : { compat: compat as ModelsJsonModel["compat"] }),
+				},
+			];
 		});
 		await saveModelsJsonModels(modelsPath, providerId, definitions);
+
 		const discoveredIds = new Set(discovered.map((model) => model.id));
-		const configuredModelIds = new Set(configuredModels.map((model) => model.id));
-		const previouslySyncedIds = new Set(providerConfig?.syncedModels ?? []);
 		const staleModelIds = [...previouslySyncedIds].filter(
 			(modelId) =>
 				!discoveredIds.has(modelId) &&
 				configuredModelIds.has(modelId) &&
 				providerConfig?.modelOverrides?.[modelId] === undefined,
 		);
-		const nextSyncedIds = [...discoveredIds].filter(
-			(modelId) => previouslySyncedIds.has(modelId) || !configuredModelIds.has(modelId),
+		const retainedSyncedOverrides = [...previouslySyncedIds].filter(
+			(modelId) =>
+				!discoveredIds.has(modelId) &&
+				configuredModelIds.has(modelId) &&
+				providerConfig?.modelOverrides?.[modelId] !== undefined,
 		);
+		const nextSyncedIds = [
+			...[...discoveredIds].filter((modelId) => !manualModelIds.has(modelId)),
+			...retainedSyncedOverrides,
+		];
 		await removeModelsJsonModels(modelsPath, providerId, staleModelIds);
 		await saveModelsJsonSyncedModels(modelsPath, providerId, nextSyncedIds);
 		await runtime.refresh({ allowNetwork: false, providers: [providerId] });
@@ -4010,8 +4097,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async setProviderModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<ModelSummary[]> {
 		const runtime = await this.getModelRuntime();
-		const modelsPath = join(this.agentDir, "models.json");
-		const config = await ModelConfig.load(modelsPath);
+		const config = await ModelConfig.load(join(this.agentDir, "models.json"));
 		const providerConfig = config.getProvider(providerId);
 		const builtIn = runtime.isBuiltinProvider(providerId);
 		if (!providerConfig && !builtIn) throw new Error(`未找到 Provider：${providerId}`);
@@ -4020,8 +4106,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			(providerConfig?.models ?? []).some((model) => model.id === modelId) ||
 			(providerConfig?.disabledModels ?? []).includes(modelId);
 		if (!known) throw new Error(`未找到模型：${providerId}/${modelId}`);
-		await setModelsJsonModelDisabled(modelsPath, providerId, modelId, !enabled);
-		await runtime.refresh({ allowNetwork: false, providers: [providerId] });
+		await runtime.setModelEnabled(providerId, modelId, enabled);
 		return this.listModels();
 	}
 

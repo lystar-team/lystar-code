@@ -955,6 +955,8 @@ export class WebCompanionServer {
 			...(this.session.sessionName ? { name: this.session.sessionName } : {}),
 			createdAt: header ? Date.parse(header.timestamp) : Date.now(),
 			updatedAt: stat?.mtimeMs ?? Date.now(),
+			observedAt: Date.now(),
+			execution: this.session.getExecutionStatus?.(),
 			phase: this.session.isCompacting
 				? "compaction"
 				: this.session.retryAttempt > 0

@@ -2,7 +2,7 @@
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
-> 当前上游基线：2026-10-09；Pi `v1.1.0`，commit `abe508e1b89912adde45528136c3221eb69acdd7`；产品版本 `1.1.0-lystar.3`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
+> 当前上游基线：2026-10-11；Pi `v1.1.0`，commit `abe508e1b89912adde45528136c3221eb69acdd7`；产品版本 `1.1.0-lystar.9`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
 
 ## 1. 产品定义
 
@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `1.1.0-lystar.9` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 Pi JSONL；Web Runtime 增加执行阶段快照与扩展输入投影；Codemode 可在同一 Session 收取后台结果 | 新增 `request_phase`、`ExtensionToolContext.steeringSignal` 和 `codemode_wait`；`@earendil-works/pi-ai/utils/models-dev` 提供模型元数据查询 |
 | `1.1.0-lystar.3` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 Pi JSONL；Session 元数据支持写锁内增量读取，Web Transcript 渐进分页 | 不增加 Extension API；协作工作区默认沿用来源项目或全局信任决定 |
 | `1.1.0-lystar.2` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 Pi JSONL；新增 shared/worktree/patch 工作区状态、成果接收与回收 | 新增 `session_accept_result`、`session_workspaces`、`workspaceMode` 和项目级协作信任继承 |
 | `1.1.0-lystar.1` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 Pi JSONL，增加响应与工具耗时；保留 LYStar Web Transcript、角色协作和 Tool Recovery | 纳入 OSC 7501、图像分类、工具增减选择和 Durable API 更新；内置 `edit` 迁移到快照行范围，`session_wait` 移除 timeout，`session_stop` 要求取消原因 |

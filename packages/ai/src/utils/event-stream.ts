@@ -113,6 +113,11 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		}
 	}
 
+	/** 已收到最终事件或已关闭，不再接受新的事件。 */
+	get isFinished(): boolean {
+		return this.done;
+	}
+
 	result(): Promise<R> {
 		return this.finalResultPromise;
 	}

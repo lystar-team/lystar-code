@@ -111,10 +111,17 @@ interface ExecutionOptions {
 	globals: ReadonlyMap<string, CodemodeTool>;
 	timeoutMs: number;
 	signal: AbortSignal | undefined;
+	steeringSignal: AbortSignal | undefined;
 	memoryLimitBytes: number | undefined;
 	store: Record<string, string>;
 	wasm: Promise<CodemodeWasmModule>;
 	workerUrl: string | URL;
+}
+
+interface CodemodeExecutionHandle {
+	result: Promise<CodemodeResult>;
+	yielded: Promise<boolean>;
+	abort(message: string): Promise<CodemodeResult>;
 }
 
 /**
@@ -125,11 +132,14 @@ interface ExecutionOptions {
 class Execution {
 	readonly promise: Promise<CodemodeResult>;
 	private resolveResult!: (result: CodemodeResult) => void;
+	readonly yielded: Promise<boolean>;
+	private resolveYield!: (yielded: boolean) => void;
 	private worker: Worker | undefined;
 	private readonly interrupt = new SharedArrayBuffer(4);
 	private readonly tools: ReadonlyMap<string, CodemodeTool>;
 	private readonly globals: ReadonlyMap<string, CodemodeTool>;
 	private readonly signal: AbortSignal | undefined;
+	private readonly steeringSignal: AbortSignal | undefined;
 	private readonly timer: NodeJS.Timeout | undefined;
 	private readonly output: CodemodeOutputItem[] = [];
 	private readonly calls: CodemodeCall[] = [];
@@ -140,9 +150,13 @@ class Execution {
 		this.promise = new Promise<CodemodeResult>((resolve) => {
 			this.resolveResult = resolve;
 		});
+		this.yielded = new Promise<boolean>((resolve) => {
+			this.resolveYield = resolve;
+		});
 		this.tools = options.tools;
 		this.globals = options.globals;
 		this.signal = options.signal;
+		this.steeringSignal = options.steeringSignal;
 
 		if (Number.isFinite(options.timeoutMs)) {
 			this.timer = setTimeout(() => {
@@ -150,13 +164,13 @@ class Execution {
 			}, options.timeoutMs);
 		}
 
-		if (options.signal) {
-			if (options.signal.aborted) {
-				this.onAbort();
-			} else {
-				options.signal.addEventListener("abort", this.onAbort, { once: true });
-			}
+		if (options.signal?.aborted) {
+			this.onAbort();
+			return;
 		}
+		options.signal?.addEventListener("abort", this.onAbort, { once: true });
+		if (options.steeringSignal?.aborted) this.onSteer();
+		else options.steeringSignal?.addEventListener("abort", this.onSteer, { once: true });
 
 		options.wasm.then(
 			(wasm) => this.start(options, wasm),
@@ -226,6 +240,10 @@ class Execution {
 	private readonly onAbort = (): void => {
 		const reason: unknown = this.signal?.reason;
 		this.finish({ kind: "aborted", message: reason instanceof Error ? reason.message : "Execution aborted" });
+	};
+
+	private readonly onSteer = (): void => {
+		if (!this.finished) this.resolveYield(true);
 	};
 
 	private post(message: HostToWorkerMessage): void {
@@ -299,6 +317,8 @@ class Execution {
 		this.finished = true;
 		clearTimeout(this.timer);
 		this.signal?.removeEventListener("abort", this.onAbort);
+		this.steeringSignal?.removeEventListener("abort", this.onSteer);
+		this.resolveYield(false);
 
 		const now = performance.now();
 		for (const pending of this.pending.values()) {
@@ -391,21 +411,31 @@ export class CodemodeSandbox {
 	 * Never rejects for script failures; those come back as `{ ok: false }`.
 	 * The script can use `store(key, value)` and `load(key)` on `options.store`.
 	 */
-	execute(code: string, options: CodemodeExecuteOptions = {}): Promise<CodemodeResult> {
-		if (this.closed) return Promise.reject(new Error("Sandbox is closed"));
+	start(code: string, options: CodemodeExecuteOptions = {}): CodemodeExecutionHandle {
+		if (this.closed) throw new Error("Sandbox is closed");
 		const execution = new Execution({
 			code,
 			tools: new Map(this.toolsByName),
 			globals: this.globalsByName,
 			timeoutMs: options.timeoutMs ?? this.timeoutMs,
 			signal: options.signal,
+			steeringSignal: options.steeringSignal,
 			memoryLimitBytes: this.memoryLimitBytes,
 			store: serializeStore(options.store),
 			wasm: this.wasm === undefined ? loadQuickJSWasm() : Promise.resolve(this.wasm),
 			workerUrl: this.workerUrl,
 		});
 		this.running.add(execution);
-		return execution.promise.finally(() => this.running.delete(execution));
+		return {
+			result: execution.promise.finally(() => this.running.delete(execution)),
+			yielded: execution.yielded,
+			abort: (message) => execution.abort(message),
+		};
+	}
+
+	execute(code: string, options: CodemodeExecuteOptions = {}): Promise<CodemodeResult> {
+		if (this.closed) return Promise.reject(new Error("Sandbox is closed"));
+		return this.start(code, options).result;
 	}
 
 	/** Aborts in-flight executions (they resolve with `kind: "aborted"`) and rejects new ones. */

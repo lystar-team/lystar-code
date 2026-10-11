@@ -5,6 +5,7 @@
 
 import {
 	type AssistantMessage,
+	type AssistantMessageEventStream,
 	EventStream,
 	getCurrentTools,
 	getToolStateChanges,
@@ -241,6 +242,7 @@ async function runLoop(
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
+			await emit({ type: "request_phase", phase: "preparing", at: Date.now() });
 			let preparedMessages: AgentMessage[] = [];
 			if (lastCompletedTurn) {
 				const nextTurnSnapshot = await abortable(signal, () => config.prepareNextTurn?.(lastCompletedTurn!));
@@ -301,8 +303,21 @@ async function runLoop(
 			}
 
 			// Stream assistant response
-			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+			const { message, preempted } = await streamAssistantResponse(
+				currentContext,
+				config,
+				signal,
+				emit,
+				streamFunction,
+			);
 			newMessages.push(message);
+			if (preempted) {
+				lastCompletedTurn = { message, toolResults: [], context: currentContext, newMessages };
+				await emit({ type: "turn_end", message, toolResults: [] });
+				pendingMessages = (await config.getSteeringMessages?.()) || [];
+				hasMoreToolCalls = false;
+				continue;
+			}
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				lastCompletedTurn = {
@@ -441,112 +456,147 @@ function withToolChanges(message: SystemMessage, { toolsAdded, toolsRemoved }: T
 	};
 }
 
-/**
- * Stream an assistant response from the LLM.
- * This is where AgentMessage[] gets transformed to Message[] for the LLM.
- */
+interface StreamedAssistantResponse {
+	message: AssistantMessage;
+	preempted: boolean;
+}
+
+/** 将插话抢占限制在本次请求内，不取消工具或整个运行。 */
 async function streamAssistantResponse(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
-): Promise<AssistantMessage> {
-	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
-	let messages = context.messages;
-	if (config.transformContext) {
-		messages = await abortable(signal, () => config.transformContext!(messages, signal));
-	}
-	if (config.validateRequest) {
-		await abortable(signal, () => config.validateRequest!({ ...context, messages }, signal));
-	}
-
-	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await abortable(signal, () => config.convertToLlm(messages));
-
-	const llmContext = normalizeContext({ messages: llmMessages });
-
-	// Resolve API key (important for expiring tokens)
-	const resolvedApiKey =
-		(config.getApiKey ? await abortable(signal, () => config.getApiKey!(config.model.provider)) : undefined) ||
-		config.apiKey;
-
-	const response = await abortable(signal, () =>
-		streamFunction(config.model, llmContext, {
-			...config,
-			apiKey: resolvedApiKey,
-			signal,
-		}),
-	);
-	// Record the requested level, whichever stream function answered.
-	const result = async () =>
-		Object.assign(await abortable(signal, () => response.result()), { thinkingLevel: config.reasoning ?? "off" });
-
+): Promise<StreamedAssistantResponse> {
+	const startedAt = performance.now();
+	const requestController = new AbortController();
+	const requestSignal = signal ? AbortSignal.any([signal, requestController.signal]) : requestController.signal;
+	const steeringSignal = config.getSteeringSignal?.();
+	let response: AssistantMessageEventStream | undefined;
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
+	let interruptedMessage: AssistantMessage | undefined;
+	const preempt = () => {
+		if (response?.isFinished) return;
+		const snapshot = partialMessage;
+		interruptedMessage = {
+			role: "assistant",
+			api: config.model.api,
+			provider: config.model.provider,
+			model: config.model.id,
+			timestamp: snapshot?.timestamp ?? Date.now(),
+			// 未完成的推理签名和工具参数不能进入后续请求或执行队列。
+			content: snapshot?.content.filter((block) => block.type === "text").map((block) => ({ ...block })) ?? [],
+			usage: snapshot
+				? { ...snapshot.usage, cost: { ...snapshot.usage.cost } }
+				: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+			stopReason: "aborted",
+			thinkingLevel: config.reasoning ?? "off",
+			durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+		};
+		requestController.abort();
+		response?.end(interruptedMessage);
+	};
+	steeringSignal?.addEventListener("abort", preempt, { once: true });
+	if (steeringSignal?.aborted) preempt();
 
-	const iterator = response[Symbol.asyncIterator]();
-	for (;;) {
-		const next = await abortable(signal, () => iterator.next());
-		if (next.done) break;
-		const event = next.value;
-		switch (event.type) {
-			case "start":
-				partialMessage = event.partial;
-				context.messages.push(partialMessage);
-				addedPartial = true;
-				await emit({ type: "message_start", message: { ...partialMessage } });
-				break;
+	const finish = async (message: AssistantMessage, preempted: boolean): Promise<StreamedAssistantResponse> => {
+		steeringSignal?.removeEventListener("abort", preempt);
+		await emit({ type: "request_phase", phase: "finishing", at: Date.now() });
+		if (addedPartial) context.messages[context.messages.length - 1] = message;
+		else {
+			context.messages.push(message);
+			await emit({ type: "message_start", message: { ...message } });
+		}
+		await emit({ type: "message_end", message });
+		return { message, preempted };
+	};
 
-			case "text_start":
-			case "text_delta":
-			case "text_end":
-			case "thinking_start":
-			case "thinking_delta":
-			case "thinking_end":
-			case "toolcall_start":
-			case "toolcall_delta":
-			case "toolcall_end":
-			case "websearch_start":
-			case "websearch_update":
-			case "websearch_end":
-				if (partialMessage) {
+	try {
+		let messages = context.messages;
+		if (config.transformContext) {
+			messages = await abortable(requestSignal, () => config.transformContext!(messages, requestSignal));
+		}
+		if (config.validateRequest) {
+			await abortable(requestSignal, () => config.validateRequest!({ ...context, messages }, requestSignal));
+		}
+		const llmMessages = await abortable(requestSignal, () => config.convertToLlm(messages));
+		const llmContext = normalizeContext({ messages: llmMessages });
+		const resolvedApiKey =
+			(config.getApiKey
+				? await abortable(requestSignal, () => config.getApiKey!(config.model.provider))
+				: undefined) || config.apiKey;
+		await emit({ type: "request_phase", phase: "waiting_model", at: Date.now() });
+		const stream = await abortable(requestSignal, () =>
+			Promise.resolve(
+				streamFunction(config.model, llmContext, {
+					...config,
+					apiKey: resolvedApiKey,
+					signal: requestSignal,
+				}),
+			).then((created) => {
+				response = created;
+				if (interruptedMessage) created.end(interruptedMessage);
+				return created;
+			}),
+		);
+		const iterator = stream[Symbol.asyncIterator]();
+		for (;;) {
+			const next = await abortable(requestSignal, () => iterator.next());
+			if (next.done) break;
+			const event = next.value;
+			switch (event.type) {
+				case "start":
 					partialMessage = event.partial;
-					context.messages[context.messages.length - 1] = partialMessage;
-					await emit({
-						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
+					context.messages.push(partialMessage);
+					addedPartial = true;
+					await emit({ type: "message_start", message: { ...partialMessage } });
+					break;
+				case "text_start":
+				case "text_delta":
+				case "text_end":
+				case "thinking_start":
+				case "thinking_delta":
+				case "thinking_end":
+				case "toolcall_start":
+				case "toolcall_delta":
+				case "toolcall_end":
+				case "websearch_start":
+				case "websearch_update":
+				case "websearch_end":
+					if (partialMessage) {
+						partialMessage = event.partial;
+						context.messages[context.messages.length - 1] = partialMessage;
+						await emit({ type: "message_update", assistantMessageEvent: event, message: { ...partialMessage } });
+					}
+					break;
+				case "done":
+				case "error": {
+					const message = Object.assign(await abortable(requestSignal, () => stream.result()), {
+						thinkingLevel: config.reasoning ?? "off",
 					});
+					return await finish(message, false);
 				}
-				break;
-
-			case "done":
-			case "error": {
-				const finalMessage = await result();
-				if (addedPartial) {
-					context.messages[context.messages.length - 1] = finalMessage;
-				} else {
-					context.messages.push(finalMessage);
-				}
-				if (!addedPartial) {
-					await emit({ type: "message_start", message: { ...finalMessage } });
-				}
-				await emit({ type: "message_end", message: finalMessage });
-				return finalMessage;
 			}
 		}
+		const message = Object.assign(await abortable(requestSignal, () => stream.result()), {
+			thinkingLevel: config.reasoning ?? "off",
+		});
+		return await finish(message, false);
+	} catch (error) {
+		if (!interruptedMessage || signal?.aborted) throw error;
+		return await finish(interruptedMessage, true);
+	} finally {
+		steeringSignal?.removeEventListener("abort", preempt);
 	}
-
-	const finalMessage = await result();
-	if (addedPartial) {
-		context.messages[context.messages.length - 1] = finalMessage;
-	} else {
-		context.messages.push(finalMessage);
-		await emit({ type: "message_start", message: { ...finalMessage } });
-	}
-	await emit({ type: "message_end", message: finalMessage });
-	return finalMessage;
 }
 
 /**
@@ -1386,7 +1436,7 @@ function createErrorToolResult(error: unknown): AgentToolResult<Record<string, u
 
 function createExecutionKeyConflictResult(conflictKey: string): AgentToolResult<any> {
 	return createErrorToolResult(
-		`同一条助手回复中不能同时修改同一个目标：${conflictKey}。请把同一文件的多个修改合并到一个 edit 或 apply_patch 调用中；本批次没有执行这些冲突修改。`,
+		`同一条助手回复中不能同时修改同一个目标：${conflictKey}。请把同一文件的多个修改合并到一个 edit 调用中；本批次没有执行这些冲突修改。`,
 	);
 }
 

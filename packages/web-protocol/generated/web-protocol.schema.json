@@ -4893,6 +4893,108 @@
           "type": "object",
           "required": [
             "type",
+            "execution"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "execution"
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "phase",
+                "phaseStartedAt",
+                "lastProgressAt"
+              ],
+              "properties": {
+                "phase": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "preparing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_model"
+                    },
+                    {
+                      "type": "string",
+                      "const": "thinking"
+                    },
+                    {
+                      "type": "string",
+                      "const": "responding"
+                    },
+                    {
+                      "type": "string",
+                      "const": "tool"
+                    },
+                    {
+                      "type": "string",
+                      "const": "compaction"
+                    },
+                    {
+                      "type": "string",
+                      "const": "retry"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_input"
+                    },
+                    {
+                      "type": "string",
+                      "const": "finishing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "idle"
+                    }
+                  ]
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "phaseStartedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastProgressAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastModelEventAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "toolName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "retryAttempt": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryMaxAttempts": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryAt": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
             "text"
           ],
           "properties": {
@@ -6527,6 +6629,98 @@
                               "const": "interrupted"
                             }
                           ]
+                        },
+                        "execution": {
+                          "type": "object",
+                          "required": [
+                            "phase",
+                            "phaseStartedAt",
+                            "lastProgressAt"
+                          ],
+                          "properties": {
+                            "phase": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "preparing"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "waiting_model"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "thinking"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "responding"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "tool"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "compaction"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "retry"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "waiting_input"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "finishing"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "idle"
+                                }
+                              ]
+                            },
+                            "startedAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "phaseStartedAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "lastProgressAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "lastModelEventAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "toolName": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "retryAttempt": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "retryMaxAttempts": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "retryAt": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "observedAt": {
+                          "type": "integer",
+                          "minimum": 0
                         },
                         "model": {
                           "type": "object",
@@ -8401,6 +8595,81 @@
                                             "const": "error"
                                           }
                                         ]
+                                      }
+                                    },
+                                    "additionalProperties": false
+                                  },
+                                  "input": {
+                                    "type": "object",
+                                    "required": [
+                                      "text"
+                                    ],
+                                    "properties": {
+                                      "text": {
+                                        "type": "string",
+                                        "maxLength": 16384
+                                      },
+                                      "contentRef": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 4096
+                                      },
+                                      "images": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "required": [
+                                            "contentRef",
+                                            "mimeType",
+                                            "byteLength"
+                                          ],
+                                          "properties": {
+                                            "contentRef": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 4096
+                                            },
+                                            "mimeType": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 256
+                                            },
+                                            "byteLength": {
+                                              "type": "integer",
+                                              "minimum": 0
+                                            },
+                                            "alt": {
+                                              "type": "string",
+                                              "maxLength": 4096
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "maxItems": 32
+                                      },
+                                      "files": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "required": [
+                                            "filename",
+                                            "mimeType"
+                                          ],
+                                          "properties": {
+                                            "filename": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 4096
+                                            },
+                                            "mimeType": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 256
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "maxItems": 32
                                       }
                                     },
                                     "additionalProperties": false
@@ -13197,6 +13466,98 @@
             }
           ]
         },
+        "execution": {
+          "type": "object",
+          "required": [
+            "phase",
+            "phaseStartedAt",
+            "lastProgressAt"
+          ],
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "preparing"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_model"
+                },
+                {
+                  "type": "string",
+                  "const": "thinking"
+                },
+                {
+                  "type": "string",
+                  "const": "responding"
+                },
+                {
+                  "type": "string",
+                  "const": "tool"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "retry"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_input"
+                },
+                {
+                  "type": "string",
+                  "const": "finishing"
+                },
+                {
+                  "type": "string",
+                  "const": "idle"
+                }
+              ]
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "phaseStartedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastProgressAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastModelEventAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "retryAttempt": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryMaxAttempts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryAt": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "observedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
         "model": {
           "type": "object",
           "required": [
@@ -13850,6 +14211,98 @@
             }
           ]
         },
+        "execution": {
+          "type": "object",
+          "required": [
+            "phase",
+            "phaseStartedAt",
+            "lastProgressAt"
+          ],
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "preparing"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_model"
+                },
+                {
+                  "type": "string",
+                  "const": "thinking"
+                },
+                {
+                  "type": "string",
+                  "const": "responding"
+                },
+                {
+                  "type": "string",
+                  "const": "tool"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "retry"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_input"
+                },
+                {
+                  "type": "string",
+                  "const": "finishing"
+                },
+                {
+                  "type": "string",
+                  "const": "idle"
+                }
+              ]
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "phaseStartedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastProgressAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastModelEventAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "retryAttempt": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryMaxAttempts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryAt": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "observedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
         "model": {
           "type": "object",
           "required": [
@@ -14502,6 +14955,98 @@
               "const": "interrupted"
             }
           ]
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "phase",
+            "phaseStartedAt",
+            "lastProgressAt"
+          ],
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "preparing"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_model"
+                },
+                {
+                  "type": "string",
+                  "const": "thinking"
+                },
+                {
+                  "type": "string",
+                  "const": "responding"
+                },
+                {
+                  "type": "string",
+                  "const": "tool"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "retry"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_input"
+                },
+                {
+                  "type": "string",
+                  "const": "finishing"
+                },
+                {
+                  "type": "string",
+                  "const": "idle"
+                }
+              ]
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "phaseStartedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastProgressAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastModelEventAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "retryAttempt": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryMaxAttempts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryAt": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "observedAt": {
+          "type": "integer",
+          "minimum": 0
         },
         "model": {
           "type": "object",
@@ -15163,6 +15708,98 @@
                   "const": "interrupted"
                 }
               ]
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "phase",
+                "phaseStartedAt",
+                "lastProgressAt"
+              ],
+              "properties": {
+                "phase": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "preparing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_model"
+                    },
+                    {
+                      "type": "string",
+                      "const": "thinking"
+                    },
+                    {
+                      "type": "string",
+                      "const": "responding"
+                    },
+                    {
+                      "type": "string",
+                      "const": "tool"
+                    },
+                    {
+                      "type": "string",
+                      "const": "compaction"
+                    },
+                    {
+                      "type": "string",
+                      "const": "retry"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_input"
+                    },
+                    {
+                      "type": "string",
+                      "const": "finishing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "idle"
+                    }
+                  ]
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "phaseStartedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastProgressAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastModelEventAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "toolName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "retryAttempt": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryMaxAttempts": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryAt": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "observedAt": {
+              "type": "integer",
+              "minimum": 0
             },
             "model": {
               "type": "object",
@@ -15834,6 +16471,98 @@
                 }
               ]
             },
+            "execution": {
+              "type": "object",
+              "required": [
+                "phase",
+                "phaseStartedAt",
+                "lastProgressAt"
+              ],
+              "properties": {
+                "phase": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "preparing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_model"
+                    },
+                    {
+                      "type": "string",
+                      "const": "thinking"
+                    },
+                    {
+                      "type": "string",
+                      "const": "responding"
+                    },
+                    {
+                      "type": "string",
+                      "const": "tool"
+                    },
+                    {
+                      "type": "string",
+                      "const": "compaction"
+                    },
+                    {
+                      "type": "string",
+                      "const": "retry"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_input"
+                    },
+                    {
+                      "type": "string",
+                      "const": "finishing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "idle"
+                    }
+                  ]
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "phaseStartedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastProgressAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastModelEventAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "toolName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "retryAttempt": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryMaxAttempts": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryAt": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "observedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
             "model": {
               "type": "object",
               "required": [
@@ -16495,6 +17224,98 @@
               "const": "interrupted"
             }
           ]
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "phase",
+            "phaseStartedAt",
+            "lastProgressAt"
+          ],
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "preparing"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_model"
+                },
+                {
+                  "type": "string",
+                  "const": "thinking"
+                },
+                {
+                  "type": "string",
+                  "const": "responding"
+                },
+                {
+                  "type": "string",
+                  "const": "tool"
+                },
+                {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                {
+                  "type": "string",
+                  "const": "retry"
+                },
+                {
+                  "type": "string",
+                  "const": "waiting_input"
+                },
+                {
+                  "type": "string",
+                  "const": "finishing"
+                },
+                {
+                  "type": "string",
+                  "const": "idle"
+                }
+              ]
+            },
+            "startedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "phaseStartedAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastProgressAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastModelEventAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "retryAttempt": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryMaxAttempts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retryAt": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "observedAt": {
+          "type": "integer",
+          "minimum": 0
         },
         "model": {
           "type": "object",
@@ -17383,6 +18204,98 @@
                   "const": "interrupted"
                 }
               ]
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "phase",
+                "phaseStartedAt",
+                "lastProgressAt"
+              ],
+              "properties": {
+                "phase": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "preparing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_model"
+                    },
+                    {
+                      "type": "string",
+                      "const": "thinking"
+                    },
+                    {
+                      "type": "string",
+                      "const": "responding"
+                    },
+                    {
+                      "type": "string",
+                      "const": "tool"
+                    },
+                    {
+                      "type": "string",
+                      "const": "compaction"
+                    },
+                    {
+                      "type": "string",
+                      "const": "retry"
+                    },
+                    {
+                      "type": "string",
+                      "const": "waiting_input"
+                    },
+                    {
+                      "type": "string",
+                      "const": "finishing"
+                    },
+                    {
+                      "type": "string",
+                      "const": "idle"
+                    }
+                  ]
+                },
+                "startedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "phaseStartedAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastProgressAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lastModelEventAt": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "toolName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "retryAttempt": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryMaxAttempts": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "retryAt": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "observedAt": {
+              "type": "integer",
+              "minimum": 0
             },
             "model": {
               "type": "object",

@@ -66,6 +66,7 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, getToolRecoveryMode, type ToolRecoveryMode } from "../config.ts";
+import { CODEMODE_TOOL_NAME, CODEMODE_WAIT_TOOL_NAME, isCodemodeTool } from "../extensions/codemode/tool.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -139,9 +140,10 @@ import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
-import { NestedToolCallRunner } from "./nested-tool-calls.ts";
+import { ExecutionTargetLock, NestedToolCallRunner } from "./nested-tool-calls.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import { SessionExecutionTracker } from "./session-execution.ts";
 import { exportSessionToJsonl } from "./session-export.ts";
 import {
 	type BranchSummaryEntry,
@@ -505,6 +507,7 @@ export class AgentSession {
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
+	private readonly _executionTracker = new SessionExecutionTracker();
 	private readonly _toolActivityTracker = new ToolActivityTracker();
 	private _isAgentRunActive = false;
 	private _agentRunAbortRequested = false;
@@ -616,6 +619,10 @@ export class AgentSession {
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	/** Created on the first `ctx.executeTool()` call. */
 	private _nestedToolCalls: NestedToolCallRunner | undefined;
+	private _nestedToolCallGeneration = 0;
+	private readonly _nestedToolCallAssistantMessages = new Map<string, AssistantMessage>();
+	private _nestedToolCallAbortController: AbortController | undefined;
+	private readonly _executionTargetLock = new ExecutionTargetLock();
 	/** Declared tools whose declarations requests leave out, from `prepareLoadout` hooks. */
 	private _hiddenDeclarations: ReadonlySet<string> = new Set();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
@@ -711,6 +718,7 @@ export class AgentSession {
 			this.abortCompaction();
 			this.abortBranchSummary();
 			this.abortBash();
+			this._invalidateNestedToolCalls();
 			this.agent.abort();
 		});
 
@@ -819,7 +827,12 @@ export class AgentSession {
 	private _capabilityViolation(toolName: string, args: Record<string, unknown>): string | undefined {
 		const lease = this._activeCapabilityLease;
 		if (!lease) return undefined;
-		if (!lease.allowedTools.includes(toolName)) return `当前 Turn 不允许使用工具：${toolName}`;
+		if (
+			!lease.allowedTools.includes(toolName) &&
+			!(toolName === CODEMODE_WAIT_TOOL_NAME && lease.allowedTools.includes(CODEMODE_TOOL_NAME))
+		) {
+			return `当前 Turn 不允许使用工具：${toolName}`;
+		}
 		if (["bash", "powershell"].includes(toolName) && lease.shell) {
 			return lease.shell === "disabled" ? "当前 Turn 已禁用 Shell" : "当前运行时没有可用的 Shell 沙箱";
 		}
@@ -1167,17 +1180,45 @@ export class AgentSession {
 		};
 	}
 
-	private async _executeNestedToolCall(
-		parentToolCallId: string,
-		name: string,
-		args: unknown,
-		options: ExecuteToolOptions,
-	): Promise<AgentToolCallOutcome> {
-		this._nestedToolCalls ??= new NestedToolCallRunner({
-			getTools: () => this._getCallableTools(),
-			isSequential: () => this.agent.toolExecution === "sequential",
+	private _getNestedToolCallRunner(): NestedToolCallRunner {
+		if (this._nestedToolCalls) return this._nestedToolCalls;
+
+		const generation = this._nestedToolCallGeneration;
+		const extensionRunner = this._extensionRunner;
+		this._nestedToolCallAbortController ??= new AbortController();
+		const lifetime = this._nestedToolCallAbortController;
+		const isCurrent = () => generation === this._nestedToolCallGeneration && !lifetime.signal.aborted;
+		this._nestedToolCalls = new NestedToolCallRunner({
+			getTools: () => (isCurrent() ? this._getCallableTools() : []),
+			isSequential: () => isCurrent() && this.agent.toolExecution === "sequential",
 			runToolCall: (toolCall, parentId, signal, onUpdate) => {
-				const assistantMessage = this._findLastAssistantMessage();
+				if (!isCurrent()) {
+					return Promise.resolve({
+						toolCall,
+						result: {
+							content: [{ type: "text", text: "Nested tool call belongs to an inactive session" }],
+							details: {},
+						},
+						isError: true,
+					});
+				}
+				const assistantMessage =
+					[...this._nestedToolCallAssistantMessages.entries()].find(
+						([id]) => id === parentId || parentId.startsWith(`${id}/`),
+					)?.[1] ??
+					this.agent.state.messages.findLast(
+						(message): message is AssistantMessage =>
+							message.role === "assistant" &&
+							message.content.some(
+								(block) =>
+									block.type === "toolCall" && (block.id === parentId || parentId.startsWith(`${block.id}/`)),
+							),
+					);
+				const rootCall = assistantMessage?.content.find(
+					(block) => block.type === "toolCall" && (block.id === parentId || parentId.startsWith(`${block.id}/`)),
+				);
+				if (rootCall?.type === "toolCall" && assistantMessage)
+					this._nestedToolCallAssistantMessages.set(rootCall.id, assistantMessage);
 				if (!assistantMessage) {
 					return Promise.resolve({
 						toolCall,
@@ -1189,18 +1230,60 @@ export class AgentSession {
 					tools: this._getCallableTools(),
 					assistantMessage,
 					context: { messages: this.agent.state.messages, tools: this.agent.state.tools },
-					beforeToolCall: (context) => this._beforeToolCall(context, parentId),
-					afterToolCall: (context) => this._afterToolCall(context, parentId),
+					beforeToolCall: async (context) => {
+						if (!isCurrent()) {
+							return { block: true, reason: "Session is no longer active", terminate: true };
+						}
+						return this._beforeToolCall(context, parentId);
+					},
+					afterToolCall: async (context) => (isCurrent() ? this._afterToolCall(context, parentId) : undefined),
 					signal,
 					onUpdate,
 				});
 			},
 			emit: async (event) => {
-				await this._extensionRunner.emit(event);
-				this._emit(event);
+				if (!isCurrent()) return;
+				await extensionRunner.emit(event);
+				if (isCurrent()) this._emit(event);
 			},
 		});
-		return this._nestedToolCalls.execute(parentToolCallId, name, args, options);
+		return this._nestedToolCalls;
+	}
+
+	private _invalidateNestedToolCalls(renewSignal = true): void {
+		this._nestedToolCallGeneration++;
+		this._nestedToolCallAbortController?.abort();
+		this._nestedToolCallAssistantMessages.clear();
+		this._nestedToolCalls?.clear();
+		this._nestedToolCalls = undefined;
+		this._nestedToolCallAbortController = renewSignal ? new AbortController() : undefined;
+	}
+
+	private async _executeNestedToolCall(
+		parentToolCallId: string,
+		name: string,
+		args: unknown,
+		options: ExecuteToolOptions,
+	): Promise<AgentToolCallOutcome> {
+		this._nestedToolCallAbortController ??= new AbortController();
+		const lifetime = this._nestedToolCallAbortController;
+		const signal = options.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal;
+		return this._getNestedToolCallRunner().execute(parentToolCallId, name, args, { ...options, signal });
+	}
+
+	private _wrapToolWithExecutionTargetLock(tool: AgentTool): AgentTool {
+		return {
+			...tool,
+			execute: async (toolCallId, params, signal, onUpdate) => {
+				this._nestedToolCallAbortController ??= new AbortController();
+				const lifetime = this._nestedToolCallAbortController;
+				const toolSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+				const keys = await tool.getExecutionKeys?.(params);
+				return this._executionTargetLock.run(keys, toolSignal, () =>
+					tool.execute(toolCallId, params, toolSignal, onUpdate),
+				);
+			},
+		};
 	}
 
 	/** Whether `projection`, the current session projection, exceeds the compaction threshold of `model`. */
@@ -1476,8 +1559,13 @@ export class AgentSession {
 		});
 	}
 
+	getExecutionStatus() {
+		return this._executionTracker.getStatus();
+	}
+
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
+		this._executionTracker.apply(event);
 		const activities = event.type === "tool_activity" ? [] : this._toolActivityTracker.apply(event);
 		for (const l of this._eventListeners) {
 			l(event);
@@ -1590,16 +1678,42 @@ export class AgentSession {
 			}
 		}
 		let queueId: string | undefined;
-		// Record nested tool calls and their usage on the parent tool result.
-		if (this._nestedToolCalls) {
-			if (event.type === "message_start" && event.message.role === "toolResult") {
-				const message = event.message;
-				const summary = this._nestedToolCalls.takeRecord(message.toolCallId);
+		if (event.type === "message_start" && event.message.role === "toolResult") {
+			const message = event.message;
+			const details =
+				message.details &&
+				typeof message.details === "object" &&
+				(message.toolName === CODEMODE_TOOL_NAME || message.toolName === CODEMODE_WAIT_TOOL_NAME)
+					? (message.details as { status?: unknown; parentToolCallId?: unknown })
+					: undefined;
+			if (details?.status === "running" && typeof details.parentToolCallId === "string") {
+				this._getNestedToolCallRunner().retainRecord(details.parentToolCallId);
+			} else if (this._nestedToolCalls) {
+				const transferFromToolCallId =
+					details &&
+					(details.status === "completed" || details.status === "failed") &&
+					typeof details.parentToolCallId === "string"
+						? details.parentToolCallId
+						: undefined;
+				const summary = this._nestedToolCalls.takeRecord(message.toolCallId, transferFromToolCallId);
 				if (summary?.calls) message.nestedCalls = summary.calls;
 				if (summary?.usage)
 					message.usage = message.usage ? combineUsage(message.usage, summary.usage) : summary.usage;
-			} else if (event.type === "agent_end") {
-				this._nestedToolCalls.clear();
+			}
+			if (details?.status !== "running") {
+				this._nestedToolCallAssistantMessages.delete(message.toolCallId);
+				if (typeof details?.parentToolCallId === "string")
+					this._nestedToolCallAssistantMessages.delete(details.parentToolCallId);
+			}
+		} else if (event.type === "agent_end") {
+			const latestAssistant = event.messages.findLast((message) => message.role === "assistant");
+			if (
+				this._agentRunAbortRequested ||
+				(latestAssistant?.role === "assistant" && latestAssistant.stopReason === "aborted")
+			) {
+				this._invalidateNestedToolCalls();
+			} else {
+				this._nestedToolCalls?.clearUnretained();
 			}
 		}
 		// When a user message starts, remove the exact queued object before notifying listeners.
@@ -1907,6 +2021,7 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		try {
+			this._invalidateNestedToolCalls(false);
 			const commandSignal = this._commandSignals.getStore();
 			for (const controller of this._inputAbortControllers) {
 				if (controller.signal !== commandSignal) controller.abort();
@@ -2098,6 +2213,12 @@ export class AgentSession {
 	private _isAllowedTool(name: string): boolean {
 		if (this._excludedTools?.(name)) return false;
 		if (!this._allowedTools || this._allowedTools(name)) return true;
+		if (
+			name === CODEMODE_WAIT_TOOL_NAME &&
+			!this._excludedTools?.(CODEMODE_TOOL_NAME) &&
+			this._allowedTools(CODEMODE_TOOL_NAME)
+		)
+			return true;
 		return !this._allowlistFiltersMcp && isMcpToolName(name);
 	}
 
@@ -2138,6 +2259,9 @@ export class AgentSession {
 			const tool = this._toolRegistry.get(name);
 			return tool && this._getToolExposure(name) !== "hidden" && this._isActivatable(name) ? [tool] : [];
 		});
+		// 结果收取随 Codemode 启用，setActiveTools(["codemode"]) 也保留让出后的收取路径。
+		const wait = this._toolRegistry.get(CODEMODE_WAIT_TOOL_NAME);
+		if (tools.some(isCodemodeTool) && wait && !tools.includes(wait)) tools.push(wait);
 		const hooks = tools.flatMap((tool) => {
 			const entry = this._toolDefinitions.get(tool.name);
 			return entry?.definition.prepareLoadout ? [entry] : [];
@@ -3278,6 +3402,7 @@ export class AgentSession {
 		if (this._isAgentRunActive || this._inputAbortControllers.size > 0) {
 			this._agentRunAbortRequested = true;
 		}
+		this._invalidateNestedToolCalls();
 		const commandSignal = this._commandSignals.getStore();
 		for (const controller of this._inputAbortControllers) {
 			if (controller.signal !== commandSignal) controller.abort();
@@ -4366,6 +4491,7 @@ export class AgentSession {
 					this._autoCompactionAbortController?.signal ??
 					this._branchSummaryAbortController?.signal ??
 					this.agent.signal,
+				getSteeringSignal: () => this.agent.steeringSignal,
 				abort: () => {
 					if (this._extensionAbortHandler) {
 						this._extensionAbortHandler();
@@ -4485,16 +4611,18 @@ export class AgentSession {
 			runner,
 		);
 
-		if (!this._baseToolsOverride) {
-			for (const tool of wrappedBuiltInTools) registerBuiltInToolIdentity(tool);
-			for (const [index, tool] of wrappedExtensionTools.entries()) {
-				if (allCustomTools[index]?.sourceInfo.source === "builtin") registerBuiltInToolIdentity(tool);
-			}
+		const toolRegistry = new Map<string, AgentTool>();
+		for (const tool of wrappedBuiltInTools) {
+			const lockedTool = this._wrapToolWithExecutionTargetLock(tool);
+			if (!this._baseToolsOverride) registerBuiltInToolIdentity(lockedTool);
+			toolRegistry.set(lockedTool.name, lockedTool);
 		}
-
-		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
-		for (const tool of wrappedExtensionTools as AgentTool[]) {
-			toolRegistry.set(tool.name, tool);
+		for (const [index, tool] of (wrappedExtensionTools as AgentTool[]).entries()) {
+			const lockedTool = this._wrapToolWithExecutionTargetLock(tool);
+			if (!this._baseToolsOverride && allCustomTools[index]?.sourceInfo.source === "builtin") {
+				registerBuiltInToolIdentity(lockedTool);
+			}
+			toolRegistry.set(lockedTool.name, lockedTool);
 		}
 		this._toolRegistry = toolRegistry;
 
@@ -4593,6 +4721,7 @@ export class AgentSession {
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		this._invalidateNestedToolCalls();
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await this.emitSessionShutdownEvent({ type: "session_shutdown", reason: "reload" });
@@ -5038,6 +5167,7 @@ export class AgentSession {
 				newLeafId = targetId;
 			}
 
+			this._invalidateNestedToolCalls();
 			// Switch leaf (with or without summary)
 			// Summary is attached at the navigation target position (newLeafId), not the old branch
 			let summaryEntry: BranchSummaryEntry | undefined;

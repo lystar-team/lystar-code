@@ -75,15 +75,13 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 	const decision = options.forcePrompt ? null : options.trustStore.get(options.cwd);
 	if (decision !== null) return decision;
 
-	if (!options.forcePrompt) {
-		switch (options.defaultProjectTrust ?? "ask") {
-			case "always":
-				return true;
-			case "never":
-				return false;
-			case "ask":
-				break;
-		}
+	switch (options.defaultProjectTrust ?? "ask") {
+		case "always":
+			return true;
+		case "never":
+			return false;
+		case "ask":
+			break;
 	}
 
 	if (!options.projectTrustContext.hasUI) return false;

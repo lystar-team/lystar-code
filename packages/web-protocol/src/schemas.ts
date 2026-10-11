@@ -419,7 +419,32 @@ const QueueMessageSchema = StrictObject({
 });
 export type QueueMessage = Static<typeof QueueMessageSchema>;
 
+export const SessionExecutionStatusSchema = StrictObject({
+	phase: Type.Union([
+		Type.Literal("preparing"),
+		Type.Literal("waiting_model"),
+		Type.Literal("thinking"),
+		Type.Literal("responding"),
+		Type.Literal("tool"),
+		Type.Literal("compaction"),
+		Type.Literal("retry"),
+		Type.Literal("waiting_input"),
+		Type.Literal("finishing"),
+		Type.Literal("idle"),
+	]),
+	startedAt: Type.Optional(Type.Integer({ minimum: 0 })),
+	phaseStartedAt: Type.Integer({ minimum: 0 }),
+	lastProgressAt: Type.Integer({ minimum: 0 }),
+	lastModelEventAt: Type.Optional(Type.Integer({ minimum: 0 })),
+	toolName: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+	retryAttempt: Type.Optional(Type.Integer({ minimum: 1 })),
+	retryMaxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
+	retryAt: Type.Optional(Type.Integer({ minimum: 0 })),
+});
+export type SessionExecutionStatus = Static<typeof SessionExecutionStatusSchema>;
+
 export const SessionProgressSchema = Type.Union([
+	StrictObject({ type: Type.Literal("execution"), execution: SessionExecutionStatusSchema }),
 	StrictObject({
 		type: Type.Literal("user_message"),
 		text: ProgressTextSchema,
@@ -539,6 +564,8 @@ export const SessionStateSnapshotSchema = StrictObject({
 	updatedAt: Type.Integer({ minimum: 0 }),
 	phase: SessionPhaseSchema,
 	activity: SessionActivitySchema,
+	execution: Type.Optional(SessionExecutionStatusSchema),
+	observedAt: Type.Optional(Type.Integer({ minimum: 0 })),
 	model: Type.Optional(ModelRefSchema),
 	thinkingLevel: ThinkingLevelSchema,
 	fastMode: Type.Optional(Type.Boolean()),
@@ -702,6 +729,14 @@ const ExtensionNotificationSchema = StrictObject({
 });
 export type ExtensionNotification = Static<typeof ExtensionNotificationSchema>;
 
+const ExtensionInputSchema = StrictObject({
+	text: TranscriptViewTextSchema,
+	contentRef: Type.Optional(Id),
+	images: Type.Optional(Type.Array(TranscriptImageSchema, { maxItems: 32 })),
+	files: Type.Optional(Type.Array(TranscriptFileSchema, { maxItems: 32 })),
+});
+export type ExtensionInput = Static<typeof ExtensionInputSchema>;
+
 // Web Runtime 投影是 Web client 的 transcript 输入；payload 用于协议内部完整回放。
 export const TranscriptViewItemSchema = Type.Union([
 	StrictObject({
@@ -752,6 +787,7 @@ export const TranscriptViewItemSchema = Type.Union([
 		customType: Type.String({ minLength: 1, maxLength: 16_384 }),
 		details: Type.Optional(TranscriptViewTextSchema),
 		notification: Type.Optional(ExtensionNotificationSchema),
+		input: Type.Optional(ExtensionInputSchema),
 	}),
 	StrictObject({
 		type: Type.Literal("extension_activity"),

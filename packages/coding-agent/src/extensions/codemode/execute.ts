@@ -3,6 +3,7 @@
  * execute.lazy.ts so the sandbox runtime only loads when a script runs.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AgentTool, AgentToolCallOutcome, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	AnyModel,
@@ -482,8 +483,11 @@ export async function executeCodemode(
 		modelUsage = modelUsage ? combineUsage(modelUsage, usage) : usage;
 	};
 
+	let shouldPublishProgress = true;
 	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
-	const publish = () => onUpdate?.({ content: [], details: snapshot() });
+	const publish = () => {
+		if (shouldPublishProgress) onUpdate?.({ content: [], details: snapshot() });
+	};
 
 	const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
 	// ALL_TOOLS entries carry the declaration.
@@ -582,6 +586,8 @@ export async function executeCodemode(
 		},
 	}));
 
+	const executionRegistry = options.executionRegistry;
+	const steeringSignal = executionRegistry ? ctx?.steeringSignal : undefined;
 	const sandbox = new CodemodeSandbox({
 		tools: sandboxTools,
 		globals: [
@@ -596,54 +602,87 @@ export async function executeCodemode(
 		workerUrl: getCodemodeWorkerSpecifier(),
 	});
 
-	let result: CodemodeResult;
+	let store: Record<string, unknown>;
 	try {
-		const store = ctx ? readCodemodeStore(ctx.sessionManager.getBranch()) : {};
-		result = await sandbox.execute(code, { signal, store });
-	} finally {
+		store = ctx ? readCodemodeStore(ctx.sessionManager.getBranch()) : {};
+	} catch (error) {
 		await sandbox.close();
+		throw error;
 	}
-	// Calls still marked running were cut off by the script ending, a timeout, or an abort.
-	for (const call of calls) {
-		if (call.status === "running") call.status = "cancelled";
-	}
+	const execution = sandbox.start(code, { signal, steeringSignal, store });
 
-	const scriptOutput = [...result.output];
-	if (result.ok) {
-		const { set, delete: deleted } = result.storeWrites;
-		if (Object.keys(set).length > 0 || deleted.length > 0) {
-			options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, { set, delete: deleted });
+	const completeExecution = async (result: CodemodeResult): Promise<AgentToolResult<CodemodeToolDetails>> => {
+		await sandbox.close();
+		// Calls still marked running were cut off by the script ending, a timeout, or an abort.
+		for (const call of calls) {
+			if (call.status === "running") call.status = "cancelled";
 		}
-		// pi extension: a returned value is appended like text().
-		if (result.value !== undefined) scriptOutput.push({ type: "text", text: valueText(result.value) });
-	}
-	const items = formatOutput(scriptOutput);
-	if (!result.ok) items.push({ type: "text", text: `Script error:\n${formatError(result, calls)}` });
-	if (generatedImages > 0 && !items.some((item) => item.type === "image")) {
-		items.push({
-			type: "text",
-			text: `Note: models.generateImages() returned ${generatedImages} image${generatedImages === 1 ? "" : "s"} that the script did not show. Show each image block of result.output with image(block).`,
-		});
-	}
 
-	const truncated = await truncateOutput(
-		joinAdjacentText(items),
-		sourceOptions.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-	);
-	// After truncation, which joins the text items and moves images after them, so each path stays
-	// next to its image and is never cut.
-	const output = joinAdjacentText(await saveImages(truncated.items));
-	const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
-	const header = `${result.ok ? "Script completed" : "Script failed"}\nWall time ${wallTime} seconds\nOutput:\n`;
-	const details = snapshot();
-	if (truncated.fullOutputPath) details.fullOutputPath = truncated.fullOutputPath;
-	return {
-		content: [{ type: "text", text: header }, ...output],
-		details,
-		...(modelUsage ? { usage: modelUsage } : {}),
-		...(terminate ? { terminate: true } : {}),
-		...(result.ok ? {} : { isError: true }),
+		const scriptOutput = [...result.output];
+		if (result.ok && !signal?.aborted) {
+			const { set, delete: deleted } = result.storeWrites;
+			if (Object.keys(set).length > 0 || deleted.length > 0) {
+				options.appendEntry?.(CODEMODE_STORE_ENTRY_TYPE, { set, delete: deleted });
+			}
+			// pi extension: a returned value is appended like text().
+			if (result.value !== undefined) scriptOutput.push({ type: "text", text: valueText(result.value) });
+		}
+		const items = formatOutput(scriptOutput);
+		if (!result.ok) items.push({ type: "text", text: `Script error:\n${formatError(result, calls)}` });
+		if (generatedImages > 0 && !items.some((item) => item.type === "image")) {
+			items.push({
+				type: "text",
+				text: `Note: models.generateImages() returned ${generatedImages} image${generatedImages === 1 ? "" : "s"} that the script did not show. Show each image block of result.output with image(block).`,
+			});
+		}
+
+		const truncated = await truncateOutput(
+			joinAdjacentText(items),
+			sourceOptions.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+		);
+		// After truncation, which joins the text items and moves images after them, so each path stays
+		// next to its image and is never cut.
+		const output = joinAdjacentText(await saveImages(truncated.items));
+		const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
+		const header = `${result.ok ? "Script completed" : "Script failed"}\nWall time ${wallTime} seconds\nOutput:\n`;
+		const details = snapshot();
+		if (truncated.fullOutputPath) details.fullOutputPath = truncated.fullOutputPath;
+		return {
+			content: [{ type: "text", text: header }, ...output],
+			details,
+			...(modelUsage ? { usage: modelUsage } : {}),
+			...(terminate ? { terminate: true } : {}),
+			...(result.ok ? {} : { isError: true }),
+		};
 	};
+
+	const outcome = await Promise.race([
+		execution.result.then((result) => ({ type: "completed" as const, result })),
+		execution.yielded.then(async (yielded) => {
+			if (yielded) return { type: "yielded" as const };
+			return { type: "completed" as const, result: await execution.result };
+		}),
+	]);
+	if (outcome.type === "yielded") {
+		shouldPublishProgress = false;
+		if (!ctx || !executionRegistry) {
+			return completeExecution(await execution.abort("No execution registry is configured"));
+		}
+
+		const executionId = randomUUID();
+		const finalResult = execution.result.then(completeExecution);
+		return executionRegistry.register(
+			ctx.sessionManager.getSessionId(),
+			executionId,
+			toolCallId,
+			finalResult,
+			async (reason) => {
+				await execution.abort(reason);
+			},
+			snapshot,
+		);
+	}
+	return completeExecution(outcome.result);
 }
 
 /**

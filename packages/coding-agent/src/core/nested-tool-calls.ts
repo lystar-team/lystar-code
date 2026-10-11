@@ -8,6 +8,7 @@
  * Nothing here runs until a tool calls `ctx.executeTool()`.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	AgentTool,
 	AgentToolCall,
@@ -16,6 +17,7 @@ import type {
 	AgentToolUpdateCallback,
 } from "@earendil-works/pi-agent-core";
 import type { JsonObject, NestedToolCallRecord, NestedToolCalls, TextContent, Usage } from "@earendil-works/pi-ai";
+import { raceWithAbortSignal } from "../utils/abort.ts";
 import { combineUsage } from "./usage-totals.ts";
 
 /**
@@ -31,6 +33,140 @@ export const NESTED_CALL_LIMITS = {
 } as const;
 
 const encoder = new TextEncoder();
+
+interface ExecutionOwner {
+	parent?: ExecutionOwner;
+}
+
+interface ExecutionTargetLease {
+	owner: ExecutionOwner;
+	parent?: ExecutionTargetLease;
+	released: boolean;
+}
+
+interface ExecutionTargetWaiter {
+	owner: ExecutionOwner;
+	resolve: (release: () => void) => void;
+	cancelled: boolean;
+	release?: () => void;
+}
+
+interface ExecutionTargetState {
+	active?: ExecutionTargetLease;
+	waiters: ExecutionTargetWaiter[];
+}
+
+/** 按共享目标键串行执行工具；同一调用链可重入，不同调用链按键排队。 */
+export class ExecutionTargetLock {
+	private readonly owners = new AsyncLocalStorage<ExecutionOwner>();
+	private readonly locks = new Map<string, ExecutionTargetState>();
+
+	async run<T>(
+		keys: readonly string[] | undefined,
+		signal: AbortSignal | undefined,
+		operation: () => Promise<T>,
+	): Promise<T> {
+		const owner: ExecutionOwner = { parent: this.owners.getStore() };
+		return this.owners.run(owner, async () => {
+			signal?.throwIfAborted();
+			const releases: Array<() => void> = [];
+			try {
+				for (const key of [...new Set(keys ?? [])].sort()) {
+					releases.push(await this.acquire(key, owner, signal));
+				}
+				signal?.throwIfAborted();
+				return await operation();
+			} finally {
+				for (let index = releases.length - 1; index >= 0; index--) releases[index]?.();
+			}
+		});
+	}
+
+	private async acquire(key: string, owner: ExecutionOwner, signal: AbortSignal | undefined): Promise<() => void> {
+		signal?.throwIfAborted();
+		let state = this.locks.get(key);
+		if (!state) {
+			state = { waiters: [] };
+			const lease: ExecutionTargetLease = { owner, released: false };
+			state.active = lease;
+			this.locks.set(key, state);
+			return this.createRelease(key, state, lease);
+		}
+
+		if (state.active && this.isAncestor(state.active.owner, owner)) {
+			const lease: ExecutionTargetLease = { owner, parent: state.active, released: false };
+			state.active = lease;
+			return this.createRelease(key, state, lease);
+		}
+
+		let resolveWaiter!: (release: () => void) => void;
+		const promise = new Promise<() => void>((resolve) => {
+			resolveWaiter = resolve;
+		});
+		const waiter: ExecutionTargetWaiter = { owner, resolve: resolveWaiter, cancelled: false };
+		state.waiters.push(waiter);
+		try {
+			return await raceWithAbortSignal(promise, signal);
+		} catch (error) {
+			waiter.cancelled = true;
+			waiter.release?.();
+			this.grantNext(key, state);
+			throw error;
+		}
+	}
+
+	private createRelease(key: string, state: ExecutionTargetState, lease: ExecutionTargetLease): () => void {
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			lease.released = true;
+			if (state.active !== lease) return;
+			while (state.active?.released) state.active = state.active.parent;
+			if (state.active) this.grantDescendant(key, state);
+			else this.grantNext(key, state);
+		};
+	}
+
+	private grantDescendant(key: string, state: ExecutionTargetState): void {
+		const active = state.active;
+		if (!active) return;
+		const index = state.waiters.findIndex(
+			(waiter) => !waiter.cancelled && this.isAncestor(active.owner, waiter.owner),
+		);
+		if (index === -1) return;
+		const [waiter] = state.waiters.splice(index, 1);
+		if (!waiter) return;
+
+		const lease: ExecutionTargetLease = { owner: waiter.owner, parent: active, released: false };
+		state.active = lease;
+		const release = this.createRelease(key, state, lease);
+		waiter.release = release;
+		waiter.resolve(release);
+	}
+
+	private grantNext(key: string, state: ExecutionTargetState): void {
+		if (state.active) return;
+		while (state.waiters.length > 0) {
+			const waiter = state.waiters.shift();
+			if (!waiter || waiter.cancelled) continue;
+			const lease: ExecutionTargetLease = { owner: waiter.owner, released: false };
+			state.active = lease;
+			const release = this.createRelease(key, state, lease);
+			waiter.release = release;
+			waiter.resolve(release);
+			return;
+		}
+		if (this.locks.get(key) === state) this.locks.delete(key);
+	}
+
+	private isAncestor(ancestor: ExecutionOwner, owner: ExecutionOwner): boolean {
+		for (let current = owner.parent; current; current = current.parent) {
+			if (current === ancestor) return true;
+		}
+		return false;
+	}
+}
 
 /** What the nested calls of one model-issued tool call leave on its tool result message. */
 export interface NestedCallSummary {
@@ -149,6 +285,8 @@ interface CallScope {
 	nextId: number;
 	/** Set inside a call that holds the exclusive queue, so its own nested calls do not wait on it. */
 	holdsQueue: boolean;
+	/** A running background parent keeps its recorder and call ID sequence across agent_end. */
+	retained: boolean;
 }
 
 function textOf(result: AgentToolResult<unknown>): string {
@@ -162,6 +300,7 @@ export class NestedToolCallRunner {
 	private readonly host: NestedToolCallHost;
 	/** Scopes by the id of the calling tool call. */
 	private readonly scopes = new Map<string, CallScope>();
+	private readonly retainedCallIds = new Set<string>();
 	/** Serializes nested calls that must not run concurrently. */
 	private queueTail: Promise<void> = Promise.resolve();
 
@@ -181,7 +320,12 @@ export class NestedToolCallRunner {
 	): Promise<AgentToolCallOutcome> {
 		let scope = this.scopes.get(callerId);
 		if (!scope) {
-			scope = { recorder: new NestedCallRecorder(), nextId: 1, holdsQueue: false };
+			scope = {
+				recorder: new NestedCallRecorder(),
+				nextId: 1,
+				holdsQueue: false,
+				retained: this.retainedCallIds.has(callerId),
+			};
 			this.scopes.set(callerId, scope);
 		}
 		const toolCall: AgentToolCall = {
@@ -215,6 +359,7 @@ export class NestedToolCallRunner {
 			recorder: scope.recorder,
 			nextId: 1,
 			holdsQueue: scope.holdsQueue || exclusive,
+			retained: scope.retained,
 		});
 		let outcome: AgentToolCallOutcome;
 		try {
@@ -249,15 +394,64 @@ export class NestedToolCallRunner {
 		return outcome;
 	}
 
-	/** Remove and return the record of the nested calls a model-issued call made. */
-	takeRecord(toolCallId: string): NestedCallSummary | undefined {
+	/** 标记后台调用，使其 recorder 和 ID 序列跨普通 agent_end 保留。 */
+	retainRecord(toolCallId: string): void {
+		this.retainedCallIds.add(toolCallId);
 		const scope = this.scopes.get(toolCallId);
-		this.scopes.delete(toolCallId);
-		if (!scope) return undefined;
-		return { calls: scope.recorder.snapshot(), usage: scope.recorder.totalUsage };
+		if (!scope) return;
+		for (const current of this.scopes.values()) {
+			if (current.recorder === scope.recorder) current.retained = true;
+		}
+	}
+
+	/** 取走当前调用记录；wait 终态可以同时迁移原后台调用的记录。 */
+	takeRecord(toolCallId: string, transferFromToolCallId?: string): NestedCallSummary | undefined {
+		const toolCallIds = new Set([toolCallId, ...(transferFromToolCallId ? [transferFromToolCallId] : [])]);
+		const recorders = new Set<NestedCallRecorder>();
+		for (const id of toolCallIds) {
+			const scope = this.scopes.get(id);
+			if (scope) recorders.add(scope.recorder);
+			this.retainedCallIds.delete(id);
+		}
+		if (recorders.size === 0) {
+			for (const id of toolCallIds) this.scopes.delete(id);
+			return undefined;
+		}
+
+		for (const [id, scope] of this.scopes) {
+			if (recorders.has(scope.recorder)) {
+				this.scopes.delete(id);
+				this.retainedCallIds.delete(id);
+			}
+		}
+
+		const summaries = [...recorders].map((recorder) => ({
+			calls: recorder.snapshot(),
+			usage: recorder.totalUsage,
+		}));
+		const hasCalls = summaries.some((summary) => summary.calls !== undefined);
+		const calls: NestedToolCalls | undefined = hasCalls
+			? {
+					calls: summaries.flatMap((summary) => summary.calls?.calls ?? []),
+					complete: summaries.every((summary) => summary.calls?.complete ?? true),
+				}
+			: undefined;
+		let usage: Usage | undefined;
+		for (const summary of summaries) {
+			if (summary.usage) usage = usage ? combineUsage(usage, summary.usage) : summary.usage;
+		}
+		return { calls, usage };
+	}
+
+	/** 只清理普通已结束调用，保留仍由后台任务持有的 recorder。 */
+	clearUnretained(): void {
+		for (const [id, scope] of this.scopes) {
+			if (!scope.retained) this.scopes.delete(id);
+		}
 	}
 
 	clear(): void {
 		this.scopes.clear();
+		this.retainedCallIds.clear();
 	}
 }

@@ -286,15 +286,18 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
 	 *
-	 * Called after the current assistant turn finishes executing its tool calls, unless `finishTurn` ends the run.
-	 * If messages are returned, they are added to the context before the next LLM call.
-	 * Tool calls from the current assistant message are not skipped.
+	 * Called at queue drain points, including after a request is preempted by `getSteeringSignal`.
+	 * Returned messages are added to the context before the next LLM call.
+	 * Already-started ordinary tool calls are not cancelled by steering.
 	 *
 	 * Use this for "steering" the agent while it's working.
 	 *
 	 * Contract: must not throw or reject. Return [] when no steering messages are available.
 	 */
 	getSteeringMessages?: () => Promise<AgentMessage[]>;
+
+	/** 返回当前插话通知信号；与整个运行的停止信号分开。 */
+	getSteeringSignal?: () => AbortSignal | undefined;
 
 	/**
 	 * Returns follow-up messages to process after the agent would otherwise stop.
@@ -538,6 +541,7 @@ export type AgentEvent =
 	| { type: "agent_end"; messages: AgentMessage[] }
 	// Turn lifecycle - a turn is one assistant response + any tool calls/results
 	| { type: "turn_start" }
+	| { type: "request_phase"; phase: "preparing" | "waiting_model" | "finishing"; at: number }
 	| { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
 	// Message lifecycle - emitted for system, user, assistant, and toolResult messages
 	| { type: "message_start"; message: AgentMessage }

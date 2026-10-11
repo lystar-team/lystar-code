@@ -62,6 +62,8 @@ export function useWorkbenchProgressActions({
 					current = { ...current, session: { ...current.session, activity } };
 				}
 				switch (progress.type) {
+					case "execution":
+						return current.session ? { ...current, session: { ...current.session, execution: progress.execution } } : current;
 					case "assistant_delta":
 						return {
 							...current,

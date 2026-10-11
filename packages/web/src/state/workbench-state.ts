@@ -322,6 +322,7 @@ export function sessionActivityFromProgress(progress: SessionProgress): "running
 				progress.activity.state === "interrupted"
 				? undefined
 				: "running";
+		case "execution":
 		case "queue_update":
 		case "status":
 		case "usage":

@@ -9,6 +9,7 @@ type WaitInput = Parameters<SessionCoordinator["wait"]>[0];
 export function observeSessionWait(options: {
 	read: () => Promise<SessionCoordinatorSummary[]>;
 	subscribe: (changed: () => void) => () => void;
+	hasPendingInput?: () => boolean;
 	signal: AbortSignal;
 	onProgress: WaitInput["onProgress"];
 }): Promise<SessionCoordinatorSummary[]> {
@@ -49,11 +50,13 @@ export function observeSessionWait(options: {
 				const sessions = await options.read();
 				if (settled) return;
 				options.signal.throwIfAborted();
-				const state = sessions.some((session) => session.activity === "waiting_for_input")
+				const state = options.hasPendingInput?.()
 					? "needs_input"
-					: sessions.some((session) => session.activity !== "running")
-						? "completed"
-						: "waiting";
+					: sessions.some((session) => session.activity === "waiting_for_input")
+						? "needs_input"
+						: sessions.some((session) => session.activity !== "running")
+							? "completed"
+							: "waiting";
 				options.onProgress?.({ state, elapsedMs: Math.round(performance.now() - startedAt), sessions });
 				if (state !== "waiting") {
 					settled = true;

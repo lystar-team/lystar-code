@@ -69,10 +69,16 @@ import {
 	classifierErrorResult,
 	imageErrorResult,
 } from "@earendil-works/pi-ai/utils/model-operations";
+import {
+	loadModelsDevCatalog,
+	type ModelsDevCatalog,
+	type ModelsDevModelMetadata,
+} from "@earendil-works/pi-ai/utils/models-dev";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
-import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
-import { ModelConfig, type ModelsJsonImageModelProviders } from "./model-config.ts";
+import { AuthStorage as DefaultAuthStorage, FileAuthStorageBackend } from "./auth-storage.ts";
+import { ModelConfig, type ModelsJsonImageModelProviders, setModelsJsonModelDisabled } from "./model-config.ts";
+import { ModelMetadataStore, withModelMetadata } from "./model-metadata.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import { getProviderAttributionHeaders } from "./provider-attribution.ts";
 import {
@@ -189,6 +195,9 @@ export class ModelRuntime implements Models {
 	private readonly compositionErrors = new Map<string, string>();
 	private readonly modelsPath: string | undefined;
 	private readonly modelNetworkEnabled: boolean;
+	private readonly metadataStore: ModelMetadataStore | undefined;
+	private modelsDevCatalog: ModelsDevCatalog | undefined;
+	private modelConfigurationOperation: Promise<void> = Promise.resolve();
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = {
 		all: [],
@@ -216,6 +225,9 @@ export class ModelRuntime implements Models {
 		this.config = config;
 		this.modelsPath = modelsPath;
 		this.modelNetworkEnabled = modelNetworkEnabled;
+		this.metadataStore = modelsPath
+			? new ModelMetadataStore(new FileAuthStorageBackend(join(dirname(modelsPath), "models-dev-cache.json")))
+			: undefined;
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore, authContext });
@@ -250,6 +262,7 @@ export class ModelRuntime implements Models {
 			providers,
 			process.env.PI_OFFLINE === undefined,
 		);
+		runtime.modelsDevCatalog = await runtime.metadataStore?.read(options.signal);
 		runtime.configureRadiusProviders();
 		runtime.rebuildProviders();
 		const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
@@ -300,7 +313,16 @@ export class ModelRuntime implements Models {
 
 	/** Returns the provider without virtual models, or undefined when only virtual models define it. */
 	private recomposeProvider(providerId: string): Provider | undefined {
-		const provider = this.composeProvider(providerId);
+		const composed = this.composeProvider(providerId);
+		const provider =
+			composed && !this.nativeExtensionProviders.has(providerId)
+				? withModelMetadata(
+						composed,
+						() => this.modelsDevCatalog,
+						this.config.getProvider(providerId),
+						this.extensionProviders.get(providerId),
+					)
+				: composed;
 		const virtualModels = [...(this.virtualModels.get(providerId)?.values() ?? [])].map((entry) => entry.model);
 		if (virtualModels.length > 0) this.models.setProvider(withVirtualModels(providerId, provider, virtualModels));
 		else if (provider) this.models.setProvider(provider);
@@ -899,6 +921,69 @@ export class ModelRuntime implements Models {
 		});
 	}
 
+	getModelMetadata(providerId: string, modelId: string): ModelsDevModelMetadata | undefined {
+		return this.modelsDevCatalog?.find(modelId, this.config.getProvider(providerId)?.catalogProvider ?? providerId);
+	}
+
+	async applyModelMetadata(catalog: ModelsDevCatalog, signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
+		if (catalog === this.modelsDevCatalog) return;
+		await this.metadataStore?.write(catalog, signal);
+		signal?.throwIfAborted();
+		this.modelsDevCatalog = catalog;
+		const availableIds = new Set(this.snapshot.available.map((model) => `${model.provider}\0${model.id}`));
+		const all = [...this.models.getModels()];
+		this.snapshot = {
+			...this.snapshot,
+			all,
+			available: all.filter((model) => availableIds.has(`${model.provider}\0${model.id}`)),
+		};
+	}
+
+	/** 开关只更新目标供应商的目录，不重新获取认证或刷新远端目录。 */
+	setModelEnabled(providerId: string, modelId: string, enabled: boolean): Promise<void> {
+		const operation = this.modelConfigurationOperation
+			.catch(() => {})
+			.then(() =>
+				this.enqueueCredentialOperation(providerId, operationSignal(), async () => {
+					if (!this.modelsPath) throw new Error("模型开关需要 models.json 配置路径");
+					const provider = this.models.getProvider(providerId);
+					if (!provider) throw new Error(`未找到 Provider：${providerId}`);
+					const config = this.config.getProvider(providerId);
+					if (!this.models.getModel(providerId, modelId) && !config?.disabledModels?.includes(modelId)) {
+						throw new Error(`未找到模型：${providerId}/${modelId}`);
+					}
+					const credential = provider.filterModels ? await this.credentials.read(providerId) : undefined;
+					await setModelsJsonModelDisabled(this.modelsPath, providerId, modelId, !enabled);
+					this.config = await ModelConfig.load(this.modelsPath);
+					const configError = this.config.getError();
+					if (configError) throw new Error(configError);
+					this.recomposeProvider(providerId);
+					const compositionError = this.compositionErrors.get(providerId);
+					if (compositionError) throw new Error(compositionError);
+					++this.availabilityRefreshSeq;
+					const updatedProvider = this.models.getProvider(providerId);
+					const models = updatedProvider?.getModels() ?? [];
+					const available = this.snapshot.configuredProviders.has(providerId)
+						? (updatedProvider?.filterModels?.(models, credential) ?? models)
+						: [];
+					const availableIds = new Set(
+						[...this.snapshot.available.filter((model) => model.provider !== providerId), ...available].map(
+							(model) => `${model.provider}\0${model.id}`,
+						),
+					);
+					const all = [...this.models.getModels()];
+					this.snapshot = {
+						...this.snapshot,
+						all,
+						available: all.filter((model) => availableIds.has(`${model.provider}\0${model.id}`)),
+					};
+				}),
+			);
+		this.modelConfigurationOperation = operation;
+		return operation;
+	}
+
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		this.config = await ModelConfig.load(this.modelsPath);
 		this.configureRadiusProviders();
@@ -912,13 +997,25 @@ export class ModelRuntime implements Models {
 			...options,
 			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
 		};
-		// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
-		// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.
-		const result = ((await this.models.refresh(refreshOptions)) as ModelsRefreshResult | undefined) ?? {
+		const metadataRefresh =
+			refreshOptions.allowNetwork && this.modelNetworkEnabled && (options.force || !this.modelsDevCatalog?.fresh)
+				? loadModelsDevCatalog({ signal: options.signal, force: options.force })
+						.then((catalog) => this.applyModelMetadata(catalog, options.signal))
+						.then(
+							() => undefined,
+							(error: unknown) => (error instanceof Error ? error : new Error(String(error))),
+						)
+				: Promise.resolve(undefined);
+		const [refreshed, metadataError] = await Promise.all([this.models.refresh(refreshOptions), metadataRefresh]);
+		// 保留既有 ModelsStore 版本的 void 返回值处理。
+		const result = (refreshed as ModelsRefreshResult | undefined) ?? {
 			aborted: refreshOptions.signal?.aborted ?? false,
 			errors: new Map(),
 		};
 		const errors = new Map(result.errors);
+		if (metadataError && !options.signal?.aborted) {
+			for (const providerId of options.providers ?? this.providerIds()) errors.set(providerId, metadataError);
+		}
 		this.updateModelSnapshot();
 		if (options.providers) {
 			await Promise.all(

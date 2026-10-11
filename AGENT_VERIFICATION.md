@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-10-09
+> 更新日期：2026-10-11
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -9,7 +9,15 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`，当前正式版本为 `1.1.0-lystar.3`，Tag `v1.1.0-lystar.3` 和 GitHub Release 已发布。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前工作区候选版本为 `1.1.0-lystar.9`，上一正式 Tag 为 `v1.1.0-lystar.8`。
+
+## 1.1.0-lystar.9 发行前验证（2026-10-11，Linux x64）
+
+- `npm run check`、`npm run build:offline` 和 `bash scripts/test-install-sh.sh` 通过。Web 打包报告超过 500 kB 的 chunk；Bun 编译器打印 directory mismatch 内部错误提示，但构建命令返回成功。
+- 定向测试：AI 12 项、Codemode 62 项、Coding Agent 27 项和 Web 18 项通过；Agent 38 项中 37 项通过，1 项旧事件序列断言失败。`./test.sh` 在 Web Runtime 的 372 项中 366 项通过、6 项失败，并报告 1 个 `SessionReadIndex.dispose` 未处理拒绝；失败涉及 models.dev 请求与测试 fetch mock 的交互、Session 列表缓存调用断言和 `display: false` Transcript 投影断言。未修改测试文件。
+- `bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data` 生成 `.9` Linux x64 归档；`sha256sum -c SHA256SUMS`、`lc --version`、`lc --help` 和 `PI_OFFLINE=1 lc --list-models` 通过。
+- 在 `/tmp` 的独立 tmux PTY 中启动发行二进制，默认模型 `gpt-6-luna` 返回 `RELEASE_SMOKE_OK`。本机已有 MCP 扩展重复注册 `/mcp` 的警告未影响回复，未修改用户配置。
+- 本机证据限于 Linux x64。Darwin ARM64/x64、Linux ARM64 和 Windows x64 将由本次 Tag 触发的原生 runner workflow 构建、校验并发布。
 
 ## 1.1.0-lystar.4 发行前验证（2026-10-09，Linux x64）
 

@@ -822,10 +822,34 @@ function projectTranscriptViews(
 		return [];
 	}
 	if (item.kind === "custom_message" || payload?.type === "custom_message") {
-		if (payload?.display !== true) return [];
-		const content = payload.content;
+		const content = payload?.content;
 		const images = imageMetadata(content);
 		const files = fileMetadata(content);
+		if (payload?.display !== true) {
+			if (typeof payload?.customType !== "string" || !payload.customType) return [];
+			const inputText =
+				typeof content === "string"
+					? content
+					: Array.isArray(content)
+						? content
+								.flatMap((part) => {
+									const block = record(part);
+									return typeof block?.text === "string" ? [block.text] : [];
+								})
+								.join("\n")
+						: promptText(content);
+			return [
+				{
+					type: "extension_entry",
+					customType: bounded(payload.customType),
+					input: {
+						text: inputText,
+						...(images.length > 0 ? { images } : {}),
+						...(files.length > 0 ? { files } : {}),
+					},
+				},
+			];
+		}
 		return [
 			{
 				type: "custom_message",

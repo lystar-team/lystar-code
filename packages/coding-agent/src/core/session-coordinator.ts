@@ -74,6 +74,7 @@ export interface SessionCoordinator {
 	wait(input: {
 		cwd: string;
 		sessionIds: string[];
+		callerSessionId?: string;
 		signal?: AbortSignal;
 		onProgress?: (progress: SessionWaitProgress) => void;
 	}): Promise<SessionCoordinatorSummary[]>;

@@ -14,6 +14,7 @@ import { PromptCompletionMenu, PromptCompletionProvider, PromptCompletionTextare
 import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputProvider, PromptInputSelect, PromptInputSelectContent, PromptInputSelectItem, PromptInputSelectTrigger, PromptInputSelectValue, PromptInputSubmit, PromptInputTools, usePromptInputAttachments, usePromptInputController } from "../ai-elements/prompt-input";
 import { ContextRing } from "./context-ring";
 import { ComposerSessionStats } from "./composer-session-stats";
+import { ComposerExecutionStatus } from "./composer-execution-status";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -130,6 +131,7 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.modelOptions === next.modelOptions &&
 		previous.providers === next.providers &&
 		previous.queuedUserPrompts === next.queuedUserPrompts &&
+		previous.pendingUiRequests === next.pendingUiRequests &&
 		previous.readOnly === next.readOnly &&
 		previous.session === next.session &&
 		previous.sessionId === next.sessionId &&
@@ -373,6 +375,9 @@ export const Composer = memo(function Composer({
 									selectedId={state.selectedSubagentId}
 									onOpen={(agentId) => void actions.openSubagent(agentId)}
 								/>
+							) : null}
+							{!inline && !roomMode && state.sessionId ? (
+								<ComposerExecutionStatus key={state.sessionId} state={state} />
 							) : null}
 							{activeEditRequest ? (
 								<div

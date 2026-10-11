@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent } from "./agent-session.ts";
+import type { SessionExecutionStatus } from "./session-execution.ts";
 import type { ToolActivitySnapshot } from "./tool-activity.ts";
 import type { WebConversationBlockMapping, WebConversationMessage } from "./web-conversation-stream.ts";
 
@@ -79,6 +80,8 @@ export interface WebCompanionSnapshot {
 	name?: string;
 	createdAt: number;
 	updatedAt: number;
+	observedAt?: number;
+	execution?: SessionExecutionStatus;
 	phase: "idle" | "turn" | "compaction" | "retry";
 	activity: "idle" | "running";
 	model?: { provider: string; id: string };

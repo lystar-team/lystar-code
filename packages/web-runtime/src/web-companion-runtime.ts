@@ -355,6 +355,8 @@ function snapshot(
 		...(value.name ? { name: value.name } : {}),
 		createdAt: value.createdAt,
 		updatedAt: value.updatedAt,
+		observedAt: value.observedAt,
+		execution: value.execution,
 		phase: value.phase,
 		activity: value.activity,
 		...(value.model ? { model: value.model } : {}),

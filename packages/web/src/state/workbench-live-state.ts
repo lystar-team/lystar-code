@@ -798,6 +798,7 @@ export function applySubagentProgress(
 			return { ...current, statusText: "正在运行命令" };
 		case "status":
 			return { ...current, statusText: progress.status };
+		case "execution":
 		case "usage":
 			return current;
 	}

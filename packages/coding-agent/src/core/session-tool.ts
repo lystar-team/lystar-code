@@ -235,6 +235,7 @@ export function createSessionWaitTool(
 			const sessions = await coordinator.wait({
 				cwd: collaborationCwd(ctx),
 				sessionIds: params.sessionIds,
+				callerSessionId: ctx.sessionManager.getSessionId(),
 				signal,
 				onProgress: (next) => {
 					progress = next;

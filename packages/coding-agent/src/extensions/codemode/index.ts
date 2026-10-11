@@ -8,7 +8,13 @@
 
 import type { ExtensionAPI, ExtensionFactory } from "../../core/extensions/types.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
-import { createCodemodeToolDefinition } from "./tool.ts";
+import { CodemodeExecutionRegistry } from "./execution-registry.ts";
+import {
+	CODEMODE_WAIT_TOOL_NAME,
+	type CodemodeToolOptions,
+	createCodemodeToolDefinition,
+	createCodemodeWaitToolDefinition,
+} from "./tool.ts";
 
 export interface CodemodeExtensionOptions {
 	/** Overrides the `codemode.mode` setting. */
@@ -30,18 +36,25 @@ function readInlineBudget(pi: ExtensionAPI): number | undefined {
 
 export function createCodemodeExtension(options: CodemodeExtensionOptions = {}): ExtensionFactory {
 	return (pi) => {
-		pi.registerTool({
-			...createCodemodeToolDefinition({
-				appendEntry: (customType, data) => pi.appendEntry(customType, data),
-				models: options.models ?? true,
-				getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
-				getToolGuidelines: () =>
-					new Map(pi.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
-				getMode: () => options.mode ?? readMode(pi),
-				getInlineBudget: () => options.inlineBudget ?? readInlineBudget(pi),
-			}),
-			defaultActive: false,
-		});
+		const executionRegistry = new CodemodeExecutionRegistry();
+		const toolOptions: CodemodeToolOptions = {
+			get executionRegistry() {
+				return pi.getActiveTools().includes(CODEMODE_WAIT_TOOL_NAME) ? executionRegistry : undefined;
+			},
+			appendEntry: (customType, data) => pi.appendEntry(customType, data),
+			models: options.models ?? true,
+			getToolNamespace: (name) => pi.getAllTools().find((tool) => tool.name === name)?.namespace,
+			getToolGuidelines: () =>
+				new Map(pi.getAllTools().map((tool) => [tool.name, tool.promptGuidelines ?? []] as const)),
+			getMode: () => options.mode ?? readMode(pi),
+			getInlineBudget: () => options.inlineBudget ?? readInlineBudget(pi),
+		};
+		pi.registerTool({ ...createCodemodeToolDefinition(toolOptions), defaultActive: false });
+		pi.registerTool(createCodemodeWaitToolDefinition(toolOptions));
+		pi.on("agent_start", (_event, ctx) => executionRegistry.startRun(ctx.sessionManager.getSessionId(), ctx.signal));
+		pi.on("agent_end", (_event, ctx) => executionRegistry.endRun(ctx.sessionManager.getSessionId()));
+		pi.on("session_tree", (_event, ctx) => executionRegistry.clearSession(ctx.sessionManager.getSessionId()));
+		pi.on("session_shutdown", (_event, ctx) => executionRegistry.clearSession(ctx.sessionManager.getSessionId()));
 	};
 }
 

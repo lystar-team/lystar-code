@@ -394,6 +394,8 @@ export interface ExecuteToolOptions {
  * created with `createBashTool()` and run in a plain `Agent` or called directly, gets no context.
  */
 export interface ExtensionToolContext extends ExtensionContext {
+	/** 插话时让出等待；脚本和嵌套工具仍使用 signal 控制停止。 */
+	readonly steeringSignal?: AbortSignal;
 	/** Tools {@link executeTool} can call. */
 	readonly tools: readonly AgentTool[];
 	/**
@@ -2264,6 +2266,8 @@ export interface ExtensionContextActions {
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
+	/** 当前插话通知，不取消整个运行。 */
+	getSteeringSignal?: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;

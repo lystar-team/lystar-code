@@ -1,4 +1,4 @@
-import type { ExtensionNotification, TranscriptCodemodeDetails, TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
+import type { ExtensionInput, ExtensionNotification, TranscriptCodemodeDetails, TranscriptSubagentRef, WebSearchProgress } from "@lystar/code-web-protocol";
 import type { WebTranscriptItem } from "../types.ts";
 
 export type ToolVisualState = "input-available" | "output-available" | "output-error";
@@ -66,7 +66,7 @@ export type SessionItemViewModel =
 	| { kind: "reasoning"; text: string; timestamp: string }
 	| { kind: "tools"; tools: TranscriptToolViewModel[]; timestamp: string }
 	| { kind: "code"; code: string; language: string; timestamp: string }
-	| { kind: "extension_entry"; customType: string; details?: string; notification?: ExtensionNotification; timestamp: string }
+	| { kind: "extension_entry"; customType: string; details?: string; notification?: ExtensionNotification; input?: ExtensionInput; timestamp: string }
 	| {
 			kind: "extension_activity";
 			activityId: string;
@@ -150,6 +150,7 @@ export function toSessionItemViewModel(
 			customType: view.customType,
 			...(view.details === undefined ? {} : { details: view.details }),
 			...(view.notification ? { notification: view.notification } : {}),
+			...(view.input ? { input: view.input } : {}),
 			timestamp: item.timestamp,
 		};
 	}

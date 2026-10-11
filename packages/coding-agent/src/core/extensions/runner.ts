@@ -419,6 +419,7 @@ export class ExtensionRunner {
 	private isIdleFn: () => boolean = () => true;
 	private isProjectTrustedFn: () => boolean = () => true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
+	private getSteeringSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
@@ -513,6 +514,7 @@ export class ExtensionRunner {
 		this.isIdleFn = contextActions.isIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
+		this.getSteeringSignalFn = contextActions.getSteeringSignal ?? (() => undefined);
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
@@ -1071,6 +1073,12 @@ export class ExtensionRunner {
 		const runner = this;
 		// createContext() returns a fresh object, so adding properties does not affect other contexts.
 		return Object.defineProperties(this.createContext() as ExtensionToolContext, {
+			steeringSignal: {
+				get() {
+					runner.assertActive();
+					return runner.getSteeringSignalFn();
+				},
+			},
 			tools: {
 				get() {
 					runner.assertActive();

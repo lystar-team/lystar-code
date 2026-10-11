@@ -93,7 +93,7 @@ function parseLine(line: Buffer): RawEntry | null {
 
 function isVisible(entry: RawEntry): boolean {
 	if (["message", "custom", "compaction", "branch_summary"].includes(entry.type)) return true;
-	return entry.type === "custom_message" && entry.display === true;
+	return entry.type === "custom_message";
 }
 
 function toTranscriptItem(entry: RawEntry): TranscriptItem {

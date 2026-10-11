@@ -466,6 +466,34 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 	margin-top: 0;
 }
 
+:is(.is-assistant, .markdown-file-preview) [data-streamdown="mermaid-block"] {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-rows: auto auto;
+	gap: 0;
+}
+
+:is(.is-assistant, .markdown-file-preview) [data-streamdown="mermaid-block"] > :first-child {
+	grid-column: 1;
+	grid-row: 1;
+	min-width: 0;
+}
+
+:is(.is-assistant, .markdown-file-preview) [data-streamdown="mermaid-block"] > :nth-child(2) {
+	grid-column: 2;
+	grid-row: 1;
+	align-self: center;
+	margin: 0;
+	position: static;
+	pointer-events: auto;
+}
+
+:is(.is-assistant, .markdown-file-preview) [data-streamdown="mermaid-block"] > :nth-child(3) {
+	grid-column: 1 / -1;
+	grid-row: 2;
+	margin-top: 0;
+}
+
 ::selection {
 	background: color-mix(in srgb, var(--brand) 18%, transparent);
 }

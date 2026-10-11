@@ -46,9 +46,11 @@ import type { CodemodeMode } from "../../core/settings-manager.ts";
 import type { ToolActivityDiff } from "../../core/tool-activity.ts";
 import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts";
 import { loadCodemodeExecutor } from "./execute.lazy.ts";
+import type { CodemodeExecutionRegistry } from "./execution-registry.ts";
 import { codemodeRenderers } from "./renderer.ts";
 
 export const CODEMODE_TOOL_NAME = "codemode";
+export const CODEMODE_WAIT_TOOL_NAME = "codemode_wait";
 
 /** Custom entry type holding one script's `store()` writes: {@link CodemodeStoreEntryData}. */
 export const CODEMODE_STORE_ENTRY_TYPE = "codemode-store";
@@ -83,6 +85,8 @@ export interface CodemodeToolOptions {
 	getMode?: () => CodemodeMode;
 	/** Token budget for tool declarations in the description. Default: {@link DEFAULT_CODEMODE_INLINE_BUDGET}. */
 	getInlineBudget?: () => number | undefined;
+	/** Session-scoped executions that can be resumed through codemode_wait. */
+	executionRegistry?: CodemodeExecutionRegistry;
 }
 
 const TEXT_OUTPUT_SCHEMA: CodemodeJsonSchema = { type: "string" };
@@ -91,6 +95,10 @@ export const codemodeSchema = Type.Object({
 	code: Type.String({
 		description: "Raw JavaScript source.",
 	}),
+});
+
+const codemodeWaitSchema = Type.Object({
+	executionId: Type.String({ description: "Execution ID returned by codemode." }),
 });
 
 export type CodemodeToolInput = Static<typeof codemodeSchema>;
@@ -131,6 +139,9 @@ export interface CodemodeToolDetails {
 	calls: CodemodeNestedCall[];
 	/** Temp file with the full text output, when the output was truncated. */
 	fullOutputPath?: string;
+	executionId?: string;
+	parentToolCallId?: string;
+	status?: "running" | "completed" | "failed";
 }
 
 export const codemodeToolSystemPromptContribution = {
@@ -407,6 +418,41 @@ export function createCodemodeToolDefinition(
 		execute: async (toolCallId, params, signal, onUpdate, ctx) =>
 			(await loadCodemodeExecutor()).executeCodemode(toolCallId, params, signal, onUpdate, ctx, options),
 		...codemodeRenderers,
+	};
+}
+
+export function createCodemodeWaitToolDefinition(
+	options: CodemodeToolOptions = {},
+): ToolDefinition<typeof codemodeWaitSchema, CodemodeToolDetails | undefined> {
+	return {
+		name: CODEMODE_WAIT_TOOL_NAME,
+		label: CODEMODE_WAIT_TOOL_NAME,
+		description: "Collect the final result of a Codemode execution that yielded during a Steer.",
+		defaultActive: false,
+		parameters: codemodeWaitSchema,
+		exposure: "model-only",
+		prepareLoadout: (loadout) =>
+			loadout.declared.some(isCodemodeTool) ? undefined : { hiddenDeclarations: [CODEMODE_WAIT_TOOL_NAME] },
+		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+			const registry = options.executionRegistry;
+			if (!registry) throw new Error("codemode_wait requires the Codemode extension execution registry");
+			const collected = await registry.take(
+				ctx.sessionManager.getSessionId(),
+				params.executionId,
+				signal,
+				ctx.steeringSignal,
+			);
+			const result = collected.result;
+			return {
+				...result,
+				details: {
+					...(result.details ?? { calls: [] }),
+					executionId: collected.executionId,
+					parentToolCallId: collected.parentToolCallId,
+					status: collected.status,
+				},
+			};
+		},
 	};
 }
 

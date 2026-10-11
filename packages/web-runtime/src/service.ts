@@ -1438,6 +1438,14 @@ export class WebRuntimeService {
 		for (const listener of this.coordinatorSessionListeners) listener(sessionPath);
 	}
 
+	private hasPendingCoordinatorInput(sessionPath: string): boolean {
+		if (this.roomDeliveryDemand.has(sessionPath)) return true;
+		const runtime = this.runtimes.get(sessionPath);
+		if (!runtime) return false;
+		const snapshot = runtime.getSnapshot("available");
+		return snapshot.queuedSteerCount > 0 || snapshot.queuedFollowUpCount > 0;
+	}
+
 	private async waitForCoordinatorSessions(
 		input: Parameters<SessionCoordinator["wait"]>[0],
 	): Promise<SessionCoordinatorSummary[]> {
@@ -1452,7 +1460,12 @@ export class WebRuntimeService {
 			Promise.all(sessionIds.map((sessionId) => this.findCoordinatorSession(input.cwd, sessionId))),
 			signal,
 		);
-		const paths = new Set(found.map((item) => item.path));
+		const caller = input.callerSessionId
+			? await raceWithAbortSignal(this.findCoordinatorSession(input.cwd, input.callerSessionId), signal)
+			: undefined;
+		const targetPaths = new Set(found.map((item) => item.path));
+		const watchedPaths = new Set(targetPaths);
+		if (caller) watchedPaths.add(caller.path);
 		const waitId = randomUUID();
 		const startedAt = performance.now();
 		let lastLogAt = 0;
@@ -1467,11 +1480,12 @@ export class WebRuntimeService {
 				signal,
 				subscribe: (changed) => {
 					const listener = (sessionPath: string) => {
-						if (paths.has(sessionPath)) changed();
+						if (watchedPaths.has(sessionPath)) changed();
 					};
 					this.coordinatorSessionListeners.add(listener);
 					return () => this.coordinatorSessionListeners.delete(listener);
 				},
+				hasPendingInput: caller ? () => this.hasPendingCoordinatorInput(caller.path) : undefined,
 				read: async () => {
 					signal.throwIfAborted();
 					let sessions = await this.adapter.listSessions(input.cwd);
@@ -2153,7 +2167,12 @@ export class WebRuntimeService {
 			}
 			case "inspect_session": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
-				const snapshot = await this.adapter.inspectSession(sessionPath);
+				const runtime = this.runtimes.get(sessionPath);
+				if (runtime && runtime.isConnected?.() !== false) await runtime.readLiveMessage?.();
+				const snapshot =
+					runtime && runtime.isConnected?.() !== false
+						? this.runtimeSnapshot(runtime, this.sessionWriteAccess(sessionPath, connection))
+						: await this.adapter.inspectSession(sessionPath);
 				return jsonValue({
 					...snapshot,
 					path: sessionPath,

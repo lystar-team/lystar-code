@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.1.0-lystar.9] - 2026-10-11
+
+### Added
+
+- 增加 models.dev 元数据解析、按 Provider 与模型查询，以及共享请求加载接口，供运行时补充模型能力和定价信息。
+
 ## [1.1.0] - 2026-10-07
 
 ### Breaking Changes

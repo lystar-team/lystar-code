@@ -208,7 +208,7 @@ function groupAgentSteps(
 			ensureStep(item.step.id, item.step);
 			continue;
 		}
-		if (item.kind === "item" && item.item.view?.type === "extension_entry") {
+		if (item.kind === "item" && item.item.view?.type === "extension_entry" && !item.item.view.input) {
 			let stepId = stepIdByMessageEntryId.get(item.item.entryId);
 			// 未写入归属的历史扩展记录，只在时间戳落入唯一已知步骤时恢复；不跨步骤猜测。
 			if (!stepId) {
@@ -229,7 +229,7 @@ function groupAgentSteps(
 			}
 			const previous = target[previousIndex];
 			if (previous?.kind === "extension-group") previous.items.push(item);
-			else if (previous?.kind === "item" && previous.item.view?.type === "extension_entry") {
+			else if (previous?.kind === "item" && previous.item.view?.type === "extension_entry" && !previous.item.view.input) {
 				target[previousIndex] = { kind: "extension-group", key: `extension-group:${previous.key}`, items: [previous, item] };
 			} else target.push(item);
 			continue;

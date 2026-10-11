@@ -187,6 +187,7 @@ type ActiveRun = {
 	promise: Promise<void>;
 	resolve: () => void;
 	abortController: AbortController;
+	steeringController: AbortController;
 };
 
 /**
@@ -312,9 +313,10 @@ export class Agent {
 		return this.followUpQueue.mode;
 	}
 
-	/** Queue a message to be injected after the current assistant turn finishes. */
+	/** 插话入队并抢占当前模型请求；不会取消正在执行的普通工具。 */
 	steer(message: AgentMessage): void {
 		this.steeringQueue.enqueue(message);
+		this.activeRun?.steeringController.abort();
 	}
 
 	/** Queue a message to run only after the agent would otherwise stop. */
@@ -364,6 +366,10 @@ export class Agent {
 		return this.activeRun?.abortController.signal;
 	}
 
+	/** 当前插话通知信号，仅用于抢占请求或让出工具等待。 */
+	get steeringSignal(): AbortSignal | undefined {
+		return this.activeRun?.steeringController.signal;
+	}
 	/** Abort the current run, if one is active. */
 	abort(): void {
 		this.activeRun?.abortController.abort();
@@ -532,12 +538,15 @@ export class Agent {
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
+			getSteeringSignal: () => this.steeringSignal,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
-				return this.steeringQueue.drain();
+				const messages = this.steeringQueue.drain();
+				if (this.activeRun) this.activeRun.steeringController = new AbortController();
+				return messages;
 			},
 			getFollowUpMessages: async () => this.followUpQueue.drain(),
 		};
@@ -553,7 +562,7 @@ export class Agent {
 		const promise = new Promise<void>((resolve) => {
 			resolvePromise = resolve;
 		});
-		this.activeRun = { promise, resolve: resolvePromise, abortController };
+		this.activeRun = { promise, resolve: resolvePromise, abortController, steeringController: new AbortController() };
 
 		this._state.isStreaming = true;
 		this._state.streamingMessage = undefined;
