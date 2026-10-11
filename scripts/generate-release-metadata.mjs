@@ -55,7 +55,7 @@ export function generateReleaseMetadata(outputArg, version, repository = "") {
 	for (const [name, assignment] of Object.entries(installerAssignments)) {
 		const source = readFileSync(resolve("scripts", name), "utf8");
 		const materialized = repository
-			? source.replace(assignment, assignment.replace(RELEASE_REPOSITORY_PLACEHOLDER, repository))
+			? source.replaceAll(assignment, assignment.replace(RELEASE_REPOSITORY_PLACEHOLDER, repository))
 			: source;
 		writeFileSync(join(outputDir, basename(name)), materialized, { mode: name.endsWith(".sh") ? 0o755 : 0o644 });
 	}
@@ -121,7 +121,7 @@ export function releaseMetadataErrors(outputArg, version, repository) {
 		errors.push("SHA256SUMS must contain exactly the five current platform archives");
 	}
 	for (const [name, assignment] of Object.entries(installerAssignments)) {
-		const expected = readFileSync(resolve("scripts", name), "utf8").replace(
+		const expected = readFileSync(resolve("scripts", name), "utf8").replaceAll(
 			assignment,
 			assignment.replace(RELEASE_REPOSITORY_PLACEHOLDER, repository),
 		);

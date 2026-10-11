@@ -9,7 +9,14 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前工作区候选版本为 `1.1.0-lystar.9`，上一正式 Tag 为 `v1.1.0-lystar.8`。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前工作区候选版本为 `1.1.0-lystar.10`，上一正式 Tag 为 `v1.1.0-lystar.9`。
+
+## 1.1.0-lystar.10 发行前验证（2026-10-11，Linux x64）
+
+- 修复发布元数据生成器对 `install.cmd` 仓库 URL 只替换首个匹配的问题。临时五平台归档 fixture 的 metadata 生成和 `--verify` 通过；安装器中两处地址均指向正式仓库，且无占位符残留。
+- `npm run check`、`npm run build:offline` 和 `bash scripts/test-install-sh.sh` 通过。Web 构建报告超过 500 kB 的 chunk；Bun 编译器打印 directory mismatch 内部错误提示，但命令成功。
+- `bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data` 生成 `.10` Linux x64 归档；归档 SHA256、`lc --version`、帮助、离线模型列表和包/锁文件/manifest/binary 五处版本一致性检查通过。
+- 本机只验证 Linux x64。完整测试未为本次发行元数据修复重跑；`.9` 的 Agent 与 Web Runtime 测试失败已记录在下方 `.9` 发行前验证。本次 Tag workflow 将验证其他平台和最终候选资产。
 
 ## 1.1.0-lystar.9 发行前验证（2026-10-11，Linux x64）
 
@@ -18,6 +25,11 @@
 - `bash scripts/build-binaries.sh --skip-install --skip-build --offline-model-data` 生成 `.9` Linux x64 归档；`sha256sum -c SHA256SUMS`、`lc --version`、`lc --help` 和 `PI_OFFLINE=1 lc --list-models` 通过。
 - 在 `/tmp` 的独立 tmux PTY 中启动发行二进制，默认模型 `gpt-6-luna` 返回 `RELEASE_SMOKE_OK`。本机已有 MCP 扩展重复注册 `/mcp` 的警告未影响回复，未修改用户配置。
 - 本机证据限于 Linux x64。Darwin ARM64/x64、Linux ARM64 和 Windows x64 将由本次 Tag 触发的原生 runner workflow 构建、校验并发布。
+
+## 1.1.0-lystar.9 发布后验证（2026-10-11）
+
+- Tag `v1.1.0-lystar.9` 对应提交 `eb607f3e97fe976b6d3969cc92780d7b313908af`。Release workflow `38130314122` 的五平台构建、候选校验、attestation 和 publish job 均通过；公开 Release 于 2026-10-11 10:04 UTC 发布，包含五个平台归档、三种安装器、manifest 和 SHA256SUMS，共 10 个资产。
+- 从 GitHub 下载的五个平台归档均通过 `SHA256SUMS` 校验。发布后的 `install.cmd` 检查发现 PowerShell fallback URL 仍含 `__LYSTAR_RELEASE_REPOSITORY__`；当前 curl.exe 路径地址正确。生成器只替换首次匹配，修复安排在 `.10`；不修改 `.9` tag 或资产。
 
 ## 1.1.0-lystar.4 发行前验证（2026-10-09，Linux x64）
 
