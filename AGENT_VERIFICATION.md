@@ -9,15 +9,23 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前产品版本为 `1.1.0-lystar.11`，上一正式 Tag 为 `v1.1.0-lystar.10`。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.1.0-lystar.11`，上一正式 Tag 为 `v1.1.0-lystar.10`。
 
 ## 1.1.0-lystar.11 发行前验证（2026-10-12，Linux x64）
 
-- 本次递增产品与 workspace 版本，同步内部依赖、根锁文件、shrinkwrap 和 install-lock。运行时代码沿用 `.10`，主工作区已有的四个未提交工具代码文件保留在原工作区。
+- 本次递增产品与 workspace 版本，同步内部依赖、根锁文件、shrinkwrap 和 install-lock。运行时代码沿用 `.10`。
 - 在独立发布 worktree 中完成 `npm ci --ignore-scripts`、`npm run build:offline`、`npm run check` 和 `bash scripts/test-install-sh.sh`。干净工作区首次检查因缺少已构建的 Pi Protocol 声明失败；构建后完整检查通过。
 - 已有 `config`、`lystar-updater`、`version-check` 测试共 37 项通过；`generate-release-metadata.test.mjs` 的 1 项测试通过。未新增或修改测试，未为版本递增重跑完整测试。
 - Linux x64 独立归档生成成功，SHA256、`lc --version`、帮助和离线模型列表通过。Web 构建保留超过 500 kB 的 chunk 提示；Bun 编译打印 directory mismatch 内部提示，命令成功且生成包可启动。
-- 五平台原生构建、候选校验、attestation 和公开 Release 由本次 Tag 的 Release workflow 执行；结果在发布后另行记录。
+- Node CLI 和 Bun standalone 从 `/tmp` 的独立 tmux socket 启动，默认模型 `gpt-6.1-sol` 均返回 `RELEASE_SMOKE_OK`，两个临时终端正常退出。
+
+## 1.1.0-lystar.11 发布后验证（2026-10-12）
+
+- Annotated Tag `v1.1.0-lystar.11` 指向 `259ef2f080de6002ee0db64e6c95cdbf4e7dc72b`。Release workflow `38168859982` 的五平台原生构建、候选校验和发布共 7 个 job 全部成功；公开 Release 于 `2026-10-11T19:42:30Z`（北京时间 2026-10-12 03:42:30）发布，不是 draft/prerelease，GitHub latest 指向本版。
+- 全部 10 个公开资产下载到 `/tmp/lystar-release-11-public`。五平台归档通过 `SHA256SUMS`，`generate-release-metadata.mjs --verify` 确认 manifest、归档大小与 SHA、三个安装器一致。仅在临时 verifier 中将源码 `install.cmd` 规范为 CRLF。
+- Linux x64 归档的 `gh attestation verify` 通过，限定仓库 `lystar-team/lystar-code`、`.github/workflows/release.yml`、本版 Tag 和上述发布提交。
+- 在隔离 `/tmp/lystar-release-11-upgrade-home` 中，从 `.10` 执行 `lc update` 成功升至 `.11`；`current` 指向 `versions/1.1.0-lystar.11`，`previous` 保留 `.10`。重复更新报告已是最新版本，两个链接保持不变；正式安装包的帮助与离线模型列表通过，用户默认安装和既有 Web 服务未修改。
+- 本机实机证据限于 Linux x64；其他四平台的证据为原生 runner 构建与归档检查。自动文本审查未覆盖 Changelog 和临时验证脚本，不记为自动审查全部通过。
 
 ## 1.1.0-lystar.10 发行前验证（2026-10-11，Linux x64）
 
