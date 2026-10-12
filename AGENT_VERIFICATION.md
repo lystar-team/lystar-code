@@ -9,7 +9,14 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前产品版本为 `1.1.0-lystar.12`，上一正式 Tag 为 `v1.1.0-lystar.11`。
+- 上游 Pi 基线为 `v1.1.0`（`abe508e1b89912adde45528136c3221eb69acdd7`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.1.0-lystar.12`，上一正式 Tag 为 `v1.1.0-lystar.11`。
+
+## 1.1.0-lystar.12 自动发布验证
+
+- 记录时间：2026-10-12T03:40:40.058Z。Annotated Tag `v1.1.0-lystar.12` 指向 `32cbe85d5364c4a7bb2a04fadd1bdfb9a2d5a5f3`；Release workflow `38199662141` 的全部 job 成功，公开 Release 不是 draft/prerelease。
+- 10 个公开资产通过 metadata、SHA 和安装器一致性校验；linux-x64 来源证明及独立包版本、帮助、离线模型列表通过。
+- 隔离 HOME 中从 `v1.1.0-lystar.11` 升级至 `v1.1.0-lystar.12`；current/previous 和重复更新检查通过。
+- 验证产物：`/tmp/lystar-release-1.1.0-lystar.12-EcnosB`。未自动执行真实模型请求或手工终端检查。
 
 ## 1.1.0-lystar.11 发行前验证（2026-10-12，Linux x64）
 
