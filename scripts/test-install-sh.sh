@@ -49,9 +49,9 @@ grep -F 'https://github.com/lystar-team/lystar-code/releases/latest/download/ins
 grep -F 'https://github.com/__LYSTAR_RELEASE_REPOSITORY__/releases/latest/download/install.ps1' "$ROOT/scripts/install.cmd" >/dev/null
 grep -F 'print_banner' "$ROOT/scripts/install.sh" >/dev/null
 grep -F 'print_step' "$ROOT/scripts/install.sh" >/dev/null
-grep -F '进度条包含实时速度' "$ROOT/scripts/install.sh" >/dev/null
-grep -F -- 'curl -fL --connect-timeout 10' "$ROOT/scripts/install.sh" >/dev/null
-grep -F -- '--progress=bar:force' "$ROOT/scripts/install.sh" >/dev/null
+grep -F 'draw_download_progress' "$ROOT/scripts/install.sh" >/dev/null
+grep -F -- 'curl -fsSL --connect-timeout 10 -D' "$ROOT/scripts/install.sh" >/dev/null
+grep -F -- 'wget -q --server-response --tries=1 --timeout=10' "$ROOT/scripts/install.sh" >/dev/null
 grep -F '当前版本：' "$ROOT/scripts/install.sh" >/dev/null
 grep -F -- '--help' "$ROOT/scripts/install.sh" >/dev/null
 grep -F '当前版本没有切换' "$ROOT/scripts/install.sh" >/dev/null
@@ -154,7 +154,7 @@ install_with_wget_only() {
     local tool_dir="$tmp/wget-tools"
     mkdir -p "$tool_dir"
     local name
-    for name in bash tar gzip awk tr grep uname mktemp rm ln mv mkdir readlink cat chmod; do
+    for name in bash tar gzip awk tr grep uname mktemp rm ln mv mkdir readlink cat chmod wc sleep; do
         ln -s "$(command -v "$name")" "$tool_dir/$name"
     done
     if command -v sha256sum >/dev/null 2>&1; then

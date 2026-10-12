@@ -2,7 +2,7 @@
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
-> 当前上游基线：2026-10-11；Pi `v1.1.0`，commit `abe508e1b89912adde45528136c3221eb69acdd7`；产品版本 `1.1.0-lystar.11`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
+> 当前上游基线：2026-10-11；Pi `v1.1.0`，commit `abe508e1b89912adde45528136c3221eb69acdd7`；产品版本 `1.1.0-lystar.12`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
 
 ## 1. 产品定义
 
@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `1.1.0-lystar.12` | `1.1.0` | `abe508e1b8...` | 见本版 CHANGELOG | 见本版 CHANGELOG | 见本版 CHANGELOG |
 | `1.1.0-lystar.11` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 `.10` 的 Pi JSONL 和 Session 行为 | 递增产品与 workspace 版本，运行时 API 与 `.10` 一致 |
 | `1.1.0-lystar.10` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 Pi JSONL 和 `.9` Session 行为，不改运行时数据 | 修复 Release 生成器替换 `install.cmd` 中重复仓库 URL 的逻辑；其他 API 不变 |
 | `1.1.0-lystar.9` | `1.1.0` | `abe508e1b...` | 内置 Pi MCP；旧 adapter 未单独验证 | 沿用 Pi JSONL；Web Runtime 增加执行阶段快照与扩展输入投影；Codemode 可在同一 Session 收取后台结果 | 新增 `request_phase`、`ExtensionToolContext.steeringSignal` 和 `codemode_wait`；`@earendil-works/pi-ai/utils/models-dev` 提供模型元数据查询 |
