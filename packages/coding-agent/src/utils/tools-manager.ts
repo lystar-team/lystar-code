@@ -21,7 +21,7 @@ import {
 } from "fs";
 import { arch, platform } from "os";
 import { delimiter, join, resolve } from "path";
-import { Readable } from "stream";
+import { Readable, Transform } from "stream";
 import { pipeline } from "stream/promises";
 import type { ReadableStream as NodeReadableStream } from "stream/web";
 import { setTimeout as delay } from "timers/promises";
@@ -178,7 +178,7 @@ function formatMegabytes(bytes: number): string {
 async function downloadFile(
 	url: string,
 	dest: string,
-	onStart?: (sizeBytes: number | undefined) => void,
+	onProgress?: (downloadedBytes: number, sizeBytes: number | undefined, completed: boolean) => void,
 ): Promise<void> {
 	const response = await fetchWithRetry(url, undefined, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
 
@@ -191,9 +191,24 @@ async function downloadFile(
 	}
 
 	const contentLength = Number(response.headers.get("content-length"));
-	onStart?.(Number.isFinite(contentLength) && contentLength > 0 ? contentLength : undefined);
+	const sizeBytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : undefined;
 	const fileStream = createWriteStream(dest);
-	await pipeline(Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>), fileStream);
+	const input = Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>);
+	if (!onProgress) {
+		await pipeline(input, fileStream);
+		return;
+	}
+	let downloadedBytes = 0;
+	onProgress(0, sizeBytes, false);
+	const progressStream = new Transform({
+		transform(chunk: Buffer, _encoding, callback) {
+			downloadedBytes += chunk.length;
+			onProgress(downloadedBytes, sizeBytes, false);
+			callback(null, chunk);
+		},
+	});
+	await pipeline(input, progressStream, fileStream);
+	onProgress(downloadedBytes, sizeBytes, true);
 }
 
 function calculateFileSha256(filePath: string): string {
@@ -454,21 +469,52 @@ async function downloadManagedWindowsBash(silent: boolean, localArchivePath?: st
 			if (isOfflineModeEnabled()) throw new Error("离线模式缺少 --archive 指定的 MinGit 安装包");
 			const failures: string[] = [];
 			let downloaded = false;
-			for (const url of MINGIT_URLS) {
+			const mirror = process.env.LYSTAR_GITHUB_MIRROR || "https://ghfast.top";
+			const urls = MINGIT_URLS.flatMap((url) =>
+				url.startsWith("https://github.com/") && mirror !== "direct"
+					? [`${mirror.replace(/\/+$/, "")}/${url}`, url]
+					: [url],
+			);
+			if (!silent) console.log(chalk.dim("下载 MinGit Bash"));
+			for (const url of urls) {
+				let progressWidth = 0;
+				let lastProgress = 0;
 				try {
 					rmSync(archivePath, { force: true });
-					await downloadFile(url, archivePath, (sizeBytes) => {
-						if (!silent) {
-							const size = sizeBytes ? `（${formatMegabytes(sizeBytes)}）` : "";
-							console.log(chalk.dim(`正在下载 MinGit Bash${size}...`));
-						}
-					});
-					if (!silent)
-						console.log(chalk.dim(`已下载 MinGit Bash（${formatMegabytes(statSync(archivePath).size)}）。`));
+					await downloadFile(
+						url,
+						archivePath,
+						silent || !process.stdout.isTTY
+							? undefined
+							: (bytes, total, completed) => {
+									const now = Date.now();
+									if (progressWidth > 0 && !completed && now - lastProgress < 100) return;
+									const percent = completed
+										? 100
+										: total
+											? Math.min(99, Math.floor((bytes * 100) / total))
+											: 0;
+									const filled = Math.floor(percent / 5);
+									const bar = "=".repeat(filled) + "-".repeat(20 - filled);
+									const label = total || completed || bytes === 0 ? `${percent}%`.padStart(4) : " --%";
+									const size = completed ? bytes : total;
+									const line = `  [${bar}] ${label} (${formatMegabytes(bytes)}/${size ? formatMegabytes(size) : "? MB"})`;
+									process.stdout.write(`\r${line.padEnd(progressWidth)}`);
+									progressWidth = line.length;
+									lastProgress = now;
+									if (completed) {
+										process.stdout.write("\n");
+										progressWidth = 0;
+									}
+								},
+					);
+					if (!silent) console.log(chalk.dim("已下载 MinGit Bash"));
 					downloaded = true;
 					break;
 				} catch (error) {
+					if (progressWidth > 0) process.stdout.write("\n");
 					failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+					if (!silent && url !== urls[urls.length - 1]) console.log(chalk.dim("下载失败，切换下载地址。"));
 				}
 			}
 			if (!downloaded) throw new Error(`MinGit 下载失败：${failures.join("; ")}`);

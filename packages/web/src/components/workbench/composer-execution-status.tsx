@@ -1,11 +1,11 @@
-import { CircleAlert, Clock3, LoaderCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CircleAlert, Clock3, Info, LoaderCircle } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { WorkbenchState } from "../../state/workbench-types";
 import type { WebSessionSnapshot } from "../../types";
 import { Button } from "../ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatElapsedDuration } from "./conversation-format";
 
 const SILENCE_NOTICE_MS = 30_000;
@@ -36,7 +36,7 @@ function StatusDetail({ label, value }: { label: string; value: string }) {
 	);
 }
 
-export function ComposerExecutionStatus({ state }: { state: WorkbenchState }) {
+export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: WorkbenchState; onVisibilityChange: (visible: boolean) => void }) {
 	const { sessionId, connected, sessionReady } = state;
 	const waitingForInput = state.session?.phase === "waiting_for_input" || state.session?.activity === "waiting_for_input" ||
 		state.currentOperation?.status === "waiting_for_input" ||
@@ -45,7 +45,13 @@ export function ComposerExecutionStatus({ state }: { state: WorkbenchState }) {
 	const active = hasActiveSessionWork(state) || waitingForInput || stopping;
 	const [now, setNow] = useState(() => Date.now());
 	const [check, setCheck] = useState<StatusCheck>({});
+	const [detailsOpen, setDetailsOpen] = useState(false);
+	const detailsTriggerRef = useRef<HTMLButtonElement>(null);
+	const clickOpenedRef = useRef(false);
 
+	useLayoutEffect(() => {
+		onVisibilityChange(active);
+	}, [active, onVisibilityChange]);
 	useEffect(() => {
 		if (!active) return;
 		setNow(Date.now());
@@ -135,36 +141,58 @@ export function ComposerExecutionStatus({ state }: { state: WorkbenchState }) {
 	const Icon = stale || statusUnknown ? CircleAlert : waiting || scheduledRetry || execution?.phase === "waiting_model" ? Clock3 : LoaderCircle;
 
 	return (
-		<div className="mb-2 min-w-0 px-1 text-xs text-muted-foreground" data-testid="composer-execution-status">
-			<div className="flex min-h-7 min-w-0 items-center gap-2">
-				<Icon aria-hidden="true" className={`size-3.5 shrink-0 ${stale || statusUnknown ? "text-[var(--warning)]" : ""}`} />
-				<span className="min-w-0 flex-1 truncate" role="status" aria-live="polite" title={label}>{label}</span>
-				{elapsed ? <span className="shrink-0 tabular-nums" aria-label={`${phaseStartedAt !== undefined ? "当前阶段耗时" : "任务已等待"} ${elapsed}`}>{elapsed}</span> : null}
-				<Popover>
-					<PopoverTrigger asChild>
-						<Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-1.5 text-xs text-muted-foreground" aria-label="查看运行状态详情">详情</Button>
-					</PopoverTrigger>
-					<PopoverContent align="end" side="top" sideOffset={8} collisionPadding={8} className="w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-popover p-3 shadow-md">
-						<div className="mb-3 text-sm font-medium">运行状态</div>
-						<div className="space-y-2">
-							<StatusDetail label="当前阶段" value={label} />
-							<StatusDetail label={phaseStartedAt !== undefined ? "阶段耗时" : "任务已等待"} value={elapsed ?? "尚未确认"} />
-							<StatusDetail label="最后进展" value={silence ? `${silence}前` : "尚未确认"} />
-							<StatusDetail label="模型最近事件" value={execution?.lastModelEventAt === undefined ? "尚未收到" : `${formatElapsedDuration(Math.max(0, serverNow - execution.lastModelEventAt))}前`} />
-							{execution?.toolName ? <StatusDetail label="当前工具" value={execution.toolName} /> : null}
-							{execution?.retryAttempt ? <StatusDetail label="重试次数" value={execution.retryMaxAttempts ? `${execution.retryAttempt}/${execution.retryMaxAttempts}` : String(execution.retryAttempt)} /> : null}
-							{scheduledRetry ? <StatusDetail label="下次重试" value={`${retryRemaining}秒后`} /> : null}
-							<StatusDetail label="连接确认" value={connectionLabel} />
-						</div>
-						{check.error ? <p className="mt-3 break-words text-xs text-[var(--warning)]">{check.error}</p> : null}
-					</PopoverContent>
-				</Popover>
-			</div>
-			<div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 pl-[22px] py-0.5">
-				{silence ? <span className={`tabular-nums ${stale ? "text-[var(--warning)]" : ""}`}>{stale ? `已 ${silence}未收到新进展` : `最后进展 ${silence}前`}</span> : null}
-				{scheduledRetry ? <span className="tabular-nums">{retryRemaining}秒后重试</span> : null}
-				<span>{connectionLabel}</span>
-			</div>
+		<div className="flex min-h-8 min-w-0 items-center gap-2 text-sm text-muted-foreground" data-testid="composer-execution-status">
+			<Icon aria-hidden="true" className={`size-4 shrink-0 ${Icon === LoaderCircle ? "animate-spin motion-reduce:animate-none" : ""} ${stale || statusUnknown ? "text-[var(--warning)]" : ""}`} />
+			<span className="min-w-0 truncate" role="status" aria-live="polite" title={label}>{label}</span>
+			{elapsed ? <span className="shrink-0 tabular-nums" aria-label={`${phaseStartedAt !== undefined ? "当前阶段耗时" : "任务已等待"} ${elapsed}`}>{elapsed}</span> : null}
+			<Tooltip open={detailsOpen} onOpenChange={(open) => {
+				if (!open) clickOpenedRef.current = false;
+				setDetailsOpen(open);
+			}}>
+				<TooltipTrigger asChild>
+					<Button
+						ref={detailsTriggerRef}
+						type="button"
+						variant="ghost"
+						size="icon-sm"
+						className="relative size-8 shrink-0 bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground before:absolute before:-inset-1.5 before:content-[''] focus-visible:border-ring"
+						aria-label="查看运行状态详情"
+						aria-expanded={detailsOpen}
+						onPointerDown={(event) => event.preventDefault()}
+						onClick={(event) => {
+							event.preventDefault();
+							clickOpenedRef.current = !clickOpenedRef.current;
+							setDetailsOpen(clickOpenedRef.current);
+						}}
+					>
+						<Info className="size-4" />
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent
+					align="end"
+					side="top"
+					sideOffset={8}
+					collisionPadding={8}
+					onPointerDownOutside={(event) => {
+						if (event.target instanceof Node && detailsTriggerRef.current?.contains(event.target)) event.preventDefault();
+					}}
+					className="max-h-[var(--radix-tooltip-content-available-height)] w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-md [&_svg]:bg-popover [&_svg]:fill-popover"
+				>
+					<div className="mb-3 text-sm font-medium">运行状态</div>
+					<div className="space-y-2">
+						<StatusDetail label="当前阶段" value={label} />
+						<StatusDetail label={phaseStartedAt !== undefined ? "阶段耗时" : "任务已等待"} value={elapsed ?? "尚未确认"} />
+						<StatusDetail label="最后进展" value={silence ? `${silence}前` : "尚未确认"} />
+						<StatusDetail label="模型最近事件" value={execution?.lastModelEventAt === undefined ? "尚未收到" : `${formatElapsedDuration(Math.max(0, serverNow - execution.lastModelEventAt))}前`} />
+						{execution?.toolName ? <StatusDetail label="当前工具" value={execution.toolName} /> : null}
+						{execution?.retryAttempt ? <StatusDetail label="重试次数" value={execution.retryMaxAttempts ? `${execution.retryAttempt}/${execution.retryMaxAttempts}` : String(execution.retryAttempt)} /> : null}
+						{scheduledRetry ? <StatusDetail label="下次重试" value={`${retryRemaining}秒后`} /> : null}
+						<StatusDetail label="连接确认" value={connectionLabel} />
+					</div>
+					{stale && silence ? <p className="mt-3 text-xs text-[var(--warning)]">已 {silence}未收到新进展</p> : null}
+					{check.error ? <p className="mt-3 break-words text-xs text-[var(--warning)]">{check.error}</p> : null}
+				</TooltipContent>
+			</Tooltip>
 		</div>
 	);
 }

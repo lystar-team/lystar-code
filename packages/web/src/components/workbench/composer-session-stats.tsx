@@ -1,11 +1,11 @@
 import type { SessionInfoResult } from "@lystar/code-web-protocol";
 import { ArrowDown, ArrowUp, Gauge, Layers3 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import type { WorkbenchState } from "../../state/workbench-types";
 import { Tabs, TabsContent } from "../ui/tabs";
 import { WorkbenchTabBar } from "./workbench-tab-bar";
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 type Metric = "tps" | "cache" | "input" | "output";
 type Tokens = SessionInfoResult["tokens"];
@@ -84,6 +84,7 @@ export function ComposerSessionStats({
 	lease,
 	readOnly,
 	controlPending = false,
+	align = "start",
 }: {
 	sessionId: string;
 	revision?: number;
@@ -94,11 +95,52 @@ export function ComposerSessionStats({
 	lease?: WorkbenchState["lease"];
 	readOnly?: boolean;
 	controlPending?: boolean;
+	align?: "start" | "end";
 }) {
 	const [tokens, setTokens] = useState<Tokens>();
 	const [openMetric, setOpenMetric] = useState<Metric>();
 	const [mobileMetric, setMobileMetric] = useState<Metric>("tps");
+	const [visibleMetricCount, setVisibleMetricCount] = useState(0);
+	const [statsOpen, setStatsOpen] = useState(false);
+	const containerRef = useRef<HTMLDivElement>(null);
+	const metricRowRef = useRef<HTMLDivElement>(null);
+	const statsButtonRef = useRef<HTMLButtonElement>(null);
 
+	useLayoutEffect(() => {
+		const container = containerRef.current;
+		const row = metricRowRef.current;
+		const statsButton = statsButtonRef.current;
+		if (!container || !row || !statsButton) return;
+		const buttons = [...row.querySelectorAll<HTMLButtonElement>("button")];
+		const measure = () => {
+			const available = container.getBoundingClientRect().width;
+			const widths = [...row.querySelectorAll<HTMLButtonElement>("button")].map((button) => button.getBoundingClientRect().width);
+			const metricGap = Number.parseFloat(getComputedStyle(row).columnGap);
+			const groupGap = Number.parseFloat(getComputedStyle(container).columnGap);
+			const fullWidth = widths.reduce((sum, width) => sum + width, 0) + metricGap * (widths.length - 1);
+			let count = widths.length;
+			if (fullWidth > available) {
+				count = 0;
+				let used = statsButton.getBoundingClientRect().width + groupGap;
+				for (const width of widths) {
+					const nextWidth = used + width + (count > 0 ? metricGap : 0);
+					if (nextWidth > available) break;
+					used = nextWidth;
+					count++;
+				}
+			}
+			setVisibleMetricCount(count);
+		};
+		measure();
+		const observer = new ResizeObserver(measure);
+		for (const element of [container, row, statsButton, ...buttons]) observer.observe(element);
+		return () => observer.disconnect();
+	}, [visibleMetricCount]);
+
+	useEffect(() => {
+		if (visibleMetricCount === metrics.length) setStatsOpen(false);
+		if (openMetric && metrics.indexOf(openMetric) >= visibleMetricCount) setOpenMetric(undefined);
+	}, [openMetric, visibleMetricCount]);
 	useEffect(() => {
 		if (
 			!ready ||
@@ -134,26 +176,26 @@ export function ComposerSessionStats({
 	};
 
 	return (
-		<div aria-label="会话统计" className="@container/stats w-14 min-w-12 shrink-0 md:w-auto md:flex-1" role="group">
-			<Popover>
+		<div ref={containerRef} aria-label="会话统计" className={`relative flex w-full min-w-12 items-center gap-0.5 ${align === "end" ? "justify-end" : "justify-start"}`} role="group">
+			<Popover open={statsOpen} onOpenChange={setStatsOpen}>
 				<PopoverTrigger asChild>
 					<button
+						ref={statsButtonRef}
 						type="button"
-						className="inline-flex h-8 min-w-max shrink-0 items-center whitespace-nowrap rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground @min-[22rem]/stats:hidden"
+						className={`order-last inline-flex h-8 min-w-max shrink-0 items-center whitespace-nowrap rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground ${visibleMetricCount === metrics.length ? "pointer-events-none invisible absolute" : ""}`}
+						aria-hidden={visibleMetricCount === metrics.length}
+						tabIndex={visibleMetricCount === metrics.length ? -1 : undefined}
 						aria-label="查看会话统计"
 					>
 						统计
 					</button>
 				</PopoverTrigger>
-				<PopoverAnchor asChild>
-					<span aria-hidden="true" className="pointer-events-none absolute left-3 top-2 size-px" />
-				</PopoverAnchor>
 				<PopoverContent
-					align="start"
+					align="end"
 					aria-label="会话统计"
 					collisionPadding={8}
 					side="top"
-					sideOffset={16}
+					sideOffset={8}
 					className="max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border-border bg-popover p-3 shadow-md"
 				>
 					<div className="mb-2 text-sm font-medium">会话统计</div>
@@ -169,17 +211,19 @@ export function ComposerSessionStats({
 					</Tabs>
 				</PopoverContent>
 			</Popover>
-			<div className="hidden w-full items-center gap-0.5 whitespace-nowrap text-xs @min-[22rem]/stats:flex">
-				{metrics.map((metric) => (
+			<div ref={metricRowRef} className="flex w-max shrink-0 items-center gap-0.5 whitespace-nowrap text-xs">
+				{metrics.map((metric, index) => (
 					<Popover key={metric} open={openMetric === metric} onOpenChange={(open) => setOpenMetric(open ? metric : undefined)}>
 						<PopoverTrigger asChild>
 							<button
 								type="button"
-								className="inline-flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
+								className={`inline-flex h-7 w-max shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground ${index >= visibleMetricCount ? "pointer-events-none invisible absolute left-0 top-0" : ""}`}
+								aria-hidden={index >= visibleMetricCount}
+								tabIndex={index >= visibleMetricCount ? -1 : undefined}
 								aria-label={`${labels[metric]} ${values[metric]}，查看详情`}
 							>
 								<span className="shrink-0">{labels[metric]}</span>
-								<span className="min-w-0 truncate tabular-nums text-foreground">{values[metric]}</span>
+								<span className="tabular-nums text-foreground">{values[metric]}</span>
 							</button>
 						</PopoverTrigger>
 						<PopoverContent align="start" collisionPadding={8} side="top" sideOffset={8} className="w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-popover p-3 shadow-md">

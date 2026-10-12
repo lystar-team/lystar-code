@@ -1,5 +1,6 @@
 ﻿param(
     [string]$Version = "",
+    [string]$Mirror = $(if ($env:LYSTAR_GITHUB_MIRROR) { $env:LYSTAR_GITHUB_MIRROR } else { "https://ghfast.top" }),
     [string]$MinGitArchive = "",
     [string]$WebView2Installer = "",
     [string]$ReleaseArchive = "",
@@ -11,7 +12,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$ProgressPreference = "Continue"
+$ProgressPreference = "SilentlyContinue"
 $ActivatedVersion = ""
 Remove-Item Env:LYSTAR_WEB_SERVICE_VERSION -ErrorAction SilentlyContinue
 $Repository = "__LYSTAR_RELEASE_REPOSITORY__"
@@ -80,17 +81,13 @@ function Format-Megabytes([long]$Bytes) {
     return "{0:0.00} MB" -f ($Bytes / 1MB)
 }
 
-function Format-TransferRate([double]$BytesPerSecond) {
-    if ($BytesPerSecond -lt 1KB) { return "{0:0} B/s" -f $BytesPerSecond }
-    if ($BytesPerSecond -lt 1MB) { return "{0:0.00} KB/s" -f ($BytesPerSecond / 1KB) }
-    return "{0:0.00} MB/s" -f ($BytesPerSecond / 1MB)
-}
 
 if ($Help) {
     Write-InstallerBanner "LYStar Code 安装器帮助"
     Write-Host "用法："
     Write-Host "  install.ps1                         安装最新版本"
     Write-Host "  install.ps1 -Version <版本号>        安装指定版本"
+    Write-Host "  install.ps1 -Mirror <地址|direct>    设置 GitHub 镜像或直连"
     Write-Host "  install.ps1 -Rollback               回退到上一个版本"
     Write-Host "  install.ps1 -Uninstall              卸载 LYStar Code"
     Write-Host "  install.ps1 -Offline ...            使用本地文件完成离线安装"
@@ -101,21 +98,40 @@ if ($Help) {
 
 function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 0) {
     $Name = Split-Path -Leaf $OutFile
-    $SizeHint = if ($ExpectedBytes -gt 0) { "（$(Format-Megabytes $ExpectedBytes)）" } else { "" }
-    Write-InstallerInfo "正在下载 $Name$SizeHint（进度条包含实时速度）……"
+    $RequestUri = $Uri
+    if ($Uri -like "https://github.com/*/releases/*" -and $Mirror -and $Mirror -ne "direct") {
+        $RequestUri = "$($Mirror.TrimEnd('/'))/$Uri"
+    }
+    $Interactive = -not [Console]::IsOutputRedirected
+    $ProgressWidth = 0
+    $DrawProgress = {
+        param([long]$Downloaded, [long]$Length, [bool]$Completed = $false)
+        $Percent = if ($Length -gt 0) { [Math]::Min(99, [Math]::Floor($Downloaded * 100 / $Length)) } else { 0 }
+        if ($Completed) { $Percent = 100; $Length = $Downloaded }
+        $Filled = [int][Math]::Floor($Percent / 5)
+        $Bar = ('=' * $Filled) + ('-' * (20 - $Filled))
+        $Label = if ($Length -gt 0 -or $Downloaded -eq 0 -or $Completed) { "{0,3}%" -f $Percent } else { " --%" }
+        $Size = if ($Length -gt 0) { Format-Megabytes $Length } else { "? MB" }
+        $Line = "  [$Bar] $Label ($(Format-Megabytes $Downloaded)/$Size)"
+        Write-Host -NoNewline ("`r" + $Line.PadRight([Math]::Max($ProgressWidth, $Line.Length)))
+        $ProgressWidth = $Line.Length
+    }
+    Write-InstallerInfo "下载 $Name"
+    Add-Type -AssemblyName System.Net.Http
     for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
         $Client = $null
         $Response = $null
         $ResponseStream = $null
         $FileStream = $null
         $ReadTimeout = $null
+        $ProgressStarted = $false
         try {
             Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
-            Add-Type -AssemblyName System.Net.Http
             $Client = New-Object System.Net.Http.HttpClient
             $Client.Timeout = [TimeSpan]::FromSeconds(60)
             $Client.DefaultRequestHeaders.UserAgent.ParseAdd("LYStar-Code-Installer")
-            $Response = $Client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            if ($Interactive) { . $DrawProgress 0 $ExpectedBytes; $ProgressStarted = $true }
+            $Response = $Client.GetAsync($RequestUri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
             [void]$Response.EnsureSuccessStatusCode()
             $ResponseStream = $Response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
             $FileStream = New-Object System.IO.FileStream($OutFile, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None, 81920, $false)
@@ -131,38 +147,35 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
                 if ($Read -eq 0) { break }
                 $FileStream.Write($Buffer, 0, $Read)
                 $TotalBytes += $Read
-                if ($Stopwatch.ElapsedMilliseconds -ge ($LastProgress + 100)) {
-                    $ElapsedSeconds = [Math]::Max($Stopwatch.Elapsed.TotalSeconds, 0.001)
-                    $Rate = $TotalBytes / $ElapsedSeconds
-                    $Percent = if ($ContentLength -gt 0) { [Math]::Min(100, [Math]::Floor($TotalBytes * 100 / $ContentLength)) } else { 0 }
-                    $Status = if ($ContentLength -gt 0) {
-                        "{0:0.00} / {1:0.00} MB | {2}" -f ($TotalBytes / 1MB), ($ContentLength / 1MB), (Format-TransferRate $Rate)
-                    }
-                    else {
-                        "{0:0.00} MB | {1}" -f ($TotalBytes / 1MB), (Format-TransferRate $Rate)
-                    }
-                    Write-Progress -Activity "下载 $Name" -Status $Status -PercentComplete $Percent
+                if ($Interactive -and $Stopwatch.ElapsedMilliseconds -ge ($LastProgress + 100)) {
+                    . $DrawProgress $TotalBytes $ContentLength
                     $LastProgress = $Stopwatch.ElapsedMilliseconds
                 }
             }
             $FileStream.Flush()
-            Write-Progress -Activity "下载 $Name" -Completed
-            $ActualBytes = (Get-Item $OutFile).Length
+            $ActualBytes = $FileStream.Length
             if ($ActualBytes -le 0) { throw "下载结果为空。" }
             if ($ContentLength -gt 0 -and $ActualBytes -ne $ContentLength) {
                 throw "文件大小不符：预期 $(Format-Megabytes $ContentLength)，实际 $(Format-Megabytes $ActualBytes)。"
             }
-            Write-InstallerSuccess "已下载 $Name（$(Format-Megabytes $ActualBytes)）。"
+            if ($Interactive) { . $DrawProgress $ActualBytes $ActualBytes $true; Write-Host ""; $ProgressStarted = $false }
+            Write-InstallerSuccess "已下载 $Name"
             return
         }
         catch {
-            Write-Progress -Activity "下载 $Name" -Completed
+            if ($ProgressStarted) { Write-Host "" }
             if ($FileStream) { $FileStream.Dispose(); $FileStream = $null }
             Remove-Item -Force -ErrorAction SilentlyContinue $OutFile
             if ($Attempt -eq 3) {
-                throw "下载失败：$Uri`n$($_.Exception.Message)"
+                throw "下载失败：$RequestUri`n$($_.Exception.Message)"
             }
-            Write-InstallerWarning "下载未完成，正在重试（$($Attempt + 1)/3）……"
+            if ($RequestUri -ne $Uri) {
+                $RequestUri = $Uri
+                Write-InstallerWarning "镜像下载失败，改用 GitHub。"
+            }
+            else {
+                Write-InstallerWarning "下载失败，重试 $($Attempt + 1)/3。"
+            }
             Start-Sleep -Seconds $Attempt
         }
         finally {
@@ -176,14 +189,22 @@ function Invoke-Download([string]$Uri, [string]$OutFile, [long]$ExpectedBytes = 
 }
 
 function Invoke-JsonRequest([string]$Uri, [hashtable]$Headers) {
+    $RequestUri = $Uri
+    if ($Uri -like "https://github.com/*/releases/*" -and $Mirror -ne "direct") {
+        $RequestUri = "$($Mirror.TrimEnd('/'))/$Uri"
+    }
     for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
         try {
-            $Result = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 -Headers $Headers -Uri $Uri
+            $Result = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 -Headers $Headers -Uri $RequestUri
             return $Result
         }
         catch {
             if ($Attempt -eq 3) {
-                throw "请求失败：$Uri`n$($_.Exception.Message)"
+                throw "请求失败：$RequestUri`n$($_.Exception.Message)"
+            }
+            if ($RequestUri -ne $Uri) {
+                $RequestUri = $Uri
+                Write-InstallerWarning "镜像请求失败，改用 GitHub。"
             }
             Start-Sleep -Seconds $Attempt
         }
@@ -327,6 +348,7 @@ function Start-WebUpdateHandoffIfNeeded {
     $InstallerPath = [IO.Path]::GetFullPath($PSCommandPath)
     $ForwardedArguments = New-Object System.Collections.Generic.List[string]
     if ($Version) { $ForwardedArguments.Add("-Version"); $ForwardedArguments.Add($Version) }
+    $ForwardedArguments.Add("-Mirror"); $ForwardedArguments.Add($Mirror)
     if ($MinGitArchive) { $ForwardedArguments.Add("-MinGitArchive"); $ForwardedArguments.Add($MinGitArchive) }
     if ($WebView2Installer) { $ForwardedArguments.Add("-WebView2Installer"); $ForwardedArguments.Add($WebView2Installer) }
     if ($ReleaseArchive) { $ForwardedArguments.Add("-ReleaseArchive"); $ForwardedArguments.Add($ReleaseArchive) }
@@ -383,6 +405,7 @@ function Start-WebUpdateHandoffIfNeeded {
     throw "等待 Web 更新任务接管超时，请查看 $LogPath。"
 }
 
+if (!$Offline -and !$Rollback -and !$Uninstall -and $Mirror -ne "direct" -and $Mirror -notmatch '^https?://\S+$') { throw "镜像地址需以 http:// 或 https:// 开头。" }
 if (Start-WebUpdateHandoffIfNeeded) { exit 0 }
 Write-InstallerBanner
 $Operation = if ($Uninstall) { "卸载" } elseif ($Rollback) { "回退版本" } else { "安装或更新" }
@@ -393,7 +416,8 @@ if ($Offline) {
     Write-InstallerInfo "网络模式：离线安装，只使用本地文件。"
 }
 else {
-    Write-InstallerInfo "网络模式：在线安装，将从 GitHub Release 获取文件。"
+    if ($Mirror -eq "direct") { Write-InstallerInfo "下载来源：GitHub" }
+    else { Write-InstallerInfo "下载镜像：$Mirror" }
 }
 Write-InstallerInfo "当前版本：$CurrentVersion"
 
@@ -509,7 +533,7 @@ try {
     }
 
     $Expected = [string]$AssetInfo.sha256
-    Write-InstallerInfo "正在校验发行包完整性（SHA-256）……"
+    Write-InstallerInfo "校验发行包 SHA-256"
     if (!$Expected) {
         Invoke-Download "$BaseUrl/SHA256SUMS" $Sums
         $Pattern = "^([0-9a-fA-F]{64})\s+\*?" + [Regex]::Escape($Asset) + '$'
@@ -548,7 +572,15 @@ try {
         if (!(Test-Path $ResolvedMinGitArchive)) { throw "MinGit 离线安装包不存在：$ResolvedMinGitArchive" }
         $MinGitArgs += @("--archive", $ResolvedMinGitArchive, "--offline")
     }
-    & $Executable @MinGitArgs | Out-Host
+    $SavedMirror = $env:LYSTAR_GITHUB_MIRROR
+    try {
+        $env:LYSTAR_GITHUB_MIRROR = $Mirror
+        & $Executable @MinGitArgs
+    }
+    finally {
+        if ($null -eq $SavedMirror) { Remove-Item Env:LYSTAR_GITHUB_MIRROR -ErrorAction SilentlyContinue }
+        else { $env:LYSTAR_GITHUB_MIRROR = $SavedMirror }
+    }
     if ($LASTEXITCODE -ne 0) { throw "MinGit Bash 自动安装失败，LYStar 版本未切换。" }
     Write-InstallerSuccess "MinGit Bash 已准备好。"
 

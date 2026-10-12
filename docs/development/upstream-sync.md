@@ -50,11 +50,19 @@ git merge --no-commit --no-ff <new-pi-commit>
 
 ## 版本与文档
 
-- workspace package 版本跟随 Pi tag。
-- `piConfig.productVersion` 设为 `<新 Pi 版本>-lystar.1`。
-- `releaseRepository` 保持 `lystar-team/lystar-code`。
-- 更新 README、建设方案和兼容矩阵。
-- Session 或 Extension API 变化时增加兼容 fixture 和迁移说明。
+- 合并时保留 LYStar `piConfig` 与 `releaseRepository=lystar-team/lystar-code`。workspace 包可暂时采用新 Pi Tag 的裸版本；不用手工将所有包改成 LYStar 版本。
+- 在各包 `[Unreleased]` 记录上游变化与 LYStar 适配结果，更新 Session、Extension API 等实际兼容说明。需要新测试或改写测试时先遵循项目的测试编写授权。
+- 提交合并与适配结果，回到干净的 `main` 后，使用一键发布入口指定实际已合入的 Tag。下方 `v2.0.0` 是示例：
+
+```bash
+npm run release:lystar -- --upstream-tag v2.0.0 --dry-run
+npm run release:lystar -- --upstream-tag v2.0.0
+```
+
+脚本校验 Tag 对应的 Pi 包版本与 commit 已合入 `HEAD`，读取 LYStar 最新正式版及本地/远端产品 Tag 后选择修订号：更换 Pi 基线且尚无产品 Tag 时从 `<新 Pi 版本>-lystar.1` 开始；同一基线已有产品 Tag 则继续递增，CI 失败的修订号也不复用。patch、minor、major 的 Pi Tag 变化都按更换基线处理。`piConfig.productVersion` 若提前设为新基线 `.1` 且尚未打产品 Tag，首版仍发布 `.1`。脚本同步包版本、锁文件、README、建设方案、Pi commit 与验证记录，不覆盖已经写好的兼容矩阵新行。
+
+发布中断后使用 `npm run release:lystar -- --resume`，去掉 `--upstream-tag`，避免再次选择版本。完整参数、GitHub CLI 要求、公开资产与升级检查见[发行](release.md)。合并与功能验证仍需按对应改动范围执行。
+
 - 检查依赖许可证和发行资产。
 
 ## 验证

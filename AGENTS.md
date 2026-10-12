@@ -123,23 +123,27 @@ Attribution:
 - `origin`（`lystar-team/lystar-code`）是 LYStar Code 的提交、推送、tag 和 Release 仓库。
 - `upstream`（`earendil-works/pi`）只用于同步上游代码，不用于查询或触发 LYStar Code 发布。
 - 所有 GitHub CLI 命令必须显式指定 `--repo lystar-team/lystar-code`，禁止依赖当前仓库自动识别。
-- LYStar Code 发布使用 `.github/workflows/release.yml`：推送 `main` 后创建并推送产品版本 tag，workflow 会完成五平台构建、候选校验和 GitHub Release。
+- LYStar Code 的常规发布入口是 `npm run release:lystar`，实现为 `scripts/release-lystar.mjs`。脚本同步版本与锁文件、运行检查、提交推送 `main` 和 annotated Tag、等待 `.github/workflows/release.yml`、核验公开资产与隔离升级，再记录实际结果。
+- 先提交待发布代码并保持工作区干净。普通发布将同一 Pi 基线的 `lystar.N` 加一；合并上游 Tag 后使用 `--upstream-tag vX.Y.Z`，脚本验证 Tag 已合入 `HEAD`，读取 GitHub 最新正式版与本地/远端已占用产品 Tag。新 Pi 基线（包括 patch/minor/major 变化）且尚无产品 Tag 时从 `lystar.1` 开始；已有产品 Tag 则继续递增，即使 CI 失败也不复用修订号。
+- 上游合并时保留 LYStar 的 `piConfig` 与发行仓库配置。workspace 包可暂时采用上游裸版本；发布脚本会统一成目标 LYStar 版本，并同步 Pi commit、README、兼容矩阵和验证记录。不要通过 `release:patch/minor/major` 发布 LYStar，它们属于上游 npm 流程。
+- `--dry-run` 只读预览；指定 `--upstream-tag` 的预览需要联网读取 GitHub latest 和 `origin` 的产品 Tag。中断后使用 `--resume`，不再次加版本、不移动 Tag；续跑时去掉 `--upstream-tag`。`--verify <version>` 只核验已有版本，不提交推送。
+- 本地入口支持 Linux/macOS x64/ARM64；`gh` 必须支持 `attestation verify`，可通过 `--gh <path>` 指定新版。真实模型请求、手工终端检查和上游合并本身不由发布脚本执行。完整参数、前置检查和恢复方式以[发行文档](docs/development/release.md)为准，上游流程见[同步 Pi 上游](docs/development/upstream-sync.md)。
 
 ```bash
-version="0.85.1-lystar.N"
-tag="v${version}"
-git tag -a "$tag" HEAD -m "LYStar Code $tag" -m "本版发布。"
-git push origin "$tag"
-run_id="$(gh run list --repo lystar-team/lystar-code --workflow release.yml --event push --limit 1 --json databaseId,headBranch --jq ".[] | select(.headBranch == \"$tag\") | .databaseId" | head -n 1)"
-gh run watch "$run_id" --repo lystar-team/lystar-code --exit-status
-gh release view "$tag" --repo lystar-team/lystar-code
+npm run release:lystar -- --dry-run
+npm run release:lystar
+# v2.0.0 为示例，必须先合入实际目标 Pi Tag
+npm run release:lystar -- --upstream-tag v2.0.0 --dry-run
+npm run release:lystar -- --upstream-tag v2.0.0
+npm run release:lystar -- --resume
+npm run release:lystar -- --verify 1.1.0-lystar.11
 ```
 
 - `gh workflow run release.yml` 不是首选入口；当前 token 可能没有 `workflow` dispatch 权限。若必须手动触发，也必须带 `--repo lystar-team/lystar-code`。
 
 ## Releasing
 
-For release preparation, publishing, verification, or recovery, load and follow [.pi/skills/release.md](.pi/skills/release.md).
+LYStar Code 发布先读取 [docs/development/release.md](docs/development/release.md)，上游同步先读取 [docs/development/upstream-sync.md](docs/development/upstream-sync.md)。使用 [.pi/skills/release.md](.pi/skills/release.md) 时区分其中的上游 npm 发布流程；LYStar GitHub Release 沿用本节的一键入口与 `release.yml`。
 
 ## User Override
 

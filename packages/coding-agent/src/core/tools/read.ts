@@ -37,7 +37,7 @@ export const readToolSystemPromptContribution = {
 	snippet: "Read file contents",
 	guidelines: [
 		"Use read to examine files instead of cat or sed.",
-		"Text reads return a snapshot reference and numbered source lines. Use that snapshot and its displayed line ranges with edit; do not reproduce oldText or include line-number prefixes in newText.",
+		'Text reads return a snapshot ID inside a header such as [snapshot r0123456789ab; lines 1-20 of 40] and numbered source lines. Set edit.snapshot to "r0123456789ab" and use the displayed ranges; do not reproduce oldText or include line-number prefixes in newText.',
 	],
 } as const;
 
@@ -559,6 +559,7 @@ export function createReadToolDefinition(
 										startLine + 1,
 										startLine + displayedLines.length,
 									);
+									state.recordRead(snapshot);
 									outputText = formatFileSnapshot(state, snapshot, displayedLines);
 									if (snapshot.endLine < allLines.length) {
 										const remaining = allLines.length - snapshot.endLine;

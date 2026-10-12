@@ -8,6 +8,8 @@ VERSION=""
 ACTION="install"
 UPDATE_PATH=true
 DOWNLOADER=""
+GITHUB_MIRROR="${LYSTAR_GITHUB_MIRROR:-https://ghfast.top}"
+download_pid=""
 tmp=""
 activated_version=""
 original_args=("$@")
@@ -50,6 +52,7 @@ print_usage() {
         '  install.sh                         安装最新版本' \
         '  install.sh --version <版本号>       安装指定版本' \
         '  install.sh --no-path-update        不修改 Shell 配置文件' \
+        '  install.sh --mirror <地址|direct>   设置 GitHub 镜像或直连' \
         '  install.sh --rollback              回退到上一个版本' \
         '  install.sh --uninstall             卸载 LYStar Code' \
         '  install.sh --help                 查看帮助'
@@ -104,6 +107,10 @@ handle_error() {
 cleanup() {
     local status=$?
     trap - EXIT
+    if [[ -n "$download_pid" ]]; then
+        kill "$download_pid" 2>/dev/null || true
+        wait "$download_pid" 2>/dev/null || true
+    fi
     if [[ -n "$tmp" ]]; then
         rm -rf "$tmp" || true
     fi
@@ -226,29 +233,80 @@ select_downloader() {
     fi
 }
 
+draw_download_progress() {
+    local downloaded="$1" total="$2" completed="${3:-false}"
+    local line
+    line="$(LC_ALL=C awk -v downloaded="$downloaded" -v total="$total" -v completed="$completed" 'BEGIN {
+        percent = total > 0 ? int(downloaded * 100 / total) : 0
+        if (percent > 99) percent = 99
+        if (completed == "true") { percent = 100; total = downloaded }
+        filled = int(percent / 5)
+        bar = ""
+        for (i = 0; i < 20; i++) bar = bar (i < filled ? "=" : "-")
+        label = total > 0 || downloaded == 0 || completed == "true" ? sprintf("%3d%%", percent) : " --%"
+        size = total > 0 ? sprintf("%.2f MB", total / 1048576) : "? MB"
+        printf "  [%s] %s (%.2f MB/%s)", bar, label, downloaded / 1048576, size
+    }')"
+    printf '\r%-*s' "$progress_width" "$line"
+    progress_width=${#line}
+}
+
 download() {
-    local url="$1"
-    local output="$2"
-    local name="${output##*/}"
-    local attempt
-    print_info "正在下载 ${name}（进度条包含实时速度）……"
+    local url="$1" output="$2"
+    local name="${output##*/}" request_url="$1"
+    local headers="${output}.headers" errors="${output}.errors"
+    local attempt downloaded total status progress_width=0
+    local interactive=false
+    [[ -t 1 ]] && interactive=true
+    if [[ "$url" == https://github.com/*/releases/* && "$GITHUB_MIRROR" != "direct" ]]; then
+        request_url="${GITHUB_MIRROR%/}/$url"
+    fi
+    print_info "下载 ${name}"
     for attempt in 1 2 3; do
         rm -f "$output"
+        : > "$headers"
+        : > "$errors"
+        if [[ "$interactive" == true ]]; then draw_download_progress 0 0; fi
         if [[ "$DOWNLOADER" == "curl" ]]; then
-            if curl -fL --connect-timeout 10 "$url" -o "$output" && [[ -s "$output" ]]; then
-                print_success "已下载 ${name}。"
-                return
+            curl -fsSL --connect-timeout 10 -D "$headers" "$request_url" -o "$output" 2>"$errors" &
+        else
+            wget -q --server-response --tries=1 --timeout=10 -O "$output" "$request_url" 2>"$headers" &
+        fi
+        download_pid=$!
+        while kill -0 "$download_pid" 2>/dev/null; do
+            if [[ "$interactive" == true ]]; then
+                downloaded=0
+                if [[ -f "$output" ]]; then downloaded="$(wc -c < "$output")"; fi
+                total="$(awk 'tolower($1) ~ /^http\// { size = 0 } tolower($1) == "content-length:" { size = $2 + 0 } END { print size + 0 }' "$headers")"
+                draw_download_progress "$downloaded" "$total"
             fi
-        elif wget --progress=bar:force --tries=1 --timeout=10 -O "$output" "$url" && [[ -s "$output" ]]; then
-            print_success "已下载 ${name}。"
+            sleep 0.1
+        done
+        status=0
+        wait "$download_pid" || status=$?
+        download_pid=""
+        if [[ "$status" -eq 0 && -s "$output" ]]; then
+            downloaded="$(wc -c < "$output")"
+            if [[ "$interactive" == true ]]; then
+                draw_download_progress "$downloaded" "$downloaded" true
+                printf '\n'
+            fi
+            rm -f "$headers" "$errors"
+            print_success "已下载 ${name}"
             return
         fi
+        if [[ "$interactive" == true ]]; then printf '\n'; fi
         if [[ "$attempt" -lt 3 ]]; then
-            print_warning "下载未完成，正在重试（$((attempt + 1))/3）……"
+            if [[ "$request_url" != "$url" ]]; then
+                request_url="$url"
+                print_warning '镜像下载失败，改用 GitHub。'
+            else
+                print_warning "下载失败，重试 $((attempt + 1))/3。"
+            fi
             sleep "$attempt"
         fi
     done
-    die "下载失败：$url"
+    die "下载失败：$request_url"
 }
 
 ensure_path() {
@@ -292,6 +350,11 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             VERSION="$2"
+            shift 2
+            ;;
+        --mirror)
+            [[ $# -ge 2 && -n "$2" ]] || die '--mirror 需要镜像地址或 direct。'
+            GITHUB_MIRROR="$2"
             shift 2
             ;;
         --rollback)
@@ -396,6 +459,8 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
     die '缺少 SHA-256 校验工具。请安装 sha256sum 或 shasum。'
 fi
 select_downloader
+[[ "$GITHUB_MIRROR" == "direct" || "$GITHUB_MIRROR" =~ ^https?://[^[:space:]]+$ ]] || die '镜像地址需以 http:// 或 https:// 开头。'
+export LYSTAR_GITHUB_MIRROR="$GITHUB_MIRROR"
 
 case "$(uname -s)" in
     Darwin) os="darwin" ;;
@@ -412,6 +477,11 @@ esac
 print_step 1 6 '检查系统和获取版本信息'
 print_info "目标平台：$os-$arch"
 print_info "下载工具：$DOWNLOADER"
+if [[ "$GITHUB_MIRROR" == "direct" ]]; then
+    print_info '下载来源：GitHub'
+else
+    print_info "下载镜像：${GITHUB_MIRROR}"
+fi
 if [[ "$UPDATE_PATH" == true ]]; then
     print_info 'PATH：安装后按需写入当前 Shell 配置文件。'
 else
@@ -437,7 +507,7 @@ download "$base_url/SHA256SUMS" "$tmp/SHA256SUMS"
 expected="$(awk -v file="$asset" '$2 == file || $2 == "*" file { print $1 }' "$tmp/SHA256SUMS")"
 [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "SHA256SUMS 中缺少 ${asset}。"
 
-print_info '正在校验发行包完整性（SHA-256）……'
+print_info '校验发行包 SHA-256'
 if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
 else

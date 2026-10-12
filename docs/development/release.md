@@ -10,6 +10,88 @@ v<Pi版本>-lystar.<修订号>
 
 同一 Pi 基线递增 LYStar 修订号；合并新 Pi 版本后从 `lystar.1` 开始。发行版本事实源是 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。
 
+## 一键发布 LYStar Code
+
+在 Linux 或 macOS 的 `main` 分支执行：
+
+```bash
+npm run release:lystar
+```
+
+先提交本次要发布的代码，并在各包的 `CHANGELOG.md` 的 `[Unreleased]` 中写入变更说明。脚本要求工作区干净，允许本地 `main` 有尚未推送的提交；远端 `main` 必须是本地提交的祖先。运行环境需要 Node.js、npm、Bun、Bash、Git，以及已登录、支持 `gh attestation verify` 的 GitHub CLI。`origin` 必须指向 `lystar-team/lystar-code`。
+
+默认从 `piConfig.productVersion` 读取版本，将当前 Pi 基线的 `lystar.N` 递增为 `lystar.N+1`。合并其他 Pi Tag 后通过下方的 `--upstream-tag` 选择基线。脚本自动完成：
+
+1. 同步包版本、内部依赖、根锁文件、install-lock、shrinkwrap 和嵌套示例锁文件；将各包非空的 `[Unreleased]` 归入本版，保留空的 `[Unreleased]`。coding-agent 没有待发布条目时写入版本递增说明。
+2. 更新 README 中的当前版本、建设方案的产品版本与兼容矩阵。矩阵新行引用本版 Changelog，不自动推断兼容性。
+3. 安装依赖（`--ignore-scripts`）、离线构建、运行完整 `npm run check`、Unix 安装器检查和已有版本、更新器、发行元数据测试。
+4. 只提交发行生成的文件，通过现有提交钩子后推送 `main` 和 annotated Tag。
+5. 等待本版的 Release workflow，确认全部 job 成功和十个公开资产齐全。
+6. 下载五平台资产，校验 SHA、manifest 和三个安装器，并验证当前平台的来源证明。
+7. 在临时 HOME 中从最近的旧正式版执行 `lc update`，检查 `current/previous`、重复更新和正式包的版本、帮助、离线模型列表。
+8. 提交并推送 `AGENT_VERIFICATION.md` 中的实际验证结果。
+
+脚本不会自动发起真实模型请求或执行手工终端检查；功能改动仍按[验证范围](verification.md)完成对应检查。五平台原生构建与包检查继续由现有 Release workflow 执行。
+
+预览不修改文件，也不提交或发布：
+
+```bash
+npm run release:lystar -- --dry-run
+```
+
+### 合并上游 Tag 后发布
+
+先按[同步 Pi 上游](upstream-sync.md)完成合并、冲突处理与对应验证，提交合并结果并回到 `main`。发布入口不会自行合并上游。下面的 `v2.0.0` 是用法示例，请替换成已经合入的实际 Tag：
+
+```bash
+npm run release:lystar -- --upstream-tag v2.0.0 --dry-run
+```
+
+确认预览后执行：
+
+```bash
+npm run release:lystar -- --upstream-tag v2.0.0
+```
+
+脚本读取该 Tag 的 Pi 包版本和 commit，验证 Tag 已合入当前 `HEAD`，再读取 LYStar GitHub latest 来选择发行版本。它不按上游最新版本自动合并，也不把未合入的 Tag 当成发行基线。
+
+| 情况 | 版本结果示例 |
+|---|---|
+| 同一 Pi 基线的常规发布 | `1.1.0-lystar.11 → 1.1.0-lystar.12` |
+| 更换 Pi patch 基线 | `1.1.0-lystar.11 → 1.1.1-lystar.1` |
+| 更换 Pi minor 基线 | `1.1.0-lystar.11 → 1.2.0-lystar.1` |
+| 更换 Pi major 基线 | `1.1.0-lystar.11 → 2.0.0-lystar.1` |
+| 指定的 Pi 基线已经发布过 | 若最新正式版为 `2.0.0-lystar.3`，继续发布 `2.0.0-lystar.4`；当前已准备的修订号更高时，以较高修订号继续加一 |
+| 新基线的 `.1` 已打 Tag，但 CI 失败 | 修复后从已占用的修订号继续加一，例如发布 `2.0.0-lystar.2`，不复用 `.1` |
+
+上表的新基线首版示例假设该基线尚未占用 LYStar 产品 Tag。脚本同时查询本地和 `origin` 的已有产品 Tag，跳过已经占用的修订号，即使对应 Release 尚未公开或 CI 失败也不复用。
+
+上游合并时保留 LYStar 的 `piConfig`，包版本可以暂时是上游裸版本。产品版本可保留上一正式版，也可已准备成新基线的 `.1`；没有已占用 Tag 时，脚本不会因提前准备而把首版跳成 `.2`。它统一 workspace 与示例锁文件的版本，同步 README 的 Pi 基线和 commit、建设方案与验证记录，并保留已经写好的兼容矩阵新行。新 Tag 早于当前产品或最新正式版基线时停止。
+
+指定上游 Tag 的预览需要联网读取 GitHub latest 与 `origin` 的产品 Tag；普通 `--dry-run` 仍只读取本地文件。`--upstream-tag` 只能与发布或预览使用，不能与 `--resume`、`--verify` 混用。版本准备后续跑时只传 `--resume`，继续已准备的 LYStar 版本。
+
+若默认 `gh` 版本较旧，可指定已安装的新版 CLI：
+
+```bash
+npm run release:lystar -- --gh /path/to/gh
+```
+
+版本准备后中断时，不要再次运行默认递增命令。若发布前检查失败，修复问题并提交当前版本改动，再续跑；若 Tag 已推送，续跑直接等待工作流并核验资产，不递增版本或移动 Tag：
+
+```bash
+npm run release:lystar -- --resume
+```
+
+单独核验某个已发布版本：
+
+```bash
+npm run release:lystar -- --verify 1.1.0-lystar.11
+```
+
+`--verify` 可在有未提交改动的工作区运行；它获取 Tag 并验证公开资产，不修改版本文件、不提交或推送。历史版本不执行指向 latest 的升级；当前最新版本会验证隔离升级。验证目录在命令输出中保留，便于查看下载资产和启动日志。CI 的断言或行为失败需要修复后递增新修订号；`--resume` 不自动重跑失败工作流。
+
+本入口只发布 LYStar GitHub Release，不执行上游 npm 发布；`release:patch/minor/major` 继续用于上游 npm 流程。
+
 ## 发布前
 
 1. 工作区干净，目标提交已推送到 `origin/main`。
@@ -87,8 +169,8 @@ git push origin vX.Y.Z-lystar.N
 ## 发布后
 
 ```bash
-gh run list --limit 5
-gh release view <tag> --json url,assets,isDraft,isPrerelease
+gh run list --repo lystar-team/lystar-code --workflow release.yml --limit 5
+gh release view <tag> --repo lystar-team/lystar-code --json url,assets,isDraft,isPrerelease
 ```
 
 确认：

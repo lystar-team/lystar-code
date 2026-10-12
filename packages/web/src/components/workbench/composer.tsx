@@ -176,6 +176,17 @@ export const Composer = memo(function Composer({
 	onCancelEdit,
 	onEditComplete,
 }: ComposerProps) {
+	const [executionStatusVisible, setExecutionStatusVisible] = useState(false);
+	const [statsInFooter, setStatsInFooter] = useState(() =>
+		typeof window !== "undefined" && window.matchMedia("(min-width: 768px), (horizontal-viewport-segments: 2)").matches,
+	);
+	useEffect(() => {
+		const media = window.matchMedia("(min-width: 768px), (horizontal-viewport-segments: 2)");
+		const update = () => setStatsInFooter(media.matches);
+		update();
+		media.addEventListener("change", update);
+		return () => media.removeEventListener("change", update);
+	}, []);
 	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 	const [modelSearch, setModelSearch] = useState("");
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
@@ -325,7 +336,21 @@ export const Composer = memo(function Composer({
 			return (leftProvider?.name ?? left).localeCompare(rightProvider?.name ?? right, "zh-CN");
 		});
 	}, [state.hiddenModelProviders, state.modelOptionProviders, state.modelOptions]);
-
+	const sessionStats = !inline && !roomMode && state.sessionId ? (
+		<ComposerSessionStats
+			key={state.sessionId}
+			sessionId={state.sessionId}
+			revision={state.session?.transcriptRevision}
+			phase={state.session?.phase}
+			ready={state.sessionReady}
+			connected={state.connected}
+			lastOutputSpeed={state.lastOutputSpeed}
+			lease={state.lease}
+			readOnly={state.readOnly}
+			controlPending={(state.pendingSessionControls?.[state.sessionId] ?? 0) > 0}
+			align={statsInFooter ? "start" : "end"}
+		/>
+	) : null;
 	return (
 		<div
 			className={inline
@@ -375,9 +400,6 @@ export const Composer = memo(function Composer({
 									selectedId={state.selectedSubagentId}
 									onOpen={(agentId) => void actions.openSubagent(agentId)}
 								/>
-							) : null}
-							{!inline && !roomMode && state.sessionId ? (
-								<ComposerExecutionStatus key={state.sessionId} state={state} />
 							) : null}
 							{activeEditRequest ? (
 								<div
@@ -532,11 +554,24 @@ export const Composer = memo(function Composer({
 										onStatus={handleEditAttachmentStatus}
 									/>
 								) : null}
-								<PromptInputHeader className="min-w-0 empty:hidden">
+								<PromptInputHeader className={`min-w-0 flex-col flex-nowrap items-stretch empty:hidden ${!inline && !roomMode ? executionStatusVisible ? "pb-0" : "p-0" : ""}`}>
+									{!inline && !roomMode && state.sessionId ? (
+										<div className={`flex w-full min-w-0 items-center justify-between gap-3 ${statsInFooter && !executionStatusVisible ? "hidden" : ""}`}>
+											<div className={`min-w-0 ${statsInFooter ? "flex-1" : "max-w-[60%] shrink"}`}>
+												<ComposerExecutionStatus key={state.sessionId} state={state} onVisibilityChange={setExecutionStatusVisible} />
+											</div>
+											{!statsInFooter ? (
+												<div className={executionStatusVisible ? "min-w-12 flex-1" : "absolute right-3 top-3 w-12"}>
+													{sessionStats}
+												</div>
+											) : null}
+										</div>
+									) : null}
 									<ComposerAttachments />
 								</PromptInputHeader>
 								<PromptInputBody>
 									<PromptCompletionTextarea
+										className={sessionStats ? executionStatusVisible ? "!pt-1.5" : !statsInFooter ? "!pr-16" : undefined : undefined}
 										autoFocus={Boolean(activeEditRequest)}
 										aria-label={inline ? "编辑 Prompt" : "输入 Prompt"}
 										placeholder={
@@ -559,22 +594,7 @@ export const Composer = memo(function Composer({
 									<PromptInputTools className="shrink-0">
 										<FileUploadButton disabled={disabled || editAttachmentState === "loading" || Boolean(visibleUploadProgress)} />
 									</PromptInputTools>
-									{!inline && !roomMode && state.sessionId ? (
-										<div className="min-w-12 flex-1 [&>div]:w-full">
-										<ComposerSessionStats
-											key={state.sessionId}
-											sessionId={state.sessionId}
-											revision={state.session?.transcriptRevision}
-											phase={state.session?.phase}
-											ready={state.sessionReady}
-											connected={state.connected}
-											lastOutputSpeed={state.lastOutputSpeed}
-											lease={state.lease}
-											readOnly={state.readOnly}
-											controlPending={(state.pendingSessionControls?.[state.sessionId] ?? 0) > 0}
-										/>
-										</div>
-									) : null}
+									{statsInFooter && sessionStats ? <div className="min-w-12 flex-1">{sessionStats}</div> : null}
 									<PromptInputTools className="min-w-0 flex-[0_1_auto] flex-nowrap justify-end gap-0.5 md:gap-1">
 									{inline ? (
 										<>

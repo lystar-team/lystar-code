@@ -33,7 +33,9 @@ const rangeEditSchema = Type.Object({
 		Type.Integer({ minimum: 0, description: "Original edit index to correct when resuming a retained plan." }),
 	),
 	snapshot: Type.Optional(
-		Type.String({ description: "Read snapshot for this corrected item; otherwise use the call's snapshot." }),
+		Type.String({
+			description: 'Snapshot ID for this corrected item, e.g. "r0123456789ab"; otherwise use the call\'s snapshot.',
+		}),
 	),
 });
 const editSchema = Type.Object({
@@ -41,7 +43,7 @@ const editSchema = Type.Object({
 	snapshot: Type.Optional(
 		Type.String({
 			description:
-				"Snapshot reference returned by read. Required for a new plan. Ranges refer to this immutable snapshot.",
+				'Snapshot ID returned by read, e.g. "r0123456789ab" from [snapshot r0123456789ab; lines 1-20 of 40]. Required for a new plan. Ranges refer to this immutable snapshot.',
 		}),
 	),
 	edits: Type.Optional(
@@ -67,7 +69,7 @@ export const editToolSystemPromptContribution = {
 	snippet:
 		"Edit read snapshots using explicit line ranges; retain and repair batches without repeating old source text",
 	guidelines: [
-		"Read the target first. Use its snapshot reference and numbered source ranges with edit; do not generate oldText.",
+		'Read the target first. Set snapshot to the ID inside the read header, e.g. "r0123456789ab", and use its numbered source ranges; do not generate oldText.',
 		"Emit path first in edit and write calls, including inside codemode, so the target is visible while arguments stream.",
 		"Batch disjoint ranges from the same file. All ranges refer to their read snapshots, not to earlier items in the batch.",
 		"Replace inclusive startLine/endLine ranges; newText is source text without numbered prefixes. Empty newText deletes. Insert using endLine = startLine - 1.",
@@ -183,7 +185,7 @@ function currentEditEvidence(
 		}
 		const snapshot = state.capture(path, rawContent, start, start + visible.length - 1);
 		snapshotId ??= snapshot.id;
-		const text = `edits[${issue.editIndex}] 当前内容：\n${formatFileSnapshot(state, snapshot, visible)}`;
+		const text = `edits[${issue.editIndex}].snapshot=${JSON.stringify(snapshot.id)} 当前内容：\n${formatFileSnapshot(state, snapshot, visible)}`;
 		budget -= Buffer.byteLength(text) + 2;
 		output.push(text);
 		if (snapshot.endLine < wantedEnd)
@@ -201,14 +203,12 @@ function snapshotFailure(
 	state: FileEditState,
 	durationMs: number,
 ): ToolExecutionError {
-	const evidence = error.recoveryAllowed
-		? currentEditEvidence(state, canonicalPath, rawContent, error.issues)
-		: { text: "" };
+	const evidence = currentEditEvidence(state, canonicalPath, rawContent, error.issues);
 	const guidance = error.recoveryAllowed
 		? error.plan
-			? `本批次保留为 plan=${error.plan}。只提交需要更正的 edits，并填写原 index 和当前 snapshot；其他项无需重发。可用 dropIndexes 明确移除待提交项。`
-			: "请先 read 目标范围，再使用返回的 snapshot 和行范围提交。"
-		: "同一文件版本的恢复预算已用完。已保留待提交计划；请停止重复提交，核对读取范围与修改目标后再提交正确参数。";
+			? `本批次保留为 plan=${error.plan}。只提交需要更正的 edits，并填写原 index 和当前 snapshot ID；例如 snapshot="r0123456789ab"，不要填写整个快照标题。其他项无需重发。可用 dropIndexes 明确移除待提交项。`
+			: "请先 read 目标范围，再用返回的 snapshot ID 和行范围提交新计划。"
+		: `本轮编辑恢复预算已用完。请先 read ${JSON.stringify(path)} 的失败范围，核对行号与修改目标，再使用返回的 snapshot ID 纠正参数。${error.plan ? `待提交计划仍保留为 plan=${error.plan}；只更正失败项并填写原 index。` : "重新提交新计划。"}不要原样重复失败调用。`;
 	const message = `${truncateEditEvidence(error.issues.map((issue) => `${issue.code}: ${issue.message}`).join("\n"), 2048)}\nNo changes were written.\n${guidance}${evidence.text ? `\n\n${evidence.text}` : ""}`;
 	const details: EditToolDetails = {
 		path,
@@ -240,9 +240,8 @@ function snapshotFailure(
 						? "arguments"
 						: "precondition",
 		retryable: false,
-		terminate: !error.recoveryAllowed,
 		details: { ...details },
-		// 数组下标、片段大小和新引用不改变同一文件实际版本的失败身份。
+		// 失败身份按文件版本归并；恢复次数由编辑状态负责，主动补读后重置。
 		fingerprintConstraint: { kind: "edit_snapshot", revision: error.revision },
 	});
 	registerBuiltInRecoveryError("edit", failure);
@@ -250,7 +249,6 @@ function snapshotFailure(
 		value: ({ signal }: { signal?: AbortSignal }) => {
 			const replacementResult: ToolRecoveryReplacementResult = {
 				content: [{ type: "text", text: message }],
-				...(!error.recoveryAllowed ? { terminate: true } : {}),
 				details: {
 					...details,
 					recovery: {

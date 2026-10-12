@@ -194,6 +194,12 @@ function randomId(prefix: string): string {
 	return `${prefix}${randomBytes(6).toString("hex")}`;
 }
 
+function normalizeSnapshotReference(reference: string | undefined): string | undefined {
+	if (reference === undefined) return undefined;
+	const value = reference.trim();
+	return value ? (/^\[snapshot (r[0-9a-f]{12}); lines \d+-\d+ of \d+\]$/.exec(value)?.[1] ?? value) : undefined;
+}
+
 function sameLineText(left: readonly LineRecord[], right: readonly LineRecord[]): boolean {
 	return left.length === right.length && left.every((line, index) => line.text === right[index].text);
 }
@@ -434,11 +440,11 @@ export class FileEditState {
 	}
 
 	getSnapshot(id: string, path: string): FileSnapshot {
-		const entry = this.snapshots.get(id);
+		const entry = this.snapshots.get(normalizeSnapshotReference(id)!);
 		if (!entry || entry.metadata.path !== path) {
 			throw new Error(`SNAPSHOT_NOT_FOUND: snapshot ${id} is not available for ${path}; read the range again.`);
 		}
-		this.touchSnapshot(id);
+		this.touchSnapshot(entry.metadata.id);
 		return { ...entry.metadata };
 	}
 
@@ -450,8 +456,14 @@ export class FileEditState {
 		return `[snapshot ${snapshot.id}; ${range}]`;
 	}
 
+	/** 只有主动补读重置失败预算；错误附带的片段和预览不算恢复进展。 */
+	recordRead(snapshot: FileSnapshot): void {
+		this.failures.delete(`${snapshot.path}\0${snapshot.revision}`);
+	}
+
 	prepare(path: string, currentRawContent: string, input: SnapshotEditInput, preview = false): PreparedSnapshotEdit {
 		const sourceRevision = hashContent(currentRawContent);
+		const snapshotId = normalizeSnapshotReference(input.snapshot);
 		const failureKey = `${path}\0${sourceRevision}`;
 		const issues: SnapshotEditIssue[] = [];
 		let plan: PlanEntry;
@@ -465,7 +477,7 @@ export class FileEditState {
 					editIndex: -1,
 					message: `Plan ${input.plan} is not available for ${path}.`,
 				});
-				return this.fail(sourceRevision, failureKey, issues, input.plan, preview);
+				return this.fail(sourceRevision, failureKey, issues, undefined, preview);
 			}
 			plan = { id: existing.id, path, operations: new Map(existing.operations), bytes: existing.bytes };
 			for (const index of input.dropIndexes ?? []) {
@@ -500,7 +512,10 @@ export class FileEditState {
 				}
 				plan.operations.set(edit.index, {
 					index: edit.index,
-					snapshotId: edit.snapshot ?? input.snapshot ?? plan.operations.get(edit.index)!.snapshotId,
+					snapshotId:
+						normalizeSnapshotReference(edit.snapshot) ??
+						snapshotId ??
+						plan.operations.get(edit.index)!.snapshotId,
 					startLine: edit.startLine,
 					endLine: edit.endLine,
 					newText: edit.newText,
@@ -508,7 +523,7 @@ export class FileEditState {
 			}
 		} else {
 			plan = { id: randomId("p"), path, operations: new Map(), bytes: 0 };
-			if (!input.snapshot) {
+			if (!snapshotId) {
 				issues.push({ code: "SNAPSHOT_REQUIRED", editIndex: -1, message: "An initial snapshot is required." });
 			}
 			if (!input.edits || input.edits.length === 0) {
@@ -537,7 +552,7 @@ export class FileEditState {
 				}
 				plan.operations.set(index, {
 					index,
-					snapshotId: edit.snapshot ?? input.snapshot,
+					snapshotId: normalizeSnapshotReference(edit.snapshot) ?? snapshotId,
 					startLine: edit.startLine,
 					endLine: edit.endLine,
 					newText: edit.newText,
@@ -561,7 +576,7 @@ export class FileEditState {
 					rangeIssue(
 						"SNAPSHOT_NOT_FOUND",
 						operation,
-						`SNAPSHOT_NOT_FOUND: edits[${operation.index}] requires a new read for ${path}.`,
+						`edits[${operation.index}] snapshot=${JSON.stringify(operation.snapshotId)} is unavailable for ${path}. Use the snapshot ID from read, such as r0123456789ab; an expired reference requires a new read of the target range.`,
 					),
 				);
 				continue;
@@ -781,6 +796,7 @@ export class FileEditState {
 		}
 		this.committed.add(prepared);
 		this.removePlan(details.plan);
+		this.failures.delete(`${details.path}\0${details.sourceRevision}`);
 	}
 
 	private hasCommitCapacity(changes: CommitChange[], receipts: Receipt[]): boolean {
