@@ -830,7 +830,7 @@ describe("Tool recovery observe ledger", () => {
 		sessionManager.dispose();
 	});
 
-	it("bounds snapshot edit recovery for one revision across direct, off, assist, and auto calls", async () => {
+	it("resets snapshot edit recovery after explicit reads across direct, off, assist, and auto calls", async () => {
 		for (const mode of ["off", "assist", "auto"] as const) {
 			process.env.PI_TOOL_RECOVERY_MODE = mode;
 			const harness = await createHarness({ responses: ["unused"] });
@@ -865,8 +865,8 @@ describe("Tool recovery observe ledger", () => {
 						if (!(directError instanceof ToolExecutionError)) throw new Error("missing direct edit failure");
 						expect(directError).toMatchObject({
 							code: "RANGE_OUTSIDE_SNAPSHOT",
-							terminate: attempt === 2,
-						details: { attempt: attempt + 1, recoveryAllowed: attempt < 2, writeState: "not_written" },
+							terminate: false,
+							details: { attempt: 1, recoveryAllowed: true, writeState: "not_written" },
 						});
 						const directHandler = (
 							directError as unknown as {
@@ -874,7 +874,7 @@ describe("Tool recovery observe ledger", () => {
 							}
 						)[Symbol.for("pi.toolRecoveryHandler")];
 						expect(await directHandler({})).toMatchObject({
-							type: attempt < 2 ? "ask_model_to_rebuild" : "stop",
+							type: "ask_model_to_rebuild",
 						});
 					}
 					expect(readFileSync(join(harness.tempDir, "direct.txt"), "utf8")).toBe("one\ntwo\nthree");
@@ -934,8 +934,8 @@ describe("Tool recovery observe ledger", () => {
 				const editDetails = editResults.map((result) => result.details as Record<string, unknown>);
 				expect(editDetails.map((details) => [details.attempt, details.recoveryAllowed])).toEqual([
 					[1, true],
-					[2, true],
-					[3, false],
+					[1, true],
+					[1, true],
 				]);
 				expect(
 					editResults
@@ -946,13 +946,12 @@ describe("Tool recovery observe ledger", () => {
 					editDetails.map((details) => (details.issues as Array<{ editIndex: number }>)[0]?.editIndex),
 				).toEqual([0, 1, 2]);
 				expect(new Set(readRevisions).size).toBe(1);
-				expect(requestCount).toBe(8);
-				expect(
-					harness.eventsOfType("tool_execution_end").findLast((event) => event.toolName === "edit")?.result,
-				).toMatchObject({
-					terminate: true,
-					details: { recoveryAllowed: false, writeState: "not_written" },
+				expect(requestCount).toBe(9);
+				const editEnd = harness.eventsOfType("tool_execution_end").findLast((event) => event.toolName === "edit");
+				expect(editEnd?.result).toMatchObject({
+					details: { recoveryAllowed: true, writeState: "not_written" },
 				});
+				expect(editEnd?.result.terminate).not.toBe(true);
 				expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\ntwo\nthree");
 			} finally {
 				harness.cleanup();
