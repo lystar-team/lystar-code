@@ -14,7 +14,7 @@
 ## Pi v1.2.0 合并验证（2026-10-13，Linux x64）
 
 - 合入 upstream Tag `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）。保留 LYStar 产品与发行配置、中文全屏 TUI、Web 工作台和 CBOR 协议、角色协作、消息来源和上下文 Provider、Codemode steering、`ultra` 思考级别及安装更新入口。
-- `npm run build:offline`、完整 `npm run check` 和 Coding Agent schema 生成通过。模型接口定向测试 70 项、Codemode sandbox/portable/deterministic 190 项、TUI 渲染/全屏/输入 209 项通过；Settings/Resource Loader/Workspace 138 项通过。Session、Codemode 和 room hook 核心测试 69 项中 64 项通过；Web Runtime 定向测试 55 项中 54 项通过。
+- `npm run build:offline`、完整 `npm run check` 和 Coding Agent schema 生成通过。模型接口定向测试 70 项、Codemode sandbox/portable/deterministic 190 项、TUI 渲染/全屏/输入 185 项通过；Settings/Resource Loader/Workspace 138 项通过。Session、Codemode 和 room hook 核心测试 69 项中 64 项通过；Web Runtime 定向测试 55 项中 54 项通过。
 - 三项失败已在合并前提交 `8c2a616ba` 的独立 worktree 中复现：Web Session 列表缓存的旧调用断言、extension-origin steering 排队断言、nested edit 同版本终止断言。另三项 upstream 新增 custom-message 测试直接调用 `triggerTurn` 而未提供 origin，与 LYStar 既有来源上下文要求不兼容；保留该要求，不将这些测试记为通过。
 - Subagent、Session 来源、自动命名及 user-message Prompt 路径的定向测试 51 项通过；其中四项 custom-message 路径未纳入这次定向执行。未新增自写测试。
 - Node CLI 的真实非交互请求及独立 tmux 中的交互请求均返回 `RELEASE_SMOKE_OK`。本机 MCP `/mcp` 重复注册及两个模型筛选警告未影响回复。五平台发行资产与 Bun standalone 交互将在发布后核验，本节不代表已验证其他平台的实机行为。
