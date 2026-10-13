@@ -3,6 +3,7 @@ import {
 	type SessionProgress,
 } from "@lystar/code-web-protocol";
 import { webApi } from "../adapters/host-protocol/api.ts";
+import { recordBrowserDiagnostic } from "../lib/browser-diagnostics.ts";
 import type {
 	GatewayEvent,
 	ProjectGroup,
@@ -75,8 +76,10 @@ type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
 type SessionSubscriptionWaiter = {
 	resolve: (result: SessionSubscriptionResult) => void;
 	timeoutId: number;
+	selection?: number;
 };
 const SESSION_SUBSCRIPTION_RETRY_MS = 1500;
+const SESSION_SUBSCRIPTION_TIMEOUT_MS = 15_000;
 const MAX_HANDLED_NOTIFY_IDS = 256;
 
 export interface WorkbenchStreamActionsContext {
@@ -190,44 +193,66 @@ export function useWorkbenchStreamActions({
 	}, []);
 
 	const subscribeSessionAndWait = useCallback((sessionId: string): Promise<SessionSubscriptionResult> => {
+		const selection = selectionRef.current;
+		for (const [waitingSessionId, waiters] of [...sessionSubscriptionWaitersRef.current]) {
+			for (const waiter of [...waiters]) {
+				if (waitingSessionId !== sessionId || waiter.selection !== selection) waiter.resolve("closed");
+			}
+		}
 		const socket = socketRef.current;
 		if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING))
-			return Promise.resolve("timeout");
+			return Promise.resolve("closed");
 		return new Promise((resolve) => {
 			const waiters = sessionSubscriptionWaitersRef.current.get(sessionId) ?? new Set<SessionSubscriptionWaiter>();
 			const shouldSubscribe = waiters.size === 0;
-			let waiter: SessionSubscriptionWaiter;
-			const startTimeout = () => {
-				const startedAt = Date.now();
-				waiter.timeoutId = window.setTimeout(() => {
-					if (!waiters.has(waiter)) return;
-					if (socket.readyState !== WebSocket.OPEN) {
-						waiter.resolve("closed");
-						return;
-					}
-					console.warn("Web 会话订阅确认延迟，正在重试", {
-						sessionId,
-						elapsedMs: Date.now() - startedAt,
-						socketState: socket.readyState,
-					});
-					webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
-					startTimeout();
-				}, SESSION_SUBSCRIPTION_RETRY_MS);
-			};
-			waiter = {
+			const startedAt = Date.now();
+			let retries = 0;
+			let settled = false;
+			const waiter: SessionSubscriptionWaiter = {
+				selection,
 				timeoutId: 0,
 				resolve: (result) => {
-					socket.removeEventListener("open", startTimeout);
+					if (settled) return;
+					settled = true;
 					window.clearTimeout(waiter.timeoutId);
 					waiters.delete(waiter);
-					if (!waiters.size) sessionSubscriptionWaitersRef.current.delete(sessionId);
+					if (!waiters.size && sessionSubscriptionWaitersRef.current.get(sessionId) === waiters)
+						sessionSubscriptionWaitersRef.current.delete(sessionId);
+					recordBrowserDiagnostic("session.subscription", {
+						sessionId, selection, result, retries, elapsedMs: Date.now() - startedAt,
+						socketState: socket.readyState,
+					});
+					if (result === "timeout" && selectionRef.current === selection && stateRef.current.sessionId === sessionId) {
+						selectionInFlightRef.current = undefined;
+						updateState((current) => ({ ...current, sessionReady: false, sessionError: "会话同步超时，请重试", statusText: "" }));
+					}
 					resolve(result);
 				},
 			};
+			const retry = () => {
+				if (settled) return;
+				if (socketRef.current !== socket || selectionRef.current !== selection || stateRef.current.sessionId !== sessionId) {
+					waiter.resolve("closed");
+					return;
+				}
+				const remaining = SESSION_SUBSCRIPTION_TIMEOUT_MS - (Date.now() - startedAt);
+				if (remaining <= 0) {
+					waiter.resolve("timeout");
+					return;
+				}
+				if (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING) {
+					waiter.resolve("closed");
+					return;
+				}
+				if (socket.readyState === WebSocket.OPEN && waiters.values().next().value === waiter) {
+					retries++;
+					webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
+				}
+				waiter.timeoutId = window.setTimeout(retry, Math.min(SESSION_SUBSCRIPTION_RETRY_MS, remaining));
+			};
 			waiters.add(waiter);
 			sessionSubscriptionWaitersRef.current.set(sessionId, waiters);
-			if (socket.readyState === WebSocket.OPEN) startTimeout();
-			else socket.addEventListener("open", startTimeout, { once: true });
+			waiter.timeoutId = window.setTimeout(retry, SESSION_SUBSCRIPTION_RETRY_MS);
 			if (shouldSubscribe) webApi.subscribeSession(socket, sessionId, sessionDetailSeqRef.current.get(sessionId));
 		});
 	}, []);
@@ -236,23 +261,40 @@ export function useWorkbenchStreamActions({
 		async (sessionId: string, result: SessionSubscriptionResult): Promise<boolean> => {
 			const subscribedSocket = socketRef.current;
 			const selection = selectionRef.current;
-			if (result === "closed") return false;
-			if (result === "timeout") return false;
+			if (stateRef.current.sessionId !== sessionId || result === "closed") return false;
+			if (result === "timeout") {
+				const message = "会话同步超时，请重试";
+				updateState((current) => ({ ...current, sessionReady: false, sessionError: message, statusText: "" }));
+				throw new Error(message);
+			}
 			if (result === "gap") {
-				const key = `${sessionId}:${sessionDetailSeqRef.current.get(sessionId) ?? ""}`;
+				const key = `${sessionId}:${selection}`;
 				let recovery = gapRecoveryRef.current.get(key);
 				if (!recovery) {
-					console.info("Web 会话订阅断档", { sessionId, time: new Date().toISOString() });
+					const startedAt = Date.now();
+					recordBrowserDiagnostic("session.reconcile.started", { sessionId, selection });
 					recovery = Promise.all([
 						loadSessionSnapshot(sessionId),
 						loadSessionOperations(sessionId),
 						loadTranscript(sessionId),
 						loadSubagents(sessionId),
-					]);
+					]).then(() => {
+						recordBrowserDiagnostic("session.reconcile.finished", { sessionId, selection, elapsedMs: Date.now() - startedAt });
+						if (stateRef.current.sessionId === sessionId && selectionRef.current === selection) {
+							const current = stateRef.current;
+							if (current.sessionError || current.transcriptError || current.subagentsError)
+								throw new Error(current.sessionError ?? current.transcriptError ?? current.subagentsError);
+						}
+					});
 					gapRecoveryRef.current.set(key, recovery);
 				}
 				try {
 					await recovery;
+				} catch (error) {
+					recordBrowserDiagnostic("session.reconcile.failed", { sessionId, selection, error: errorMessage(error) });
+					if (socketRef.current === subscribedSocket && selectionRef.current === selection && stateRef.current.sessionId === sessionId)
+						updateState((current) => ({ ...current, sessionReady: false, sessionError: errorMessage(error), statusText: "" }));
+					throw error;
 				} finally {
 					if (gapRecoveryRef.current.get(key) === recovery) gapRecoveryRef.current.delete(key);
 				}
@@ -262,6 +304,7 @@ export function useWorkbenchStreamActions({
 				const next = updateState((current) => ({
 					...current,
 					...connectionStateAfterSessionSubscription(current, browserNetworkOnline()),
+					sessionError: undefined,
 				}));
 				if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
 			}
@@ -273,8 +316,11 @@ export function useWorkbenchStreamActions({
 	const restoreSelectedSessionSubscription = useCallback(
 		(sessionId: string): void => {
 			if (sessionSubscriptionWaitersRef.current.has(sessionId)) return;
+			const selection = selectionRef.current;
+			const socket = socketRef.current;
 			void subscribeSessionAndWait(sessionId)
 				.then(async (result) => {
+					if (selectionRef.current !== selection || stateRef.current.sessionId !== sessionId || socketRef.current !== socket) return;
 					const ready = await completeSessionSubscription(sessionId, result);
 					if (ready && result !== "gap" && stateRef.current.sessionId === sessionId) {
 						if (selectionInFlightRef.current === sessionId) return;
@@ -300,8 +346,9 @@ export function useWorkbenchStreamActions({
 					}
 				})
 				.catch((error) => {
+					if (selectionRef.current !== selection || stateRef.current.sessionId !== sessionId || socketRef.current !== socket) return;
 					showToast(errorMessage(error), "error");
-					socketRef.current?.close(4002, "会话状态恢复失败");
+					updateState((current) => ({ ...current, sessionReady: false, sessionError: errorMessage(error), statusText: "" }));
 				});
 		},
 		[
@@ -318,17 +365,20 @@ export function useWorkbenchStreamActions({
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "session_subscription") {
-				console.info("Web 会话订阅确认", { sessionId: event.sessionId, seq: event.seq, gap: event.gap, time: new Date().toISOString() });
+				recordBrowserDiagnostic("session.subscription.ack", { sessionId: event.sessionId, selection: selectionRef.current, seq: event.seq, gap: event.gap });
 				const selected = stateRef.current.sessionId === event.sessionId;
+				const previousSeq = sessionDetailSeqRef.current.get(event.sessionId);
+				if (selected && !event.gap && previousSeq !== undefined && event.seq < previousSeq) return;
 				if (selected) sessionDetailSeqRef.current.set(event.sessionId, event.seq);
 				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
 				if (waiters) {
-					for (const waiter of [...waiters]) waiter.resolve(event.gap ? "gap" : "ready");
+					for (const waiter of [...waiters])
+						waiter.resolve(selected && waiter.selection === selectionRef.current ? event.gap ? "gap" : "ready" : "closed");
 				}
 				if (selected) {
-					const selectionIsPending = selectionInFlightRef.current === event.sessionId;
+					const selectionIsPending = selectionInFlightRef.current === event.sessionId || gapRecoveryRef.current.has(`${event.sessionId}:${selectionRef.current}`);
 					const next = updateState((current) =>
-						event.gap || selectionIsPending
+						event.gap || selectionIsPending || Boolean(current.sessionError || current.transcriptError || current.subagentsError)
 							? { ...current, sessionReady: false }
 							: {
 									...current,
@@ -337,11 +387,13 @@ export function useWorkbenchStreamActions({
 					);
 					if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
 				}
-				if (event.gap && selected && !waiters && selectionInFlightRef.current !== event.sessionId)
+				if (event.gap && selected && !waiters && selectionInFlightRef.current !== event.sessionId) {
+					const selection = selectionRef.current;
 					void completeSessionSubscription(event.sessionId, "gap").catch((error) => {
-						showToast(errorMessage(error), "error");
-						socketRef.current?.close(4002, "会话断档恢复失败");
+						if (selectionRef.current === selection && stateRef.current.sessionId === event.sessionId)
+							showToast(errorMessage(error), "error");
 					});
+				}
 				return;
 			}
 			const sequenceSessionId =

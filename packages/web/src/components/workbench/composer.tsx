@@ -136,6 +136,9 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.session === next.session &&
 		previous.sessionId === next.sessionId &&
 		previous.sessionReady === next.sessionReady &&
+		previous.sessionError === next.sessionError &&
+		previous.transcriptError === next.transcriptError &&
+		previous.subagentsError === next.subagentsError &&
 		previous.stoppingSessionIds === next.stoppingSessionIds &&
 		previous.selectedSubagentId === next.selectedSubagentId &&
 		previous.subagents === next.subagents
@@ -580,7 +583,7 @@ export const Composer = memo(function Composer({
 													? "正在等待智能体协作回复…"
 											: "发送消息给智能体协作中的智能体…"
 												: state.sessionId && !state.sessionReady
-													? "正在同步会话"
+													? state.sessionError || state.transcriptError || state.subagentsError ? "会话同步失败，请重试" : "正在同步会话"
 											: externallyDisabled
 												? "请先完成当前 Prompt 编辑"
 												: disabled

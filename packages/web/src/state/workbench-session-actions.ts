@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { createUuid } from "@lystar/code-web-protocol";
 import { webApi } from "../adapters/host-protocol/api.ts";
+import { recordBrowserDiagnostic } from "../lib/browser-diagnostics.ts";
 import type {
 	PromptAttachment,
 	PromptAttachmentPreview,
@@ -227,249 +228,258 @@ export function useWorkbenchSessionActions({
 				return;
 			selectionInFlightRef.current = sessionId;
 			const request = ++selectionRef.current;
-			const previous = stateRef.current;
-			const selectedProjectId = previous.projects.find((project) =>
-				project.sessions.some((session) => session.id === sessionId),
-			)?.id;
-			const projectChanged = selectedProjectId !== undefined && selectedProjectId !== previous.currentProjectId;
-			const sessionChanged = previous.sessionId !== sessionId;
-			if (projectChanged) {
-				fileRequestRef.current++;
-				fileMetadataPromisesRef.current.clear();
-				projectTreeRefreshPromisesRef.current.clear();
-				gitStatusPromiseRef.current = undefined;
-				gitStatusRequestRef.current++;
-				gitBranchesRequestRef.current++;
-				gitHistoryRequestRef.current++;
-				gitCommitRequestRef.current++;
-				gitDiffRequestRef.current++;
-				gitStatsRepositoryRef.current.clear();
-				projectTreeGenerationRef.current++;
-			}
-			if (sessionChanged) sessionTreeRequestRef.current++;
-			if (previous.sessionId && previous.sessionId !== sessionId) {
-				cacheSessionDetail(
-					sessionDetailCacheRef.current,
-					previous.sessionId,
-					sessionDetailCacheFromState(previous),
-				);
-			}
-			const cached = readCachedSessionDetail(sessionDetailCacheRef.current, sessionId);
-			const socket = socketRef.current;
-			if (socket && selectedProjectId) {
-				if (previous.currentProjectId && previous.currentProjectId !== selectedProjectId) {
-					webApi.unsubscribeProject(socket, previous.currentProjectId);
-				}
-				webApi.subscribeProject(socket, selectedProjectId);
-			}
-			if (transcriptTimerRef.current) {
-				window.clearTimeout(transcriptTimerRef.current);
-				transcriptTimerRef.current = undefined;
-			}
-			transcriptRequestRef.current++;
-			(cached?.transcriptPageLoaded ? transitionState : updateState)((current) => ({
-				...current,
-				...projectInspectorStateForSelection(previous.currentProjectId, selectedProjectId),
-				...(selectedProjectId ? { currentProjectId: selectedProjectId } : {}),
-				sessionId,
-				session: cached?.session,
-				lastOutputSpeed: cached?.lastOutputSpeed,
-				sessionError: undefined,
-				lease: undefined,
-				readOnly: true,
-				sessionReady: false,
-				transcriptLoading: !cached?.transcriptPageLoaded,
-				transcriptError: undefined,
-				...(cached
-					? cached
-					: current.sessionId !== sessionId
-						? {
-								transcript: [],
-								agentSteps: {},
-								transcriptPageLoaded: false,
-								transcriptGeneration: undefined,
-								toolActivityEpoch: undefined,
-								toolActivityRevision: undefined,
-								transcriptRevision: undefined,
-								transcriptLeafId: undefined,
-								previousCursor: undefined,
-								hasMorePrevious: false,
-								liveTools: {},
-								liveSteps: {},
-								liveTurnItems: [],
-								liveTurnActive: undefined,
-											liveTurnStartRevision: undefined,
-											subagents: [],
-											subagentsLoading: false,
-											subagentsError: undefined,
-											selectedSubagentId: undefined,
-											subagentViews: {},
-										}
-								: {}),
-				loadingEarlier: false,
-				pendingUserPrompts:
-					current.sessionId === sessionId ? current.pendingUserPrompts : (cached?.pendingUserPrompts ?? []),
-				queuedUserPrompts:
-					current.sessionId === sessionId ? current.queuedUserPrompts : (cached?.queuedUserPrompts ?? []),
-				unreadSessionIds: Object.fromEntries(
-					Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
-				) as Record<string, true>,
-				statusText: cached ? "正在同步会话" : "正在打开会话",
-				currentOperation: operationForSessionSnapshot(current.operations, cached?.session),
-				liveCompaction: cached?.liveCompaction,
-				...(sessionChanged
-					? {
-							subagents: [],
-							subagentsLoading: false,
-							subagentsError: undefined,
-							selectedSubagentId: undefined,
-							subagentViews: {},
-					  }
-					: {}),
-				sessionTree: sessionChanged ? [] : current.sessionTree,
-				sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
-			}));
-			if (previous.unreadSessionIds[sessionId]) onSessionRead(sessionId);
-			if (socket && previous.sessionId && previous.sessionId !== sessionId)
-				webApi.unsubscribeSession(socket, previous.sessionId);
-							const subscriptionPromise = socket
-								? subscribeSessionAndWait(sessionId)
-								: Promise.resolve<SessionSubscriptionResult>("timeout");
-			if (
-				previous.sessionId &&
-				previous.sessionId !== sessionId &&
-				!ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")
-			) {
-				void webApi.release(previous.sessionId).catch(() => {});
-			}
-			const transcriptPromise = loadTranscript(sessionId, undefined, true);
-			const subagentsPromise = loadSubagents(sessionId);
-			void transcriptPromise.catch(() => {});
-			void subagentsPromise.catch(() => {});
-			if (projectChanged && previous.inspectorOpen) {
-				const projectReviewRefresh =
-					previous.inspectorMode === "git"
-						? loadGitStatusRef.current()
-						: previous.inspectorMode === "files"
-							? loadProjectTreeRef.current()
-							: Promise.resolve();
-				void projectReviewRefresh.catch((error) => showToast(errorMessage(error), "error"));
-			}
+			const startedAt = Date.now();
+			recordBrowserDiagnostic("session.selection.started", { sessionId, selection: request });
 			try {
-				const controlled = await acquireSelectedSessionControl(sessionId);
-				if (!controlled || request !== selectionRef.current) {
-					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
-					return;
+				const previous = stateRef.current;
+				const selectedProjectId = previous.projects.find((project) =>
+					project.sessions.some((session) => session.id === sessionId),
+				)?.id;
+				const projectChanged = selectedProjectId !== undefined && selectedProjectId !== previous.currentProjectId;
+				const sessionChanged = previous.sessionId !== sessionId;
+				if (projectChanged) {
+					fileRequestRef.current++;
+					fileMetadataPromisesRef.current.clear();
+					projectTreeRefreshPromisesRef.current.clear();
+					gitStatusPromiseRef.current = undefined;
+					gitStatusRequestRef.current++;
+					gitBranchesRequestRef.current++;
+					gitHistoryRequestRef.current++;
+					gitCommitRequestRef.current++;
+					gitDiffRequestRef.current++;
+					gitStatsRepositoryRef.current.clear();
+					projectTreeGenerationRef.current++;
 				}
-				updateState((current) => {
-					if (isOlderSessionSnapshot(current.session, controlled.snapshot))
-						return {
-							...current,
-							lease: controlled.lease,
-							readOnly: controlled.owned === false,
-							sessionError: undefined,
-						};
-					const next: WorkbenchState = {
-						...current,
-						projects: updateSessionActivity(
-							updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
-							sessionId,
-							controlled.snapshot.activity,
-						),
-						lease: controlled.lease,
-						session: controlled.snapshot,
-						transcriptGeneration: current.transcriptGeneration,
-						transcriptRevision: current.transcriptRevision,
-						transcriptLeafId: current.transcriptLeafId,
-						sessionError: undefined,
-						readOnly: controlled.owned === false,
-						currentOperation: operationForSessionSnapshot(current.operations, controlled.snapshot),
-					};
-					return restoreRuntimeActivities(next, controlled.snapshot);
-				});
-			} catch (error) {
-				if (request !== selectionRef.current) return;
-				try {
-					const result = await readSelectedSession(sessionId, (signal) => webApi.session(sessionId, signal));
-					if (!result) {
-						if (request === selectionRef.current && selectionInFlightRef.current === sessionId)
-							selectionInFlightRef.current = undefined;
-						return;
+				if (sessionChanged) sessionTreeRequestRef.current++;
+				if (previous.sessionId && previous.sessionId !== sessionId) {
+					cacheSessionDetail(
+						sessionDetailCacheRef.current,
+						previous.sessionId,
+						sessionDetailCacheFromState(previous),
+					);
+				}
+				const cached = readCachedSessionDetail(sessionDetailCacheRef.current, sessionId);
+				const socket = socketRef.current;
+				if (socket && selectedProjectId) {
+					if (previous.currentProjectId && previous.currentProjectId !== selectedProjectId) {
+						webApi.unsubscribeProject(socket, previous.currentProjectId);
 					}
-					const snapshot = result.session;
-					if (request !== selectionRef.current) {
-						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+					webApi.subscribeProject(socket, selectedProjectId);
+				}
+				if (transcriptTimerRef.current) {
+					window.clearTimeout(transcriptTimerRef.current);
+					transcriptTimerRef.current = undefined;
+				}
+				transcriptRequestRef.current++;
+				(cached?.transcriptPageLoaded ? transitionState : updateState)((current) => ({
+					...current,
+					...projectInspectorStateForSelection(previous.currentProjectId, selectedProjectId),
+					...(selectedProjectId ? { currentProjectId: selectedProjectId } : {}),
+					sessionId,
+					session: cached?.session,
+					lastOutputSpeed: cached?.lastOutputSpeed,
+					sessionError: undefined,
+					lease: undefined,
+					readOnly: true,
+					sessionReady: false,
+					transcriptLoading: !cached?.transcriptPageLoaded,
+					transcriptError: undefined,
+					...(cached
+						? cached
+						: current.sessionId !== sessionId
+							? {
+									transcript: [],
+									agentSteps: {},
+									transcriptPageLoaded: false,
+									transcriptGeneration: undefined,
+									toolActivityEpoch: undefined,
+									toolActivityRevision: undefined,
+									transcriptRevision: undefined,
+									transcriptLeafId: undefined,
+									previousCursor: undefined,
+									hasMorePrevious: false,
+									liveTools: {},
+									liveSteps: {},
+									liveTurnItems: [],
+									liveTurnActive: undefined,
+												liveTurnStartRevision: undefined,
+												subagents: [],
+												subagentsLoading: false,
+												subagentsError: undefined,
+												selectedSubagentId: undefined,
+												subagentViews: {},
+											}
+									: {}),
+					loadingEarlier: false,
+					pendingUserPrompts:
+						current.sessionId === sessionId ? current.pendingUserPrompts : (cached?.pendingUserPrompts ?? []),
+					queuedUserPrompts:
+						current.sessionId === sessionId ? current.queuedUserPrompts : (cached?.queuedUserPrompts ?? []),
+					unreadSessionIds: Object.fromEntries(
+						Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
+					) as Record<string, true>,
+					statusText: cached ? "正在同步会话" : "正在打开会话",
+					currentOperation: operationForSessionSnapshot(current.operations, cached?.session),
+					liveCompaction: cached?.liveCompaction,
+					...(sessionChanged
+						? {
+								subagents: [],
+								subagentsLoading: false,
+								subagentsError: undefined,
+								selectedSubagentId: undefined,
+								subagentViews: {},
+						  }
+						: {}),
+					sessionTree: sessionChanged ? [] : current.sessionTree,
+					sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
+				}));
+				if (previous.unreadSessionIds[sessionId]) onSessionRead(sessionId);
+				if (socket && previous.sessionId && previous.sessionId !== sessionId)
+					webApi.unsubscribeSession(socket, previous.sessionId);
+				const subscriptionPromise = subscribeSessionAndWait(sessionId);
+				if (
+					previous.sessionId &&
+					previous.sessionId !== sessionId &&
+					!ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")
+				) {
+					void webApi.release(previous.sessionId).catch(() => {});
+				}
+				const transcriptPromise = loadTranscript(sessionId, undefined, true);
+				const subagentsPromise = loadSubagents(sessionId);
+				void transcriptPromise.catch(() => {});
+				void subagentsPromise.catch(() => {});
+				if (projectChanged && previous.inspectorOpen) {
+					const projectReviewRefresh =
+						previous.inspectorMode === "git"
+							? loadGitStatusRef.current()
+							: previous.inspectorMode === "files"
+								? loadProjectTreeRef.current()
+								: Promise.resolve();
+					void projectReviewRefresh.catch((error) => showToast(errorMessage(error), "error"));
+				}
+				try {
+					const controlled = await acquireSelectedSessionControl(sessionId);
+					if (!controlled || request !== selectionRef.current) {
 						return;
 					}
 					updateState((current) => {
+						if (isOlderSessionSnapshot(current.session, controlled.snapshot))
+							return {
+								...current,
+								lease: controlled.lease,
+								readOnly: controlled.owned === false,
+								sessionError: undefined,
+							};
 						const next: WorkbenchState = {
 							...current,
 							projects: updateSessionActivity(
-								updateSessionSummaryName(current.projects, sessionId, snapshot.name),
+								updateSessionSummaryName(current.projects, sessionId, controlled.snapshot.name),
 								sessionId,
-								snapshot.activity,
+								controlled.snapshot.activity,
 							),
-							session: snapshot,
+							lease: controlled.lease,
+							session: controlled.snapshot,
 							transcriptGeneration: current.transcriptGeneration,
 							transcriptRevision: current.transcriptRevision,
 							transcriptLeafId: current.transcriptLeafId,
 							sessionError: undefined,
-							readOnly: true,
-							currentOperation: operationForSessionSnapshot(current.operations, snapshot),
+							readOnly: controlled.owned === false,
+							currentOperation: operationForSessionSnapshot(current.operations, controlled.snapshot),
 						};
-						return restoreRuntimeActivities(next, snapshot);
+						return restoreRuntimeActivities(next, controlled.snapshot);
 					});
-					showToast(errorMessage(error), "error");
-				} catch (snapshotError) {
-					if (request !== selectionRef.current) {
-						if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+				} catch (error) {
+					if (request !== selectionRef.current) return;
+					try {
+						const result = await readSelectedSession(sessionId, (signal) => webApi.session(sessionId, signal));
+						if (!result) {
+							return;
+						}
+						const snapshot = result.session;
+						if (request !== selectionRef.current) {
+							return;
+						}
+						updateState((current) => {
+							const next: WorkbenchState = {
+								...current,
+								projects: updateSessionActivity(
+									updateSessionSummaryName(current.projects, sessionId, snapshot.name),
+									sessionId,
+									snapshot.activity,
+								),
+								session: snapshot,
+								transcriptGeneration: current.transcriptGeneration,
+								transcriptRevision: current.transcriptRevision,
+								transcriptLeafId: current.transcriptLeafId,
+								sessionError: undefined,
+								readOnly: true,
+								currentOperation: operationForSessionSnapshot(current.operations, snapshot),
+							};
+							return restoreRuntimeActivities(next, snapshot);
+						});
+						showToast(errorMessage(error), "error");
+					} catch (snapshotError) {
+						if (request !== selectionRef.current) {
+							return;
+						}
+						const message = errorMessage(snapshotError);
+						updateState((current) => ({
+							...current,
+							session: undefined,
+							lease: undefined,
+							readOnly: true,
+							transcriptLoading: false,
+							sessionError: message,
+							statusText: "",
+						}));
 						return;
 					}
-					const message = errorMessage(snapshotError);
-					updateState((current) => ({
-						...current,
-						session: undefined,
-						lease: undefined,
-						readOnly: true,
-						transcriptLoading: false,
-						sessionError: message,
-						statusText: "",
-					}));
-					if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
+				}
+				if (request !== selectionRef.current) {
 					return;
 				}
-			}
-			if (request !== selectionRef.current) {
-				if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
-				return;
-			}
-			try {
-				await transcriptPromise;
+				try {
+					await transcriptPromise;
+				} catch (error) {
+					if (request === selectionRef.current) showToast(errorMessage(error), "error");
+				}
+				const subscriptionResult = await subscriptionPromise;
+				if (request !== selectionRef.current) {
+					return;
+				}
+				let subscriptionReady = false;
+				try {
+					subscriptionReady = await completeSessionSubscription(sessionId, subscriptionResult);
+					if (request !== selectionRef.current) return;
+					if (subscriptionResult !== "gap" && subscriptionReady) await loadSessionOperations(sessionId);
+				} catch (error) {
+					if (request !== selectionRef.current) return;
+					showToast(errorMessage(error), "error");
+					updateState((current) => ({ ...current, sessionReady: false, sessionError: errorMessage(error), statusText: "" }));
+					return;
+				}
+				if (request !== selectionRef.current) return;
+				const supplementalLoads = [loadProjectTrustRef.current()];
+				if (stateRef.current.inspectorMode === "tree") supplementalLoads.push(loadSessionTreeRef.current());
+				void Promise.allSettled(supplementalLoads);
+				updateState((current) =>
+					current.sessionId === sessionId
+						? { ...current, statusText: "", sessionReady: !current.sessionError && !current.transcriptError && !current.subagentsError && (current.sessionReady || subscriptionReady) }
+						: current,
+				);
 			} catch (error) {
+				if (request !== selectionRef.current) return;
+				updateState((current) => ({ ...current, sessionReady: false, sessionError: errorMessage(error), transcriptLoading: false, statusText: "" }));
 				showToast(errorMessage(error), "error");
+			} finally {
+				if (request === selectionRef.current && selectionInFlightRef.current === sessionId)
+					selectionInFlightRef.current = undefined;
+				recordBrowserDiagnostic("session.selection.finished", {
+					sessionId, selection: request, elapsedMs: Date.now() - startedAt,
+					outcome: request !== selectionRef.current ? "superseded" : stateRef.current.sessionReady ? "ready" : "not_ready",
+					error: request === selectionRef.current ? stateRef.current.sessionError ?? stateRef.current.transcriptError : undefined,
+				});
 			}
-			const subscriptionResult = await subscriptionPromise;
-			if (request !== selectionRef.current) {
-				if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
-				return;
-			}
-			let subscriptionReady = false;
-			try {
-				subscriptionReady = await completeSessionSubscription(sessionId, subscriptionResult);
-				if (subscriptionResult !== "gap") await loadSessionOperations(sessionId);
-			} catch (error) {
-				showToast(errorMessage(error), "error");
-				socketRef.current?.close(4002, "会话状态对账失败");
-			}
-			const supplementalLoads = [loadProjectTrustRef.current()];
-			if (stateRef.current.inspectorMode === "tree") supplementalLoads.push(loadSessionTreeRef.current());
-			void Promise.allSettled(supplementalLoads);
-			updateState((current) =>
-				current.sessionId === sessionId
-					? { ...current, statusText: "", sessionReady: current.sessionReady || subscriptionReady }
-					: current,
-			);
-			if (selectionInFlightRef.current === sessionId) selectionInFlightRef.current = undefined;
 		},
 		[
 			acquireSelectedSessionControl,

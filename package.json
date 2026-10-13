@@ -23,6 +23,7 @@
 		"check:ci": "biome check --write --error-on-warnings . && npm run check:pinned-deps && npm run check:runtime-deps && npm run check:entry-graphs && npm run check:ts-imports && npm run check:schema && npm run check:shrinkwrap && npm run check:install-lock:coding-agent && tsgo --noEmit",
 		"check:web": "npm run check --workspace=@lystar/code-web && npm run build --workspace=@lystar/code-web-gateway",
 		"format": "biome check --write .",
+		"diagnose:web": "node scripts/diagnose-web-performance.mjs",
 		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
 		"check:runtime-deps": "node scripts/check-runtime-deps.mjs",

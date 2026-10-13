@@ -39,7 +39,7 @@ import {
 	type TranscriptItem,
 } from "@lystar/code-web-protocol";
 import { CollaborationWorkspaceManager } from "./collaboration-workspace.ts";
-import { logRuntimeConnection } from "./connection-log.ts";
+import { logRuntimeConnection, measureRuntimePhase, measureRuntimePhaseAsync } from "./connection-log.ts";
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
@@ -410,6 +410,7 @@ export class WebRuntimeService {
 	private readonly clients = new Map<string, ClientConnection>();
 	private readonly runtimes = new Map<string, RuntimeSession>();
 	private readonly runtimeOpenings = new Map<string, Promise<RuntimeSession>>();
+	private readonly runtimeDisposals = new Map<string, Promise<void>>();
 	private readonly workspaceTransitions = new Map<string, Promise<unknown>>();
 	private disposed = false;
 	private readonly runtimeUnsubscribers = new Map<string, () => void>();
@@ -1706,6 +1707,7 @@ export class WebRuntimeService {
 		this.sessionHandoffRecoveries.clear();
 		this.sessionsInHandoff.clear();
 		await Promise.allSettled(this.runtimeOpenings.values());
+		await Promise.allSettled(this.runtimeDisposals.values());
 		for (const controller of this.operationAbortControllers.values()) controller.abort();
 		this.operationAbortControllers.clear();
 		for (const runtime of this.runtimes.values()) await runtime.dispose();
@@ -3575,7 +3577,9 @@ export class WebRuntimeService {
 	}
 
 	private async listSessionSummariesUnqueued(cwd: string, metadataOnly: boolean): Promise<ObservedSessionSummary[]> {
-		const sessions = await this.adapter.listSessions(cwd, { metadataOnly });
+		const sessions = await measureRuntimePhaseAsync("sessions.scan", { cwd, metadataOnly }, () =>
+			this.adapter.listSessions(cwd, { metadataOnly }),
+		);
 		if (!this.reconciledWorkspaceProjects.has(cwd)) {
 			this.reconciledWorkspaceProjects.add(cwd);
 			const acceptedIds = sessions
@@ -4575,9 +4579,12 @@ export class WebRuntimeService {
 		writeAccess: SessionStateSnapshot["writeAccess"],
 		attached = true,
 		revision?: number,
+		baseSnapshot?: SessionStateSnapshot,
 	): SessionStateSnapshot {
-		const snapshot = runtime.getSnapshot(writeAccess);
 		const sessionPath = canonicalSessionPath(runtime.sessionPath);
+		const snapshot =
+			baseSnapshot ??
+			measureRuntimePhase("session.snapshot", { sessionPath }, () => runtime.getSnapshot(writeAccess));
 		const projectedRevision = revision ?? Math.max(snapshot.revision, this.snapshotRevisions.get(sessionPath) ?? 0);
 		this.snapshotRevisions.set(sessionPath, projectedRevision);
 		return {
@@ -4604,7 +4611,10 @@ export class WebRuntimeService {
 			this.snapshotTimers.delete(sessionPath);
 		}
 		this.rememberRuntimeTranscriptFact(runtime);
-		const runtimeRevision = runtimeReadState(runtime).revision;
+		const baseSnapshot = measureRuntimePhase("session.snapshot", { sessionPath }, () =>
+			runtime.getSnapshot("available"),
+		);
+		const runtimeRevision = baseSnapshot.revision;
 		const revision = Math.max(runtimeRevision, (this.snapshotRevisions.get(sessionPath) ?? -1) + 1);
 		this.snapshotRevisions.set(sessionPath, revision);
 		await Promise.allSettled(
@@ -4615,7 +4625,13 @@ export class WebRuntimeService {
 						type: "event",
 						event: {
 							type: "session_snapshot",
-							snapshot: this.runtimeSnapshot(runtime, this.writeAccess(sessionPath, client), attached, revision),
+							snapshot: this.runtimeSnapshot(
+								runtime,
+								this.writeAccess(sessionPath, client),
+								attached,
+								revision,
+								baseSnapshot,
+							),
 						},
 					}),
 				),
@@ -4642,6 +4658,7 @@ export class WebRuntimeService {
 		options: { deferExtensionLifecycle?: boolean; workspaceTransition?: boolean } = {},
 	): Promise<RuntimeSession> {
 		if (!options.workspaceTransition) await this.workspaceTransitions.get(sessionPath);
+		await this.runtimeDisposals.get(sessionPath);
 		if (this.disposed) throw new Error("Web Runtime 已关闭");
 		if (this.sessionsInHandoff.has(sessionPath)) {
 			throw Object.assign(new Error("会话正在交给 TUI，请稍后重试"), {
@@ -4681,9 +4698,11 @@ export class WebRuntimeService {
 					throw error;
 				}
 			}
-			const replacement = await this.adapter.openSession(sessionPath, onUiRequest, {
-				deferExtensionLifecycle: options.deferExtensionLifecycle === true,
-			});
+			const replacement = await measureRuntimePhaseAsync("session.open", { sessionPath }, () =>
+				this.adapter.openSession(sessionPath, onUiRequest, {
+					deferExtensionLifecycle: options.deferExtensionLifecycle === true,
+				}),
+			);
 			if (
 				this.disposed ||
 				canonicalSessionPath(replacement.sessionPath) !== sessionPath ||
@@ -4928,7 +4947,7 @@ export class WebRuntimeService {
 			return;
 		}
 		const workspace = existsSync(sessionPath) ? readSessionHeader(sessionPath)?.collaborationWorkspace : undefined;
-		await this.disposeRuntime(sessionPath);
+		await this.disposeRuntime(sessionPath, true);
 		if (workspace?.status === "accepted") {
 			await this.transitionWorkspace(sessionPath, async () => {
 				const sessions = await this.adapter.listSessions(workspace.projectCwd);
@@ -4939,17 +4958,29 @@ export class WebRuntimeService {
 		this.retryPendingWorkspaceReleases();
 	}
 
-	private async disposeRuntime(sessionPath: string): Promise<void> {
-		await this.runtimeOpenings.get(sessionPath)?.catch(() => {});
-		await this.disposeSessionHandoffServer(sessionPath);
-		const timer = this.snapshotTimers.get(sessionPath);
-		if (timer) {
-			clearTimeout(timer);
-			this.snapshotTimers.delete(sessionPath);
+	private async disposeRuntime(sessionPath: string, ifUnused = false): Promise<void> {
+		const pending = this.runtimeDisposals.get(sessionPath);
+		if (pending) return pending;
+		const opening = this.runtimeOpenings.get(sessionPath);
+		const disposal = Promise.resolve().then(() =>
+			measureRuntimePhaseAsync("session.dispose", { sessionPath }, async () => {
+				await opening?.catch(() => {});
+				const runtime = this.runtimes.get(sessionPath);
+				if (ifUnused && this.runtimeHasDemand(sessionPath, runtime)) return;
+				await measureRuntimePhaseAsync("session.dispose.handoff", { sessionPath }, () =>
+					this.disposeSessionHandoffServer(sessionPath, runtime),
+				);
+				this.detachRuntimeProjection(sessionPath);
+				if (runtime)
+					await measureRuntimePhaseAsync("session.dispose.runtime", { sessionPath }, () => runtime.dispose());
+			}),
+		);
+		this.runtimeDisposals.set(sessionPath, disposal);
+		try {
+			await disposal;
+		} finally {
+			if (this.runtimeDisposals.get(sessionPath) === disposal) this.runtimeDisposals.delete(sessionPath);
 		}
-		const runtime = this.runtimes.get(sessionPath);
-		this.detachRuntimeProjection(sessionPath);
-		await runtime?.dispose();
 	}
 
 	private mutationSessionPath(request: { sessionPath?: string; leaseId?: string }): string | undefined {

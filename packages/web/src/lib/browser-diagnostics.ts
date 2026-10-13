@@ -1,5 +1,5 @@
 const DIAGNOSTIC_STORAGE_KEY = "lystar.web.browser-diagnostics.v1";
-const MAX_DIAGNOSTIC_ENTRIES = 50;
+const MAX_DIAGNOSTIC_ENTRIES = 500;
 
 export interface BrowserDiagnosticEntry {
 	id: string;
@@ -7,6 +7,7 @@ export interface BrowserDiagnosticEntry {
 	scope: string;
 	message: string;
 	stack?: string;
+	details?: Record<string, unknown>;
 	componentStack?: string;
 	location?: string;
 	visibility?: DocumentVisibilityState;
@@ -66,13 +67,15 @@ export function recordBrowserDiagnostic(scope: string, value: unknown, component
 		timestamp: new Date().toISOString(),
 		scope,
 		message: error.message || error.name,
+		...(value !== null && typeof value === "object" && !(value instanceof Error) && !Array.isArray(value)
+			? { details: value as Record<string, unknown> } : {}),
 		...(error.stack ? { stack: error.stack } : {}),
 		...(componentStack ? { componentStack } : {}),
-		...(typeof window === "undefined"
+		...(typeof window === "undefined" || !window.location
 			? {}
 			: {
 					location: `${window.location.pathname}${window.location.search}${window.location.hash}`,
-					visibility: document.visibilityState,
+					...(typeof document === "undefined" ? {} : { visibility: document.visibilityState }),
 				}),
 		...(memory
 			? {

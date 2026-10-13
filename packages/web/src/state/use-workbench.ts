@@ -95,6 +95,7 @@ type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
 type SessionSubscriptionWaiter = {
 	resolve: (result: SessionSubscriptionResult) => void;
 	timeoutId: number;
+	selection?: number;
 };
 
 export function useWorkbench() {
@@ -162,6 +163,10 @@ export function useWorkbench() {
 	const streamConnectStartedAtRef = useRef(0);
 
 	const cancelSessionReads = useCallback(() => {
+		for (const waiters of [...sessionSubscriptionWaitersRef.current.values()]) {
+			for (const waiter of [...waiters]) waiter.resolve("closed");
+		}
+		sessionSubscriptionWaitersRef.current.clear();
 		for (const controller of sessionReadControllersRef.current) controller.abort();
 		sessionReadControllersRef.current.clear();
 		transcriptReadsRef.current.clear();
@@ -172,13 +177,14 @@ export function useWorkbench() {
 	const readSelectedSession = useCallback(
 		async <T,>(sessionId: string, read: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> => {
 			if (stateRef.current.sessionId !== sessionId) return;
+			const selection = selectionRef.current;
 			const controller = new AbortController();
 			sessionReadControllersRef.current.add(controller);
 			try {
 				const result = await read(controller.signal);
-				if (!controller.signal.aborted) return result;
+				if (!controller.signal.aborted && selectionRef.current === selection && stateRef.current.sessionId === sessionId) return result;
 			} catch (error) {
-				if (!controller.signal.aborted) throw error;
+				if (!controller.signal.aborted && selectionRef.current === selection && stateRef.current.sessionId === sessionId) throw error;
 			} finally {
 				sessionReadControllersRef.current.delete(controller);
 			}
@@ -191,6 +197,7 @@ export function useWorkbench() {
 		let next = typeof update === "function" ? update(current) : update;
 		if (next.sessionId !== current.sessionId) {
 			cancelSessionReads();
+			if (selectionInFlightRef.current !== next.sessionId) selectionInFlightRef.current = undefined;
 			if (next.settledTurns === current.settledTurns) next = { ...next, settledTurns: {} };
 		}
 		stateRef.current = next;

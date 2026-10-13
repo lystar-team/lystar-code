@@ -224,6 +224,10 @@ export class ServiceEventLog {
 let currentLog: ServiceEventLog | undefined;
 process.once("exit", () => currentLog?.close());
 
+export function configuredServiceEventLogPath(): string | undefined {
+	return currentLog?.path;
+}
+
 export function configureServiceEventLog(
 	agentDir: string,
 	profile?: string,

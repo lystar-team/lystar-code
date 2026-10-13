@@ -5,7 +5,7 @@ import {
 	encodeTrustedServerMessage,
 	type ServerMessage,
 } from "@lystar/code-web-protocol";
-import { logRuntimeConnection } from "./connection-log.ts";
+import { logRuntimeConnection, withRuntimeRequest } from "./connection-log.ts";
 import type { WebRuntimeService } from "./service.ts";
 
 export const MAX_RUNTIME_WRITE_BYTES = 32 * 1024 * 1024;
@@ -26,6 +26,14 @@ const CONCURRENT_READ_COMMANDS = new Set<Command["command"]>([
 	"resolve_project_resource",
 	"read_project_resource",
 	"read_project_image",
+]);
+
+// Session reconciliation must not share the list-scanning / ordered-write barrier.
+const SESSION_SYNC_READ_COMMANDS = new Set<Command["command"]>([
+	"get_session_info",
+	"inspect_session",
+	"list_operations",
+	"list_subagents",
 ]);
 
 type ReadBatch = {
@@ -196,6 +204,11 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	let transcriptProcessing = Promise.resolve();
 	let updateCheckProcessing = Promise.resolve();
 	const acquisitions = new Set<Promise<void>>();
+	const sessionLifecycle = new Map<string, Promise<void>>();
+	const pendingSyncReads = new Set<Promise<void>>();
+	const syncReadPaths = new WeakMap<Promise<void>, string | undefined>();
+	const pendingSessionReads = (sessionPath?: string) =>
+		[...pendingSyncReads].filter((read) => sessionPath === undefined || syncReadPaths.get(read) === sessionPath);
 	let queuedRequests = 0;
 	let queuedBytes = 0;
 	let closed = false;
@@ -207,6 +220,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 		});
 		input.destroy(error instanceof Error ? error : new Error(String(error)));
 	};
+	const syncReads = createReadBatch(fail, 2);
+	void syncReads.done.catch(fail);
 	let readBatch: ReadBatch | undefined;
 	const sealReadBatch = () => {
 		readBatch?.seal();
@@ -234,6 +249,18 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 									: {}),
 							}
 						: {};
+				const sessionPath = "sessionPath" in requestFields ? requestFields.sessionPath : undefined;
+				const lifecycleBarrier = sessionPath ? sessionLifecycle.get(sessionPath) : undefined;
+				const queueLane =
+					message.type !== "request"
+						? "ordered"
+						: SESSION_SYNC_READ_COMMANDS.has(message.request.command)
+							? "session_sync"
+							: message.request.command === "acquire_session" || message.request.command === "release_session"
+								? "session_control"
+								: message.request.command === "read_transcript"
+									? "transcript"
+									: "ordered";
 				const byteLength = Buffer.byteLength(JSON.stringify(message));
 				queuedBytes += byteLength;
 				if (++queuedRequests > 128 || queuedBytes > MAX_RUNTIME_WRITE_BYTES)
@@ -245,6 +272,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						command: message.request.command,
 						...requestFields,
 						queueDepth: queuedRequests,
+						queueLane,
 					});
 				const handle = async () => {
 					const startedAt = performance.now();
@@ -257,8 +285,19 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								command: message.request.command,
 								...requestFields,
 								queueWaitMs: Math.round(startedAt - receivedAt),
+								queueLane,
 							});
-						if (handled) await connection.handle(message);
+						if (handled)
+							await withRuntimeRequest(
+								{
+									clientInstanceId,
+									...requestFields,
+									...(message.type === "request"
+										? { requestId: message.id, command: message.request.command, queueLane }
+										: {}),
+								},
+								() => connection.handle(message),
+							);
 					} finally {
 						if (message.type === "request")
 							logRuntimeConnection(handled ? "request_finished" : "request_skipped", {
@@ -267,6 +306,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								command: message.request.command,
 								...requestFields,
 								queueWaitMs: Math.round(startedAt - receivedAt),
+								queueLane,
 								...(handled
 									? {
 											processMs: Math.round(performance.now() - startedAt),
@@ -280,14 +320,60 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				};
 				if (message.type === "ui_response") {
 					void handle().catch(fail);
+				} else if (message.type === "request" && SESSION_SYNC_READ_COMMANDS.has(message.request.command)) {
+					let resolveRead!: () => void;
+					const read = new Promise<void>((resolve) => {
+						resolveRead = resolve;
+					});
+					pendingSyncReads.add(read);
+					syncReadPaths.set(read, sessionPath);
+					void Promise.all([handshake, lifecycleBarrier])
+						.then(() => {
+							if (closed) {
+								pendingSyncReads.delete(read);
+								resolveRead();
+								return;
+							}
+							syncReads.add(async () => {
+								try {
+									await handle();
+								} finally {
+									pendingSyncReads.delete(read);
+									resolveRead();
+								}
+							}, "control");
+							syncReads.start();
+						})
+						.catch((error: unknown) => {
+							pendingSyncReads.delete(read);
+							resolveRead();
+							fail(error);
+						});
 				} else if (message.type === "request" && message.request.command === "check_for_updates") {
 					updateCheckProcessing = Promise.all([handshake, updateCheckProcessing]).then(handle).catch(fail);
 				} else if (message.type === "request" && message.request.command === "read_transcript") {
 					transcriptProcessing = Promise.all([handshake, transcriptProcessing]).then(handle).catch(fail);
-				} else if (message.type === "request" && message.request.command === "acquire_session") {
-					const acquisition = handshake.then(handle).catch(fail);
+				} else if (
+					message.type === "request" &&
+					(message.request.command === "acquire_session" || message.request.command === "release_session")
+				) {
+					if (message.request.command === "release_session") sealReadBatch();
+					const acquisition = Promise.all([
+						handshake,
+						lifecycleBarrier,
+						...(message.request.command === "release_session"
+							? [processing, ...pendingSessionReads(sessionPath)]
+							: []),
+					])
+						.then(handle)
+						.catch(fail);
 					acquisitions.add(acquisition);
-					void acquisition.finally(() => acquisitions.delete(acquisition));
+					if (sessionPath) sessionLifecycle.set(sessionPath, acquisition);
+					void acquisition.finally(() => {
+						acquisitions.delete(acquisition);
+						if (sessionPath && sessionLifecycle.get(sessionPath) === acquisition)
+							sessionLifecycle.delete(sessionPath);
+					});
 				} else if (
 					message.type === "request" &&
 					(message.request.command === "list_sessions" || CONCURRENT_READ_COMMANDS.has(message.request.command))
@@ -312,7 +398,9 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 					);
 				} else {
 					sealReadBatch();
-					processing = processing.then(handle).catch(fail);
+					processing = Promise.all([processing, lifecycleBarrier, ...pendingSessionReads(sessionPath)])
+						.then(handle)
+						.catch(fail);
 					if (message.type === "hello") handshake = processing;
 				}
 			}
@@ -331,7 +419,15 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				try {
 					decoder.end();
 					sealReadBatch();
-					void Promise.all([processing, transcriptProcessing, updateCheckProcessing, ...acquisitions]).then(() => {
+					syncReads.seal();
+					void Promise.all([
+						processing,
+						transcriptProcessing,
+						updateCheckProcessing,
+						...acquisitions,
+						...pendingSyncReads,
+						syncReads.done,
+					]).then(() => {
 						cleanup();
 						resolve();
 					}, onError);
@@ -342,6 +438,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 			const onClose = () => {
 				closed = true;
 				sealReadBatch();
+				syncReads.seal();
 				cleanup();
 				resolve();
 			};
