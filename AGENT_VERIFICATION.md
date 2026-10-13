@@ -9,7 +9,16 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前产品版本为 `1.2.0-lystar.1`，上一正式 Tag 为 `v1.1.0-lystar.13`。
+- 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.2.0-lystar.1`，上一正式 Tag 为 `v1.1.0-lystar.13`。
+
+## 1.2.0-lystar.1 发布后验证（2026-10-13）
+
+- Annotated Tag `v1.2.0-lystar.1` 指向 `96049cd4686ebea46574836733c57f1f53b25791`。Release workflow `38467995118` 的五平台原生构建、候选校验和发布共 7 个 job 全部成功；Release 于 `2026-10-13T21:12:18Z` 公开发布，不是 draft/prerelease，GitHub latest 指向本版。
+- 下载的 10 个公开资产通过 metadata、五平台归档 SHA-256 和三个安装器一致性校验。Linux x64 归档的来源证明检查限定本仓库、`release.yml`、本版 Tag 与上述发行提交。
+- 隔离 HOME 中从 `1.1.0-lystar.13` 执行 `lc update` 成功升级；`current` 指向 `versions/1.2.0-lystar.1`，`previous` 保留 `.13`。重复更新报告已是最新版本，两个链接保持不变；正式包版本、帮助和离线模型列表通过。
+- Node CLI 与正式 Linux x64 Bun standalone 的独立 tmux 交互均返回 `RELEASE_SMOKE_OK`。正式包的 `/settings`、`80x24`、`80x8`、`120x36` 和退出检查完成；其他四平台的证据为原生 runner 构建与归档检查，未替代实机交互。
+- 验证资产：`/tmp/lystar-release-1.2.0-lystar.1-nZhZwW`；正式包交互证据：`/tmp/lystar-120-public-bun-pty.log`。发布续跑日志：`/tmp/lystar-120-release-resume.log`，退出码为 `0`。两次 GitHub 状态查询的临时 `502` 未改变版本或 Tag。
+- 自动文本审查有两项未完成：`.husky/pre-commit` 无扩展名，工具不支持；`packages/ai/src/providers/compat-schema.ts` 的审查响应格式无效。未记为自动审查全部通过；完整 `npm run check` 和相关模型接口测试已通过。
 
 ## Pi v1.2.0 合并验证（2026-10-13，Linux x64）
 
@@ -17,7 +26,7 @@
 - `npm run build:offline`、完整 `npm run check` 和 Coding Agent schema 生成通过。模型接口定向测试 70 项、Codemode sandbox/portable/deterministic 190 项、TUI 渲染/全屏/输入 185 项通过；Settings/Resource Loader/Workspace 138 项通过。Session、Codemode 和 room hook 核心测试 69 项中 64 项通过；Web Runtime 定向测试 55 项中 54 项通过。
 - 三项失败已在合并前提交 `8c2a616ba` 的独立 worktree 中复现：Web Session 列表缓存的旧调用断言、extension-origin steering 排队断言、nested edit 同版本终止断言。另三项 upstream 新增 custom-message 测试直接调用 `triggerTurn` 而未提供 origin，与 LYStar 既有来源上下文要求不兼容；保留该要求，不将这些测试记为通过。
 - Subagent、Session 来源、自动命名及 user-message Prompt 路径的定向测试 51 项通过；其中四项 custom-message 路径未纳入这次定向执行。未新增自写测试。
-- Node CLI 的真实非交互请求及独立 tmux 中的交互请求均返回 `RELEASE_SMOKE_OK`。本机 MCP `/mcp` 重复注册及两个模型筛选警告未影响回复。五平台发行资产与 Bun standalone 交互将在发布后核验，本节不代表已验证其他平台的实机行为。
+- Node CLI 的真实非交互请求及独立 tmux 中的交互请求均返回 `RELEASE_SMOKE_OK`。本机 MCP `/mcp` 重复注册及两个模型筛选警告未影响回复。五平台发行资产与 Bun standalone 交互的结果见本版发布后验证。
 
 ## 1.1.0-lystar.13 自动发布验证
 
