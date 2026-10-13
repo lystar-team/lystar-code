@@ -31,8 +31,10 @@ import {
 import type { VirtualModelDefinition } from "../virtual-models.ts";
 import type {
 	AgentBeforeSettleEvent,
+	BeforeAgentStartCustomEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeAgentStartUserEvent,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	BoundaryContextPreview,
@@ -168,6 +170,11 @@ function isUserBashEventResult(value: unknown): value is UserBashEventResult {
 		(resultRecord.fullOutputPath === undefined || typeof resultRecord.fullOutputPath === "string")
 	);
 }
+
+/** The message that starts a run: the before_agent_start event without its prompt fields. */
+export type BeforeAgentStartTrigger =
+	| Pick<BeforeAgentStartUserEvent, "messageType" | "prompt" | "images">
+	| Pick<BeforeAgentStartCustomEvent, "messageType" | "message">;
 
 /** Combined result from all before_agent_start handlers. */
 interface BeforeAgentStartCombinedResult {
@@ -1654,8 +1661,7 @@ export class ExtensionRunner {
 	}
 
 	async emitBeforeAgentStart(
-		prompt: string,
-		images: ImageContent[] | undefined,
+		trigger: BeforeAgentStartTrigger,
 		systemPromptOptions: BuildSystemPromptOptions,
 		turn?: AgentTurnContext,
 	): Promise<BeforeAgentStartCombinedResult> {
@@ -1676,10 +1682,9 @@ export class ExtensionRunner {
 			for (const handler of handlers) {
 				try {
 					const event: BeforeAgentStartEvent = {
+						...trigger,
 						type: "before_agent_start",
 						turn: activeTurn,
-						prompt,
-						images,
 						get systemPrompt() {
 							return renderCurrentSystemPrompt();
 						},

@@ -270,7 +270,7 @@ interface WorkingStatusEditor extends EditorComponent {
 	setWorkingStatusIndicator(indicator: StatusIndicator | undefined): void;
 }
 
-function isWorkingStatusEditor(editor: EditorComponent): editor is WorkingStatusEditor {
+function isEmbeddedStatus(editor: EditorComponent): editor is WorkingStatusEditor {
 	return (
 		"embedWorkingStatus" in editor &&
 		editor.embedWorkingStatus === true &&
@@ -2696,7 +2696,7 @@ export class InteractiveMode {
 
 	private setEditorWorkingStatusIndicator(indicator: StatusIndicator | undefined): boolean {
 		this.defaultEditor.setWorkingStatusIndicator(undefined);
-		if (!isWorkingStatusEditor(this.editor)) return false;
+		if (!isEmbeddedStatus(this.editor)) return false;
 		this.editor.setWorkingStatusIndicator(indicator);
 		return true;
 	}
@@ -2736,7 +2736,7 @@ export class InteractiveMode {
 	}
 
 	private showWorkingStatusIndicator(): void {
-		const colorFn = isWorkingStatusEditor(this.editor)
+		const colorFn = isEmbeddedStatus(this.editor)
 			? (text: string) =>
 					(this.editor.borderColor ?? theme.getThinkingBorderColor(this.session.thinkingLevel || "off"))(text)
 			: undefined;
@@ -4525,7 +4525,13 @@ export class InteractiveMode {
 				this.defaultEditor.onEscape = () => {
 					this.session.abortCompaction();
 				};
-				this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
+				const colorFn = isEmbeddedStatus(this.editor)
+					? (text: string) =>
+							(this.editor.borderColor ?? theme.getThinkingBorderColor(this.session.thinkingLevel || "off"))(
+								text,
+							)
+					: undefined;
+				this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason, colorFn));
 				this.ui.requestRender();
 				break;
 			}
@@ -4616,7 +4622,13 @@ export class InteractiveMode {
 				if (event.source === "branchSummary") {
 					this.showStatusIndicator(new BranchSummaryStatusIndicator(this.ui));
 				} else {
-					this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason));
+					const colorFn = isEmbeddedStatus(this.editor)
+						? (text: string) =>
+								(this.editor.borderColor ?? theme.getThinkingBorderColor(this.session.thinkingLevel || "off"))(
+									text,
+								)
+						: undefined;
+					this.showStatusIndicator(new CompactionStatusIndicator(this.ui, event.reason, colorFn));
 				}
 				this.ui.requestRender();
 				break;

@@ -361,10 +361,6 @@ async function runBuild(bundle = false, quiet = false) {
 				"packages/ai",
 				"--workspace",
 				"packages/agent",
-				"--workspace",
-				"packages/protocol",
-				"--workspace",
-				"packages/client",
 			],
 		},
 		{

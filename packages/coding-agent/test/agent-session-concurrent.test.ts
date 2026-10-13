@@ -491,8 +491,7 @@ describe("AgentSession concurrent prompt guard", () => {
 					streamingBehavior?: "steer" | "followUp",
 				) => Promise<{ action: "continue" }>;
 				emitBeforeAgentStart: (
-					prompt: string,
-					images: unknown,
+					trigger: unknown,
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
 				invalidate: (message?: string) => void;
@@ -516,7 +515,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				return undefined;
 			},
 			emitInput: async () => ({ action: "continue" }),
-			emitBeforeAgentStart: async (_prompt, _images, systemPromptOptions) => ({
+			emitBeforeAgentStart: async (_trigger, systemPromptOptions) => ({
 				messages: [],
 				systemPromptOptions: normalizeBuildSystemPromptOptions(systemPromptOptions),
 			}),
@@ -642,8 +641,7 @@ describe("AgentSession concurrent prompt guard", () => {
 					streamingBehavior?: "steer" | "followUp",
 				) => Promise<{ action: "continue" }>;
 				emitBeforeAgentStart: (
-					prompt: string,
-					images: unknown,
+					trigger: unknown,
 					systemPromptOptions: BuildSystemPromptOptions,
 				) => Promise<{ messages: []; systemPromptOptions: NormalizedBuildSystemPromptOptions }>;
 				invalidate: (message?: string) => void;
@@ -663,7 +661,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				return undefined;
 			},
 			emitInput: async () => ({ action: "continue" }),
-			emitBeforeAgentStart: async (_prompt, _images, systemPromptOptions) => ({
+			emitBeforeAgentStart: async (_trigger, systemPromptOptions) => ({
 				messages: [],
 				systemPromptOptions: normalizeBuildSystemPromptOptions(systemPromptOptions),
 			}),

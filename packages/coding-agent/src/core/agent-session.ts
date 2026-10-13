@@ -128,6 +128,7 @@ import {
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
+import type { BeforeAgentStartTrigger } from "./extensions/runner.ts";
 import { supportsFastMode } from "./fast-mode.ts";
 import {
 	type AgentCapabilityLease,
@@ -1677,6 +1678,22 @@ export class AgentSession {
 				}).catch(() => {});
 			}
 		}
+		// An abort requested while the run was starting, e.g. during before_agent_start, stops it
+		// here. agent_start is awaited before the first request.
+		if (event.type === "agent_start" && this._agentRunAbortRequested) this.agent.abort();
+		// Record the calls a tool made through ctx.executeTool() and their usage on its result message.
+		if (this._nestedToolCalls) {
+			if (event.type === "message_start" && event.message.role === "toolResult") {
+				const message = event.message;
+				const summary = this._nestedToolCalls.takeRecord(message.toolCallId);
+				if (summary?.calls) message.nestedCalls = summary.calls;
+				if (summary?.usage) {
+					message.usage = message.usage ? combineUsage(message.usage, summary.usage) : summary.usage;
+				}
+			} else if (event.type === "agent_end") {
+				this._nestedToolCalls.clear();
+			}
+		}
 		let queueId: string | undefined;
 		if (event.type === "message_start" && event.message.role === "toolResult") {
 			const message = event.message;
@@ -2177,6 +2194,7 @@ export class AgentSession {
 			exposure: this._getToolExposure(definition.name),
 			...(definition.namespace ? { namespace: definition.namespace } : {}),
 			...(definition.annotations ? { annotations: { ...definition.annotations } } : {}),
+			...(definition.reachesTools ? { reachesTools: definition.reachesTools } : {}),
 			sourceInfo,
 		}));
 	}
@@ -2529,19 +2547,41 @@ export class AgentSession {
 		}
 	}
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], inputSignal?: AbortSignal): Promise<void> {
+	private async _startRun(
+		trigger: BeforeAgentStartTrigger,
+		inputSignal?: AbortSignal,
+		onStarted?: () => void,
+		toolLease?: readonly string[],
+	): Promise<void> {
 		inputSignal?.throwIfAborted();
 		const controller = new AbortController();
+		const signal = inputSignal ? AbortSignal.any([inputSignal, controller.signal]) : controller.signal;
 		this._agentRunAbortController = controller;
 		this._toolRecoveryController?.beginTask?.();
+		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
+		let messages: AgentMessage[];
+		try {
+			messages = await this._prepareRun(trigger, signal, toolLease);
+			signal.throwIfAborted();
+		} catch (error) {
+			this._isAgentRunActive = false;
+			this._agentRunAbortController = undefined;
+			this._flushPendingBashMessages();
+			this._flushPendingCustomMessages();
+			this._resolveIdleWaitIfIdle();
+			throw error;
+		}
+		this._flushPendingBashMessages();
+		this._flushPendingCustomMessages();
+		onStarted?.();
+
 		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
 		this._failedResponse = undefined;
 		this._recordSelection();
 		// The run records the loadout in the transcript; restored tools that did not register by now
 		// are dropped, so a tool that never registers does not stay pending.
 		this._pendingToolNames.clear();
-		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
 			while (!this._agentRunAbortRequested) {
@@ -2568,6 +2608,96 @@ export class AgentSession {
 				if (this._agentRunAbortController === controller) this._agentRunAbortController = undefined;
 			}
 		}
+	}
+
+	/**
+	 * Prepare a run and return its starting messages: compact first when needed, emit
+	 * before_agent_start, apply the run's prompt options and tool loadout, and build the starting
+	 * message followed by pending nextTurn messages (consumed here) and handler messages, with a
+	 * system patch first when the prompt changed.
+	 */
+	private async _prepareRun(
+		trigger: BeforeAgentStartTrigger,
+		signal: AbortSignal,
+		toolLease?: readonly string[],
+	): Promise<AgentMessage[]> {
+		// Check if we need to compact before sending (catches aborted responses).
+		// The starting message is sent below, so do not call agent.continue() here.
+		const lastAssistant = this._findLastAssistantMessage();
+		if (lastAssistant) {
+			await raceWithAbortSignal(this._checkCompaction(lastAssistant, false), signal);
+		}
+
+		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+		const result = await raceWithAbortSignal(
+			this._extensionRunner.emitBeforeAgentStart(trigger, this._baseSystemPromptOptions),
+			signal,
+		);
+		signal.throwIfAborted();
+		const providerMessages =
+			trigger.messageType === "user"
+				? await raceWithAbortSignal(
+						this._extensionRunner.prepareContextProviders(trigger.prompt, this._activeTurnContext!),
+						signal,
+					)
+				: [];
+		signal.throwIfAborted();
+		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
+		// which updates the live loadout instead. An explicit edit wins; otherwise the live
+		// loadout is authoritative, so a setActiveTools() call is not undone here.
+		const handlerEditedTools =
+			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+		if (toolLease) {
+			const allowed = new Set(toolLease);
+			result.systemPromptOptions.selectedTools = result.systemPromptOptions.selectedTools.filter((name) =>
+				allowed.has(name),
+			);
+		}
+
+		const messages: AgentMessage[] = [];
+		if (trigger.messageType === "custom") {
+			messages.push(trigger.message);
+		} else {
+			// Normalize images after before_agent_start so extension-driven model selection
+			// determines the resize profile used for the request and history.
+			const normalized = await raceWithAbortSignal(this._normalizePromptImages(trigger.images), signal);
+			const text =
+				normalized.hints.length > 0 ? `${trigger.prompt}\n\n${normalized.hints.join("\n")}` : trigger.prompt;
+			messages.push({
+				role: "user",
+				content: [{ type: "text", text }, ...normalized.images],
+				timestamp: Date.now(),
+			});
+		}
+		// Inject any pending "nextTurn" messages as context alongside the starting message
+		messages.push(...this._pendingNextTurnMessages);
+		this._pendingNextTurnMessages = [];
+		for (const msg of [...result.messages, ...providerMessages]) {
+			messages.push({
+				role: "custom",
+				customType: msg.customType,
+				// Untyped extensions can pass null/missing content; normalize at ingestion.
+				content: msg.content ?? [],
+				display: msg.display,
+				details: msg.details,
+				timestamp: Date.now(),
+			});
+		}
+		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
+		this._runSystemPromptOptions = result.systemPromptOptions;
+		if (updateMessage) messages.unshift(updateMessage);
+		await raceWithAbortSignal(
+			this._prepareRequestContext(
+				{ messages: [...this.agent.state.messages, ...messages], tools: this.agent.state.tools },
+				messages,
+				signal,
+			),
+			signal,
+		);
+		signal.throwIfAborted();
+		return messages;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -2708,7 +2838,6 @@ export class AgentSession {
 			return;
 		}
 		const preflightResult = options?.preflightResult;
-		let messages: AgentMessage[] | undefined;
 		let turn: AgentTurnContext | undefined;
 		let ownsTurn = false;
 		const previousActiveToolNames = options?.activeToolNames ? this.getActiveToolNames() : undefined;
@@ -2831,121 +2960,19 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
-			// Check if we need to compact before sending (catches aborted responses).
-			// The user's new prompt is sent below, so do not call agent.continue() here.
-			const lastAssistant = this._findLastAssistantMessage();
-			if (lastAssistant) {
-				await raceWithAbortSignal(this._checkCompaction(lastAssistant, false), signal);
-			}
-
-			// Emit before_agent_start before normalizing images so extension-driven model
-			// selection determines the resize profile used for the request and history.
-			const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-			const result = await raceWithAbortSignal(
-				this._extensionRunner.emitBeforeAgentStart(
-					expandedText,
-					currentImages,
-					this._baseSystemPromptOptions,
-					turn,
-				),
+			await this._startRun(
+				{ messageType: "user", prompt: expandedText, images: currentImages },
 				signal,
+				() => preflightResult?.("started"),
+				options?.capabilities?.allowedTools ?? options?.activeToolNames,
 			);
-			signal.throwIfAborted();
-			const providerMessages = await raceWithAbortSignal(
-				this._extensionRunner.prepareContextProviders(expandedText, turn),
-				signal,
-			);
-			signal.throwIfAborted();
-			// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
-			// which updates the live loadout instead. An explicit edit wins; otherwise the live
-			// loadout is authoritative, so a setActiveTools() call is not undone here.
-			const handlerEditedTools =
-				result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-				result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
-			if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
-			const toolLease = options?.capabilities?.allowedTools ?? options?.activeToolNames;
-			if (toolLease) {
-				const allowed = new Set(toolLease);
-				result.systemPromptOptions.selectedTools = result.systemPromptOptions.selectedTools.filter((name) =>
-					allowed.has(name),
-				);
-			}
-
-			const normalized = await raceWithAbortSignal(this._normalizePromptImages(currentImages), signal);
-			signal.throwIfAborted();
-			const userText =
-				normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
-
-			// Build messages only after hooks and image normalization have completed.
-			messages = [];
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
-			userContent.push(...normalized.images);
-			messages.push({
-				role: "user",
-				content: userContent,
-				timestamp: Date.now(),
-			});
-
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this._pendingNextTurnMessages) {
-				messages.push(msg);
-			}
-			this._pendingNextTurnMessages = [];
-
-			for (const msg of [...result.messages, ...providerMessages]) {
-				messages.push({
-					role: "custom",
-					customType: msg.customType,
-					// Untyped extensions can pass null/missing content; normalize at ingestion.
-					content: msg.content ?? [],
-					display: msg.display,
-					details: msg.details,
-					timestamp: Date.now(),
-				});
-			}
-			const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
-			this._runSystemPromptOptions = result.systemPromptOptions;
-			if (updateMessage) messages.unshift(updateMessage);
-
-			// 最终预算必须包含扩展展开的 Skill 和附加消息。
-			await raceWithAbortSignal(
-				this._prepareRequestContext(
-					{
-						messages: [...this.agent.state.messages, ...messages],
-						tools: this.agent.state.tools,
-					},
-					messages,
-					signal,
-				),
-				signal,
-			);
-			signal.throwIfAborted();
+			return turn;
 		} catch (error) {
 			if (signal.aborted && ownsTurn) {
 				await this._emitAgentSettled();
-				this._activeTurnContext = undefined;
-				this._activeCapabilityLease = previousCapabilityLease;
 				return turn;
 			}
-			if (ownsTurn) {
-				this._activeTurnContext = undefined;
-				this._activeCapabilityLease = previousCapabilityLease;
-			}
 			throw error;
-		}
-
-		if (!messages) {
-			if (ownsTurn) {
-				this._activeTurnContext = undefined;
-				this._activeCapabilityLease = previousCapabilityLease;
-			}
-			return turn;
-		}
-
-		preflightResult?.("started");
-		try {
-			await this._runAgentPrompt(messages, signal);
-			return turn;
 		} finally {
 			if (previousActiveToolNames) this.setActiveToolsByName([...previousActiveToolNames]);
 			if (ownsTurn) {
@@ -3219,10 +3246,12 @@ export class AgentSession {
 			this._activeTurnContext = turn;
 			try {
 				if (this._isEmittingAgentSettled) {
-					this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
+					this._deferredSettledActions.push(async () => await this.sendCustomMessage(message, options));
 					return;
 				}
-				await this._runAgentPrompt(appMessage);
+				await this._withInputCancellation((signal) =>
+					this._startRun({ messageType: "custom", message: appMessage }, signal),
+				);
 			} finally {
 				this._activeTurnContext = previousTurn;
 			}

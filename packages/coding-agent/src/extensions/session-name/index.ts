@@ -219,7 +219,7 @@ export function createSessionNameExtension(agentDir?: string): ExtensionFactory 
 		};
 
 		pi.on("before_agent_start", (event: BeforeAgentStartEvent, ctx) => {
-			if (ctx.mode === "rpc") startNameRequest(ctx, event.prompt);
+			if (ctx.mode === "rpc" && "prompt" in event) startNameRequest(ctx, event.prompt);
 		});
 
 		pi.on("agent_settled", (_event: AgentSettledEvent, ctx) => {

@@ -176,6 +176,7 @@ export {
 	type OverlayMargin,
 	type OverlayOptions,
 	type OverlayUnfocusOptions,
+	renderFakeCursor,
 	type SizeValue,
 	type TerminalClipboardContent,
 	type TUI,
