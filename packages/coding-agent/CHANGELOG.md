@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.2.0-lystar.1] - 2026-10-14
+
 ### Changed
 
 - 合并 Pi v1.2.0，保留 LYStar 中文全屏 TUI、Web 协议与工作台、角色协作、消息来源和上下文 Provider、Codemode steering、安装与更新入口。

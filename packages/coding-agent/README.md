@@ -1,6 +1,6 @@
 # LYStar Code
 
-LYStar Code `1.1.0-lystar.13` 是基于 Pi `v1.1.0` 的中文编码 Agent。最终用户命令为 `lc` 和 `lystar`，两者完全等价；继续保留 Pi Runtime、Session、Skill、Extension、Package、MCP、`.pi` 数据和 `PI_*` 环境变量兼容。
+LYStar Code `1.2.0-lystar.1` 是基于 Pi `v1.2.0` 的中文编码 Agent。最终用户命令为 `lc` 和 `lystar`，两者完全等价；继续保留 Pi Runtime、Session、Skill、Extension、Package、MCP、`.pi` 数据和 `PI_*` 环境变量兼容。
 
 ## 使用
 
@@ -31,7 +31,7 @@ Unix 构建脚本只生成当前原生平台归档。五平台正式产物由 Re
 
 发行仓库固定为 `lystar-team/lystar-code`。构建脚本会把该地址写入安装器、manifest 和发行包，供安装与更新使用。
 
-LYStar Code 当前基于 `earendil-works/pi` `v1.1.0`，上游 commit 为 `abe508e1b89912adde45528136c3221eb69acdd7`，按 MIT License 发行。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。
+LYStar Code 当前基于 `earendil-works/pi` `v1.2.0`，上游 commit 为 `06a466935536f8c9bcacb2d5efc0fc021be1bdff`，按 MIT License 发行。Grok Build 仅作为全屏 TUI 交互参考，没有复制其源码或资产。
 
 ## License
 
