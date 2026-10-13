@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0-lystar.13] - 2026-10-13
+
 ### Added
 
 - Web Runtime 记录请求内部阶段耗时（`runtime_phase_started`/`runtime_phase_finished`），用 `requestId` 关联排队、处理时长和阶段；`session.snapshot` 只在同步计算达到 100 毫秒或失败时记录。
