@@ -487,7 +487,16 @@ export class TranscriptReader {
 				!previous || appendOnly ? (previous?.generation ?? baseGeneration) : `${baseGeneration}:${contentHash}`;
 			this.rememberObserved(resolvedPath, { ...rewriteGeneration, generation, sessionId: header.id });
 			if (cursor && options.leafId !== undefined && cursor.leafId !== options.leafId) {
-				throw new TranscriptCursorInvalidError();
+				// 同一分支追加消息后，旧游标仍从原来的分页边界继续读取。
+				let currentWantedId = options.leafId;
+				await scanReverse(handle, completeSize, this.maxJsonlLineBytes, (line) => {
+					if (currentWantedId === cursor.leafId || currentWantedId === null) return true;
+					const entry = parseLine(line);
+					if (!entry || entry.type === "session" || entry.id !== currentWantedId) return false;
+					currentWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
+					return currentWantedId === cursor.leafId || currentWantedId === null;
+				});
+				if (currentWantedId !== cursor.leafId) throw new TranscriptCursorInvalidError();
 			}
 			const leafId = cursor ? cursor.leafId : options.leafId !== undefined ? options.leafId : persistedTailId;
 			if (!leafId) {

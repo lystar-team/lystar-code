@@ -9,7 +9,7 @@ import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { CodeBlock, CodeBlockCopyButton } from "./code-block";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-type OutputSegment = { kind: "text"; value: string } | { kind: "json"; value: JsonValue };
+type OutputSegment = { kind: "text"; value: string; start: number } | { kind: "json"; value: JsonValue; start: number };
 type ResultItem = { index: number; status?: string; value: JsonValue };
 
 const CODEMODE_OUTPUT_HEADER = /^Script (?:completed|failed)\nWall time [\d.]+ seconds\nOutput:\n/;
@@ -127,12 +127,12 @@ function parseOutput(output: string): { body: string; segments: OutputSegment[];
 		if (!isJsonContainerStart(body, index)) continue;
 		const candidate = parseJsonCandidate(body, index);
 		if (!candidate) continue;
-		if (index > textStart) segments.push({ kind: "text", value: body.slice(textStart, index) });
-		segments.push({ kind: "json", value: candidate.value });
+		if (index > textStart) segments.push({ kind: "text", value: body.slice(textStart, index), start: textStart });
+		segments.push({ kind: "json", value: candidate.value, start: index });
 		index = candidate.end - 1;
 		textStart = candidate.end;
 	}
-	if (textStart < body.length || segments.length === 0) segments.push({ kind: "text", value: body.slice(textStart) });
+	if (textStart < body.length || segments.length === 0) segments.push({ kind: "text", value: body.slice(textStart), start: textStart });
 	return { body, segments, hasJson: segments.some((segment) => segment.kind === "json") };
 }
 
@@ -200,7 +200,7 @@ function ResultValue({ value, depth = 0 }: { value: JsonValue; depth?: number })
 }
 
 function ResultCard({ value, index }: { value: JsonValue; index: number }) {
-	const [open, setOpen] = useState(true);
+	const [open, setOpen] = useState(false);
 	const result = normalizeResult(value, index);
 	const title = `结果 ${result.index + 1}`;
 	return (
@@ -226,13 +226,13 @@ function ResultCard({ value, index }: { value: JsonValue; index: number }) {
 function StructuredOutput({ segments }: { segments: OutputSegment[] }) {
 	return (
 		<div className="max-h-80 min-w-0 overflow-auto p-2 text-xs leading-5">
-			{segments.map((segment, index) => segment.kind === "json" ? <ResultCard key={`result-${index}`} value={segment.value} index={index} /> : segment.value ? <pre className="m-0 whitespace-pre-wrap break-words px-1 py-1 text-xs leading-5 text-foreground" key={`text-${index}`}>{segment.value}</pre> : null)}
+			{segments.map((segment, index) => segment.kind === "json" ? <ResultCard key={`json-${segment.start}`} value={segment.value} index={index} /> : segment.value ? <pre className="m-0 whitespace-pre-wrap break-words px-1 py-1 text-xs leading-5 text-foreground" key={`text-${segment.start}`}>{segment.value}</pre> : null)}
 		</div>
 	);
 }
 
 export function CodemodeOutput({ output }: { output: string }) {
-	const [open, setOpen] = useState(true);
+	const [open, setOpen] = useState(false);
 	const [raw, setRaw] = useState(false);
 	const { body, segments, hasJson } = useMemo(() => parseOutput(output), [output]);
 	return (

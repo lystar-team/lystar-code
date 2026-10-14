@@ -393,7 +393,13 @@ export function useWorkbench() {
 	);
 
 	const loadTranscript = useCallback(
-		async (sessionId = stateRef.current.sessionId, cursor?: string, deferCommit = false, completeTurn = false) => {
+		async function readTranscript(
+			sessionId = stateRef.current.sessionId,
+			cursor?: string,
+			deferCommit = false,
+			completeTurn = false,
+			recoveringCursor = false,
+		): Promise<void> {
 			if (!sessionId) return;
 			const requestedHistory = {
 				generation: stateRef.current.transcriptGeneration,
@@ -509,6 +515,7 @@ export function useWorkbench() {
 				}
 				if (
 					!cursor &&
+					!recoveringCursor &&
 					sameHistory &&
 					current.transcriptPageLoaded &&
 					current.transcriptRevision === result.transcriptRevision &&
@@ -547,7 +554,7 @@ export function useWorkbench() {
 					result,
 					// 有游标的是补更早历史，放前面；无游标的首屏在未加载过时放前面，已加载过是尾页更新放后面。
 					Boolean(cursor) || !current.transcriptPageLoaded,
-					sameHistory,
+					sameHistory && !recoveringCursor,
 					renderIdOverrides,
 				);
 				const pendingUserPrompts = cursor
@@ -591,13 +598,17 @@ export function useWorkbench() {
 				};
 			});
 			} catch (error) {
-				if ((cursor ? historyRequestIsActive() : requestId === transcriptRequestRef.current && stateRef.current.sessionId === sessionId)) {
-					updateState((current) => ({
-						...current,
-						transcriptLoading: false,
-						transcriptError: errorMessage(error),
-					}));
+				if (!historyRequestIsActive() || (!cursor && requestId !== transcriptRequestRef.current)) return;
+				if (!recoveringCursor && error instanceof Error && "code" in error && error.code === "cursor_stale") {
+					// 失效后从尾页重建窗口和游标；最多恢复一次，避免持续变化时循环请求。
+					await readTranscript(sessionId, undefined, deferCommit, false, true);
+					return;
 				}
+				updateState((current) => ({
+					...current,
+					transcriptLoading: false,
+					transcriptError: errorMessage(error),
+				}));
 				throw error;
 			}
 		},

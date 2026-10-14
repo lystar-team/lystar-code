@@ -234,6 +234,8 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 			candidate.summary === tool.summary &&
 			candidate.state === tool.state &&
 			(streamingImageGeneration || candidate.detail === tool.detail) &&
+			candidate.codemode === tool.codemode &&
+			candidate.progress === tool.progress &&
 			JSON.stringify(candidate.subagents) === JSON.stringify(tool.subagents) &&
 			candidate.inputPreview === tool.inputPreview &&
 			candidate.preparing === tool.preparing &&
