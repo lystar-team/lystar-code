@@ -16,7 +16,9 @@
 - 记录时间：2026-10-14T04:36:12.298Z。Annotated Tag `v1.2.0-lystar.2` 指向 `46da4e34867abf35267ad9051e86498f22bc6fc5`；Release workflow `38510401207` 的全部 job 成功，公开 Release 不是 draft/prerelease。
 - 10 个公开资产通过 metadata、SHA 和安装器一致性校验；linux-x64 来源证明及独立包版本、帮助、离线模型列表通过。
 - 隔离 HOME 中从 `v1.2.0-lystar.1` 升级至 `v1.2.0-lystar.2`；current/previous 和重复更新检查通过。
-- 验证产物：`/tmp/lystar-release-1.2.0-lystar.2-3CYlZB`。未自动执行真实模型请求或手工终端检查。
+- 验证产物：`/tmp/lystar-release-1.2.0-lystar.2-3CYlZB`。发布脚本日志为 `/tmp/lystar-release-1202.log`，退出码为 `0`。
+- 补充终端检查：Node CLI 与正式 Linux x64 Bun standalone 均从 `/tmp` 的独立 tmux 启动，默认模型均返回 `RELEASE_SMOKE_OK`，并正常退出。正式包的 `/settings`、`80x24`、`80x8` 和 `120x36` 检查通过；交互证据为 `/tmp/lystar-release-1202-node-pty.log` 和 `/tmp/lystar-release-1202-public-pty.log`。其他四平台未执行实机交互。
+- 本次 `npm run build:offline`、完整 `npm run check`、Unix 安装器检查和 38 项发行测试通过。Web 定向测试 52 项通过；Runtime 的 Transcript reader/projection 定向测试共 41 项，其中 40 项通过，隐藏扩展消息的 `display: false` 投影断言失败，与下方 `1.1.0-lystar.9` 已记录的失败一致。本次未修改该投影代码或测试，未将此项记为通过。
 
 ## 1.2.0-lystar.1 发布后验证（2026-10-13）
 
