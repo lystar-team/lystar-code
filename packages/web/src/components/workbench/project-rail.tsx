@@ -71,6 +71,7 @@ import {
 } from "./project-rail-utils";
 import { SessionRenameDialog } from "./dialogs";
 import { SessionButton, type SessionButtonProps } from "./session-button";
+import { SessionResultsList, type SessionResultEntry } from "./session-results-list.tsx";
 import { SessionManagementDialog } from "./session-management-dialog";
 import type { WorkbenchActions } from "./types";
 import { VirtualizedSessionList } from "./virtualized-session-list";
@@ -81,7 +82,7 @@ const SESSION_PAGE_SIZE = 7;
 const SESSION_TABS: ReadonlyArray<WorkbenchTabOption<SessionListTab>> = [
 	{ icon: List, label: "全部", value: "all" },
 	{ icon: Play, label: "进行中", value: "running" },
-	{ icon: CircleCheck, label: "已完成", value: "completed" },
+	{ icon: CircleCheck, label: "结果", value: "completed" },
 ];
 
 type ProjectDropTarget =
@@ -244,19 +245,37 @@ export const ProjectRail = memo(function ProjectRail({
 	const [projectNameDrafts, setProjectNameDrafts] = useState<Record<string, string>>({});
 	const [editingProjectId, setEditingProjectId] = useState<string>();
 	const [projectActionId, setProjectActionId] = useState<string>();
+	const tabViewsRef = useRef<Record<SessionListTab, { scrollTop: number; counts: Record<string, number> }>>({
+		all: { scrollTop: 0, counts: {} }, running: { scrollTop: 0, counts: {} }, completed: { scrollTop: 0, counts: {} },
+	});
+	const focusSequenceRef = useRef(0);
+	const handledFocusRef = useRef<number>();
+	const [focusRequest, setFocusRequest] = useState<{ tab: SessionListTab; sessionId?: string; scrollTop: number; id: number }>();
+	const [retainedUnread, setRetainedUnread] = useState<{ sessionId: string; index: number }>();
+	const pendingNewSessionRef = useRef<{ projectId: string; knownIds: Set<string> }>();
+	const changeSessionTab = useCallback((tab: SessionListTab, sessionId?: string) => {
+		if (tab === sessionTab && !sessionId) return;
+		tabViewsRef.current[sessionTab] = { scrollTop: sessionViewportRef.current?.scrollTop ?? 0, counts: sessionVisibleCounts };
+		const view = tabViewsRef.current[tab];
+		setSessionVisibleCounts(view.counts);
+		setSessionTab(tab);
+		setFocusRequest({ tab, sessionId: sessionId ?? state.sessionId, scrollTop: view.scrollTop, id: ++focusSequenceRef.current });
+	}, [sessionTab, sessionVisibleCounts, state.sessionId]);
 	const sessionViewportRef = useRef<HTMLDivElement>(null);
 	const draggedSessionRef = useRef<SessionDrag>();
 	draggedSessionRef.current = draggedSession;
-	const selectedSessionActivity = currentProject?.sessions.find((session) => session.id === state.sessionId)?.activity;
+	const selectedSession = currentProject?.sessions.find((session) => session.id === state.sessionId);
+	const selectedSessionActivity = selectedSession && isSessionRunning(selectedSession)
+		? selectedSession.activity : selectedSession?.result?.activity ?? selectedSession?.activity;
 	const previousSelectedSessionRef = useRef({ id: state.sessionId, activity: selectedSessionActivity });
 
 	useEffect(() => {
 		const current = { id: state.sessionId, activity: selectedSessionActivity };
 		if (sessionTab === "completed" && isResumedCompletedSession(previousSelectedSessionRef.current, current)) {
-			setSessionTab("running");
+			changeSessionTab("running", state.sessionId);
 		}
 		previousSelectedSessionRef.current = current;
-	}, [sessionTab, state.sessionId, selectedSessionActivity]);
+	}, [sessionTab, state.sessionId, selectedSessionActivity, changeSessionTab]);
 
 	const normalizedQuery = query.trim().toLowerCase();
 	const archivedProjects = state.projects.filter((project) => project.archived);
@@ -277,6 +296,9 @@ export const ProjectRail = memo(function ProjectRail({
 		}
 		return index;
 	}, [projects]);
+	const resultEntries = useMemo(() => projects.flatMap((project) =>
+		searchProjectSessions(project, "all", "", roomAgentSessionIds, state.unreadSessionIds)
+			.map((session) => ({ project, session }))), [projects, roomAgentSessionIds, state.unreadSessionIds]);
 	const tabCounts = useMemo(
 		() => countSessionsByTab(searchedSessionsByProject, state.unreadSessionIds),
 		[searchedSessionsByProject, state.unreadSessionIds],
@@ -299,6 +321,57 @@ export const ProjectRail = memo(function ProjectRail({
 			),
 		[projects, searchedSessionsByProject, sessionTab, state.unreadSessionIds],
 	);
+	useLayoutEffect(() => {
+		const pending = pendingNewSessionRef.current;
+		if (!pending || !state.sessionId || state.currentProjectId !== pending.projectId || pending.knownIds.has(state.sessionId)) return;
+		pendingNewSessionRef.current = undefined;
+		setQuery("");
+		changeSessionTab("all", state.sessionId);
+	}, [state.sessionId, state.currentProjectId, changeSessionTab]);
+
+	useLayoutEffect(() => {
+		if (!focusRequest || focusRequest.tab !== sessionTab || handledFocusRef.current === focusRequest.id) return;
+		handledFocusRef.current = focusRequest.id;
+		const viewport = sessionViewportRef.current;
+		if (!viewport) return;
+		viewport.scrollTop = focusRequest.scrollTop;
+		const entry = focusRequest.sessionId ? sessionsById.get(focusRequest.sessionId) : undefined;
+		if (entry && sessionTab !== "completed") {
+			const sessions = matchingSessionsByProject.get(entry.projectId) ?? [];
+			const selected = sessions.find((session) => session.id === entry.session.id);
+			if (selected) {
+				const ancestors = new Set<string>();
+				let root = selected;
+				while (root.relation === "collaboration" && root.parentId && !ancestors.has(root.parentId)) {
+					const parent = sessions.find((session) => session.id === root.parentId);
+					if (!parent) break;
+					ancestors.add(parent.id);
+					root = parent;
+				}
+				const index = topLevelSessions(sessions).findIndex((session) => session.id === root.id);
+				setSessionVisibleCounts((current) => index < (current[entry.projectId] ?? SESSION_PAGE_SIZE) ? current :
+					{ ...current, [entry.projectId]: index + 1 });
+				setExpandedSessionIds((current) => ancestors.size ? new Set([...current, ...ancestors]) : current);
+				setExpandedProjectIds((current) => current.has(entry.projectId) ? current : new Set(current).add(entry.projectId));
+				const group = state.projectGroups.find((group) => group.projectIds.includes(entry.projectId));
+				if (group) setExpandedGroupIds((current) => current.has(group.id) ? current : new Set(current).add(group.id));
+				else setUngroupedOpen(true);
+			}
+		} else if (entry && isSessionUnread(entry.session, state.unreadSessionIds)) {
+			const waiting = resultEntries.filter(({ session }) => isSessionUnread(session, state.unreadSessionIds));
+			const index = waiting.findIndex(({ session }) => session.id === entry.session.id);
+			setSessionVisibleCounts((current) => index < (current.results ?? SESSION_PAGE_SIZE) ? current : { ...current, results: index + 1 });
+		}
+		const frame = requestAnimationFrame(() => {
+			const row = Array.from(viewport.querySelectorAll<HTMLElement>("[data-session-id]")).find((node) => node.dataset.sessionId === focusRequest.sessionId);
+			if (!row) return;
+			const bounds = viewport.getBoundingClientRect();
+			const rect = row.getBoundingClientRect();
+			if (rect.top < bounds.top) viewport.scrollTop += rect.top - bounds.top;
+			else if (rect.bottom > bounds.bottom) viewport.scrollTop += rect.bottom - bounds.bottom;
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [focusRequest, sessionTab, sessionsById, matchingSessionsByProject, resultEntries, state.projectGroups, state.unreadSessionIds]);
 	const topLevelSessionsByProject = useMemo(
 		() =>
 			new Map(
@@ -433,9 +506,21 @@ export const ProjectRail = memo(function ProjectRail({
 		projectId: string,
 		agentProfile?: Pick<SubagentConfig, "id" | "name" | "icon">,
 	) => {
-		if (projectId !== state.currentProjectId) await actions.selectProject(projectId);
-		await actions.createSession(agentProfile);
-		onNavigate?.();
+		pendingNewSessionRef.current = { projectId, knownIds: new Set(sessionsById.keys()) };
+		try {
+			if (projectId !== state.currentProjectId) await actions.selectProject(projectId);
+			const createdSessionId = await actions.createSession(agentProfile);
+			if (!createdSessionId) return;
+			if (pendingNewSessionRef.current) {
+				setQuery("");
+				changeSessionTab("all", createdSessionId);
+			}
+			onNavigate?.();
+		} catch (error) {
+			actions.showToast(error instanceof Error ? error.message : String(error), "error");
+		} finally {
+			pendingNewSessionRef.current = undefined;
+		}
 	};
 
 	const resetProjectDrag = () => {
@@ -730,18 +815,6 @@ export const ProjectRail = memo(function ProjectRail({
 				const entry = context.sessionsById.get(sessionId);
 				if (!entry) return;
 				context.setSelectedProjectId(entry.projectId);
-				if (context.sessionTab === "completed") {
-					if (!entry.session.pinned) {
-						const searchedSessions = context.searchedSessionsByProject.get(entry.projectId) ?? [];
-						const index = topLevelSessions(searchedSessions).findIndex((session) => session.id === sessionId);
-						context.setSessionVisibleCounts((current) =>
-							index >= (current[entry.projectId] ?? SESSION_PAGE_SIZE)
-								? { ...current, [entry.projectId]: index + 1 }
-								: current,
-						);
-					}
-					context.setSessionTab("all");
-				}
 				void context.actions.selectSession(sessionId);
 				context.onNavigate?.();
 			},
@@ -1082,6 +1155,8 @@ export const ProjectRail = memo(function ProjectRail({
 												items={visibleSessions}
 												getKey={sessionItemKey}
 												scrollRef={sessionViewportRef}
+												scrollToKey={focusRequest?.tab === sessionTab ? focusRequest.sessionId : undefined}
+												scrollRequestId={focusRequest?.id}
 												renderItem={({ session, depth }) => {
 													const running = isSessionRunning(session);
 													const sessionDrop =
@@ -1469,7 +1544,7 @@ export const ProjectRail = memo(function ProjectRail({
 			</div>
 			<Tabs
 				value={sessionTab}
-				onValueChange={(value) => setSessionTab(value as SessionListTab)}
+				onValueChange={(value) => changeSessionTab(value as SessionListTab)}
 				className="min-h-0 flex-1 gap-0"
 			>
 				<WorkbenchTabBar
@@ -1484,8 +1559,41 @@ export const ProjectRail = memo(function ProjectRail({
 					.map((tab) => (
 						<TabsContent key={tab} value={tab} forceMount className="hidden" />
 					))}
-				<TabsContent value={sessionTab} className="flex min-h-0 flex-1 flex-col">
+				<TabsContent value={sessionTab} forceMount className="flex min-h-0 flex-1 flex-col">
 					<ScrollArea viewportRef={sessionViewportRef} className="project-list min-h-0 flex-1 px-3">
+					{sessionTab === "completed" ? (
+						<SessionResultsList
+							entries={resultEntries}
+							unreadSessionIds={state.unreadSessionIds}
+							selectedSessionId={state.sessionId}
+							retainedUnread={retainedUnread}
+							visibleCount={sessionVisibleCounts.results ?? SESSION_PAGE_SIZE}
+							onLoadMore={() => setSessionVisibleCounts((current) => ({ ...current, results: (current.results ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE }))}
+							query={normalizedQuery}
+							loading={state.loading || projects.some((project) => project.sessionsLoaded === false)}
+							scrollRef={sessionViewportRef}
+							focusRequest={focusRequest?.tab === sessionTab ? focusRequest : undefined}
+							renderEntry={({ project, session }: SessionResultEntry, waitingIndex) => {
+								const handlers = getSessionHandlers(session.id);
+								return <SessionButton
+									projectName={project.name}
+									session={session}
+									active={state.sessionId === session.id}
+									running={false}
+									unread={isSessionUnread(session, state.unreadSessionIds)}
+									showResultStatus
+									dragging={draggedSession?.sessionId === session.id}
+									dropTarget={false}
+									{...handlers}
+									onClick={() => {
+										if (waitingIndex !== undefined && isSessionUnread(session, state.unreadSessionIds))
+											setRetainedUnread({ sessionId: session.id, index: waitingIndex });
+										handlers.onClick();
+									}}
+								/>;
+							}}
+						/>
+					) : (
 				<div className="pb-5">
 					{pinnedSessions.length ? (
 						<div className="mb-4">
@@ -1564,9 +1672,7 @@ export const ProjectRail = memo(function ProjectRail({
 										? "没有匹配的项目或会话"
 										: sessionTab === "running"
 											? "暂无进行中的会话"
-											: sessionTab === "completed"
-												? "暂无待查看的会话"
-												: "暂无项目"}
+											: "暂无项目"}
 						</div>
 					) : null}
 					{sessionTab === "all" && archivedProjects.length ? (
@@ -1606,6 +1712,7 @@ export const ProjectRail = memo(function ProjectRail({
 						</>
 					) : null}
 				</div>
+					)}
 					</ScrollArea>
 				</TabsContent>
 			</Tabs>

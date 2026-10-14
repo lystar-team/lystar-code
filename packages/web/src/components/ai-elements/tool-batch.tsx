@@ -1355,11 +1355,10 @@ export const ToolBatch = memo(function ToolBatch({
 			tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch",
 		);
 	const compactActivity = readActivity || commandActivity || mutationActivity;
-	const searchHasSources = tools.length === 1 && tools[0]?.name === "web_search" && Boolean(tools[0].sources?.length);
 	const userOpened = useRef(initialOpen || controlledOpen === true);
 	const preserveExpanded = tools.length !== 1 || tools[0]?.name !== "read";
 	const [open, setOpen] = useControllableState({
-		defaultProp: imageGallery || imageGeneration || (compactActivity && active) || initialOpen || searchHasSources,
+		defaultProp: imageGallery || imageGeneration || (compactActivity && active) || initialOpen,
 		prop: imageGeneration ? undefined : controlledOpen,
 		onChange: (nextOpen) => {
 			userOpened.current = nextOpen;
@@ -1480,12 +1479,7 @@ export const ToolBatch = memo(function ToolBatch({
 				onOpenPath={onOpenPath}
 				onOpenSubagent={onOpenSubagent}
 				onOpenSession={onOpenSession}
-				initialOpen={
-					imageTool ||
-					imageGenerationTool ||
-					initialOpen ||
-					(tool.name === "web_search" && Boolean(webSearchSources(tool).length))
-				}
+				initialOpen={imageTool || imageGenerationTool || initialOpen}
 				open={imageTool || imageGenerationTool ? undefined : open}
 				onOpenChange={imageTool || imageGenerationTool ? undefined : setOpen}
 				className={className}

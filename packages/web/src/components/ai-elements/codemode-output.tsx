@@ -1,8 +1,11 @@
 "use client";
 
+import { ChevronDownIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { CodeBlock, CodeBlockCopyButton } from "./code-block";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -197,15 +200,26 @@ function ResultValue({ value, depth = 0 }: { value: JsonValue; depth?: number })
 }
 
 function ResultCard({ value, index }: { value: JsonValue; index: number }) {
+	const [open, setOpen] = useState(true);
 	const result = normalizeResult(value, index);
+	const title = `结果 ${result.index + 1}`;
 	return (
-		<article className="min-w-0 rounded-md border border-border/60 bg-background/45 px-3 py-2">
-			<header className="mb-1.5 flex items-center justify-between gap-2 text-xs">
-				<span className="font-medium text-foreground">结果 {result.index + 1}</span>
-				<span className={result.status === "rejected" ? "text-destructive" : "text-muted-foreground"}>{statusLabel(result.status)}</span>
-			</header>
-			<ResultValue value={result.value} />
-		</article>
+		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0 rounded-md border border-border/60 bg-background/45">
+			<CollapsibleTrigger asChild>
+				<button
+					aria-label={`${title}，${open ? "收起" : "展开"}`}
+					className="flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-xs hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					type="button"
+				>
+					<span className="flex-1 font-medium text-foreground">{title}</span>
+					<span className={result.status === "rejected" ? "text-destructive" : "text-muted-foreground"}>{statusLabel(result.status)}</span>
+					<ChevronDownIcon aria-hidden="true" className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+				</button>
+			</CollapsibleTrigger>
+			<GsapCollapsibleContent open={open} className="min-w-0 px-3 pb-2">
+				<ResultValue value={result.value} />
+			</GsapCollapsibleContent>
+		</Collapsible>
 	);
 }
 
@@ -218,20 +232,28 @@ function StructuredOutput({ segments }: { segments: OutputSegment[] }) {
 }
 
 export function CodemodeOutput({ output }: { output: string }) {
+	const [open, setOpen] = useState(true);
 	const [raw, setRaw] = useState(false);
 	const { body, segments, hasJson } = useMemo(() => parseOutput(output), [output]);
 	return (
-		<div className="my-0 min-w-0 overflow-hidden rounded-md border border-border/60 bg-muted/25">
-			<div className="flex min-h-9 items-center justify-between gap-2 border-b border-border/50 px-3 py-1.5">
-				<span className="text-xs font-medium text-foreground">返回结果</span>
+		<Collapsible open={open} onOpenChange={setOpen} className="my-0 min-w-0 overflow-hidden rounded-md border border-border/60 bg-muted/25">
+			<div className="flex min-h-9 items-center justify-between gap-2 px-3 py-1.5">
+				<CollapsibleTrigger asChild>
+					<Button aria-label={`返回结果，${open ? "收起" : "展开"}`} className="h-6 min-w-0 justify-start gap-1.5 px-0 text-xs font-medium" size="xs" type="button" variant="ghost">
+						<ChevronDownIcon aria-hidden="true" className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+						返回结果
+					</Button>
+				</CollapsibleTrigger>
 				<div className="flex shrink-0 items-center gap-1">
 					{hasJson ? <Button aria-pressed={raw} className="h-6 px-2" onClick={() => setRaw(!raw)} size="xs" type="button" variant="ghost">{raw ? "整理后" : "原始"}</Button> : null}
 					<CodeBlockCopyButton aria-label="复制返回结果" code={output} size="icon-xs" />
 				</div>
 			</div>
-			{raw ? <CodeBlock code={output} language={"text" as BundledLanguage} plainText wrap /> : <StructuredOutput segments={segments} />}
-			{!body.trim() && <p className="px-3 py-3 text-xs text-muted-foreground">脚本没有返回内容。</p>}
-		</div>
+			<GsapCollapsibleContent open={open} className="min-w-0 border-t border-border/50">
+				{raw ? <CodeBlock className="[&>div:last-child]:max-h-80 [&>div:last-child]:overflow-auto" code={output} language={"text" as BundledLanguage} plainText wrap /> : <StructuredOutput segments={segments} />}
+				{!body.trim() && <p className="px-3 py-3 text-xs text-muted-foreground">脚本没有返回内容。</p>}
+			</GsapCollapsibleContent>
+		</Collapsible>
 	);
 }
 

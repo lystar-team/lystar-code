@@ -36,6 +36,7 @@ import {
 	type HostDirectoryListing,
 	type ImageModelSettings,
 	isGitMutation,
+	isSessionResultActivity,
 	type JsonValue,
 	MAX_TRANSCRIPT_PAGE_SIZE,
 	type ModelOptions,
@@ -52,6 +53,7 @@ import {
 	type SessionActivity,
 	type SessionInfoResult,
 	type SessionProgress,
+	type SessionResultState,
 	type SessionStateSnapshot,
 	type SessionSummary,
 	type SessionTreeNode,
@@ -121,6 +123,7 @@ import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { PushNotifications, parsePushSubscription } from "./push-notifications.ts";
 import { markRoomAgentSessions, type RoomSessionMembership } from "./room-session-visibility.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
+import { SessionResultRegistry } from "./session-result-registry.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
@@ -230,7 +233,10 @@ async function persistSessionAttachment(
 	return { path };
 }
 
-export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean };
+export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & {
+	pinned?: boolean;
+	result?: SessionResultState;
+};
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
 type WebTranscriptItem = Omit<TranscriptItem, "payload">;
 export type WebOperation = Omit<
@@ -647,11 +653,16 @@ function orderSessionSummaries<T extends SessionSummary>(
 	return [...ordered, ...sessions.filter((session) => !orderedIds.has(session.id))];
 }
 
-function publicSessionSummary(session: GatewaySessionSummary, pinnedSessionIds?: readonly string[]): WebSessionSummary {
+function publicSessionSummary(
+	session: GatewaySessionSummary,
+	pinnedSessionIds?: readonly string[],
+	readState?: SessionResultState,
+): WebSessionSummary {
 	const { path: _path, cwd: _cwd, ...result } = session;
 	return {
 		...result,
 		...(pinnedSessionIds?.includes(result.id) ? { pinned: true } : {}),
+		...(readState ? { result: readState } : {}),
 		firstMessage:
 			result.firstMessage.length > PUBLIC_SESSION_FIRST_MESSAGE_LIMIT
 				? `${result.firstMessage.slice(0, PUBLIC_SESSION_FIRST_MESSAGE_LIMIT - 1)}…`
@@ -1001,6 +1012,7 @@ export class WebGatewayServer {
 	readonly config: WebGatewayConfig;
 	readonly registry: ProjectRegistry;
 	readonly projectGroups: ProjectGroupRegistry;
+	private readonly sessionResults: SessionResultRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
 	private readonly bootstrapProjectRefreshes = new WeakMap<BrowserContext, BootstrapProjectRefreshState>();
 	private readonly roomMembershipCache = new Map<string, readonly RoomSessionMembership[]>();
@@ -1043,6 +1055,12 @@ export class WebGatewayServer {
 		this.config = { ...config, host: DEFAULT_WEB_HOST };
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
+		this.sessionResults = new SessionResultRegistry(config.agentDir, (result) => {
+			for (const context of this.contexts.values()) {
+				context.bootstrapCache = undefined;
+				this.broadcast(context, { type: "session_result", result });
+			}
+		});
 		this.productUpdate = new ProductUpdateController(config.agentDir);
 		this.pushNotifications = new PushNotifications(config.agentDir, config.serviceProfile);
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
@@ -1062,6 +1080,7 @@ export class WebGatewayServer {
 	async listen(): Promise<void> {
 		await this.registry.load();
 		await this.projectGroups.load();
+		await this.sessionResults.load();
 		await this.pushNotifications.load();
 		await new Promise<void>((resolvePromise, reject) => {
 			this.server.once("error", reject);
@@ -1646,6 +1665,7 @@ export class WebGatewayServer {
 			const sessionListGeneration = context.sessionListGeneration;
 			const sessionIdsByPath = new Map(this.sessionIdsByPath);
 			const registeredProjects = this.registry.list();
+			await this.sessionResults.observe(registeredProjects.flatMap((project) => project.recentSessions ?? []));
 			const projects = registeredProjects.map((project) => {
 				const cachedSessions = context.sessionListCache.get(project.id);
 				const sessionsLoaded = cachedSessions?.generation === sessionListGeneration;
@@ -1780,6 +1800,7 @@ export class WebGatewayServer {
 				}
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
+			await this.sessionResults.observe(uniqueSessions);
 			if (generation === context.sessionListGeneration)
 				await this.registry.setRecentSessions(project.id, uniqueSessions);
 			const refreshedProject = this.registry.get(project.id) ?? project;
@@ -1816,7 +1837,9 @@ export class WebGatewayServer {
 			...(project.pinned ? { pinned: true } : {}),
 			...(project.color ? { color: project.color } : {}),
 			...(project.archived ? { archived: true } : {}),
-			sessions: sessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
+			sessions: sessions.map((session) =>
+				publicSessionSummary(session, project.pinnedSessionIds, this.sessionResults.get(session.id)),
+			),
 			sessionsLoaded,
 			...(sessionsError === undefined ? {} : { sessionsError }),
 		};
@@ -2937,7 +2960,9 @@ export class WebGatewayServer {
 			this.invalidateBootstrap(context);
 			const orderedSessions = orderSessionSummaries(sessions, sessionIds);
 			sendJson(response, 200, {
-				sessions: orderedSessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
+				sessions: orderedSessions.map((session) =>
+					publicSessionSummary(session, project.pinnedSessionIds, this.sessionResults.get(session.id)),
+				),
 			});
 			return;
 		}
@@ -2957,7 +2982,9 @@ export class WebGatewayServer {
 		if (parts.length === 4 && parts[3] === "sessions" && request.method === "GET") {
 			const sessions = await this.listProjectSessions(context, project);
 			sendJson(response, 200, {
-				sessions: sessions.map((session) => publicSessionSummary(session, project.pinnedSessionIds)),
+				sessions: sessions.map((session) =>
+					publicSessionSummary(session, project.pinnedSessionIds, this.sessionResults.get(session.id)),
+				),
 			});
 			return;
 		}
@@ -3837,6 +3864,14 @@ export class WebGatewayServer {
 		const sessionId = parts[2];
 		const session = await this.resolveSession(context, sessionId);
 		const client = await this.getClient(context);
+		if (parts.length === 4 && parts[3] === "read" && request.method === "POST") {
+			const body = await parseJsonBody(request);
+			if (typeof body.revision !== "number" || !Number.isSafeInteger(body.revision))
+				throw new HttpError(400, "session_result_revision_invalid", "会话结果版本无效");
+			const result = await this.sessionResults.markRead(sessionId, body.revision);
+			sendJson(response, 200, { result });
+			return;
+		}
 		if (parts.length === 4 && parts[3] === "accept-result") {
 			if (request.method !== "POST") throw new HttpError(405, "method_not_allowed", "不支持的会话操作");
 			const body = await parseJsonBody(request);
@@ -4003,13 +4038,15 @@ export class WebGatewayServer {
 					}),
 				);
 			} else {
+				await this.sessionResults.observe([]);
+				const resultRevision = this.sessionResults.get(sessionId)?.revision;
 				const page = await client.request<TranscriptPage>({
 					command: "read_transcript",
 					sessionPath: session.path,
 					...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
 					limit,
 				});
-				sendJson(response, 200, { ...page, items: page.items.map(publicTranscriptItem) });
+				sendJson(response, 200, { ...page, items: page.items.map(publicTranscriptItem), resultRevision });
 			}
 			return;
 		}
@@ -5044,6 +5081,21 @@ export class WebGatewayServer {
 	}
 
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
+		if (event.type === "operation_updated" && isSessionResultActivity(event.operation.status)) {
+			const sessionId = this.sessionIdsByPath.get(event.operation.sessionPath);
+			if (sessionId) {
+				void this.sessionResults
+					.observe([
+						{
+							id: sessionId,
+							activity: event.operation.status,
+							operationUpdatedAt: event.operation.updatedAt,
+							updatedAt: event.operation.updatedAt,
+						},
+					])
+					.catch((error: unknown) => console.error("保存会话结果失败", error));
+			}
+		}
 		if (event.type === "room_updated") {
 			if (event.membersChanged) {
 				this.roomMembershipGeneration.set(event.cwd, (this.roomMembershipGeneration.get(event.cwd) ?? 0) + 1);

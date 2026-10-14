@@ -1,4 +1,4 @@
-import { createUuid, type SessionInfoResult } from "@lystar/code-web-protocol";
+import { createUuid, type SessionInfoResult, type SessionResultState } from "@lystar/code-web-protocol";
 import type {
 	WebRoomTask,
 	WebRoomTaskStatus,
@@ -136,6 +136,12 @@ export class WebApi {
 		return this.request<DirectoryListing>(`/api/directories${query}`);
 	}
 
+	async markSessionResultRead(sessionId: string, revision: number): Promise<{ result: SessionResultState }> {
+		return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/read`, {
+			method: "POST",
+			body: JSON.stringify({ revision }),
+		});
+	}
 	async projectGroups(): Promise<{ groups: ProjectGroup[] }> {
 		return this.request<{ groups: ProjectGroup[] }>("/api/project-groups");
 	}

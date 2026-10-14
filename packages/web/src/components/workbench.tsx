@@ -135,10 +135,12 @@ export function Workbench({
 	const [inspectorWidth, setInspectorWidth] = useState(INSPECTOR_DEFAULT_WIDTH);
 	const [isResizingInspector, setIsResizingInspector] = useState(false);
 	const [workspaceWidth, setWorkspaceWidth] = useState(0);
+	const [layoutWidth, setLayoutWidth] = useState(() => window.innerWidth);
+	const layoutRef = useRef<HTMLDivElement>(null);
 	const resizePointerIdRef = useRef<number | null>(null);
 	const inspectorResizePointerIdRef = useRef<number | null>(null);
 	const [panelOpen, setPanelOpen] = useState(
-		() => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
+		() => typeof window !== "undefined" && window.matchMedia("(min-width: 768px), (horizontal-viewport-segments: 2)").matches,
 	);
 	const expandButtonRef = useRef<HTMLButtonElement>(null);
 	const mainRef = useRef<HTMLElement>(null);
@@ -147,31 +149,24 @@ export function Workbench({
 	const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("sessions");
 	const [roomSection, setRoomSection] = useState<"chat" | "board">("chat");
 	const desktopLayout = useMediaQuery("(min-width: 768px), (horizontal-viewport-segments: 2)");
-	const wideLayout = useMediaQuery("(min-width: 1024px)");
+	const availableSidebarWidth =
+		layoutWidth -
+		WORKSPACE_NAVIGATION_RAIL_WIDTH -
+		WORKSPACE_MIN_CONTENT_WIDTH -
+		(state.inspectorOpen && desktopLayout ? INSPECTOR_MIN_WIDTH : 0);
+	const dockedSidebar = desktopLayout && availableSidebarWidth >= SIDEBAR_MIN_WIDTH;
+	const sidebarMaxWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, availableSidebarWidth));
+	const visibleSidebarWidth = Math.min(sidebarWidth, sidebarMaxWidth);
 	const inspectorMaxWidth = Math.max(
 		INSPECTOR_MIN_WIDTH,
 		Math.min(INSPECTOR_MAX_WIDTH, workspaceWidth - WORKSPACE_MIN_CONTENT_WIDTH),
 	);
 	const visibleInspectorWidth = Math.min(inspectorWidth, inspectorMaxWidth);
-	const sidebarMaxWidth =
-		state.inspectorOpen && desktopLayout && wideLayout && panelOpen
-			? Math.max(
-					SIDEBAR_MIN_WIDTH,
-					Math.min(
-						SIDEBAR_MAX_WIDTH,
-						window.innerWidth -
-							WORKSPACE_NAVIGATION_RAIL_WIDTH -
-							INSPECTOR_MIN_WIDTH -
-							WORKSPACE_MIN_CONTENT_WIDTH,
-					),
-				)
-			: SIDEBAR_MAX_WIDTH;
-	const visibleSidebarWidth = Math.min(sidebarWidth, sidebarMaxWidth);
 	const overlaySidebarWidth = Math.max(
 		SIDEBAR_MIN_WIDTH,
 		Math.min(
 			SIDEBAR_DEFAULT_WIDTH,
-			window.innerWidth - WORKSPACE_NAVIGATION_RAIL_WIDTH - (state.inspectorOpen ? visibleInspectorWidth : 0),
+			layoutWidth - WORKSPACE_NAVIGATION_RAIL_WIDTH - (state.inspectorOpen ? visibleInspectorWidth : 0),
 		),
 	);
 	const currentSessions = currentProject?.sessions ?? [];
@@ -312,17 +307,22 @@ export function Workbench({
 	}, [state.sessionId]);
 
 	useEffect(() => {
-		if (wideLayout) return;
+		if (dockedSidebar) return;
 		resizePointerIdRef.current = null;
 		setIsResizingSidebar(false);
-	}, [wideLayout]);
+	}, [dockedSidebar]);
 
 	useEffect(() => {
+		const layout = layoutRef.current;
 		const workspace = workspaceAreaRef.current;
-		if (!workspace) return;
-		const observer = new ResizeObserver(([entry]) => {
-			if (entry) setWorkspaceWidth(entry.contentRect.width);
+		if (!layout || !workspace) return;
+		const observer = new ResizeObserver((entries) => {
+			for (const entry of entries) {
+				if (entry.target === layout) setLayoutWidth(entry.contentRect.width);
+				else if (entry.target === workspace) setWorkspaceWidth(entry.contentRect.width);
+			}
 		});
+		observer.observe(layout);
 		observer.observe(workspace);
 		return () => observer.disconnect();
 	}, []);
@@ -330,11 +330,11 @@ export function Workbench({
 	useEffect(() => {
 		const main = mainRef.current;
 		if (!main) return;
-		main.inert = desktopLayout && !wideLayout && panelOpen && !state.inspectorOpen;
+		main.inert = desktopLayout && !dockedSidebar && panelOpen && !state.inspectorOpen;
 		return () => {
 			main.inert = false;
 		};
-	}, [desktopLayout, panelOpen, state.inspectorOpen, wideLayout]);
+	}, [desktopLayout, dockedSidebar, panelOpen, state.inspectorOpen]);
 
 	const closeSidebar = useCallback(() => {
 		setPanelOpen(false);
@@ -342,18 +342,18 @@ export function Workbench({
 	}, []);
 
 	useEffect(() => {
-		if (!desktopLayout || wideLayout || !panelOpen) return;
+		if (!desktopLayout || dockedSidebar || !panelOpen) return;
 		const handleKeyDown = (event: KeyboardEvent) => {
 			if (event.key === "Escape" && !event.defaultPrevented) closeSidebar();
 		};
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [closeSidebar, desktopLayout, panelOpen, wideLayout]);
+	}, [closeSidebar, desktopLayout, dockedSidebar, panelOpen]);
 
 	const openDirectory = useCallback(() => {
 		setDirectoryOpen(true);
-		if (desktopLayout && !wideLayout) setPanelOpen(false);
-	}, [desktopLayout, wideLayout]);
+		if (desktopLayout && !dockedSidebar) setPanelOpen(false);
+	}, [desktopLayout, dockedSidebar]);
 	const retryProjectSessions = useCallback(
 		async (projectId: string) => {
 			try {
@@ -394,7 +394,7 @@ export function Workbench({
 	);
 
 	return (
-		<div className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+		<div ref={layoutRef} className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
 			{desktopLayout ? (
 				<div className="relative flex h-full shrink-0">
 					<WorkspaceNavigationRail
@@ -408,7 +408,7 @@ export function Workbench({
 					/>
 					{panelOpen ? (
 						<>
-							{!wideLayout && !state.inspectorOpen ? (
+							{!dockedSidebar && !state.inspectorOpen ? (
 								<button
 									type="button"
 									tabIndex={-1}
@@ -421,10 +421,10 @@ export function Workbench({
 								aria-label={workspaceMode === "rooms" ? "智能体协作导航" : "项目与会话"}
 								className={cn(
 									"workspace-navigation-panel relative flex min-h-0 min-w-0 shrink-0 border-r border-border/60 bg-background",
-									!wideLayout && "absolute inset-y-0 left-16 z-40 shadow-lg",
+									!dockedSidebar && "absolute inset-y-0 left-16 z-40 shadow-lg",
 								)}
 								style={
-									wideLayout
+									dockedSidebar
 										? {
 												width: `${visibleSidebarWidth}px`,
 												minWidth: SIDEBAR_MIN_WIDTH,
@@ -459,7 +459,7 @@ export function Workbench({
 												onSelectRoom={(projectId, summary) => handleSelectRoom(projectId, summary.room.id)}
 												onCreateRoom={handleCreateRoom}
 												onModeChange={handleWorkspaceModeChange}
-												onNavigate={wideLayout ? undefined : closeSidebar}
+												onNavigate={dockedSidebar ? undefined : closeSidebar}
 												withNavigationRail
 												onCollapse={closeSidebar}
 											/>
@@ -473,7 +473,7 @@ export function Workbench({
 											currentProject={currentProject}
 											onAddProject={openDirectory}
 											onEditProject={setEditingProject}
-											onNavigate={wideLayout ? undefined : closeSidebar}
+											onNavigate={dockedSidebar ? undefined : closeSidebar}
 											onRetryProjectSessions={retryProjectSessions}
 											workspaceMode={workspaceMode}
 											onWorkspaceModeChange={handleWorkspaceModeChange}
@@ -482,7 +482,7 @@ export function Workbench({
 										/>
 									)}
 								</StabilityBoundary>
-								{wideLayout ? (
+							{dockedSidebar ? (
 									<div
 										// biome-ignore lint/a11y/useSemanticElements: 可拖拽分隔器需要保留指针事件和数值属性
 										role="separator"

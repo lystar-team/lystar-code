@@ -170,7 +170,9 @@ export function mergeSessionSummaries(
 			!hasMeaningfulSessionFirstMessage(next.firstMessage)
 				? { firstMessage: previous.firstMessage }
 				: {};
-		const summary = { ...next, ...preservedName, ...preservedFirstMessage };
+		const preservedResult = previous?.result && (!next.result || previous.result.version > next.result.version)
+			? { result: previous.result } : {};
+		const summary = { ...next, ...preservedName, ...preservedFirstMessage, ...preservedResult };
 		if (previous && Object.keys(summary).length === Object.keys(previous).length &&
 			Object.keys(summary).every((key) => {
 				const value = summary[key as keyof WebSessionSummary];

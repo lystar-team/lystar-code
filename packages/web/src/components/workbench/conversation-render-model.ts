@@ -297,16 +297,14 @@ export function buildPersistedRenderItems(
 	let batchKey = "";
 	let batchEntryId: string | undefined;
 	let batchStepId: string | undefined;
-	const latestSteps = new Map<string, { entryId: string; step: AgentStep }>(
-		agentStepsFromIndex(mergeAgentStepIndex(agentSteps, Object.values(liveSteps))).map((step) => [
-			step.id,
-			{ entryId: `agent-step-index:${step.id}`, step },
-		]),
+	const transcriptSteps = items.flatMap((item) => item.view?.type === "agent_step" ? [item.view.step] : []);
+	const stepIndex = mergeAgentStepIndex(
+		mergeAgentStepIndex(agentSteps, transcriptSteps),
+		Object.values(liveSteps),
 	);
-	for (const item of items) {
-		if (item.view?.type === "agent_step" && !latestSteps.has(item.view.step.id))
-			latestSteps.set(item.view.step.id, { entryId: item.entryId, step: item.view.step });
-	}
+	const latestSteps = new Map<string, { entryId: string; step: AgentStep }>(
+		agentStepsFromIndex(stepIndex).map((step) => [step.id, { entryId: `agent-step-index:${step.id}`, step }]),
+	);
 	const stepIdByEntryId = new Map<string, string>();
 	const stepIdByToolCallId = new Map<string, string>();
 	for (const [stepId, value] of latestSteps) {
@@ -553,12 +551,12 @@ export function appendLiveRenderItems(
 	const nestedCodemodeCallIds = new Set(Object.values(liveTools).flatMap((tool) =>
 		tool.name === "codemode" ? (tool.codemode?.calls ?? []).map((call) => call.id) : [],
 	));
+	const steps = mergeAgentStepIndex(
+		Object.fromEntries(next.flatMap((entry) => entry.kind === "agent-step" ? [[entry.step.id, entry.step]] : [])),
+		Object.values(liveSteps),
+	);
 	const stepIdByToolCallId = new Map<string, string>();
-	for (const entry of next) {
-		if (entry.kind !== "agent-step") continue;
-		for (const toolCallId of entry.step.toolCallIds) stepIdByToolCallId.set(toolCallId, entry.step.id);
-	}
-	for (const step of Object.values(liveSteps)) {
+	for (const step of Object.values(steps)) {
 		for (const toolCallId of step.toolCallIds) stepIdByToolCallId.set(toolCallId, step.id);
 	}
 	const hasRenderItemKey = (key: string) =>
@@ -566,7 +564,7 @@ export function appendLiveRenderItems(
 	const appendStepItem = (stepId: string, item: AgentStepChildRenderItem): boolean => {
 		const key = `agent-step:${stepId}`;
 		const existing = next.find((entry): entry is AgentStepRenderItem => entry.kind === "agent-step" && entry.key === key);
-		const step = liveSteps[stepId] ?? existing?.step;
+		const step = steps[stepId];
 		if (!step) return false;
 		if (existing) {
 			existing.live = true;
@@ -653,7 +651,8 @@ export function appendLiveRenderItems(
 		if (!stepId || !appendStepItem(stepId, stack)) next.push(stack);
 		for (const tool of toolsWithStep) renderedToolCallIds.add(tool.id);
 	}
-	for (const step of Object.values(liveSteps)) {
+	for (const incoming of Object.values(liveSteps)) {
+		const step = steps[incoming.id]!;
 		const key = `agent-step:${step.id}`;
 		const existing = next.find((entry): entry is AgentStepRenderItem => entry.kind === "agent-step" && entry.key === key);
 		if (existing) {

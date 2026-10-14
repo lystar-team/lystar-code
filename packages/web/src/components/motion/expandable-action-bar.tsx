@@ -136,6 +136,7 @@ export function ExpandableActionBar({
 	expandOnHover = true,
 	orientation = "horizontal",
 	size = "md",
+	trackClassName,
 }: {
 	activeId?: string;
 	children: ReactNode;
@@ -146,6 +147,7 @@ export function ExpandableActionBar({
 	expandOnHover?: boolean;
 	orientation?: "horizontal" | "vertical";
 	size?: ExpandableActionBarSize;
+	trackClassName?: string;
 }) {
 	const layoutId = useId();
 	const hover = useHoverGesture();
@@ -223,6 +225,7 @@ export function ExpandableActionBar({
 						"border border-border bg-card/90 shadow-[0_8px_24px_rgb(0_0_0/0.08)] backdrop-blur-xl",
 						"[-webkit-scrollbar]:hidden [scrollbar-width:none]",
 						SIZE_CLASS[size],
+						trackClassName,
 					)}
 				>
 					<ExpandableActionBarContext.Provider

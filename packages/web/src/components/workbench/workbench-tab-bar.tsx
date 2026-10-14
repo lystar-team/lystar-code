@@ -19,7 +19,7 @@ export type WorkbenchTabOption<Value extends string> = {
 	section?: string;
 };
 
-function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, count, countLabel = "会话", compact, orientation }: WorkbenchTabOption<Value> & { compact: boolean; orientation: "horizontal" | "vertical" }) {
+function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, count, countLabel = "会话", compact, orientation, variant }: WorkbenchTabOption<Value> & { compact: boolean; orientation: "horizontal" | "vertical"; variant: "default" | "navigation" }) {
 	const item = useExpandableActionBarItem(value);
 
 	return (
@@ -34,10 +34,11 @@ function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, c
 				compact ? "!min-w-0 !flex-auto !px-0.5" : "!min-w-max !flex-1 !shrink-0 !px-1.5",
 				orientation === "vertical" && "!w-full !flex-none !justify-start !px-3",
 				"data-[state=active]:!bg-transparent data-[state=active]:!text-foreground",
+				variant === "navigation" && "!h-8 !shrink-0 !px-3 !text-[13px] !leading-5 !text-foreground !shadow-none data-[state=active]:!font-semibold",
 			)}
 		>
 			<ExpandableActionBarHighlight itemId={value} />
-			<Icon className={cn("shrink-0", compact ? "size-3" : "size-3.5")} aria-hidden="true" />
+			<Icon className={cn("shrink-0", variant === "navigation" ? "size-4" : compact ? "size-3" : "size-3.5")} aria-hidden="true" />
 			<ExpandableActionBarLabel visible={item.labelVisible} gap={compact ? 4 : 8}>{label}</ExpandableActionBarLabel>
 			{count !== undefined ? (
 				<Badge
@@ -59,6 +60,7 @@ export function WorkbenchTabBar<Value extends string>({
 	label,
 	orientation = "horizontal",
 	tabs,
+	variant = "default",
 }: {
 	activeId: Value;
 	className?: string;
@@ -66,6 +68,7 @@ export function WorkbenchTabBar<Value extends string>({
 	label: string;
 	orientation?: "horizontal" | "vertical";
 	tabs: readonly WorkbenchTabOption<Value>[];
+	variant?: "default" | "navigation";
 }) {
 	return (
 		<TabsList
@@ -73,13 +76,21 @@ export function WorkbenchTabBar<Value extends string>({
 			aria-label={label}
 			className={cn("!h-auto !w-auto min-w-0 self-stretch !justify-start !gap-0 !rounded-none !border-0 !bg-transparent !p-0", orientation === "vertical" && "min-h-0 !w-full", className)}
 		>
-			<ExpandableActionBar activeId={activeId} defaultExpanded expandOnFocus={false} expandOnHover={false} orientation={orientation} size="sm">
+			<ExpandableActionBar
+				activeId={activeId}
+				defaultExpanded
+				expandOnFocus={false}
+				expandOnHover={false}
+				orientation={orientation}
+				size="sm"
+				trackClassName={variant === "navigation" ? "gap-0 rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-none" : undefined}
+			>
 				{tabs.map((tab, index) => (
 					<Fragment key={tab.value}>
 						{orientation === "vertical" && tab.section && tab.section !== tabs[index - 1]?.section ? (
-							<p className="px-3 pb-1 pt-3 text-xs font-medium text-muted-foreground">{tab.section}</p>
+							<p className={cn("shrink-0 px-3 text-xs font-medium text-muted-foreground", variant === "navigation" ? "pb-1.5 leading-[18px]" : "pb-1 pt-3", variant === "navigation" && index > 0 && "pt-3")}>{tab.section}</p>
 						) : null}
-						<WorkbenchTabTrigger {...tab} compact={compact} orientation={orientation} />
+						<WorkbenchTabTrigger {...tab} compact={compact} orientation={orientation} variant={variant} />
 					</Fragment>
 				))}
 			</ExpandableActionBar>

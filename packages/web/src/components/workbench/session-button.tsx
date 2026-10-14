@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Clock3, Folder, LoaderCircle, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Clock3, Folder, LoaderCircle, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import type { DragEvent as ReactDragEvent } from "react";
 import { memo, useEffect, useState } from "react";
 import { cn } from "../../lib/utils";
@@ -19,6 +19,7 @@ import {
 	AgentIdentityIcon,
 	collaborationAgentType,
 	collaborationAlias,
+	collaborationStatus,
 	isCollaborationSession,
 } from "./collaboration-session";
 
@@ -60,6 +61,7 @@ export interface SessionButtonProps {
 	active: boolean;
 	running: boolean;
 	unread: boolean;
+	showResultStatus?: boolean;
 	hasChildren?: boolean;
 	childrenExpanded?: boolean;
 	onToggleChildren?: () => void;
@@ -83,6 +85,7 @@ function SessionButtonComponent({
 	active,
 	running,
 	unread,
+	showResultStatus = false,
 	hasChildren = false,
 	childrenExpanded = false,
 	onToggleChildren,
@@ -110,6 +113,7 @@ function SessionButtonComponent({
 	const profileName = session.profileName?.trim() || "智能体";
 	const alias = collaborationAlias(session.id);
 	const agentType = collaborationAgentType(session);
+	const resultLabel = collaborationStatus({ ...session, activity: session.result?.activity ?? session.activity });
 
 	useEffect(() => {
 		if (!editingTitle) setRenameDraft(title);
@@ -134,6 +138,7 @@ function SessionButtonComponent({
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
 				<li
+					data-session-id={session.id}
 					className={cn(
 						"group/session list-none relative min-w-0 rounded-md",
 						dragging && "opacity-50",
@@ -159,6 +164,7 @@ function SessionButtonComponent({
 									)}
 									variant={active ? "secondary" : "ghost"}
 									onClick={onClick}
+									aria-current={active ? "true" : undefined}
 								>
 									{collaboration ? (
 										<AgentIdentityIcon
@@ -184,6 +190,7 @@ function SessionButtonComponent({
 											displayTitle
 										)}
 									</span>
+									{showResultStatus && resultLabel ? <span className="shrink-0 text-[11px] text-muted-foreground">{resultLabel}</span> : null}
 									<span className="mobile-session-status absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center gap-1 transition-opacity group-hover/session:opacity-0">
 										{session.pinned ? (
 											<Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="已置顶" />
@@ -197,10 +204,10 @@ function SessionButtonComponent({
 											<span
 												role="img"
 												className="size-2 shrink-0 rounded-full bg-blue-500 ring-2 ring-blue-500/20"
-												aria-label="有新的会话内容"
-												title="有新的会话内容"
+												aria-label="未读结果"
+												title="未读结果"
 											/>
-										) : null}
+										) : showResultStatus ? <Check className="size-3.5 shrink-0 text-muted-foreground" aria-label="已读结果" /> : null}
 									</span>
 								</Button>
 								{hasChildren ? (

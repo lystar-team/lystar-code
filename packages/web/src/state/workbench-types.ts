@@ -121,6 +121,7 @@ export interface WorkbenchState {
 	transcriptGeneration?: string;
 	transcriptRevision?: number;
 	transcriptLeafId?: string | null;
+	displayedResultRevision?: number;
 	previousCursor?: string;
 	toolActivityEpoch?: string;
 	toolActivityRevision?: number;

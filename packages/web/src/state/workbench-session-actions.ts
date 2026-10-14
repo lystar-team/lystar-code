@@ -94,7 +94,6 @@ export interface WorkbenchSessionActionsContext {
 	updateState: UpdateState;
 	transitionState: (update: StateUpdate | ((current: WorkbenchState) => WorkbenchState)) => void;
 	showToast: ShowToast;
-	onSessionRead: (sessionId: string) => void;
 	refreshProjectSessions: (projectId: string) => Promise<void>;
 	loadTranscript: (sessionId?: string, cursor?: string, deferCommit?: boolean, completeTurn?: boolean) => Promise<void>;
 	loadSubagents: (sessionId?: string) => Promise<void>;
@@ -134,7 +133,6 @@ export function useWorkbenchSessionActions({
 	updateState,
 	transitionState,
 	showToast,
-	onSessionRead,
 	refreshProjectSessions,
 	loadTranscript,
 	loadSubagents,
@@ -315,9 +313,6 @@ export function useWorkbenchSessionActions({
 						current.sessionId === sessionId ? current.pendingUserPrompts : (cached?.pendingUserPrompts ?? []),
 					queuedUserPrompts:
 						current.sessionId === sessionId ? current.queuedUserPrompts : (cached?.queuedUserPrompts ?? []),
-					unreadSessionIds: Object.fromEntries(
-						Object.entries(current.unreadSessionIds).filter(([id]) => id !== sessionId),
-					) as Record<string, true>,
 					statusText: cached ? "正在同步会话" : "正在打开会话",
 					currentOperation: operationForSessionSnapshot(current.operations, cached?.session),
 					liveCompaction: cached?.liveCompaction,
@@ -333,7 +328,6 @@ export function useWorkbenchSessionActions({
 					sessionTree: sessionChanged ? [] : current.sessionTree,
 					sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
 				}));
-				if (previous.unreadSessionIds[sessionId]) onSessionRead(sessionId);
 				if (socket && previous.sessionId && previous.sessionId !== sessionId)
 					webApi.unsubscribeSession(socket, previous.sessionId);
 				const subscriptionPromise = subscribeSessionAndWait(sessionId);
@@ -487,7 +481,6 @@ export function useWorkbenchSessionActions({
 			loadSessionOperations,
 			loadSubagents,
 			loadTranscript,
-			onSessionRead,
 			readSelectedSession,
 			showToast,
 			subscribeSessionAndWait,
@@ -682,6 +675,7 @@ export function useWorkbenchSessionActions({
 		await completeSessionSubscription(result.session.id, subscriptionResult).catch((error) =>
 			showToast(errorMessage(error), "error"),
 		);
+		return result.session.id;
 	}, [completeSessionSubscription, showToast, subscribeSessionAndWait, updateState]);
 
 	const sendMessage = useCallback(

@@ -383,7 +383,13 @@ export class TranscriptReader {
 
 	async read(
 		sessionPath: string,
-		options: { cursor?: string; limit: number; emptyGeneration?: string; byteBudget?: number },
+		options: {
+			cursor?: string;
+			limit: number;
+			emptyGeneration?: string;
+			byteBudget?: number;
+			leafId?: string | null;
+		},
 	): Promise<TranscriptPage & { contextCalls?: TranscriptItem[] }> {
 		const resolvedPath = resolve(sessionPath);
 		const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
@@ -480,7 +486,10 @@ export class TranscriptReader {
 			const generation =
 				!previous || appendOnly ? (previous?.generation ?? baseGeneration) : `${baseGeneration}:${contentHash}`;
 			this.rememberObserved(resolvedPath, { ...rewriteGeneration, generation, sessionId: header.id });
-			const leafId = cursor?.leafId ?? persistedTailId;
+			if (cursor && options.leafId !== undefined && cursor.leafId !== options.leafId) {
+				throw new TranscriptCursorInvalidError();
+			}
+			const leafId = cursor ? cursor.leafId : options.leafId !== undefined ? options.leafId : persistedTailId;
 			if (!leafId) {
 				return {
 					items: [],

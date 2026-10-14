@@ -21,6 +21,7 @@ import {
 	reconcileQueuedUserPromptCounts,
 } from "./chat-lifecycle.ts";
 import { restoreCompactionState, updateCompactionState } from "./compaction-state.ts";
+import { mergeAgentStepIndex } from "./session-timeline.ts";
 import { mergeImageGenerationSummary, mergeWebSearchToolSummary, shouldJoinLiveToolBatch } from "./tool-batching.ts";
 import type {
 	LiveTool,
@@ -492,10 +493,13 @@ export function restoreRuntimeActivities(current: WorkbenchState, snapshot: WebS
 			? { ...item, status: "processing" as const }
 			: item,
 	);
+	const completedSteps = Object.fromEntries(
+		Object.entries(current.liveSteps ?? {}).filter(([, step]) => step.status !== "running"),
+	);
 	const liveSteps = snapshot.activeStep
-		? { [snapshot.activeStep.id]: snapshot.activeStep }
+		? mergeAgentStepIndex(completedSteps, [snapshot.activeStep])
 		: hasActiveSessionSnapshot(snapshot)
-			? Object.fromEntries(Object.entries(current.liveSteps ?? {}).filter(([, step]) => step.status !== "running"))
+			? completedSteps
 			: {};
 	const liveCompaction = restoreCompactionState(current.liveCompaction, snapshot.phase, current.transcript);
 	const next = {

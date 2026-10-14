@@ -976,7 +976,9 @@ export const PromptInputBody = ({
 
 export type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
->;
+> & {
+  contentRef?: RefObject<HTMLElement | null>;
+};
 
 export function shouldFollowPromptInputCaret(
   focused: boolean,
@@ -996,6 +998,7 @@ export const PromptInputTextarea = forwardRef<
     onInput,
     onKeyDown,
     className,
+    contentRef,
     placeholder = "What would you like to know?",
     ...props
   },
@@ -1027,23 +1030,51 @@ export const PromptInputTextarea = forwardRef<
       textarea.selectionEnd,
       textarea.value.length,
     );
-    textarea.style.height = "auto";
+    const scrollTop = textarea.scrollTop;
+    textarea.style.height = "0px";
+    const content = contentRef?.current;
+    let overlayHeight = 0;
+    if (content) {
+      const previousHeight = content.style.height;
+      content.style.height = "0px";
+      overlayHeight = content.scrollHeight;
+      content.style.height = previousHeight;
+    }
     const styles = getComputedStyle(textarea);
     const minHeight = Number.parseFloat(styles.minHeight);
     const maxHeight = Number.parseFloat(styles.maxHeight);
-    const contentHeight = Math.max(textarea.scrollHeight, Number.isFinite(minHeight) ? minHeight : 0);
+    const borderHeight = styles.boxSizing === "border-box"
+      ? Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth)
+      : -Number.parseFloat(styles.paddingTop) - Number.parseFloat(styles.paddingBottom);
+    const contentHeight = Math.max(
+      Math.max(textarea.scrollHeight, overlayHeight) + borderHeight,
+      Number.isFinite(minHeight) ? minHeight : 0,
+    );
     const overflowing = Number.isFinite(maxHeight) && contentHeight > maxHeight;
-    const height = overflowing ? maxHeight : contentHeight;
-    textarea.style.height = `${height}px`;
+    textarea.style.height = `${overflowing ? maxHeight : contentHeight}px`;
     textarea.style.overflowY = overflowing ? "auto" : "hidden";
-    if (overflowing && followCaret) textarea.scrollTop = textarea.scrollHeight;
-  }, []);
+    textarea.scrollTop = overflowing ? followCaret ? textarea.scrollHeight : scrollTop : 0;
+    if (content) content.scrollTop = textarea.scrollTop;
+  }, [contentRef]);
 
   const inputValue = controller?.textInput.value ?? props.value ?? "";
 
   useLayoutEffect(() => {
     resizeTextarea();
-  }, [inputValue, placeholder, resizeTextarea]);
+  }, [className, inputValue, placeholder, resizeTextarea]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    let width = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === width) return;
+      width = textarea.clientWidth;
+      resizeTextarea();
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [resizeTextarea]);
 
   const handleInput: FormEventHandler<HTMLTextAreaElement> = useCallback(
     (event) => {
@@ -1162,7 +1193,7 @@ export const PromptInputTextarea = forwardRef<
 
   return (
     <InputGroupTextarea
-      className={cn("field-sizing-content max-h-48 min-h-16", className)}
+      className={cn("field-sizing-fixed max-h-48 min-h-16", className)}
       name="message"
       onCompositionEnd={handleCompositionEnd}
       onCompositionStart={handleCompositionStart}

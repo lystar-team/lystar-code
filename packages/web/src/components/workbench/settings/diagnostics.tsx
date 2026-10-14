@@ -1,19 +1,18 @@
 import { Line } from "@ant-design/plots";
 import type { LineConfig } from "@ant-design/plots";
-import { Activity, CheckCircle2, CircleAlert, Cpu, Gauge, HardDrive, MemoryStick, RotateCw, Server, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, RotateCw, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { webApi } from "../../../adapters/host-protocol/api.ts";
 import { cn } from "../../../lib/utils";
-import type { WorkbenchActions } from "../types";
 import type { WorkbenchState } from "../../../state/use-workbench";
 import { Alert, AlertDescription, AlertTitle } from "../../ui/alert";
 import { Button } from "../../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
+import { Collapsible, CollapsibleTrigger } from "../../ui/collapsible";
+import { GsapCollapsibleContent } from "../../ui/gsap-collapsible-content";
 import { Progress } from "../../ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
-import { Separator } from "../../ui/separator";
-import { SettingSection, StatText } from "./shared";
+import type { WorkbenchActions } from "../types";
 
 type DiagnosticsSnapshot = {
 	generatedAt?: number;
@@ -82,21 +81,7 @@ type ChartPalette = {
 	isDark: boolean;
 	border: string;
 	primary: string;
-};
-
-type ServiceCardProps = {
-	icon: ReactNode;
-	name: string;
-	description: string;
-	status: ServiceSnapshot | undefined;
-	metadata: Array<{ label: string; value: string }>;
-	restarting: boolean;
-	onRestart: () => void;
-};
-
-type MetricValue = {
-	value: string;
-	unit: string;
+	muted: string;
 };
 
 function numberValue(value: unknown): number | undefined {
@@ -126,7 +111,7 @@ function formatBytes(value: number | undefined): string {
 	return `${current >= 100 ? current.toFixed(0) : current.toFixed(1)} ${units[unit]}`;
 }
 
-function formatBytesValue(value: number | undefined): MetricValue {
+function formatBytesValue(value: number | undefined): { value: string; unit: string } {
 	const formatted = formatBytes(value);
 	if (formatted === "—") return { value: "—", unit: "" };
 	const [amount, unit = ""] = formatted.split(" ");
@@ -147,30 +132,25 @@ function formatDuration(seconds: number | undefined): string {
 	return `${minutes} 分钟`;
 }
 
-function formatTime(timestamp: number | undefined): string {
-	return timestamp ? new Date(timestamp).toLocaleTimeString() : "等待数据";
-}
-
 function formatAxisTime(value: unknown): string {
 	const timestamp = value instanceof Date ? value.getTime() : Number(value);
-	return Number.isFinite(timestamp) ? formatTime(timestamp) : String(value);
+	return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString() : String(value);
 }
 
 function readChartPalette(): ChartPalette {
 	const styles = getComputedStyle(document.documentElement);
-	const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
 	const theme = document.documentElement.dataset.theme;
 	const isDark = theme === "dark" || (theme === "" && window.matchMedia("(prefers-color-scheme: dark)").matches);
 	return {
 		isDark,
-		border: read("--border", isDark ? "#3b3b3b" : "#eeeeee"),
-		primary: isDark ? "#f5f5f5" : "#111111",
+		border: styles.getPropertyValue("--border").trim(),
+		primary: styles.getPropertyValue("--foreground").trim(),
+		muted: styles.getPropertyValue("--muted-foreground").trim(),
 	};
 }
 
 function useChartPalette(theme: string): ChartPalette {
 	const [palette, setPalette] = useState<ChartPalette>(() => readChartPalette());
-
 	useEffect(() => {
 		const update = () => setPalette(readChartPalette());
 		const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -183,104 +163,72 @@ function useChartPalette(theme: string): ChartPalette {
 			observer.disconnect();
 		};
 	}, [theme]);
-
 	return palette;
 }
 
 function usePrefersReducedMotion(): boolean {
 	const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-
 	useEffect(() => {
 		const media = window.matchMedia("(prefers-reduced-motion: reduce)");
 		const update = () => setReducedMotion(media.matches);
-		update();
 		media.addEventListener("change", update);
 		return () => media.removeEventListener("change", update);
 	}, []);
-
 	return reducedMotion;
 }
 
-function serviceLabel(status: ServiceSnapshot | undefined): string {
-	if (status?.status === "running" || status?.reachable) return "运行中";
-	if (status?.status === "unavailable") return "不可用";
-	return "未知";
-}
-
-function serviceTone(status: ServiceSnapshot | undefined): "success" | "warning" | "error" {
-	if (status?.status === "running" || status?.reachable) return "success";
-	if (status?.status === "unavailable") return "error";
-	return "warning";
-}
-
 function StatusBadge({ status }: { status: ServiceSnapshot | undefined }) {
-	const tone = serviceTone(status);
+	const running = status?.status === "running" || status?.reachable;
+	const unavailable = status?.status === "unavailable";
 	return (
-		<span
-			className={cn(
-				"inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium",
-				tone === "success" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-				tone === "warning" && "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-				tone === "error" && "bg-destructive/10 text-destructive",
-			)}
-		>
-			{tone === "success" ? <CheckCircle2 className="size-3.5" aria-hidden="true" /> : tone === "error" ? <XCircle className="size-3.5" aria-hidden="true" /> : <CircleAlert className="size-3.5" aria-hidden="true" />}
-			{serviceLabel(status)}
+		<span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", running ? "text-[var(--success)]" : unavailable ? "text-destructive" : "text-[var(--warning)]")}>
+			{running ? <CheckCircle2 className="size-4" aria-hidden="true" /> : unavailable ? <XCircle className="size-4" aria-hidden="true" /> : <CircleAlert className="size-4" aria-hidden="true" />}
+			{running ? "运行中" : unavailable ? "不可用" : "未知"}
 		</span>
 	);
 }
 
-function ServiceCard({ icon, name, description, status, metadata, restarting, onRestart }: ServiceCardProps) {
+function ServiceRow({ name, status, metadata, restarting, onRestart }: {
+	name: string;
+	status: ServiceSnapshot | undefined;
+	metadata: Array<{ label: string; value: string }>;
+	restarting: boolean;
+	onRestart: () => void;
+}) {
 	return (
-		<Card className="min-w-0 rounded-xl py-3 shadow-none">
-			<CardContent className="grid min-w-0 gap-3 px-4">
-				<div className="flex min-w-0 items-start justify-between gap-3">
-					<div className="flex min-w-0 gap-2.5">
-						<span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">{icon}</span>
-						<div className="min-w-0">
-							<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-								<p className="font-medium">{name}</p>
-								<StatusBadge status={status} />
-							</div>
-							<p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
-						</div>
+		<div className="grid min-h-12 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 lg:grid-cols-[20%_10%_10%_minmax(0,1fr)_auto] lg:gap-x-0 lg:py-2">
+			<p className="text-sm font-medium">{name}</p>
+			<div className="lg:pl-2"><StatusBadge status={status} /></div>
+			<p className="font-mono text-xs leading-[18px] text-muted-foreground lg:pl-2">PID <span className="text-foreground">{status?.pid ?? "—"}</span></p>
+			<dl className="col-span-2 flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-xs leading-[18px] lg:col-span-1 lg:row-start-auto lg:pl-2">
+				{metadata.map((item) => (
+					<div className="flex min-w-0 gap-2" key={item.label}>
+						<dt className="shrink-0 text-muted-foreground">{item.label}</dt>
+						<dd className="min-w-0 break-all font-mono">{item.value}</dd>
 					</div>
-				</div>
-
-				<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-t pt-3">
-					<dl className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-xs">
-						{metadata.map((item) => (
-							<div className="min-w-0 max-w-full" key={item.label}>
-								<dt className="inline text-muted-foreground">{item.label} </dt>
-								<dd className="inline break-all font-mono text-foreground">{item.value}</dd>
-							</div>
-						))}
-					</dl>
-					<Button className="shrink-0" variant="outline" size="sm" disabled={restarting} onClick={onRestart}>
-						<RotateCw className={cn("size-3.5", restarting && "animate-spin")} aria-hidden="true" />
-						{restarting ? "重启中" : "重启"}
-					</Button>
-				</div>
-			</CardContent>
-		</Card>
+				))}
+			</dl>
+			<Button className="col-start-2 row-start-2 h-7 gap-1.5 rounded-md px-2 !text-xs !leading-[18px] lg:col-start-auto lg:row-start-auto" variant="outline" size="sm" aria-label={`重启 ${name}`} disabled={restarting} onClick={onRestart}>
+				<RotateCw className={cn("size-3.5", restarting && "animate-spin")} aria-hidden="true" />
+				{restarting ? "重启中" : "重启"}
+			</Button>
+		</div>
 	);
 }
 
-function ResourceSummaryCard({ icon, label, value, unit, detail }: { icon: ReactNode; label: string; value: string; unit: string; detail: string }) {
+function ResourceMetric({ label, value, unit, detail, children }: { label: string; value: string; unit: string; detail: ReactNode; children: ReactNode }) {
 	return (
-		<Card className="min-w-0 rounded-xl py-0 shadow-none">
-			<CardContent className="flex min-h-32 min-w-0 items-center gap-3 px-4 py-4 sm:min-h-36 sm:gap-4 sm:px-5">
-				<span className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">{icon}</span>
-				<div className="min-w-0">
-					<p className="truncate text-sm font-medium text-muted-foreground">{label}</p>
-					<p className="mt-1 flex min-w-0 items-baseline gap-1 font-mono tracking-tight">
-						<span className="truncate text-2xl font-semibold sm:text-3xl">{value}</span>
-						{unit ? <span className="shrink-0 text-base font-semibold text-muted-foreground sm:text-lg">{unit}</span> : null}
-					</p>
-					<p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{detail}</p>
-				</div>
-			</CardContent>
-		</Card>
+		<article className="flex min-h-56 min-w-0 flex-col p-4">
+			<div className="h-[88px] shrink-0">
+				<h3 className="text-xs leading-[18px]">{label}</h3>
+				<p className="flex items-baseline gap-1 font-mono">
+					<span className="text-[28px] leading-[34px] font-semibold tracking-tight">{value}</span>
+					{unit ? <span className="text-xs">{unit}</span> : null}
+				</p>
+				<div className="text-xs leading-[18px] text-muted-foreground">{detail}</div>
+			</div>
+			<div className="mt-2 min-w-0">{children}</div>
+		</article>
 	);
 }
 
@@ -291,139 +239,55 @@ function chartDomainMax(values: number[]): number {
 	return Math.min(100, Math.max(step, Math.ceil((maximum * 1.15) / step) * step));
 }
 
-function ResourceTrendChart({ icon, title, currentValue, history, selectValue, palette, reducedMotion, first }: { icon: ReactNode; title: string; currentValue: string; history: ChartSample[]; selectValue: (sample: ChartSample) => number; palette: ChartPalette; reducedMotion: boolean; first: boolean }) {
-	const chartData = useMemo(() => history.map((sample) => ({ at: new Date(sample.at), value: boundedPercent(selectValue(sample)) ?? 0 })), [history, selectValue]);
-	const domainMax = useMemo(() => chartDomainMax(chartData.map((point) => point.value)), [chartData]);
-	const chartConfig = useMemo<LineConfig>(
-		() => ({
-			data: chartData,
-			height: 208,
-			autoFit: true,
-			xField: "at",
-			yField: "value",
-			color: palette.primary,
-			theme: { type: palette.isDark ? "classicDark" : "classic" },
-			padding: [8, 16, 32, 52],
-			scale: {
-				x: { type: "time" },
-				y: { domain: [0, domainMax], nice: false },
-			},
-			axis: {
-				x: { labelAutoHide: true, labelAutoRotate: false, labelFormatter: formatAxisTime, tickCount: 5 },
-				y: {
-					labelFormatter: (value: unknown) => `${value}%`,
-					tickCount: 4,
-					grid: { line: { style: { stroke: palette.border, lineDash: [4, 4] } } },
-				},
-			},
-			legend: false,
-			tooltip: {
-				title: (datum: unknown) => {
-					const timestamp = datum && typeof datum === "object" && "at" in datum ? (datum as { at?: unknown }).at : undefined;
-					return `采样时间：${formatAxisTime(timestamp)}`;
-				},
-				items: [{ channel: "y", name: title, valueFormatter: (value: unknown) => formatPercent(numberValue(value)) }],
-			},
-			interaction: { tooltip: { crosshairs: true } },
-			style: { lineWidth: 2 },
-			point: { size: 2.5 },
-			animate: reducedMotion ? false : { update: { duration: 360, easing: "ease-out" } },
-		}),
-		[chartData, domainMax, palette.border, palette.isDark, palette.primary, reducedMotion, title],
-	);
-
-	return (
-		<section className={cn("grid gap-3", !first && "border-t pt-5")}>
-			<div className="flex flex-wrap items-center justify-between gap-2">
-				<div className="flex min-w-0 items-center gap-2">
-					<span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">{icon}</span>
-					<h3 className="truncate text-sm font-medium">{title}</h3>
-				</div>
-				<span className="shrink-0 font-mono text-sm text-muted-foreground">{currentValue}</span>
-			</div>
-			<div className="h-52 min-w-0 w-full" role="img" aria-label={`${title}最近 ${history.length} 个采样点的使用趋势`}>
-				<Line {...chartConfig} />
-			</div>
-		</section>
-	);
-}
-
-function ResourceTrendPanel({ history, palette, reducedMotion }: { history: ChartSample[]; palette: ChartPalette; reducedMotion: boolean }) {
-	return (
-		<Card className="min-w-0 rounded-xl shadow-none">
-			<CardHeader className="gap-2 px-4 pb-3 sm:px-6">
-				<div className="flex flex-wrap items-end justify-between gap-2">
-					<div>
-						<CardTitle className="text-base">资源趋势</CardTitle>
-						<p className="mt-1 text-xs text-muted-foreground">最近 {history.length} 个采样点，约每 2 秒更新</p>
-					</div>
-					<span className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground">实时采样</span>
-				</div>
-			</CardHeader>
-			<CardContent className="px-4 pb-5 sm:px-6 sm:pb-6">
-				{history.length ? (
-					<div>
-						<ResourceTrendChart
-							icon={<Cpu className="size-4" aria-hidden="true" />}
-							title="CPU 使用率"
-							currentValue={formatPercent(history.at(-1)?.cpu)}
-							history={history}
-							selectValue={(sample) => sample.cpu}
-							palette={palette}
-							reducedMotion={reducedMotion}
-							first
-						/>
-						<ResourceTrendChart
-							icon={<MemoryStick className="size-4" aria-hidden="true" />}
-							title="系统内存使用率"
-							currentValue={formatPercent(history.at(-1)?.memory)}
-							history={history}
-							selectValue={(sample) => sample.memory}
-							palette={palette}
-							reducedMotion={reducedMotion}
-							first={false}
-						/>
-						<ResourceTrendChart
-							icon={<Server className="size-4" aria-hidden="true" />}
-							title="LYStar 进程内存占比"
-							currentValue={formatPercent(history.at(-1)?.processMemory)}
-							history={history}
-							selectValue={(sample) => sample.processMemory}
-							palette={palette}
-							reducedMotion={reducedMotion}
-							first={false}
-						/>
-					</div>
-				) : (
-					<div className="grid h-52 place-items-center rounded-lg border bg-muted/20 text-sm text-muted-foreground">等待诊断数据</div>
-				)}
-			</CardContent>
-		</Card>
-	);
-}
-
-function formatConcurrencyMemory(value: number | undefined): string {
-	return formatBytes(value);
-}
-
-function concurrencyLabel(value: number | undefined): string {
-	return value === undefined ? "—" : `${value} 个读槽`;
-}
-
-function RuntimeReadConcurrencyPanel({
-	state,
-	actions,
-	value,
-}: {
-	state: WorkbenchState;
-	actions: WorkbenchActions;
-	value: DiagnosticsSnapshot["runtimeReadConcurrency"];
+function ResourceTrendChart({ title, history, field, palette, reducedMotion }: {
+	title: string;
+	history: ChartSample[];
+	field: "cpu" | "memory" | "processMemory";
+	palette: ChartPalette;
+	reducedMotion: boolean;
 }) {
+	const chartData = useMemo(() => history.map((sample) => ({ at: new Date(sample.at), value: sample[field] })), [history, field]);
+	const domainMax = useMemo(() => chartDomainMax(chartData.map((point) => point.value)), [chartData]);
+	const chartConfig = useMemo<LineConfig>(() => ({
+		data: chartData,
+		height: 96,
+		autoFit: true,
+		xField: "at",
+		yField: "value",
+		theme: { type: palette.isDark ? "classicDark" : "classic" },
+		paddingTop: 4,
+		paddingRight: 8,
+		paddingBottom: 20,
+		paddingLeft: 32,
+		scale: { x: { type: "time" }, y: { domain: [0, domainMax], nice: false } },
+		axis: {
+			x: { title: false, labelAutoHide: true, labelAutoRotate: false, labelFormatter: formatAxisTime, tickCount: 2, labelFontSize: 11, labelFill: palette.muted, labelOpacity: 1, tickStroke: palette.border, lineStroke: palette.border },
+			y: { title: false, labelFormatter: (value: unknown) => `${value}%`, tickCount: 2, labelFontSize: 11, labelFill: palette.muted, labelOpacity: 1, tickStroke: palette.border, gridStroke: palette.border, gridLineDash: [3, 3] },
+		},
+		legend: false,
+		tooltip: {
+			title: (datum: unknown) => {
+				const timestamp = datum && typeof datum === "object" && "at" in datum ? (datum as { at?: unknown }).at : undefined;
+				return `采样时间：${formatAxisTime(timestamp)}`;
+			},
+			items: [{ channel: "y", name: title, valueFormatter: (value: unknown) => formatPercent(numberValue(value)) }],
+		},
+		interaction: { tooltip: { crosshairs: true } },
+		style: { stroke: palette.primary, lineWidth: 1.5 },
+		animate: reducedMotion ? false : { update: { duration: 360, easing: "ease-out" } },
+	}), [chartData, domainMax, palette, reducedMotion, title]);
+	return (
+		<div className="h-24 min-w-0 w-full" role="img" aria-label={`${title}最近 ${history.length} 个采样点的使用趋势，当前 ${formatPercent(history.at(-1)?.[field])}`}>
+			{history.length ? <Line {...chartConfig} /> : <div className="grid h-full place-items-center text-xs text-muted-foreground">等待诊断数据</div>}
+		</div>
+	);
+}
+
+function RuntimeReadConcurrencyPanel({ state, actions, value }: { state: WorkbenchState; actions: WorkbenchActions; value: DiagnosticsSnapshot["runtimeReadConcurrency"] }) {
 	const configured = value?.configured ?? 0;
 	const canEdit = Boolean(state.sessionId) && !state.readOnly;
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string>();
-
 	const update = async (nextValue: string) => {
 		if (!canEdit) return;
 		setSaving(true);
@@ -438,92 +302,102 @@ function RuntimeReadConcurrencyPanel({
 			setSaving(false);
 		}
 	};
-
 	return (
-		<Card className="min-w-0 rounded-xl shadow-none">
-			<CardHeader className="gap-2 px-4 pb-3 sm:px-6">
-				<div className="flex flex-wrap items-start justify-between gap-3">
+		<section className="grid min-w-0 content-start gap-3" aria-labelledby="runtime-queue-title">
+			<h2 id="runtime-queue-title" className="text-sm leading-5 font-semibold">Runtime 读取队列</h2>
+			<div className="grid min-h-48 content-start gap-3 rounded-lg border p-4" aria-busy={saving}>
+				<dl className="grid grid-cols-2 gap-3">
 					<div>
-						<CardTitle className="text-base">Runtime 读取队列</CardTitle>
-						<p className="mt-1 text-xs leading-5 text-muted-foreground">
-							自动模式会根据当前主机配置选择建议值，手动值在下次读批次开始时生效。
-						</p>
+						<dt className="text-xs text-muted-foreground">当前生效</dt>
+						<dd className="mt-1 text-sm leading-5 font-medium">{value?.effective === undefined ? "—" : `${value.effective} 个读槽`}</dd>
 					</div>
-					<Gauge className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
-				</div>
-			</CardHeader>
-			<CardContent className="grid gap-4 px-4 pb-5 sm:px-6 sm:pb-6">
-				<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-					<StatText label="当前生效" value={concurrencyLabel(value?.effective)} />
-					<StatText label="建议值" value={concurrencyLabel(value?.suggested)} />
-					<StatText label="计算依据" value={`${value?.cpuCores ?? "—"} 核 · ${formatConcurrencyMemory(value?.totalMemoryBytes)}`} />
-					<StatText label="来源" value={value?.source === "manual" ? "手动" : value?.source === "auto" ? "自动" : "—"} />
-				</div>
-				<div className="flex flex-col gap-2 border-t pt-4 sm:flex-row sm:items-end sm:justify-between">
-					<div className="min-w-0">
-						<label className="text-sm font-medium" htmlFor="runtime-read-concurrency">
-							设置方式
-						</label>
-						<p className="mt-1 text-xs text-muted-foreground">自动或固定 2～16 个读槽。</p>
+					<div>
+						<dt className="text-xs text-muted-foreground">建议值</dt>
+						<dd className="mt-1 text-sm leading-5 font-medium">{value?.suggested === undefined ? "—" : `${value.suggested} 个读槽`}</dd>
 					</div>
+				</dl>
+				<dl className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-2 text-xs leading-[18px]">
+					<div className="flex gap-2"><dt className="text-muted-foreground">计算依据</dt><dd className="font-mono">{value?.cpuCores ?? "—"} 核 / {formatBytes(value?.totalMemoryBytes)}</dd></div>
+					<div className="flex gap-2"><dt className="text-muted-foreground">来源</dt><dd>{value?.source === "manual" ? "手动" : value?.source === "auto" ? "自动" : "—"}</dd></div>
+				</dl>
+				<div className="flex items-center justify-between gap-3 border-t pt-2">
+					<label className="text-xs text-muted-foreground" htmlFor="runtime-read-concurrency">设置方式</label>
 					<Select value={String(configured)} onValueChange={(nextValue) => void update(nextValue)} disabled={!canEdit || saving}>
-						<SelectTrigger id="runtime-read-concurrency" className="w-full sm:w-48">
-							<SelectValue />
-						</SelectTrigger>
+						<SelectTrigger id="runtime-read-concurrency" size="sm" className="w-28 rounded-md !text-sm !leading-5 focus-visible:ring-2 focus-visible:ring-ring"><SelectValue /></SelectTrigger>
 						<SelectContent>
 							<SelectItem value="0">自动</SelectItem>
-							{Array.from({ length: 15 }, (_, index) => index + 2).map((option) => (
-								<SelectItem key={option} value={String(option)}>
-									固定 {option} 个
-								</SelectItem>
-							))}
+							{Array.from({ length: 15 }, (_, index) => index + 2).map((option) => <SelectItem key={option} value={String(option)}>固定 {option} 个</SelectItem>)}
 						</SelectContent>
 					</Select>
 				</div>
+				<p className="text-xs leading-[18px] text-muted-foreground">手动值在下次读批次开始时生效。</p>
 				{!canEdit ? <p className="text-xs text-muted-foreground">需要当前会话的控制权才能修改。</p> : null}
-				{error ? <p className="text-xs text-destructive">{error}</p> : null}
-			</CardContent>
-		</Card>
+				{error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+			</div>
+		</section>
 	);
 }
 
-function ChecksSummary({ checks }: { checks: Array<{ id?: string; status?: string; message?: string }> }) {
-	if (!checks.length) {
-		return <Card className="min-w-0 rounded-xl shadow-none"><CardContent className="py-6 text-center text-sm text-muted-foreground">等待诊断数据</CardContent></Card>;
-	}
-
+function ChecksSummary({ checks }: { checks: NonNullable<DiagnosticsSnapshot["checks"]> }) {
 	const passed = checks.filter((check) => check.status === "ok" || check.status === "pass").length;
-	const ratio = (passed / checks.length) * 100;
-
+	const hasIssues = checks.length > passed;
+	const [open, setOpen] = useState(hasIssues);
+	useEffect(() => {
+		if (hasIssues) setOpen(true);
+	}, [hasIssues]);
 	return (
-		<Card className="min-w-0 rounded-xl shadow-none">
-			<CardContent className="grid gap-3 p-3 sm:p-4">
-				<div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/30 px-3 py-2.5">
-					<div>
-						<p className="text-sm font-medium">检查通过率</p>
-						<p className="mt-0.5 text-xs text-muted-foreground">{passed} / {checks.length} 项通过</p>
-					</div>
-					<div className="flex w-48 max-w-full shrink-0 items-center gap-2">
-						<Progress className="bg-muted [&_[data-slot=progress-indicator]]:bg-emerald-600 dark:[&_[data-slot=progress-indicator]]:bg-emerald-400" value={ratio} aria-label="检查通过率" />
-						<span className="shrink-0 font-mono text-xs">{ratio.toFixed(0)}%</span>
-					</div>
-				</div>
-				<div className="grid">
+		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
+			<div className="flex min-h-11 flex-wrap items-center justify-between gap-2 rounded-md bg-muted/60 px-4 py-2">
+				<p className="flex items-center gap-2 text-sm font-medium" role="status">
+					{checks.length ? hasIssues ? <CircleAlert className="size-4 text-[var(--warning)]" aria-hidden="true" /> : <CheckCircle2 className="size-4 text-[var(--success)]" aria-hidden="true" /> : null}
+					{checks.length ? `${passed} / ${checks.length} 项检查通过` : "等待诊断数据"}
+				</p>
+				{checks.length ? <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="h-7 gap-1 rounded-md px-0 !text-sm !leading-5" aria-label={open ? "收起检查明细" : "查看检查明细"}>{open ? "收起检查明细" : "查看检查明细"}<ChevronDown className={cn("size-4 transition-transform", open && "rotate-180")} aria-hidden="true" /></Button></CollapsibleTrigger> : null}
+			</div>
+			<GsapCollapsibleContent open={open}>
+				<div className="mt-2 divide-y divide-border rounded-lg border px-4">
 					{checks.map((check, index) => {
 						const ok = check.status === "ok" || check.status === "pass";
-						return (
-							<div key={check.id ?? index}>
-								{index ? <Separator className="my-1" /> : null}
-								<div className="flex min-w-0 items-start gap-2 py-2 text-sm">
-									{ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" /> : <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />}
-									<span className="min-w-0 break-words">{check.message ?? "检查完成"}</span>
-								</div>
-							</div>
-						);
+						return <div key={check.id ?? index} className="flex min-w-0 items-start gap-2 py-2 text-xs leading-5">{ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[var(--success)]" aria-hidden="true" /> : <CircleAlert className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" aria-hidden="true" />}<span className="min-w-0 break-words">{check.message ?? "检查完成"}</span></div>;
 					})}
 				</div>
-			</CardContent>
-		</Card>
+			</GsapCollapsibleContent>
+		</Collapsible>
+	);
+}
+
+function HostConnections({ diagnostics }: { diagnostics: DiagnosticsSnapshot }) {
+	const [open, setOpen] = useState(false);
+	const addresses = diagnostics.web?.ipAddresses ?? [];
+	const port = diagnostics.web?.port;
+	const rows = [
+		{ label: "版本", value: diagnostics.product?.version ?? "—" },
+		{ label: "平台 / 架构", value: `${diagnostics.host?.platform ?? "—"} / ${diagnostics.host?.arch ?? "—"}` },
+		{ label: "Host 运行时间", value: formatDuration(diagnostics.host?.uptimeSeconds) },
+		{ label: "Runtime 持久化", value: diagnostics.runtime?.persistent ? "已启用" : "未启用" },
+	];
+	return (
+		<section className="grid min-w-0 content-start gap-3" aria-labelledby="host-connections-title">
+			<h2 id="host-connections-title" className="text-sm leading-5 font-semibold">主机与连接</h2>
+			<div className="min-w-0 rounded-lg border px-4 py-2">
+				<dl className="grid min-w-0 sm:grid-cols-2">
+					{rows.map((row) => <div key={row.label} className="flex min-h-8 min-w-0 items-center gap-2 border-b py-1 sm:even:pl-4"><dt className="shrink-0 text-xs leading-[18px] text-muted-foreground">{row.label}</dt><dd className={cn("min-w-0 break-words text-[13px] leading-5", row.label === "版本" || row.label === "平台 / 架构" ? "font-mono text-xs leading-[18px]" : undefined)}>{row.value}</dd></div>)}
+					<div className="flex min-h-8 min-w-0 items-center gap-2 border-b py-1 sm:col-span-2"><dt className="shrink-0 text-xs leading-[18px] text-muted-foreground">磁盘路径</dt><dd className="min-w-0 break-all font-mono text-xs leading-[18px]">{diagnostics.disk?.path ?? "—"}</dd></div>
+				</dl>
+				<Collapsible open={open} onOpenChange={setOpen}>
+					<div className="flex min-h-8 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1">
+						<span className="shrink-0 text-xs text-muted-foreground">可访问地址</span>
+						{addresses[0] && port !== undefined ? <a className="min-w-0 break-all font-mono text-xs leading-[18px] underline-offset-4 hover:underline" href={`http://${addresses[0]}:${port}`}>http://{addresses[0]}:{port}</a> : <span className="text-xs">—</span>}
+						{addresses.length > 1 ? <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="ml-auto h-7 gap-1 px-0 !text-[13px] !leading-5" aria-label={open ? "收起可访问地址" : `展开全部 ${addresses.length} 个地址`}>{open ? "收起地址" : `全部 ${addresses.length} 个地址`}<ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} aria-hidden="true" /></Button></CollapsibleTrigger> : null}
+					</div>
+					<GsapCollapsibleContent open={open}>
+						<div className="grid min-w-0 gap-2 border-t py-2">
+							{port !== undefined ? addresses.slice(1).map((address) => <a key={address} className="break-all font-mono text-xs underline underline-offset-4" href={`http://${address}:${port}`}>http://{address}:{port}</a>) : null}
+						</div>
+					</GsapCollapsibleContent>
+				</Collapsible>
+			</div>
+		</section>
 	);
 }
 
@@ -534,7 +408,6 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 	const [refreshError, setRefreshError] = useState<string>();
 	const palette = useChartPalette(state.theme);
 	const reducedMotion = usePrefersReducedMotion();
-
 	useEffect(() => {
 		if (!state.settingsOpen || state.settingsTab !== "diagnostics") return;
 		let active = true;
@@ -553,31 +426,21 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 			window.clearInterval(timer);
 		};
 	}, [actions.refreshDiagnostics, state.settingsOpen, state.settingsTab]);
-
 	useEffect(() => {
 		if (!diagnostics.generatedAt) return;
 		const totalMemory = numberValue(diagnostics.memory?.totalBytes) ?? 0;
 		const processMemory = numberValue(diagnostics.processMemory?.totalRssBytes) ?? 0;
 		setHistory((previous) => {
 			if (previous.at(-1)?.at === diagnostics.generatedAt) return previous;
-			return [
-				...previous,
-				{
-					at: diagnostics.generatedAt ?? Date.now(),
-					cpu: boundedPercent(numberValue(diagnostics.cpu?.usagePercent)) ?? 0,
-					memory: boundedPercent(numberValue(diagnostics.memory?.usedPercent)) ?? 0,
-					processMemory: ratioPercent(processMemory, totalMemory) ?? 0,
-				},
-			].slice(-30);
+			return [...previous, {
+				at: diagnostics.generatedAt ?? Date.now(),
+				cpu: boundedPercent(numberValue(diagnostics.cpu?.usagePercent)) ?? 0,
+				memory: boundedPercent(numberValue(diagnostics.memory?.usedPercent)) ?? 0,
+				processMemory: ratioPercent(processMemory, totalMemory) ?? 0,
+			}].slice(-30);
 		});
 	}, [diagnostics.generatedAt, diagnostics.cpu?.usagePercent, diagnostics.memory?.usedPercent, diagnostics.memory?.totalBytes, diagnostics.processMemory?.totalRssBytes]);
-
-	const runtimeProcess = useMemo(
-		() => diagnostics.processMemory?.processes?.find((processInfo) => processInfo.role === "runtime"),
-		[diagnostics.processMemory?.processes],
-	);
-	const ipAddresses = diagnostics.web?.ipAddresses ?? [];
-	const processMemoryDetail = `${formatBytes(diagnostics.processMemory?.totalRssBytes)} · Gateway ${formatBytes(diagnostics.gateway?.rssBytes)}${runtimeProcess ? ` · Runtime ${formatBytes(runtimeProcess.rssBytes)}` : ""}`;
+	const runtimeProcess = useMemo(() => diagnostics.processMemory?.processes?.find((processInfo) => processInfo.role === "runtime"), [diagnostics.processMemory?.processes]);
 	const processMemoryPercent = ratioPercent(diagnostics.processMemory?.totalRssBytes, diagnostics.memory?.totalBytes);
 	const memoryValue = formatBytesValue(diagnostics.memory?.usedBytes);
 	const processMemoryValue = formatBytesValue(diagnostics.processMemory?.totalRssBytes);
@@ -593,114 +456,44 @@ export function DiagnosticsSettings({ state, actions }: { state: WorkbenchState;
 		}
 	};
 	const checks = Array.isArray(diagnostics.checks) ? diagnostics.checks : [];
-
 	return (
-		<div className="grid min-w-0 gap-5">
-			{refreshError && (
-				<Alert variant="destructive">
-					<CircleAlert className="size-4" aria-hidden="true" />
-					<AlertTitle>诊断数据获取失败</AlertTitle>
-					<AlertDescription>{refreshError}</AlertDescription>
-				</Alert>
-			)}
-
-			<SettingSection title="服务状态">
-				<div className="grid min-w-0 gap-3 lg:grid-cols-2">
-					<ServiceCard
-						icon={<Server className="size-4" aria-hidden="true" />}
-						name="Web Gateway"
-						description="负责浏览器连接、页面资源、API 请求和实时消息转发。"
-						status={diagnostics.gateway}
-						metadata={[
-							{ label: "端口", value: String(diagnostics.gateway?.port ?? "—") },
-							{ label: "PID", value: String(diagnostics.gateway?.pid ?? "—") },
-						]}
-						restarting={activeAction === "gateway"}
-						onRestart={() => void runServiceAction("gateway")}
-					/>
-					<ServiceCard
-						icon={<Activity className="size-4" aria-hidden="true" />}
-						name="Web Runtime"
-						description="负责 Agent 会话、文件与 Git 访问、任务持久化和运行恢复。"
-						status={diagnostics.runtime}
-						metadata={[
-							{ label: "PID", value: String(diagnostics.runtime?.pid ?? "—") },
-							{ label: "管理器", value: diagnostics.runtime?.manager ?? "—" },
-						]}
-						restarting={activeAction === "runtime"}
-						onRestart={() => void runServiceAction("runtime")}
-					/>
+		<div className="grid min-w-0 gap-6">
+			{refreshError ? <Alert variant="destructive"><CircleAlert className="size-4" aria-hidden="true" /><AlertTitle>诊断数据获取失败</AlertTitle><AlertDescription>{refreshError}</AlertDescription></Alert> : null}
+			<ChecksSummary checks={checks} />
+			<section className="grid min-w-0 gap-3" aria-labelledby="diagnostic-services-title">
+				<h2 id="diagnostic-services-title" className="text-sm leading-5 font-semibold">服务状态</h2>
+				<div className="divide-y divide-border rounded-lg border">
+					<ServiceRow name="Web Gateway" status={diagnostics.gateway} metadata={[{ label: "端口", value: String(diagnostics.gateway?.port ?? "—") }, { label: "运行", value: formatDuration(diagnostics.gateway?.uptimeSeconds) }]} restarting={activeAction === "gateway"} onRestart={() => void runServiceAction("gateway")} />
+					<ServiceRow name="Web Runtime" status={diagnostics.runtime} metadata={[{ label: "管理器", value: diagnostics.runtime?.manager ?? "—" }, { label: "持久化", value: diagnostics.runtime?.persistent ? "已启用" : "未启用" }]} restarting={activeAction === "runtime"} onRestart={() => void runServiceAction("runtime")} />
 				</div>
-			</SettingSection>
-
-			<SettingSection title="可访问地址">
-				<div className="grid gap-2">
-					{ipAddresses.map((address) => (
-						<a key={address} className="break-all font-mono text-sm underline underline-offset-4" href={`http://${address}:${diagnostics.web?.port}`}>
-							http://{address}:{diagnostics.web?.port}
-						</a>
-					))}
+			</section>
+			<section className="grid min-w-0 gap-3" aria-labelledby="diagnostic-resources-title">
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<h2 id="diagnostic-resources-title" className="text-sm leading-5 font-semibold">实时资源</h2>
+					<p className="text-xs text-muted-foreground">最近 {history.length} 次采样 / 约 2 秒更新</p>
 				</div>
-			</SettingSection>
-
-			<SettingSection title="主机信息">
-				<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-					<StatText label="Web 服务端口" value={diagnostics.web?.port ? String(diagnostics.web.port) : "—"} />
-					<StatText label={`${state.branding.name} 版本`} value={diagnostics.product?.version ?? "—"} />
-					<StatText label="平台 / 架构" value={`${diagnostics.host?.platform ?? "—"} / ${diagnostics.host?.arch ?? "—"}`} />
+				<div className="grid min-w-0 grid-cols-1 overflow-hidden rounded-lg border sm:grid-cols-2 xl:grid-cols-4 [&>article]:border-border [&>article+article]:border-t sm:[&>article+article]:border-t-0 sm:[&>article:nth-child(even)]:border-l sm:[&>article:nth-child(n+3)]:border-t xl:[&>article:nth-child(n+3)]:border-t-0 xl:[&>article+article]:border-l">
+					<ResourceMetric label="CPU 使用率" value={diagnostics.cpu?.usagePercent === undefined ? "—" : diagnostics.cpu.usagePercent.toFixed(1)} unit="%" detail={<span>{diagnostics.cpu?.cores ?? "—"} 核 <span className="ml-2">负载 {diagnostics.cpu?.loadAverage?.[0]?.toFixed(2) ?? "—"}</span></span>}>
+						<ResourceTrendChart title="CPU 使用率" field="cpu" history={history} palette={palette} reducedMotion={reducedMotion} />
+					</ResourceMetric>
+					<ResourceMetric label="系统运行内存" value={memoryValue.value} unit={memoryValue.unit} detail={`${formatPercent(diagnostics.memory?.usedPercent)} 已用 / 共 ${formatBytes(diagnostics.memory?.totalBytes)}`}>
+						<ResourceTrendChart title="系统内存使用率" field="memory" history={history} palette={palette} reducedMotion={reducedMotion} />
+					</ResourceMetric>
+					<ResourceMetric label={`${state.branding.name} 相关进程`} value={processMemoryValue.value} unit={processMemoryValue.unit} detail={<><p>{formatPercent(processMemoryPercent)} 系统内存</p><p className="truncate" title={`Gateway ${formatBytes(diagnostics.gateway?.rssBytes)}${runtimeProcess ? ` / Runtime ${formatBytes(runtimeProcess.rssBytes)}` : ""}`}>Gateway {formatBytes(diagnostics.gateway?.rssBytes)}{runtimeProcess ? ` / Runtime ${formatBytes(runtimeProcess.rssBytes)}` : ""}</p></>}>
+						<ResourceTrendChart title={`${state.branding.name} 进程内存占比`} field="processMemory" history={history} palette={palette} reducedMotion={reducedMotion} />
+					</ResourceMetric>
+					<ResourceMetric label="磁盘使用" value={diskValue.value} unit={diskValue.unit} detail={`${formatPercent(diagnostics.disk?.usedPercent)} 已用 / 共 ${formatBytes(diagnostics.disk?.totalBytes)}`}>
+						<div className="grid h-24 content-start gap-3 pt-3">
+							<div className="flex items-center gap-2"><Progress value={diagnostics.disk?.usedPercent} className="h-1.5 flex-1 bg-muted [&_[data-slot=progress-indicator]]:bg-muted-foreground" aria-label="磁盘使用率" /><span className="font-mono text-xs">{formatPercent(diagnostics.disk?.usedPercent)}</span></div>
+							<dl className="grid gap-1 text-xs"><div className="flex gap-2"><dt className="text-muted-foreground">已用</dt><dd>{formatBytes(diagnostics.disk?.usedBytes)}</dd></div><div className="flex gap-2"><dt className="text-muted-foreground">总量</dt><dd>{formatBytes(diagnostics.disk?.totalBytes)}</dd></div></dl>
+						</div>
+					</ResourceMetric>
 				</div>
-			</SettingSection>
-
-			<SettingSection title="实时资源">
-				<div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-					<ResourceSummaryCard
-						icon={<Cpu className="size-5" aria-hidden="true" />}
-						label="CPU 使用率"
-						value={diagnostics.cpu?.usagePercent === undefined ? "—" : diagnostics.cpu.usagePercent.toFixed(1)}
-						unit="%"
-						detail={`${diagnostics.cpu?.cores ?? "—"} 核 · 负载 ${diagnostics.cpu?.loadAverage?.[0]?.toFixed(2) ?? "—"}`}
-					/>
-					<ResourceSummaryCard
-						icon={<MemoryStick className="size-5" aria-hidden="true" />}
-						label="系统运行内存"
-						value={memoryValue.value}
-						unit={memoryValue.unit}
-						detail={`${formatPercent(diagnostics.memory?.usedPercent)} 已用 · ${formatBytes(diagnostics.memory?.totalBytes)}`}
-					/>
-					<ResourceSummaryCard
-						icon={<Server className="size-5" aria-hidden="true" />}
-						label="LYStar 相关进程"
-						value={processMemoryValue.value}
-						unit={processMemoryValue.unit}
-						detail={`${formatPercent(processMemoryPercent)} 系统内存 · ${processMemoryDetail}`}
-					/>
-					<ResourceSummaryCard
-						icon={<HardDrive className="size-5" aria-hidden="true" />}
-						label="磁盘使用"
-						value={diskValue.value}
-						unit={diskValue.unit}
-						detail={`${formatPercent(diagnostics.disk?.usedPercent)} 已用 · ${formatBytes(diagnostics.disk?.totalBytes)}`}
-					/>
-				</div>
-				<ResourceTrendPanel history={history} palette={palette} reducedMotion={reducedMotion} />
-			</SettingSection>
-
-			<SettingSection title="运行详情">
-				<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-					<StatText label="Host 运行时间" value={formatDuration(diagnostics.host?.uptimeSeconds)} />
-					<StatText label="Gateway 运行时间" value={formatDuration(diagnostics.gateway?.uptimeSeconds)} />
-					<StatText label="Runtime 持久化" value={diagnostics.runtime?.persistent ? "已启用" : "未启用"} />
-					<StatText label="磁盘路径" value={diagnostics.disk?.path ?? "—"} />
-				</div>
-			</SettingSection>
-
-			<SettingSection title="Runtime 调度">
+			</section>
+			<div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+				<HostConnections diagnostics={diagnostics} />
 				<RuntimeReadConcurrencyPanel state={state} actions={actions} value={diagnostics.runtimeReadConcurrency} />
-			</SettingSection>
-
-			<SettingSection title="检查结果">
-				<ChecksSummary checks={checks} />
-			</SettingSection>
+			</div>
 		</div>
 	);
 }

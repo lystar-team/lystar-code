@@ -23,7 +23,8 @@ export interface PromptEditRequest {
 export interface WorkbenchActions {
 	selectProject: (projectId: string) => Promise<void>;
 	selectSession: (sessionId: string) => Promise<void>;
-	createSession: (agentProfile?: Pick<SubagentConfig, "id" | "name" | "icon">) => Promise<void>;
+	markSessionResultRead: (sessionId: string, revision: number) => Promise<void>;
+	createSession: (agentProfile?: Pick<SubagentConfig, "id" | "name" | "icon">) => Promise<string | undefined>;
 	sendMessage: (
 		text: string,
 		mode?: ComposerMode,

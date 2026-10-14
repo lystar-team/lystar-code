@@ -1,3 +1,4 @@
+import { isSessionResultActivity } from "@lystar/code-web-protocol";
 import { sessionTitle } from "../../state/workbench-state.ts";
 import type { WebProject, WebSessionSummary } from "../../types";
 
@@ -30,7 +31,7 @@ export function isResumedCompletedSession(
 	return Boolean(
 		previous.id &&
 		previous.id === current.id &&
-		previous.activity === "completed" &&
+		isSessionResultActivity(previous.activity ?? "") &&
 		(current.activity === "running" || current.activity === "waiting_for_input"),
 	);
 }
@@ -183,8 +184,8 @@ export function countSessionsByTab(
 		for (const session of topLevelSessions(sessions)) {
 			counts.all += 1;
 			if (isSessionRunning(session)) counts.running += 1;
-			else if (isSessionUnread(session, unreadSessionIds)) counts.completed += 1;
 		}
+		counts.completed += sessions.filter((session) => isSessionUnread(session, unreadSessionIds)).length;
 	}
 	return counts;
 }

@@ -42,6 +42,8 @@ export interface VirtualizedSessionListProps<T> {
 	getKey: (item: T, index: number) => string;
 	renderItem: (item: T, index: number) => ReactNode;
 	scrollRef: ScrollRef;
+	scrollToKey?: string;
+	scrollRequestId?: number;
 	rowHeight?: number;
 	rowGap?: number;
 	overscan?: number;
@@ -52,11 +54,14 @@ export function VirtualizedSessionList<T>({
 	getKey,
 	renderItem,
 	scrollRef,
+	scrollToKey,
+	scrollRequestId,
 	rowHeight = SESSION_ROW_HEIGHT,
 	rowGap = SESSION_ROW_GAP,
 	overscan = SESSION_OVERSCAN,
 }: VirtualizedSessionListProps<T>) {
 	const listRef = useRef<HTMLDivElement>(null);
+	const handledScrollRequestRef = useRef<string>();
 	const [viewport, setViewport] = useState({ scrollTop: 0, height: 0, listTop: 0 });
 
 	const updateViewport = useCallback(() => {
@@ -121,6 +126,20 @@ export function VirtualizedSessionList<T>({
 		};
 	}, [scrollRef, updateViewport]);
 
+	useLayoutEffect(() => {
+		if (!scrollToKey || scrollRequestId === undefined || !listRef.current || !scrollRef.current) return;
+		const request = `${scrollRequestId}:${scrollToKey}`;
+		if (handledScrollRequestRef.current === request) return;
+		const index = items.findIndex((item, index) => getKey(item, index) === scrollToKey);
+		if (index < 0) return;
+		const viewport = scrollRef.current;
+		const bounds = viewport.getBoundingClientRect();
+		const rowTop = listRef.current.getBoundingClientRect().top - bounds.top + index * (rowHeight + rowGap);
+		if (rowTop < 0) viewport.scrollTop += rowTop;
+		else if (rowTop + rowHeight > viewport.clientHeight) viewport.scrollTop += rowTop + rowHeight - viewport.clientHeight;
+		handledScrollRequestRef.current = request;
+		updateViewport();
+	}, [items, getKey, scrollRef, scrollToKey, scrollRequestId, rowHeight, rowGap, updateViewport]);
 	const slotHeight = rowHeight + rowGap;
 	const itemKeys = useMemo(() => items.map(getKey), [getKey, items]);
 	const range = getVirtualSessionRange(items.length, viewport.scrollTop, viewport.height, viewport.listTop, slotHeight, overscan);

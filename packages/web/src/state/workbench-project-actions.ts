@@ -49,7 +49,10 @@ export function useWorkbenchProjectActions({
 			const current = stateRef.current;
 			const sessionId = current.sessionId;
 			if (!sessionId || current.readOnly) return;
-			await webApi.navigateTree(sessionId, entryId);
+			const result = await webApi.navigateTree(sessionId, entryId);
+			if (result && typeof result === "object" && "cancelled" in result && result.cancelled) {
+				throw new Error("会话分支切换已取消");
+			}
 			updateState((next) => (next.sessionId === sessionId ? clearUncommittedUserPrompts(next) : next));
 			await loadTranscript();
 		},

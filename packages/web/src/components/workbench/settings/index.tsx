@@ -109,18 +109,18 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					orientation={isMobile ? "horizontal" : "vertical"}
 					className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col gap-0 overflow-hidden md:flex-row"
 				>
-					<aside className="flex min-w-0 w-full shrink-0 flex-col border-b border-border/60 bg-background md:w-[clamp(13rem,24vw,17rem)] md:border-r md:border-b-0">
-						<div className="flex h-16 shrink-0 items-center px-5">
+					<aside className="flex min-h-0 w-full min-w-0 shrink-0 flex-col border-b border-border/60 bg-background md:w-56 md:border-r md:border-b-0">
+						<div className="flex h-16 shrink-0 items-center px-4">
 							<Button
-								className="justify-start gap-2 px-0 text-base font-medium"
+								className="justify-start gap-2 px-0 !text-sm !leading-5 font-medium"
 								variant="ghost"
 								onClick={actions.closeSettings}
 							>
-								<ArrowLeft className="size-5" />
+								<ArrowLeft className="size-4" />
 								返回工作台
 							</Button>
 						</div>
-						<div className="px-5 pb-5">
+						<div className="shrink-0 px-4 pb-4 md:pt-2">
 							<div className="relative">
 								<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 								<Input
@@ -128,7 +128,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 									onChange={(event) => setQuery(event.target.value)}
 									placeholder="搜索设置"
 									aria-label="搜索设置"
-									className="h-10 rounded-xl border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0"
+									className="h-8 rounded-md border-0 bg-muted/60 pl-9 !text-sm !leading-5 shadow-none"
 								/>
 							</div>
 						</div>
@@ -137,7 +137,8 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							tabs={visibleItems}
 							label="设置分类"
 							orientation={isMobile ? "horizontal" : "vertical"}
-							className="mx-4 mb-3 !w-auto min-w-0 md:mx-5 md:mb-5 md:flex-1"
+							variant="navigation"
+							className="mx-4 mb-4 !w-auto min-h-0 min-w-0 shrink md:mt-2"
 						/>
 					</aside>
 					<section
@@ -149,19 +150,22 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 								className={cn(
 									"mx-auto w-full min-w-0 p-5 sm:p-8 lg:p-12 xl:p-16",
 									state.settingsTab === "subagents" ? "max-w-[1680px]" : "max-w-[1120px]",
+									state.settingsTab === "diagnostics" && "max-w-[1216px] px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-8 xl:px-12 xl:py-8",
 								)}
 							>
 								<div
 									className={
-										state.settingsTab === "instructions" || state.settingsTab === "skills"
-											? "mb-5 sm:mb-6"
-											: "mb-8 sm:mb-12"
+										state.settingsTab === "diagnostics"
+											? "mb-4"
+											: state.settingsTab === "instructions" || state.settingsTab === "skills"
+												? "mb-5 sm:mb-6"
+												: "mb-8 sm:mb-12"
 									}
 								>
 								<div className="flex items-center justify-between gap-4">
 									<div className="min-w-0">
 										<div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-												<h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">
+												<h1 className={cn("text-2xl font-semibold tracking-tight sm:text-4xl", state.settingsTab === "diagnostics" && "text-[28px] leading-9 sm:text-[28px]")}>
 													{currentLabel}
 												</h1>
 											{state.settingsTab === "instructions" ? (
@@ -181,7 +185,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 												</>
 											) : null}
 										</div>
-										<p className="mt-2 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-3">
+										{state.settingsTab !== "diagnostics" ? <p className="mt-2 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-3">
 											{state.settingsTab === "system"
 								? "修改应用名称和 Logo，并保存到本机配置文件。"
 								: state.settingsTab === "instructions"
@@ -201,11 +205,11 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 													: state.settingsTab === "appearance"
 														? "配置工作台的外观和应用安装。"
 														: "配置工作台的外观、模型连接和运行信息。"}
-										</p>
+										</p> : null}
 									</div>
 								{state.settingsTab === "diagnostics" ? (
 											<Button
-												className="shrink-0 self-center"
+												className="h-8 w-[72px] shrink-0 self-center rounded-md !text-sm !leading-5"
 												variant="outline"
 												size="sm"
 												onClick={() => void actions.refreshDiagnostics()}

@@ -2054,13 +2054,15 @@ export class WebRuntimeService {
 			case "read_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				const runtime = this.runtimes.get(sessionPath);
-				const emptyGeneration = runtime ? runtimeReadState(runtime).transcriptGeneration : undefined;
+				const runtimeState = runtime ? runtimeReadState(runtime) : undefined;
+				const emptyGeneration = runtimeState?.transcriptGeneration;
 				return readTranscriptPageWithinFrameBudget(request.limit, async (limit, byteBudget) => {
 					const page = await this.transcriptReader.read(sessionPath, {
 						...request,
 						limit,
 						byteBudget,
 						emptyGeneration,
+						...(runtimeState ? { leafId: runtimeState.leafId } : {}),
 					});
 					const { contextCalls, ...transcriptPage } = page;
 					return {

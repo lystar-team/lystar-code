@@ -24,7 +24,7 @@ export function CodemodeToolDetail({
 	imagePreview?: ReactNode;
 	children?: ReactNode;
 }) {
-	const [selectedTab, setSelectedTab] = useState<string>();
+	const [tab, setTab] = useState("output");
 	const [wrap, setWrap] = useState(true);
 	const source = useMemo(() => {
 		try {
@@ -37,14 +37,13 @@ export function CodemodeToolDetail({
 	}, [tool.summary]);
 	const active = tool.state === "input-available" || tool.state === "input-queued";
 	const output = tool.detail === tool.summary && active ? undefined : tool.detail;
-	const tab = selectedTab ?? (output ? "output" : active ? "script" : "output");
 	const parameterPreview = source === undefined && tool.summary !== tool.name ? tool.summary : undefined;
 
 	return (
-		<Tabs className="min-w-0 gap-0" value={tab} onValueChange={setSelectedTab}>
+		<Tabs className="min-w-0 gap-0" value={tab} onValueChange={setTab} onClick={(event) => event.stopPropagation()}>
 			{children}
 			<WorkbenchTabBar activeId={tab} tabs={CODEMODE_TABS} label="脚本执行详情" className="mb-2 !w-44 !self-start" compact />
-			<TabsContent className="min-w-0" value="output">
+			<TabsContent className="min-w-0 data-[state=inactive]:hidden" value="output" forceMount>
 				<div className="grid min-w-0 gap-2">
 					{imagePreview}
 					{output ? (
@@ -56,7 +55,7 @@ export function CodemodeToolDetail({
 					)}
 				</div>
 			</TabsContent>
-			<TabsContent className="min-w-0" value="script">
+			<TabsContent className="min-w-0 data-[state=inactive]:hidden" value="script" forceMount>
 				{source !== undefined || parameterPreview ? (
 					<CodeBlock
 						className="my-0 border-border/60 bg-muted/25 [&>div:last-child]:max-h-80 [&>div:last-child]:overflow-auto"

@@ -236,7 +236,7 @@ function TranscriptAttachments({
 						}}
 					>
 						<AttachmentPreview />
-						<AttachmentInfo showMediaType />
+						<AttachmentInfo />
 					</Attachment>
 				);
 			})}

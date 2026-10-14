@@ -62,6 +62,8 @@ export type ConversationState = {
 	transcriptPageLoaded: boolean;
 	transcriptLoading: boolean;
 	transcriptError?: string;
+	displayedResultRevision?: number;
+	projects?: WorkbenchState["projects"];
 	previousCursor?: string;
 	hasMorePrevious: boolean;
 	loadingEarlier: boolean;
@@ -81,6 +83,7 @@ export type ConversationState = {
 export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queueAction" | "showToast" | "loadEarlier"> & {
 	selectSession?: WorkbenchActions["selectSession"];
 	loadTranscript?: WorkbenchActions["loadTranscript"];
+	markSessionResultRead?: WorkbenchActions["markSessionResultRead"];
 	openSubagent?: WorkbenchActions["openSubagent"];
 	/** 主会话提供的 sessionDetail 缓存可用会话，用于在渲染前裁剪渲染缓存。 */
 	retainedSessionDetailIds?: () => ReadonlySet<string>;
@@ -506,6 +509,28 @@ function ConversationBody({
 		showToast: actions.showToast,
 		resetExpandedState,
 	});
+	const resultVersion = state.projects?.flatMap((project) => project.sessions).find((session) => session.id === state.sessionId)?.result?.version;
+	useEffect(() => {
+		if (!actions.markSessionResultRead || !state.sessionId || state.displayedResultRevision === undefined ||
+			!state.connected || !state.sessionReady || !state.transcriptPageLoaded || state.transcriptLoading ||
+			state.transcriptError || state.sessionError || responseActive || !isAtBottom) return;
+		let frame: number | undefined;
+		const acknowledge = () => {
+			if (document.visibilityState !== "visible") return;
+			if (frame !== undefined) cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(() => {
+				void actions.markSessionResultRead!(state.sessionId!, state.displayedResultRevision!).catch((error: unknown) =>
+					actions.showToast(`保存查看状态失败：${error instanceof Error ? error.message : String(error)}`, "error"));
+			});
+		};
+		acknowledge();
+		document.addEventListener("visibilitychange", acknowledge);
+		return () => {
+			if (frame !== undefined) cancelAnimationFrame(frame);
+			document.removeEventListener("visibilitychange", acknowledge);
+		};
+	}, [actions.markSessionResultRead, actions.showToast, state.sessionId, state.displayedResultRevision, state.connected,
+		state.sessionReady, state.transcriptPageLoaded, state.transcriptLoading, state.transcriptError, state.sessionError, responseActive, isAtBottom, resultVersion]);
 	const renderStateRef = useRef({ sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses });
 	renderStateRef.current = { sessionId: state.sessionId, projectId: state.currentProjectId, toolStatuses };
 	const openSubagent = actions.openSubagent;

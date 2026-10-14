@@ -190,6 +190,7 @@ function PromptTokenOverlay({
 					}}
 				/>
 			))}
+			<span>{"\u200b"}</span>
 		</div>
 	);
 }
@@ -443,7 +444,45 @@ function promptCaretPosition(
 	if (!rect.height) return fallback();
 	return { left: rect.left - overlayRect.left, top: rect.top - overlayRect.top, height: rect.height };
 }
-
+function promptOffsetFromPoint(
+	overlay: HTMLDivElement,
+	textarea: HTMLTextAreaElement,
+	text: string,
+	validTokens: ReadonlySet<string>,
+	x: number,
+	y: number,
+): number | undefined {
+	const textareaPointerEvents = textarea.style.pointerEvents;
+	const overlayPointerEvents = overlay.style.pointerEvents;
+	textarea.style.pointerEvents = "none";
+	overlay.style.pointerEvents = "auto";
+	try {
+		const position = document.caretPositionFromPoint?.(x, y);
+		const caretRange = position ? undefined : document.caretRangeFromPoint(x, y);
+		const node = position?.offsetNode ?? caretRange?.startContainer;
+		const offset = position?.offset ?? caretRange?.startOffset;
+		if (!node || offset === undefined || !overlay.contains(node)) return undefined;
+		const element = (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>("[data-prompt-part-start]");
+		if (!element) return text.length;
+		const start = Number(element.dataset.promptPartStart);
+		const part = promptTokenParts(text, validTokens).find((candidate) => candidate.start === start);
+		if (!part) return undefined;
+		const textElement = part.kind ? element.querySelector<HTMLElement>('[data-prompt-text="true"]') : element;
+		if (!textElement?.contains(node)) {
+			const rect = element.getBoundingClientRect();
+			return x < rect.left + rect.width / 2 ? part.start : part.end;
+		}
+		const range = document.createRange();
+		range.selectNodeContents(textElement);
+		range.setEnd(node, offset);
+		const rawText = text.slice(part.start, part.end);
+		const prefixLength = !part.kind ? 0 : part.kind === "file" ? rawText.startsWith('@"') ? 2 : 1 : rawText.startsWith("/skill:") ? 7 : 2;
+		return Math.min(part.end, part.start + prefixLength + range.toString().length);
+	} finally {
+		textarea.style.pointerEvents = textareaPointerEvents;
+		overlay.style.pointerEvents = overlayPointerEvents;
+	}
+}
 export function PromptCompletionTextarea({
 	className,
 	onChange,
@@ -467,8 +506,12 @@ export function PromptCompletionTextarea({
 			setCaret(null);
 			return;
 		}
+		if (textarea.selectionStart !== textarea.selectionEnd) {
+			setCaret(null);
+			return;
+		}
 		setCaret(promptCaretPosition(overlay, textarea, controller.textInput.value, context.validTokens));
-	}, [context.textareaRef, controller.textInput.value, focused, hasTokens]);
+	}, [context.textareaRef, context.validTokens, controller.textInput.value, focused, hasTokens]);
 	const updateCursor = useCallback(
 		(event: SyntheticEvent<HTMLTextAreaElement>) => {
 			context.setCursor(event.currentTarget.selectionStart);
@@ -497,6 +540,7 @@ export function PromptCompletionTextarea({
 				/>
 			) : null}
 			<PromptInputTextarea
+				contentRef={hasTokens ? overlayRef : undefined}
 				{...props}
 				aria-activedescendant={context.open ? `${context.menuId}-item-${context.selectedIndex}` : undefined}
 				aria-autocomplete="list"
@@ -514,9 +558,16 @@ export function PromptCompletionTextarea({
 					onChange?.(event);
 				}}
 				onClick={(event) => {
+					props.onClick?.(event);
+					if (event.defaultPrevented) return;
+					const textarea = event.currentTarget;
+					const overlay = overlayRef.current;
+					if (hasTokens && overlay && textarea.selectionStart === textarea.selectionEnd) {
+						const offset = promptOffsetFromPoint(overlay, textarea, controller.textInput.value, context.validTokens, event.clientX, event.clientY);
+						if (offset !== undefined) textarea.setSelectionRange(offset, offset);
+					}
 					context.resumeAutoOpen();
 					updateCursor(event);
-					props.onClick?.(event);
 				}}
 				onKeyDown={(event) => {
 					context.handleKeyDown(event);
@@ -525,6 +576,7 @@ export function PromptCompletionTextarea({
 						event.key === "Enter" &&
 						!event.ctrlKey &&
 						!event.metaKey &&
+						!event.nativeEvent.isComposing &&
 						mobilePromptEnterInsertsNewline()
 					) {
 						event.preventDefault();

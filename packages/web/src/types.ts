@@ -26,6 +26,7 @@ import type {
 	SessionProgress,
 	SessionStateSnapshot,
 	SessionSummary,
+	SessionResultState,
 	SessionWorkspace,
 	SessionCollaborationResult,
 	SessionWorkspacesResult,
@@ -55,7 +56,7 @@ export type {
 };
 
 export type WebSessionWorkspace = SessionWorkspace;
-export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean; roomMember?: boolean };
+export type WebSessionSummary = Omit<SessionSummary, "path" | "cwd"> & { pinned?: boolean; roomMember?: boolean; result?: SessionResultState };
 export type WebSessionSnapshot = Omit<SessionStateSnapshot, "path" | "cwd">;
 export type WebSessionWorkspaceMode = SessionWorkspace["mode"];
 export type WebSessionWorkspaceStatus = SessionWorkspace["status"];
@@ -339,6 +340,7 @@ export type GatewayEvent =
 	| { type: "model_catalog_changed"; revision: number }
 	| { type: "project_files_changed"; projectId: string; paths: string[] }
 	| { type: "sessions_changed"; projectId?: string }
+	| { type: "session_result"; result: SessionResultState }
 	| {
 			type: "room_updated";
 			projectId: string;
@@ -535,4 +537,4 @@ export interface GitHistoryResponse extends GitHistory {}
 export interface GitCommitResponse extends GitCommit {}
 export interface GitMutationResponse extends GitMutationResult {}
 export interface ProjectTrustResponse extends ProjectTrust {}
-export type TranscriptResponse = Omit<TranscriptPage, "items"> & { items: WebTranscriptItem[] };
+export type TranscriptResponse = Omit<TranscriptPage, "items"> & { items: WebTranscriptItem[]; resultRevision?: number };

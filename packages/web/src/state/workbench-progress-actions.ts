@@ -7,6 +7,7 @@ import {
 	reconcileQueuedUserPromptCounts,
 } from "./chat-lifecycle.ts";
 import { restoreCompactionState, updateCompactionState } from "./compaction-state.ts";
+import { mergeAgentStepIndex } from "./session-timeline.ts";
 import {
 	appendLiveTextBlock,
 	appendLiveToolBlock,
@@ -111,7 +112,8 @@ export function useWorkbenchProgressActions({
 						return {
 							...current,
 							liveTurnActive: true,
-							liveSteps: { ...current.liveSteps, [progress.step.id]: progress.step },
+							agentSteps: mergeAgentStepIndex(current.agentSteps, [progress.step]),
+							liveSteps: mergeAgentStepIndex(current.liveSteps, [progress.step]),
 							statusText: progress.step.status === "running" ? progress.step.title : current.statusText,
 						};
 					case "tool_state":
@@ -316,7 +318,8 @@ export function useWorkbenchProgressActions({
 										liveTools: {},
 										toolActivityEpoch: undefined,
 										toolActivityRevision: undefined,
-										liveSteps: {},
+										// turn 表示一条模型回复开始，重试和工具后的回复仍属于当前 Task。
+										liveSteps: current.liveSteps,
 								  }
 								: progress.phase === "idle" || progress.phase === "interrupted"
 									? { liveTurnActive: false, liveTurnItems }

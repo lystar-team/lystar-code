@@ -65,6 +65,7 @@ import type {
 	ShowToast,
 	WorkbenchState,
 } from "./workbench-types.ts";
+import { applySessionResult } from "./session-result-state.ts";
 
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
@@ -116,7 +117,6 @@ export interface WorkbenchStreamActionsContext {
 	transcriptTimerRef: Ref<number | undefined>;
 	sessionDetailCacheRef: Ref<Map<string, CachedSessionDetail>>;
 	sessionDetailSeqRef: Ref<Map<string, number>>;
-	sessionReadAtRef: Ref<Map<string, number>>;
 	scheduleSubagentTranscriptRefresh: (agentId: string, sessionId?: string) => void;
 	sessionSubscriptionWaitersRef: Ref<Map<string, Set<SessionSubscriptionWaiter>>>;
 	handledNotifyIdsRef: Ref<Set<string>>;
@@ -148,7 +148,6 @@ export function useWorkbenchStreamActions({
 	transcriptTimerRef,
 	sessionDetailCacheRef,
 	sessionDetailSeqRef,
-	sessionReadAtRef,
 	scheduleSubagentTranscriptRefresh,
 	sessionSubscriptionWaitersRef,
 	handledNotifyIdsRef,
@@ -495,40 +494,19 @@ export function useWorkbenchStreamActions({
 				}
 				return;
 			}
+			if (event.type === "session_result") {
+				updateState((current) => applySessionResult(current, event.result));
+				if (event.result.sessionId === stateRef.current.sessionId &&
+					event.result.revision !== stateRef.current.displayedResultRevision)
+					scheduleTranscriptRefresh(event.result.sessionId);
+				return;
+			}
 			if (event.type === "session_summary") {
 				updateState((current) => {
-					if (event.sessionId === current.sessionId) return current;
-					const previous = current.projects
-						.flatMap((project) => project.sessions)
-						.find((session) => session.id === event.sessionId);
-					const wasRunning =
-						previous?.activity === "running" ||
-						previous?.activity === "waiting_for_input" ||
-						current.operations.some(
-							(operation) =>
-								operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
-						);
-					const unreadSessionIds = { ...current.unreadSessionIds };
-					const readAt = sessionReadAtRef.current.get(event.sessionId);
-					if (
-						(event.activity === "running" || event.activity === "waiting_for_input") &&
-						readAt !== undefined &&
-						(event.operationUpdatedAt === undefined || event.operationUpdatedAt > readAt)
-					) sessionReadAtRef.current.delete(event.sessionId);
-					const completedAt = event.operationUpdatedAt ?? previous?.operationUpdatedAt;
-					const alreadyRead = readAt !== undefined && (completedAt === undefined || completedAt <= readAt);
-					const terminal = TERMINAL_OPERATION_STATUSES.has(event.activity);
-					if ((terminal || (event.activity === "idle" && wasRunning)) && !alreadyRead && event.sessionId !== current.sessionId)
-						unreadSessionIds[event.sessionId] = true;
-					else if (event.activity !== "idle") delete unreadSessionIds[event.sessionId];
 					const projects = Object.hasOwn(event, "name")
 						? updateSessionSummaryName(current.projects, event.sessionId, event.name)
 						: current.projects;
-					return {
-						...current,
-						projects: updateSessionActivity(projects, event.sessionId, event.activity, event.operationUpdatedAt),
-						unreadSessionIds,
-					};
+					return { ...current, projects: updateSessionActivity(projects, event.sessionId, event.activity, event.operationUpdatedAt) };
 				});
 				return;
 			}
@@ -750,38 +728,8 @@ export function useWorkbenchStreamActions({
 				const activity = sessionActivityFromProgress(event.progress);
 				if (activity) {
 					updateState((current) => {
-						const previous = current.projects
-							.flatMap((project) => project.sessions)
-							.find((session) => session.id === event.sessionId);
-						const wasRunning =
-							previous?.activity === "running" ||
-							previous?.activity === "waiting_for_input" ||
-							current.operations.some(
-								(operation) =>
-									operation.sessionId === event.sessionId && ACTIVE_OPERATION_STATUSES.has(operation.status),
-							);
-						let unreadSessionIds = current.unreadSessionIds;
-						if (activity === "running" && previous && !["running", "waiting_for_input"].includes(previous.activity))
-							sessionReadAtRef.current.delete(event.sessionId);
-						if (
-							activity === "idle" &&
-							event.sessionId !== current.sessionId &&
-							wasRunning &&
-							!sessionReadAtRef.current.has(event.sessionId) &&
-							!unreadSessionIds[event.sessionId]
-						) {
-							unreadSessionIds = { ...unreadSessionIds, [event.sessionId]: true };
-						} else if (
-							(activity !== "idle" || event.sessionId === current.sessionId) &&
-							unreadSessionIds[event.sessionId]
-						) {
-							unreadSessionIds = { ...unreadSessionIds };
-							delete unreadSessionIds[event.sessionId];
-						}
 						const projects = updateSessionActivity(current.projects, event.sessionId, activity);
-						return projects === current.projects && unreadSessionIds === current.unreadSessionIds
-							? current
-							: { ...current, projects, unreadSessionIds };
+						return projects === current.projects ? current : { ...current, projects };
 					});
 				}
 				if (event.sessionId === stateRef.current.sessionId) {
@@ -826,16 +774,6 @@ export function useWorkbenchStreamActions({
 								: ("running" as const)
 							: terminalActivity
 						: undefined;
-					const unreadSessionIds = { ...current.unreadSessionIds };
-					if (operationSessionId) {
-						const readAt = sessionReadAtRef.current.get(operationSessionId);
-						if (operationIsActive && readAt !== undefined && event.operation.updatedAt > readAt)
-							sessionReadAtRef.current.delete(operationSessionId);
-						if (operationIsActive || operationSessionId === current.sessionId)
-							delete unreadSessionIds[operationSessionId];
-						else if (operationIsTerminal && (readAt === undefined || event.operation.updatedAt > readAt))
-							unreadSessionIds[operationSessionId] = true;
-					}
 					return {
 						...current,
 						projects:
@@ -848,7 +786,6 @@ export function useWorkbenchStreamActions({
 									)
 								: current.projects,
 						operations,
-						unreadSessionIds,
 						...(selected ? { currentOperation: event.operation } : {}),
 						...(selected &&
 						operationIsTerminal &&

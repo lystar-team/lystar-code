@@ -31,7 +31,6 @@ import {
 } from "./workbench-live-state.ts";
 import {
 	ACTIVE_OPERATION_STATUSES,
-	acknowledgeSessionRead,
 	applyTheme,
 	browserNetworkOnline,
 	errorMessage,
@@ -61,6 +60,7 @@ import { useWorkbenchSessionActions } from "./workbench-session-actions.ts";
 import { useWorkbenchProjectActions } from "./workbench-project-actions.ts";
 import { useWorkbenchStreamActions } from "./workbench-stream-actions.ts";
 import type { ShowToast, SubagentConversationState, WorkbenchState } from "./workbench-types.ts";
+import { applySessionResult, sessionUnreadIndex } from "./session-result-state.ts";
 
 export {
 	applySubagentProgress,
@@ -107,8 +107,9 @@ export function useWorkbench() {
 	const reconnectTimerRef = useRef<number | undefined>(undefined);
 	const reconnectAttemptRef = useRef(0);
 	const bootstrapLoadedRef = useRef(false);
-	const sessionReadAtRef = useRef(new Map<string, number>());
-	const sessionReadChannelRef = useRef<BroadcastChannel>();
+	const resultReadRequestRef = useRef<Promise<void>>();
+	const resultReadKeyRef = useRef<string>();
+	const viewedResultKeyRef = useRef<string>();
 	const transcriptTimerRef = useRef<number | undefined>(undefined);
 	const liveToolBatchRef = useRef(0);
 	const liveTurnItemRef = useRef(0);
@@ -199,6 +200,10 @@ export function useWorkbench() {
 			cancelSessionReads();
 			if (selectionInFlightRef.current !== next.sessionId) selectionInFlightRef.current = undefined;
 			if (next.settledTurns === current.settledTurns) next = { ...next, settledTurns: {} };
+			next = { ...next, displayedResultRevision: undefined };
+		}
+		if (next.projects !== current.projects) {
+			next = { ...next, unreadSessionIds: sessionUnreadIndex(next.projects, current.unreadSessionIds) };
 		}
 		stateRef.current = next;
 		// 后台仍接收完整状态；控制权、连接和交互请求继续驱动原有副作用。
@@ -222,11 +227,6 @@ export function useWorkbench() {
 		return retained;
 	}, []);
 
-	const onSessionRead = useCallback((sessionId: string) => {
-		const readAt = Date.now();
-		sessionReadAtRef.current.set(sessionId, readAt);
-		sessionReadChannelRef.current?.postMessage({ type: "session_read", sessionId, readAt });
-	}, []);
 	const transitionState = useCallback(
 		(update: WorkbenchState | ((current: WorkbenchState) => WorkbenchState)) => {
 			startTransition(() => {
@@ -481,7 +481,9 @@ export function useWorkbench() {
 						result,
 					) ||
 						(current.transcriptGeneration === result.transcriptGeneration &&
-							(!cursor || current.transcript.some((item) => item.entryId === result.leafId)))) &&
+							(cursor
+								? current.transcript.some((item) => item.entryId === result.leafId)
+								: result.items.some((item) => item.entryId === current.transcriptLeafId || item.parentId === current.transcriptLeafId)))) &&
 					!(
 						current.transcriptPageLoaded &&
 						current.transcriptGeneration === undefined &&
@@ -519,11 +521,14 @@ export function useWorkbench() {
 						pendingUserPrompts.length === current.pendingUserPrompts.length &&
 						liveTurnItems.length === current.liveTurnItems.length
 					)
-						return current.transcriptLoading ? { ...current, transcriptLoading: false } : current;
+						return !current.transcriptLoading && current.displayedResultRevision === result.resultRevision
+							? current
+							: { ...current, transcriptLoading: false, displayedResultRevision: result.resultRevision };
 					return {
 						...current,
 						agentSteps: mergeAgentStepIndex(current.agentSteps, result.agentSteps),
 						transcriptLoading: false,
+						displayedResultRevision: result.resultRevision,
 						pendingUserPrompts,
 						promptSendTimes: withPromptSendTimes(current, current.transcript),
 						liveTurnItems,
@@ -577,6 +582,7 @@ export function useWorkbench() {
 						? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
 						: result.transcriptRevision,
 					transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
+					...(!cursor ? { displayedResultRevision: result.resultRevision } : {}),
 					...(completedTurnSynced ? { liveTools: {}, liveSteps: {}, liveTurnItems: [] } : {}),
 				};
 				return {
@@ -894,7 +900,6 @@ export function useWorkbench() {
 		transcriptTimerRef,
 		sessionDetailCacheRef,
 		sessionDetailSeqRef,
-		sessionReadAtRef,
 		scheduleSubagentTranscriptRefresh,
 		sessionSubscriptionWaitersRef,
 		handledNotifyIdsRef,
@@ -1242,7 +1247,7 @@ export function useWorkbench() {
 		socketRef.current?.close();
 		socketRef.current = undefined;
 		webApi.clearToken();
-		sessionReadAtRef.current.clear();
+		viewedResultKeyRef.current = undefined;
 		sessionDetailCacheRef.current.clear();
 		sessionDetailSeqRef.current.clear();
 		updateState(() => ({
@@ -1278,7 +1283,6 @@ export function useWorkbench() {
 		updateState,
 		transitionState,
 		showToast,
-		onSessionRead,
 		refreshProjectSessions,
 		loadTranscript,
 		loadSubagents,
@@ -1446,6 +1450,31 @@ export function useWorkbench() {
 	refreshProjectFilesRef.current = refreshProjectFiles;
 	refreshModelOptionsRef.current = refreshModelOptions;
 	refreshModelSettingsRef.current = refreshModelSettings;
+
+	const markSessionResultRead = useCallback((sessionId: string, revision: number): Promise<void> => {
+		const current = stateRef.current;
+		const result = current.projects.flatMap((project) => project.sessions).find((session) => session.id === sessionId)?.result;
+		if (current.sessionId !== sessionId || current.displayedResultRevision !== revision || !result ||
+			!current.connected || !current.sessionReady || current.transcriptLoading || current.transcriptError ||
+			current.sessionError || document.visibilityState !== "visible") return Promise.resolve();
+		const key = `${selectionRef.current}:${sessionId}:${revision}`;
+		if (viewedResultKeyRef.current === key) return Promise.resolve();
+		if (resultReadKeyRef.current === key && resultReadRequestRef.current) return resultReadRequestRef.current;
+		const request = webApi.markSessionResultRead(sessionId, revision).then(({ result: readState }) => {
+			if (!mountedRef.current) return;
+			viewedResultKeyRef.current = key;
+			updateState((value) => applySessionResult(value, readState));
+		});
+		const tracked = request.finally(() => {
+			if (resultReadRequestRef.current === tracked) {
+				resultReadRequestRef.current = undefined;
+				resultReadKeyRef.current = undefined;
+			}
+		});
+		resultReadKeyRef.current = key;
+		resultReadRequestRef.current = tracked;
+		return tracked;
+	}, [updateState]);
 
 	const actions = useMemo(
 		() => ({
@@ -1631,27 +1660,8 @@ export function useWorkbench() {
 			showToast,
 		],
 	);
-	const actionsWithFastMode = useMemo(() => ({ ...actions, updateFastMode }), [actions, updateFastMode]);
+	const actionsWithFastMode = useMemo(() => ({ ...actions, updateFastMode, markSessionResultRead }), [actions, updateFastMode, markSessionResultRead]);
 
-	useEffect(() => {
-		if (typeof BroadcastChannel === "undefined") return;
-		const channel = new BroadcastChannel("lystar.web.session-read");
-		sessionReadChannelRef.current = channel;
-		channel.onmessage = (event: MessageEvent<unknown>) => {
-			const data = event.data;
-			if (!data || typeof data !== "object" || !("type" in data) || data.type !== "session_read" ||
-				!("sessionId" in data) || typeof data.sessionId !== "string" ||
-				!("readAt" in data) || typeof data.readAt !== "number" || !Number.isFinite(data.readAt)) return;
-			const sessionId = data.sessionId;
-			const readAt = Math.max(sessionReadAtRef.current.get(sessionId) ?? 0, data.readAt);
-			sessionReadAtRef.current.set(sessionId, readAt);
-			updateState((current) => acknowledgeSessionRead(current, sessionId, readAt));
-		};
-		return () => {
-			channel.close();
-			if (sessionReadChannelRef.current === channel) sessionReadChannelRef.current = undefined;
-		};
-	}, [updateState]);
 
 	useEffect(() => {
 		if (!("serviceWorker" in navigator)) return;
