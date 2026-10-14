@@ -1,6 +1,6 @@
 # LYStar Code 验证记录
 
-> 更新日期：2026-10-13
+> 更新日期：2026-10-14
 >
 > 本文件只记录当前 TypeScript TUI、Web Runtime、Web Runtime Protocol 和发行链路的验证。历史原生终端实验记录已移除，不作为当前实现证据。
 
@@ -9,7 +9,14 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前产品版本为 `1.2.0-lystar.2`，上一正式 Tag 为 `v1.2.0-lystar.1`。
+- 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.2.0-lystar.2`，上一正式 Tag 为 `v1.2.0-lystar.1`。
+
+## 1.2.0-lystar.2 自动发布验证
+
+- 记录时间：2026-10-14T04:36:12.298Z。Annotated Tag `v1.2.0-lystar.2` 指向 `46da4e34867abf35267ad9051e86498f22bc6fc5`；Release workflow `38510401207` 的全部 job 成功，公开 Release 不是 draft/prerelease。
+- 10 个公开资产通过 metadata、SHA 和安装器一致性校验；linux-x64 来源证明及独立包版本、帮助、离线模型列表通过。
+- 隔离 HOME 中从 `v1.2.0-lystar.1` 升级至 `v1.2.0-lystar.2`；current/previous 和重复更新检查通过。
+- 验证产物：`/tmp/lystar-release-1.2.0-lystar.2-3CYlZB`。未自动执行真实模型请求或手工终端检查。
 
 ## 1.2.0-lystar.1 发布后验证（2026-10-13）
 
