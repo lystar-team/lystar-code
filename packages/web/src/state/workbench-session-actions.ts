@@ -30,6 +30,7 @@ import {
 } from "./workbench-state.ts";
 import {
 	cacheSessionDetail,
+	invalidateCachedSessionSubscription,
 	readCachedSessionDetail,
 	sessionDetailCacheFromState,
 	type CachedSessionDetail,
@@ -101,6 +102,8 @@ export interface WorkbenchSessionActionsContext {
 	readSelectedSession: <T>(sessionId: string, read: (signal: AbortSignal) => Promise<T>) => Promise<T | undefined>;
 	subscribeSessionAndWait: (sessionId: string) => Promise<SessionSubscriptionResult>;
 	completeSessionSubscription: (sessionId: string, result: SessionSubscriptionResult) => Promise<boolean>;
+	restoreCachedSession: (sessionId: string) => boolean;
+	flushPendingTextProgress: () => void;
 	scheduleTranscriptRefresh: (sessionId?: string) => void;
 	selectionRef: Ref<number>;
 	selectionInFlightRef: Ref<string | undefined>;
@@ -140,6 +143,8 @@ export function useWorkbenchSessionActions({
 	readSelectedSession,
 	subscribeSessionAndWait,
 	completeSessionSubscription,
+	restoreCachedSession,
+	flushPendingTextProgress,
 	scheduleTranscriptRefresh,
 	selectionRef,
 	selectionInFlightRef,
@@ -224,6 +229,7 @@ export function useWorkbenchSessionActions({
 				currentSelection.sessionReady
 			)
 				return;
+			flushPendingTextProgress();
 			selectionInFlightRef.current = sessionId;
 			const request = ++selectionRef.current;
 			const startedAt = Date.now();
@@ -249,15 +255,22 @@ export function useWorkbenchSessionActions({
 					projectTreeGenerationRef.current++;
 				}
 				if (sessionChanged) sessionTreeRequestRef.current++;
+				const socket = socketRef.current;
+				const previousSeq = previous.sessionId ? sessionDetailSeqRef.current.get(previous.sessionId) : undefined;
+				const previousSubscription = socket?.readyState === WebSocket.OPEN && previous.sessionReady &&
+					previous.lease && !previous.readOnly && !previous.transcriptLoading &&
+					!previous.sessionError && !previous.transcriptError && !previous.subagentsError &&
+					hasActiveSessionWork(previous) && previousSeq !== undefined
+						? { socket, seq: previousSeq } : undefined;
 				if (previous.sessionId && previous.sessionId !== sessionId) {
 					cacheSessionDetail(
 						sessionDetailCacheRef.current,
 						previous.sessionId,
 						sessionDetailCacheFromState(previous),
+						previousSubscription,
 					);
 				}
 				const cached = readCachedSessionDetail(sessionDetailCacheRef.current, sessionId);
-				const socket = socketRef.current;
 				if (socket && selectedProjectId) {
 					if (previous.currentProjectId && previous.currentProjectId !== selectedProjectId) {
 						webApi.unsubscribeProject(socket, previous.currentProjectId);
@@ -277,9 +290,6 @@ export function useWorkbenchSessionActions({
 					session: cached?.session,
 					lastOutputSpeed: cached?.lastOutputSpeed,
 					sessionError: undefined,
-					lease: undefined,
-					readOnly: true,
-					sessionReady: false,
 					transcriptLoading: !cached?.transcriptPageLoaded,
 					transcriptError: undefined,
 					...(cached
@@ -308,6 +318,9 @@ export function useWorkbenchSessionActions({
 												subagentViews: {},
 											}
 									: {}),
+					lease: undefined,
+					readOnly: true,
+					sessionReady: false,
 					loadingEarlier: false,
 					pendingUserPrompts:
 						current.sessionId === sessionId ? current.pendingUserPrompts : (cached?.pendingUserPrompts ?? []),
@@ -318,26 +331,28 @@ export function useWorkbenchSessionActions({
 					liveCompaction: cached?.liveCompaction,
 					...(sessionChanged
 						? {
-								subagents: [],
+								subagents: cached?.subagents ?? [],
 								subagentsLoading: false,
 								subagentsError: undefined,
 								selectedSubagentId: undefined,
-								subagentViews: {},
+								subagentViews: cached?.subagentViews ?? {},
 						  }
 						: {}),
 					sessionTree: sessionChanged ? [] : current.sessionTree,
 					sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
 				}));
-				if (socket && previous.sessionId && previous.sessionId !== sessionId)
+				if (socket && previous.sessionId && sessionChanged && !previousSubscription)
 					webApi.unsubscribeSession(socket, previous.sessionId);
-				const subscriptionPromise = subscribeSessionAndWait(sessionId);
-				if (
-					previous.sessionId &&
-					previous.sessionId !== sessionId &&
-					!ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")
-				) {
+				if (previous.sessionId && sessionChanged && !hasActiveSessionWork(previous))
 					void webApi.release(previous.sessionId).catch(() => {});
+				if (sessionChanged && !projectChanged && restoreCachedSession(sessionId)) {
+					if (stateRef.current.inspectorMode === "tree")
+						void loadSessionTreeRef.current().catch((error) => showToast(errorMessage(error), "error"));
+					return;
 				}
+				const cachedEntry = sessionDetailCacheRef.current.get(sessionId);
+				if (cachedEntry) invalidateCachedSessionSubscription(sessionId, cachedEntry, false);
+				const subscriptionPromise = subscribeSessionAndWait(sessionId);
 				const transcriptPromise = loadTranscript(sessionId, undefined, true);
 				const subagentsPromise = loadSubagents(sessionId);
 				void transcriptPromise.catch(() => {});
@@ -478,6 +493,8 @@ export function useWorkbenchSessionActions({
 		[
 			acquireSelectedSessionControl,
 			completeSessionSubscription,
+			restoreCachedSession,
+			flushPendingTextProgress,
 			loadSessionOperations,
 			loadSubagents,
 			loadTranscript,
@@ -491,6 +508,7 @@ export function useWorkbenchSessionActions({
 
 	const selectProject = useCallback(
 		async (projectId: string) => {
+			flushPendingTextProgress();
 			const request = ++selectionRef.current;
 			const previous = stateRef.current;
 			const projectChanged = projectId !== previous.currentProjectId;
@@ -523,7 +541,7 @@ export function useWorkbenchSessionActions({
 				);
 				if (socketRef.current) webApi.unsubscribeSession(socketRef.current, previous.sessionId);
 			}
-			if (previous.sessionId && !ACTIVE_OPERATION_STATUSES.has(previous.currentOperation?.status ?? "")) {
+			if (previous.sessionId && !hasActiveSessionWork(previous)) {
 				void webApi.release(previous.sessionId).catch(() => {});
 			}
 			updateState((current) => ({
@@ -580,7 +598,7 @@ export function useWorkbenchSessionActions({
 			if (stateRef.current.inspectorOpen && stateRef.current.inspectorMode === "git")
 				await loadGitStatusRef.current();
 		},
-		[refreshProjectSessions, updateState, showToast],
+		[flushPendingTextProgress, refreshProjectSessions, updateState, showToast],
 	);
 
 	const loadEarlier = useCallback(async () => {

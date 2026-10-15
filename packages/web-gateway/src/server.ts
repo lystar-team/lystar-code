@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream, type FSWatcher, type Stats, watch } from "node:fs";
+import { createReadStream, createWriteStream, type Stats } from "node:fs";
 import {
 	type FileHandle,
 	link,
@@ -118,6 +118,7 @@ import {
 	shouldSendProgressImmediately,
 	type WebSessionProgressEvent,
 } from "./progress-coalescing.ts";
+import { ProjectFileWatcher } from "./project-file-watcher.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { PushNotifications, parsePushSubscription } from "./push-notifications.ts";
@@ -135,7 +136,8 @@ const PROGRESS_BATCH_MS = 50;
 const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
 const BROWSER_CONTEXT_IDLE_MS = 60_000;
 const MAX_SESSION_DETAIL_EVENTS = 256;
-const MAX_SESSION_DETAIL_BYTES = 2 * 1024 * 1024;
+const MAX_WEBSOCKET_BUFFER_BYTES = 2 * 1024 * 1024;
+const MAX_SESSION_DETAIL_BYTES = MAX_WEBSOCKET_BUFFER_BYTES;
 const STATIC_GZIP_CACHE_LIMIT_BYTES = 16 * 1024 * 1024;
 const STATIC_GZIP_MIN_BYTES = 1024;
 const COMPRESSIBLE_STATIC_EXTENSIONS = new Set(["css", "html", "js", "json", "map", "mjs", "svg", "txt", "xml"]);
@@ -160,6 +162,7 @@ function acceptsGzip(header: string | string[] | undefined): boolean {
 	return wildcardAllowed;
 }
 const PROJECT_WATCH_DEBOUNCE_MS = 150;
+const MAX_PROJECT_WATCH_PATHS = 256;
 const UPLOAD_EXTENSIONS: Record<string, string> = {
 	"application/pdf": ".pdf",
 	"application/zip": ".zip",
@@ -272,7 +275,7 @@ interface SessionDeleteResult {
 }
 
 interface ProjectWatcher {
-	watcher: FSWatcher;
+	watcher: ProjectFileWatcher;
 	paths: Set<string>;
 	timer?: ReturnType<typeof setTimeout>;
 }
@@ -313,6 +316,7 @@ interface BrowserContext {
 	sockets: Set<WebSocket>;
 	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
+	projectSessionListGenerations: Map<string, number>;
 	pendingProjectUpdates: Map<string, { generation: number; project: WebProjectResponse }>;
 	sessionSummaryState: Map<string, { name?: string; activity: SessionActivity; operationUpdatedAt?: number }>;
 	sessionSnapshotState: Map<string, WebSessionSnapshot>;
@@ -321,6 +325,7 @@ interface BrowserContext {
 	bootstrapGeneration: number;
 	bootstrapCache?: BootstrapCache;
 	bootstrapPromise?: Promise<BootstrapResponse>;
+	bootstrapPushPromise?: Promise<void>;
 	bootstrapRetryTimer?: ReturnType<typeof setTimeout>;
 	bootstrapRetryAttempt: number;
 	resumeGeneration?: number;
@@ -464,9 +469,9 @@ interface ProjectSessionsResult {
 interface SessionListCache {
 	generation: number;
 	value: GatewaySessionSummary[];
+	dirty?: boolean;
 }
 interface BootstrapProjectRefreshJob {
-	bootstrapGeneration: number;
 	sessionListGeneration: number;
 	project: WebProject;
 }
@@ -1173,6 +1178,7 @@ export class WebGatewayServer {
 			sockets: new Set(),
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
+			projectSessionListGenerations: new Map(),
 			pendingProjectUpdates: new Map(),
 			sessionSummaryState: new Map(),
 			sessionSnapshotState: new Map(),
@@ -1284,14 +1290,21 @@ export class WebGatewayServer {
 		context.idleTimer = timer;
 	}
 
-	private invalidateBootstrap(context: BrowserContext): void {
+	private invalidateBootstrap(context: BrowserContext, projectId?: string): void {
 		context.bootstrapGeneration += 1;
 		context.sessionListGeneration += 1;
-		context.pendingProjectUpdates?.clear();
+		if (projectId) {
+			context.projectSessionListGenerations.set(projectId, context.sessionListGeneration);
+			context.sessionListCache.delete(projectId);
+			context.sessionListPromises.delete(projectId);
+			context.pendingProjectUpdates.delete(projectId);
+		} else {
+			context.projectSessionListGenerations.clear();
+			context.sessionListCache.clear();
+			context.sessionListPromises.clear();
+			context.pendingProjectUpdates.clear();
+		}
 		if (context.sockets.size === 0) this.invalidateSessionDetails(context);
-		if (context.sockets.size === 0 && context.activeRequests === 0) return;
-		context.sessionListCache.clear();
-		context.sessionListPromises.clear();
 	}
 
 	private invalidateAllBootstraps(): void {
@@ -1299,6 +1312,14 @@ export class WebGatewayServer {
 			this.invalidateBootstrap(context);
 			if (context.sockets.size > 0) void this.pushBootstrap(context);
 		}
+	}
+	private projectSessionListGeneration(context: BrowserContext, projectId: string): number {
+		let generation = context.projectSessionListGenerations.get(projectId);
+		if (generation === undefined) {
+			generation = context.sessionListGeneration;
+			context.projectSessionListGenerations.set(projectId, generation);
+		}
+		return generation;
 	}
 
 	private invalidateModelCatalog(): void {
@@ -1375,7 +1396,13 @@ export class WebGatewayServer {
 			if (!state) return;
 			const path = filename ? String(filename).split(sep).join("/") : "";
 			if (path === ".git/objects" || path.startsWith(".git/objects/")) return;
-			state.paths.add(path);
+			if (state.paths.has("")) return;
+			if (!path || state.paths.size >= MAX_PROJECT_WATCH_PATHS) {
+				state.paths.clear();
+				state.paths.add("");
+			} else {
+				state.paths.add(path);
+			}
 			if (state.timer) clearTimeout(state.timer);
 			state.timer = setTimeout(() => {
 				state.timer = undefined;
@@ -1392,14 +1419,10 @@ export class WebGatewayServer {
 			}, PROJECT_WATCH_DEBOUNCE_MS);
 			state.timer.unref?.();
 		};
-		let watcher: FSWatcher;
-		try {
-			watcher = watch(project.cwd, { persistent: false, recursive: true }, onChange);
-		} catch {
-			watcher = watch(project.cwd, { persistent: false }, onChange);
-		}
+		const watcher = new ProjectFileWatcher(project.cwd, onChange);
 		const state: ProjectWatcher = { watcher, paths: new Set() };
-		watcher.on("error", () => {
+		watcher.on("error", (error: Error) => {
+			logGatewayConnection("project_watcher_failed", { projectId: project.id, error: error.message });
 			if (state.timer) clearTimeout(state.timer);
 			watcher.close();
 			if (this.projectWatchers.get(project.id) === state) this.projectWatchers.delete(project.id);
@@ -1622,7 +1645,6 @@ export class WebGatewayServer {
 					sessionId,
 					sessionPath: previous.sessionPath,
 				});
-				context.bootstrapGeneration += 1;
 				context.bootstrapCache = undefined;
 				const payload = JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(result.lease) });
 				for (const socket of context.sockets) {
@@ -1662,13 +1684,14 @@ export class WebGatewayServer {
 			if (context.client !== client || !client.getSnapshot().connected)
 				throw new Error("Web Runtime 在读取工作区时断开");
 			context.initial = initial;
-			const sessionListGeneration = context.sessionListGeneration;
+			const generation = context.bootstrapGeneration;
 			const sessionIdsByPath = new Map(this.sessionIdsByPath);
 			const registeredProjects = this.registry.list();
 			await this.sessionResults.observe(registeredProjects.flatMap((project) => project.recentSessions ?? []));
 			const projects = registeredProjects.map((project) => {
 				const cachedSessions = context.sessionListCache.get(project.id);
-				const sessionsLoaded = cachedSessions?.generation === sessionListGeneration;
+				const sessionsLoaded =
+					cachedSessions?.generation === this.projectSessionListGeneration(context, project.id);
 				const sessions = sessionsLoaded ? cachedSessions.value : (project.recentSessions ?? []);
 				for (const session of sessions) sessionIdsByPath.set(session.path, session.id);
 				return this.publicProject(project, sessions, sessionsLoaded);
@@ -1700,13 +1723,14 @@ export class WebGatewayServer {
 					lease: publicLease(lease),
 				})),
 			};
-			const generation = context.bootstrapGeneration;
-			const currentSessionListGeneration = context.sessionListGeneration;
 			context.bootstrapCache = { generation, value };
 			const projectsToRefresh = registeredProjects.filter(
-				(project) => context.sessionListCache.get(project.id)?.generation !== currentSessionListGeneration,
+				(project) =>
+					context.sessionListCache.get(project.id)?.dirty ||
+					context.sessionListCache.get(project.id)?.generation !==
+						this.projectSessionListGeneration(context, project.id),
 			);
-			this.refreshBootstrapProjects(context, generation, currentSessionListGeneration, projectsToRefresh);
+			this.refreshBootstrapProjects(context, projectsToRefresh);
 			return value;
 		})();
 		context.bootstrapPromise = promise;
@@ -1730,12 +1754,12 @@ export class WebGatewayServer {
 	}
 
 	private async listProjectSessions(context: BrowserContext, project: WebProject): Promise<GatewaySessionSummary[]> {
+		const generation = this.projectSessionListGeneration(context, project.id);
 		const cached = context.sessionListCache.get(project.id);
-		if (cached?.generation === context.sessionListGeneration) return cached.value;
 		const pending = context.sessionListPromises.get(project.id);
 		if (pending) return pending;
-		const generation = context.sessionListGeneration;
-		const bootstrapGeneration = context.bootstrapGeneration;
+		if (cached?.generation === generation && !cached.dirty) return cached.value;
+		if (cached) cached.dirty = false;
 		const request = (async () => {
 			const client = await this.getClient(context);
 			const cachedRooms = this.roomMembershipCache.get(project.cwd);
@@ -1801,16 +1825,20 @@ export class WebGatewayServer {
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
 			await this.sessionResults.observe(uniqueSessions);
-			if (generation === context.sessionListGeneration)
+			if (generation === this.projectSessionListGeneration(context, project.id))
 				await this.registry.setRecentSessions(project.id, uniqueSessions);
 			const refreshedProject = this.registry.get(project.id) ?? project;
 			const roomAwareSessions = markRoomAgentSessions(uniqueSessions, rooms);
 			const orderedSessions = orderSessionSummaries(roomAwareSessions, refreshedProject.sessionOrder);
-			if (generation === context.sessionListGeneration) {
-				context.sessionListCache.set(project.id, { generation, value: orderedSessions });
+			if (generation === this.projectSessionListGeneration(context, project.id)) {
+				context.sessionListCache.set(project.id, {
+					generation,
+					value: orderedSessions,
+					...(cached?.dirty ? { dirty: true } : {}),
+				});
 				this.updateBootstrapProject(
 					context,
-					bootstrapGeneration,
+					context.bootstrapGeneration,
 					this.publicProject(refreshedProject, orderedSessions, true),
 				);
 			}
@@ -1819,6 +1847,9 @@ export class WebGatewayServer {
 		context.sessionListPromises.set(project.id, request);
 		try {
 			return await request;
+		} catch (error) {
+			if (cached) cached.dirty = true;
+			throw error;
 		} finally {
 			if (context.sessionListPromises.get(project.id) === request) context.sessionListPromises.delete(project.id);
 		}
@@ -1845,25 +1876,19 @@ export class WebGatewayServer {
 		};
 	}
 
-	private refreshBootstrapProjects(
-		context: BrowserContext,
-		bootstrapGeneration: number,
-		sessionListGeneration: number,
-		projects: WebProject[],
-	): void {
+	private refreshBootstrapProjects(context: BrowserContext, projects: WebProject[]): void {
 		let state = this.bootstrapProjectRefreshes.get(context);
 		if (!state) {
 			state = { activeWorkers: 0, jobs: [] };
 			this.bootstrapProjectRefreshes.set(context, state);
 		}
 		state.jobs = state.jobs.filter(
-			(job) =>
-				job.bootstrapGeneration === bootstrapGeneration && job.sessionListGeneration === sessionListGeneration,
+			(job) => job.sessionListGeneration === this.projectSessionListGeneration(context, job.project.id),
 		);
 		const queuedProjectIds = new Set(state.jobs.map((job) => job.project.id));
 		for (const project of projects) {
 			if (queuedProjectIds.has(project.id)) continue;
-			state.jobs.push({ bootstrapGeneration, sessionListGeneration, project });
+			state.jobs.push({ sessionListGeneration: this.projectSessionListGeneration(context, project.id), project });
 			queuedProjectIds.add(project.id);
 		}
 		this.pumpBootstrapProjectRefresh(context, state);
@@ -1872,19 +1897,11 @@ export class WebGatewayServer {
 	private pumpBootstrapProjectRefresh(context: BrowserContext, state: BootstrapProjectRefreshState): void {
 		while (!this.closed && state.activeWorkers < BOOTSTRAP_PROJECT_REFRESH_CONCURRENCY && state.jobs.length > 0) {
 			const job = state.jobs.shift()!;
-			if (
-				context.bootstrapGeneration !== job.bootstrapGeneration ||
-				context.sessionListGeneration !== job.sessionListGeneration
-			)
-				continue;
+			if (this.projectSessionListGeneration(context, job.project.id) !== job.sessionListGeneration) continue;
 			state.activeWorkers += 1;
 			void this.listProjectSessions(context, job.project)
 				.then((sessions) => {
-					if (
-						context.bootstrapGeneration !== job.bootstrapGeneration ||
-						context.sessionListGeneration !== job.sessionListGeneration
-					)
-						return;
+					if (this.projectSessionListGeneration(context, job.project.id) !== job.sessionListGeneration) return;
 					const currentProject = this.registry.get(job.project.id);
 					if (
 						!currentProject ||
@@ -1892,13 +1909,12 @@ export class WebGatewayServer {
 					)
 						return;
 					const response = this.publicProject(currentProject, sessions, true);
-					this.updateBootstrapProject(context, job.bootstrapGeneration, response);
-					this.emitProjectUpdate(context, job.bootstrapGeneration, response);
+					this.updateBootstrapProject(context, context.bootstrapGeneration, response);
+					this.emitProjectUpdate(context, context.bootstrapGeneration, response);
 				})
 				.catch((error: unknown) => {
 					if (
-						context.bootstrapGeneration !== job.bootstrapGeneration ||
-						context.sessionListGeneration !== job.sessionListGeneration ||
+						this.projectSessionListGeneration(context, job.project.id) !== job.sessionListGeneration ||
 						context.sessionListCache.get(job.project.id)?.generation === job.sessionListGeneration
 					)
 						return;
@@ -1906,8 +1922,8 @@ export class WebGatewayServer {
 					if (!currentProject) return;
 					const message = error instanceof Error ? error.message : String(error);
 					const response = this.publicProject(currentProject, currentProject.recentSessions ?? [], false, message);
-					this.updateBootstrapProject(context, job.bootstrapGeneration, response);
-					this.emitProjectUpdate(context, job.bootstrapGeneration, response);
+					this.updateBootstrapProject(context, context.bootstrapGeneration, response);
+					this.emitProjectUpdate(context, context.bootstrapGeneration, response);
 				})
 				.finally(() => {
 					state.activeWorkers -= 1;
@@ -1919,7 +1935,9 @@ export class WebGatewayServer {
 			state.jobs.length === 0 &&
 			!this.closed &&
 			!context.bootstrapPromise &&
-			context.bootstrapCache?.generation !== context.bootstrapGeneration
+			context.sockets.size > 0 &&
+			context.bootstrapCache &&
+			context.bootstrapCache.generation !== context.bootstrapGeneration
 		)
 			void this.pushBootstrap(context);
 	}
@@ -1930,6 +1948,32 @@ export class WebGatewayServer {
 		if (!cached || cached.generation !== generation) return;
 		const index = cached.value.projects.findIndex((candidate) => candidate.id === project.id);
 		if (index >= 0) cached.value.projects[index] = project;
+	}
+
+	private updateSessionListSummary(
+		context: BrowserContext,
+		sessionId: string,
+		update: Partial<Pick<SessionSummary, "name" | "activity" | "updatedAt" | "writeAccess" | "operationUpdatedAt">>,
+	): void {
+		const ref = this.sessions.get(sessionId);
+		if (!ref) return;
+		const cached = context.sessionListCache.get(ref.projectId);
+		if (cached?.generation !== this.projectSessionListGeneration(context, ref.projectId)) return;
+		const index = cached.value.findIndex((session) => session.id === sessionId);
+		if (index < 0) return;
+		const previous = cached.value[index];
+		cached.value[index] = {
+			...previous,
+			...update,
+			updatedAt: Math.max(previous.updatedAt, update.updatedAt ?? previous.updatedAt),
+		};
+		const project = this.registry.get(ref.projectId);
+		if (project)
+			this.updateBootstrapProject(
+				context,
+				context.bootstrapGeneration,
+				this.publicProject(project, cached.value, true),
+			);
 	}
 
 	private emitProjectUpdate(context: BrowserContext, generation: number, project: WebProjectResponse): void {
@@ -2888,7 +2932,7 @@ export class WebGatewayServer {
 			const client = await this.getClient(context);
 			const listing = await client.request<HostDirectoryListing>({ command: "list_directories", path: cwd });
 			const project = await this.registry.add({ id: randomUUID(), cwd: listing.path, name: stringValue(body.name) });
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, project.id);
 			const sessions = await this.listProjectSessions(context, project);
 			sendJson(response, 201, { project: this.publicProject(project, sessions) });
 			return;
@@ -2916,7 +2960,7 @@ export class WebGatewayServer {
 					: undefined,
 				archived: body.archived === true,
 			});
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			sendJson(response, 200, {
 				project: this.publicProject(update, await this.listProjectSessions(context, update)),
 			});
@@ -2957,7 +3001,7 @@ export class WebGatewayServer {
 			)
 				throw new HttpError(400, "session_order_invalid", "会话顺序必须包含当前项目的全部会话");
 			await this.registry.setSessionOrder(projectId, sessionIds);
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			const orderedSessions = orderSessionSummaries(sessions, sessionIds);
 			sendJson(response, 200, {
 				sessions: orderedSessions.map((session) =>
@@ -2973,7 +3017,7 @@ export class WebGatewayServer {
 				throw new HttpError(404, "session_not_found", "未找到项目中的会话");
 			const body = await parseJsonBody(request);
 			const updated = await this.registry.setSessionPinned(projectId, sessionId, body.pinned === true);
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			sendJson(response, 200, {
 				project: this.publicProject(updated, sessions),
 			});
@@ -3036,7 +3080,7 @@ export class WebGatewayServer {
 				...(stringValue(body.profileName) ? { profileName: stringValue(body.profileName)! } : {}),
 				...(stringValue(body.profileIcon) ? { profileIcon: stringValue(body.profileIcon)! } : {}),
 			});
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			sendJson(response, 200, joined);
 			return;
 		}
@@ -3052,7 +3096,7 @@ export class WebGatewayServer {
 				roomId: parts[4],
 				sessionId,
 			});
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			sendJson(response, 200, left);
 			return;
 		}
@@ -3071,7 +3115,7 @@ export class WebGatewayServer {
 				sessionId,
 				nickname,
 			});
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			sendJson(response, 200, renamed);
 			return;
 		}
@@ -3841,7 +3885,7 @@ export class WebGatewayServer {
 			});
 			this.sessionIdsByPath.set(result.snapshot.path, sessionId);
 			context.leases.set(sessionId, result.lease);
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, project.id);
 			sendJson(response, 201, { session: publicSessionSnapshot(result.snapshot), lease: publicLease(result.lease) });
 			return;
 		}
@@ -3945,7 +3989,7 @@ export class WebGatewayServer {
 				);
 				context.leasesToRestore.delete(sessionId);
 				context.leases.set(sessionId, result.lease);
-				this.invalidateBootstrap(context);
+				context.bootstrapCache = undefined;
 				sendJson(response, 200, {
 					owned: true,
 					lease: publicLease(result.lease),
@@ -3959,7 +4003,7 @@ export class WebGatewayServer {
 				if (lease) {
 					await client.request({ command: "release_session", sessionPath: session.path, leaseId: lease.leaseId });
 					context.leases.delete(sessionId);
-					this.invalidateBootstrap(context);
+					context.bootstrapCache = undefined;
 				}
 				sendJson(response, 200, { released: true });
 				return;
@@ -4224,7 +4268,7 @@ export class WebGatewayServer {
 			});
 			this.sessionIdsByPath.set(result.snapshot.path, newSessionId);
 			context.leases.set(newSessionId, result.lease);
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, session.projectId);
 			sendJson(response, 201, {
 				session: publicSessionSnapshot(result.snapshot),
 				lease: publicLease(result.lease),
@@ -5046,37 +5090,46 @@ export class WebGatewayServer {
 	}
 
 	private async pushBootstrap(context: BrowserContext): Promise<void> {
-		try {
-			const bootstrap = await this.buildBootstrap(context);
-			if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
-			context.bootstrapRetryTimer = undefined;
-			context.bootstrapRetryAttempt = 0;
-			this.broadcast(context, { type: "bootstrap", data: bootstrap });
-		} catch {
-			this.broadcast(context, {
-				type: "connection_state",
-				connected: false,
-				message: "Web Host 恢复后读取工作区失败",
-			});
-			if (
-				this.closed ||
-				context.sockets.size === 0 ||
-				!context.client?.getSnapshot().connected ||
-				context.bootstrapRetryTimer
-			)
-				return;
-			const delay = Math.min(5_000, 250 * 2 ** Math.min(context.bootstrapRetryAttempt, 5));
-			context.bootstrapRetryAttempt += 1;
-			logGatewayConnection("bootstrap_retry_scheduled", { clientInstanceId: context.id, delayMs: delay });
-			context.bootstrapRetryTimer = setTimeout(() => {
+		if (context.bootstrapPushPromise) return context.bootstrapPushPromise;
+		const promise = (async () => {
+			try {
+				const bootstrap = await this.buildBootstrap(context);
+				if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
 				context.bootstrapRetryTimer = undefined;
-				if (context.sockets.size === 0) {
-					this.scheduleContextCleanup(context);
+				context.bootstrapRetryAttempt = 0;
+				this.broadcast(context, { type: "bootstrap", data: bootstrap });
+			} catch {
+				this.broadcast(context, {
+					type: "connection_state",
+					connected: false,
+					message: "Web Host 恢复后读取工作区失败",
+				});
+				if (
+					this.closed ||
+					context.sockets.size === 0 ||
+					!context.client?.getSnapshot().connected ||
+					context.bootstrapRetryTimer
+				)
 					return;
-				}
-				void this.pushBootstrap(context);
-			}, delay);
-			context.bootstrapRetryTimer.unref?.();
+				const delay = Math.min(5_000, 250 * 2 ** Math.min(context.bootstrapRetryAttempt, 5));
+				context.bootstrapRetryAttempt += 1;
+				logGatewayConnection("bootstrap_retry_scheduled", { clientInstanceId: context.id, delayMs: delay });
+				context.bootstrapRetryTimer = setTimeout(() => {
+					context.bootstrapRetryTimer = undefined;
+					if (context.sockets.size === 0) {
+						this.scheduleContextCleanup(context);
+						return;
+					}
+					void this.pushBootstrap(context);
+				}, delay);
+				context.bootstrapRetryTimer.unref?.();
+			}
+		})();
+		context.bootstrapPushPromise = promise;
+		try {
+			await promise;
+		} finally {
+			if (context.bootstrapPushPromise === promise) context.bootstrapPushPromise = undefined;
 		}
 	}
 
@@ -5101,7 +5154,8 @@ export class WebGatewayServer {
 				this.roomMembershipGeneration.set(event.cwd, (this.roomMembershipGeneration.get(event.cwd) ?? 0) + 1);
 				this.roomMembershipCache.delete(event.cwd);
 				this.roomMembershipRequests.delete(event.cwd);
-				this.invalidateBootstrap(context);
+				const projectId = this.registry.list().find((project) => project.cwd === event.cwd)?.id;
+				this.invalidateBootstrap(context, projectId);
 			}
 			const projected = this.projectEvent(event);
 			if (projected && context.sockets.size > 0) this.broadcast(context, projected);
@@ -5124,8 +5178,35 @@ export class WebGatewayServer {
 			}
 			return;
 		}
+		const changesSessionList = event.type === "sessions_changed" || event.type === "session_removed";
+		if (changesSessionList) {
+			const cwd =
+				event.type === "sessions_changed"
+					? event.cwd
+					: this.sessions.get(this.sessionIdsByPath.get(event.sessionPath) ?? "")?.cwd;
+			const projectId = this.registry.list().find((project) => project.cwd === cwd)?.id;
+			this.invalidateBootstrap(context, projectId);
+		} else if (event.type !== "session_progress" && event.type !== "subagent_updated") {
+			// 会话事件已通过增量发送；只让下次工作区读取更新动态状态，不重扫全部项目。
+			context.bootstrapCache = undefined;
+		}
+		if (event.type === "session_snapshot") {
+			this.updateSessionListSummary(context, event.snapshot.id, {
+				name: event.snapshot.name,
+				activity: event.snapshot.activity,
+				updatedAt: event.snapshot.updatedAt,
+				writeAccess: event.snapshot.writeAccess,
+			});
+		}
+		if (event.type === "transcript_changed" || event.type === "transcript_committed") {
+			const sessionId = this.sessionIdsByPath.get(event.sessionPath);
+			const ref = sessionId ? this.sessions.get(sessionId) : undefined;
+			const cached = ref ? context.sessionListCache.get(ref.projectId) : undefined;
+			// 历史提交后按需重读摘要，保留当前列表，避免把提交事件放大为全量刷新。
+			if (cached) cached.dirty = true;
+		}
+		const projected = this.projectEvent(event);
 		if (context.sockets.size === 0) {
-			const projected = this.projectEvent(event);
 			if (projected?.type === "session_progress" || projected?.type === "subagent_updated") {
 				const sessionId = stringValue(projected.sessionId);
 				if (sessionId && context.resumeSessionIds.has(sessionId)) {
@@ -5135,16 +5216,10 @@ export class WebGatewayServer {
 				}
 				return;
 			}
-			this.invalidateBootstrap(context);
+			if (!changesSessionList) this.invalidateSessionDetails(context);
 			return;
 		}
-		if (event.type !== "session_progress" && event.type !== "subagent_updated") this.invalidateBootstrap(context);
-		const projected = this.projectEvent(event);
-		if (!projected) {
-			this.invalidateBootstrap(context);
-			this.broadcast(context, { type: "sessions_changed" });
-			return;
-		}
+		if (!projected) return;
 		if (projected.type === "session_progress") {
 			this.enqueueProgress(context, projected as WebSessionProgressEvent);
 			return;
@@ -5349,7 +5424,7 @@ export class WebGatewayServer {
 
 	private sendWebSocket(socket: WebSocket, payload: string): void {
 		if (socket.readyState !== WebSocket.OPEN) return;
-		if (socket.bufferedAmount + Buffer.byteLength(payload) > 2 * 1024 * 1024) {
+		if (socket.bufferedAmount + Buffer.byteLength(payload) > MAX_WEBSOCKET_BUFFER_BYTES) {
 			logGatewayConnection("websocket_backpressure", {
 				socketId: this.socketIds.get(socket),
 				bufferedBytes: socket.bufferedAmount,
@@ -5420,6 +5495,10 @@ export class WebGatewayServer {
 			}
 			state.events.push({ seq, payload, bytes });
 			state.bytes += bytes;
+		} else {
+			// 无法保留的事件必须截断回放基线，后续订阅才能识别断档。
+			state.events.length = 0;
+			state.bytes = 0;
 		}
 		for (const socket of context.sockets) {
 			if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
@@ -5438,17 +5517,20 @@ export class WebGatewayServer {
 		this.detailStateFor(context, sessionId);
 		if (lastSeq !== undefined) {
 			const oldestSeq = state?.events[0]?.seq;
+			const replay = (state?.events ?? []).filter((event) => event.seq > lastSeq);
+			const acknowledgement = { type: "session_subscription", sessionId, seq: currentSeq, gap: false };
+			const replayBytes = replay.reduce((bytes, event) => bytes + event.bytes, 0);
 			const gap =
 				!state ||
 				lastSeq > currentSeq ||
 				(currentSeq > lastSeq && oldestSeq === undefined) ||
-				(oldestSeq !== undefined && lastSeq < oldestSeq - 1);
+				(oldestSeq !== undefined && lastSeq < oldestSeq - 1) ||
+				socket.bufferedAmount + replayBytes + Buffer.byteLength(JSON.stringify(acknowledgement)) >
+					MAX_WEBSOCKET_BUFFER_BYTES;
 			if (!gap) {
-				for (const event of state?.events ?? []) {
-					if (event.seq > lastSeq) this.sendWebSocket(socket, event.payload);
-				}
+				for (const event of replay) this.sendWebSocket(socket, event.payload);
 			}
-			this.sendWebSocket(socket, JSON.stringify({ type: "session_subscription", sessionId, seq: currentSeq, gap }));
+			this.sendWebSocket(socket, JSON.stringify({ ...acknowledgement, gap }));
 			logGatewayConnection("session_subscription_sent", {
 				clientInstanceId: context.id,
 				socketId: this.socketIds.get(socket),
@@ -5490,6 +5572,10 @@ export class WebGatewayServer {
 		activity: SessionActivity,
 		operationUpdatedAt?: number,
 	): void {
+		this.updateSessionListSummary(context, sessionId, {
+			activity,
+			...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt, updatedAt: operationUpdatedAt }),
+		});
 		const previous = context.sessionSummaryState.get(sessionId);
 		if (previous?.activity === activity) {
 			if (operationUpdatedAt !== undefined && previous.operationUpdatedAt !== operationUpdatedAt) {

@@ -1,13 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { createRuntimeCpuRecorder } from "./runtime-cpu-recorder.ts";
-import { configuredServiceEventLogPath, logWebServiceEvent, type ServiceEventFields } from "./service-event-log.ts";
+import { createServiceCpuRecorder } from "./runtime-cpu-recorder.ts";
+import {
+	configuredServiceEventLogPath,
+	logWebServiceEvent,
+	type ServiceEventFields,
+	serviceEventLogHealth,
+} from "./service-event-log.ts";
 
 const requestContext = new AsyncLocalStorage<ServiceEventFields>();
 const activeRequests = new Map<symbol, ServiceEventFields>();
 const activePhases = new Map<string, ServiceEventFields>();
-
+const EVENT_LOOP_SAMPLE_INTERVAL_MS = 10_000;
 export function logRuntimeConnection(event: string, fields: ServiceEventFields = {}): void {
 	logWebServiceEvent("runtime", event, { ...requestContext.getStore(), ...fields });
 }
@@ -20,6 +25,19 @@ export async function withRuntimeRequest<T>(fields: ServiceEventFields, run: () 
 	} finally {
 		activeRequests.delete(key);
 	}
+}
+
+function runtimeFailureFields(error: unknown): ServiceEventFields {
+	const failure = error instanceof Error ? error : undefined;
+	const cause = failure?.cause;
+	return {
+		error: failure?.message ?? String(error),
+		errorName: failure?.name,
+		errorStack: failure?.stack,
+		errorCause: cause instanceof Error ? cause.message : cause === undefined ? undefined : String(cause),
+		errorCauseStack: cause instanceof Error ? cause.stack : undefined,
+		errorCode: failure && "code" in failure && typeof failure.code === "string" ? failure.code : undefined,
+	};
 }
 
 /** Sync CPU cost is meaningful here; async phase CPU time would include unrelated requests. */
@@ -43,7 +61,7 @@ export function measureRuntimePhase<T>(phase: string, fields: ServiceEventFields
 				elapsedMs,
 				cpuMs: Math.round((usage.user + usage.system) / 1000),
 				outcome: failure === undefined ? "completed" : "failed",
-				...(failure !== undefined ? { error: failure instanceof Error ? failure.message : String(failure) } : {}),
+				...(failure !== undefined ? runtimeFailureFields(failure) : {}),
 			});
 		}
 	}
@@ -71,42 +89,61 @@ export async function measureRuntimePhaseAsync<T>(
 			...details,
 			elapsedMs: Math.round(performance.now() - startedAt),
 			outcome: failure === undefined ? "completed" : "failed",
-			...(failure !== undefined ? { error: failure instanceof Error ? failure.message : String(failure) } : {}),
+			...(failure !== undefined ? runtimeFailureFields(failure) : {}),
 		});
 	}
 }
 
 export function watchRuntimeEventLoop(): () => void {
+	return watchServiceEventLoop("runtime", () => ({
+		activeRequestCount: activeRequests.size,
+		activeRequests: JSON.stringify([...activeRequests.values()].slice(0, 16)),
+		activePhases: JSON.stringify([...activePhases.values()].slice(0, 16)),
+	}));
+}
+
+export function watchServiceEventLoop(
+	component: "runtime" | "gateway",
+	getActivity?: () => ServiceEventFields,
+): () => void {
 	const histogram = monitorEventLoopDelay({ resolution: 20 });
 	histogram.enable();
+	const log = (event: string, fields: ServiceEventFields) => logWebServiceEvent(component, event, fields);
 	const logPath = configuredServiceEventLogPath();
 	const recorder = logPath
-		? createRuntimeCpuRecorder(`${logPath.slice(0, -".sqlite".length)}-cpu`, logRuntimeConnection)
+		? createServiceCpuRecorder(component, `${logPath.slice(0, -".sqlite".length)}-${component}-cpu`, log)
 		: undefined;
 	let samples = 0;
 	let lastTick = performance.now();
 	let lastCpu = process.cpuUsage();
 	const timer = setInterval(() => {
-		if (histogram.count === 0) return;
 		const now = performance.now();
 		const usage = process.cpuUsage(lastCpu);
-		const maxMs = Math.round(histogram.max / 1_000_000);
-		if (maxMs >= 250 || ++samples % 6 === 0)
-			logRuntimeConnection("event_loop_delay", {
+		const hasHistogramSamples = histogram.count > 0;
+		// Bun 可能没有直方图样本，仍用计时器延迟记录长阻塞并触发 CPU 采样保存。
+		const maxMs = Math.max(
+			hasHistogramSamples ? Math.round(histogram.max / 1_000_000) : 0,
+			Math.round(now - lastTick - EVENT_LOOP_SAMPLE_INTERVAL_MS),
+		);
+		samples++;
+		if (samples % 6 === 0) {
+			log("cpu_recorder_health", recorder?.health() ?? { state: "disabled" });
+			log("service_log_health", serviceEventLogHealth());
+		}
+		if (maxMs >= 250 || samples % 6 === 0)
+			log("event_loop_delay", {
 				windowMs: Math.round(now - lastTick),
-				p99Ms: Math.round(histogram.percentile(99) / 1_000_000),
+				p99Ms: hasHistogramSamples ? Math.round(histogram.percentile(99) / 1_000_000) : undefined,
 				maxMs,
 				cpuMs: Math.round((usage.user + usage.system) / 1000),
 				rssBytes: process.memoryUsage().rss,
-				activeRequestCount: activeRequests.size,
-				activeRequests: JSON.stringify([...activeRequests.values()].slice(0, 16)),
-				activePhases: JSON.stringify([...activePhases.values()].slice(0, 16)),
+				...getActivity?.(),
 			});
 		lastTick = now;
 		lastCpu = process.cpuUsage();
 		histogram.reset();
 		void recorder?.checkpoint(maxMs);
-	}, 10_000);
+	}, EVENT_LOOP_SAMPLE_INTERVAL_MS);
 	timer.unref?.();
 	return () => {
 		clearInterval(timer);

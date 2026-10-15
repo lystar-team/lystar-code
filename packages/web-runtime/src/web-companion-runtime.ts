@@ -29,6 +29,7 @@ import type {
 	TranscriptItem,
 	UsageProgress,
 } from "@lystar/code-web-protocol";
+import { measureRuntimePhaseAsync } from "./connection-log.ts";
 import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
 import { projectedToolActivity } from "./transcript-projection.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
@@ -406,66 +407,73 @@ export class WebCompanionRuntime implements RuntimeSession {
 	}
 
 	static async open(agentDir: string, sessionPath: string): Promise<WebCompanionRuntime> {
-		return new Promise((resolve, reject) => {
-			const socket = createConnection(getWebCompanionEndpoint(agentDir, sessionPath));
-			socket.setEncoding("utf8");
-			let runtime: WebCompanionRuntime | undefined;
-			let buffer = "";
-			const fail = (error: Error) => {
-				clearTimeout(timer);
-				if (runtime) {
-					runtime.disconnect(error);
-					return;
-				}
-				socket.destroy();
-				reject(error);
-			};
-			const timer = setTimeout(() => fail(new Error("TUI 共享通道握手超时")), COMPANION_HANDSHAKE_MS);
-			timer.unref?.();
-			socket.once("error", fail);
-			socket.once("close", () => fail(new Error("TUI 共享通道已关闭")));
-			socket.once("connect", () => {
-				socket.write(
-					`${JSON.stringify({ type: "hello", sessionPath, protocolVersion: WEB_COMPANION_PROTOCOL_VERSION } satisfies WebCompanionCommand)}\n`,
-				);
-			});
-			socket.on("data", (chunk: string) => {
-				try {
-					if (runtime) {
-						runtime.consume(chunk);
-						return;
-					}
-					buffer += chunk;
-					const newline = buffer.indexOf("\n");
-					if (newline < 0) {
-						if (Buffer.byteLength(buffer) > MAX_COMPANION_BYTES) throw new Error("TUI 共享握手超过大小限制");
-						return;
-					}
-					if (Buffer.byteLength(buffer.slice(0, newline)) > MAX_COMPANION_BYTES)
-						throw new Error("TUI 共享握手超过大小限制");
-					const message = JSON.parse(buffer.slice(0, newline)) as WebCompanionServerMessage;
-					if (
-						message.type !== "ready" ||
-						!isWebCompanionSnapshot(message.snapshot) ||
-						message.snapshot.path !== sessionPath
-					) {
-						throw new Error("TUI 共享通道返回了无效握手或会话路径");
-					}
-					runtime = new WebCompanionRuntime(sessionPath, message.snapshot);
-					runtime.socket = socket;
-					runtime.consume(buffer.slice(newline + 1));
-					buffer = "";
-					clearTimeout(timer);
-					runtime.heartbeat = setInterval(() => {
-						if (runtime?.isConnected()) void runtime.request("snapshot").catch(fail);
-					}, COMPANION_HANDSHAKE_MS);
-					runtime.heartbeat.unref?.();
-					resolve(runtime);
-				} catch (error) {
-					fail(error instanceof Error ? error : new Error(String(error)));
-				}
-			});
-		});
+		const endpoint = getWebCompanionEndpoint(agentDir, sessionPath);
+		return measureRuntimePhaseAsync(
+			"session.companion.handshake",
+			{ sessionPath, companionEndpoint: endpoint },
+			() =>
+				new Promise<WebCompanionRuntime>((resolve, reject) => {
+					const socket = createConnection(endpoint);
+					socket.setEncoding("utf8");
+					let runtime: WebCompanionRuntime | undefined;
+					let buffer = "";
+					const fail = (error: Error) => {
+						clearTimeout(timer);
+						if (runtime) {
+							runtime.disconnect(error);
+							return;
+						}
+						socket.destroy();
+						reject(error);
+					};
+					const timer = setTimeout(() => fail(new Error("TUI 共享通道握手超时")), COMPANION_HANDSHAKE_MS);
+					timer.unref?.();
+					socket.once("error", fail);
+					socket.once("close", () => fail(new Error("TUI 共享通道已关闭")));
+					socket.once("connect", () => {
+						socket.write(
+							`${JSON.stringify({ type: "hello", sessionPath, protocolVersion: WEB_COMPANION_PROTOCOL_VERSION } satisfies WebCompanionCommand)}\n`,
+						);
+					});
+					socket.on("data", (chunk: string) => {
+						try {
+							if (runtime) {
+								runtime.consume(chunk);
+								return;
+							}
+							buffer += chunk;
+							const newline = buffer.indexOf("\n");
+							if (newline < 0) {
+								if (Buffer.byteLength(buffer) > MAX_COMPANION_BYTES)
+									throw new Error("TUI 共享握手超过大小限制");
+								return;
+							}
+							if (Buffer.byteLength(buffer.slice(0, newline)) > MAX_COMPANION_BYTES)
+								throw new Error("TUI 共享握手超过大小限制");
+							const message = JSON.parse(buffer.slice(0, newline)) as WebCompanionServerMessage;
+							if (
+								message.type !== "ready" ||
+								!isWebCompanionSnapshot(message.snapshot) ||
+								message.snapshot.path !== sessionPath
+							) {
+								throw new Error("TUI 共享通道返回了无效握手或会话路径");
+							}
+							runtime = new WebCompanionRuntime(sessionPath, message.snapshot);
+							runtime.socket = socket;
+							runtime.consume(buffer.slice(newline + 1));
+							buffer = "";
+							clearTimeout(timer);
+							runtime.heartbeat = setInterval(() => {
+								if (runtime?.isConnected()) void runtime.request("snapshot").catch(fail);
+							}, COMPANION_HANDSHAKE_MS);
+							runtime.heartbeat.unref?.();
+							resolve(runtime);
+						} catch (error) {
+							fail(error instanceof Error ? error : new Error(String(error)));
+						}
+					});
+				}),
+		);
 	}
 
 	getLiveMessage(): WebConversationMessage | undefined {
@@ -473,7 +481,11 @@ export class WebCompanionRuntime implements RuntimeSession {
 	}
 
 	async readLiveMessage(): Promise<WebConversationMessage | undefined> {
-		await this.request("snapshot");
+		await measureRuntimePhaseAsync(
+			"session.companion.snapshot",
+			{ sessionPath: this.sessionPathValue, pendingCompanionRequests: this.pending.size },
+			() => this.request("snapshot"),
+		);
 		return this.liveMessage ? { ...this.liveMessage } : undefined;
 	}
 

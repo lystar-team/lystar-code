@@ -5,7 +5,7 @@ import {
 	encodeTrustedServerMessage,
 	type ServerMessage,
 } from "@lystar/code-web-protocol";
-import { logRuntimeConnection, withRuntimeRequest } from "./connection-log.ts";
+import { logRuntimeConnection, measureRuntimePhase, withRuntimeRequest } from "./connection-log.ts";
 import type { WebRuntimeService } from "./service.ts";
 
 export const MAX_RUNTIME_WRITE_BYTES = 32 * 1024 * 1024;
@@ -196,7 +196,17 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				error: message.error.message,
 				retryable: message.error.retryable,
 			});
-		return write(encodeTrustedServerMessage(message));
+		const bytes = measureRuntimePhase(
+			"transport.encode",
+			{
+				clientInstanceId,
+				messageType: message.type,
+				...(message.type === "response" ? { requestId: message.id } : {}),
+				...(message.type === "event" ? { eventType: message.event.type } : {}),
+			},
+			() => encodeTrustedServerMessage(message),
+		);
+		return write(bytes);
 	});
 	const decoder = new ClientMessageDecoder();
 	let processing = Promise.resolve();
@@ -216,6 +226,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 		closed = true;
 		logRuntimeConnection("connection_failure", {
 			clientInstanceId,
+			queuedRequests,
+			queuedBytes,
 			error: error instanceof Error ? error.message : String(error),
 		});
 		input.destroy(error instanceof Error ? error : new Error(String(error)));
@@ -272,6 +284,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						command: message.request.command,
 						...requestFields,
 						queueDepth: queuedRequests,
+						queuedBytes,
 						queueLane,
 					});
 				const handle = async () => {
@@ -286,6 +299,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								...requestFields,
 								queueWaitMs: Math.round(startedAt - receivedAt),
 								queueLane,
+								queueDepth: queuedRequests,
+								queuedBytes,
 							});
 						if (handled)
 							await withRuntimeRequest(
@@ -307,6 +322,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								...requestFields,
 								queueWaitMs: Math.round(startedAt - receivedAt),
 								queueLane,
+								queueDepth: queuedRequests,
+								queuedBytes,
 								...(handled
 									? {
 											processMs: Math.round(performance.now() - startedAt),
@@ -453,7 +470,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 		});
 	} finally {
 		closed = true;
-		logRuntimeConnection("connection_closed", { clientInstanceId, queuedRequests });
+		logRuntimeConnection("connection_closed", { clientInstanceId, queuedRequests, queuedBytes });
 		input.off("data", onData);
 		await connection.close();
 	}

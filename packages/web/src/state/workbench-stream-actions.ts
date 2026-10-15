@@ -54,7 +54,12 @@ import {
 	updateSessionActivity,
 	updateSessionSummaryName,
 } from "./workbench-state.ts";
-import type { CachedSessionDetail } from "./workbench-session-cache.ts";
+import {
+	approximateValueBytes,
+	cacheSessionEvent,
+	invalidateCachedSessionSubscription,
+	type CachedSessionDetail,
+} from "./workbench-session-cache.ts";
 import {
 	mergeTranscriptEntries,
 	mergeTranscriptPage,
@@ -366,6 +371,8 @@ export function useWorkbenchStreamActions({
 			if (event.type === "session_subscription") {
 				recordBrowserDiagnostic("session.subscription.ack", { sessionId: event.sessionId, selection: selectionRef.current, seq: event.seq, gap: event.gap });
 				const selected = stateRef.current.sessionId === event.sessionId;
+				const cached = sessionDetailCacheRef.current.get(event.sessionId);
+				if (event.gap && cached) invalidateCachedSessionSubscription(event.sessionId, cached, !selected);
 				const previousSeq = sessionDetailSeqRef.current.get(event.sessionId);
 				if (selected && !event.gap && previousSeq !== undefined && event.seq < previousSeq) return;
 				if (selected) sessionDetailSeqRef.current.set(event.sessionId, event.seq);
@@ -401,6 +408,15 @@ export function useWorkbenchStreamActions({
 					: event.type === "operation_updated"
 						? event.operation.sessionId
 						: undefined;
+			if (sequenceSessionId && sequenceSessionId !== stateRef.current.sessionId &&
+				(("seq" in event && typeof event.seq === "number") || event.type === "session_lease")) {
+				const cached = sessionDetailCacheRef.current.get(sequenceSessionId);
+				if (cached?.subscription?.socket === socketRef.current) {
+					cacheSessionEvent(sessionDetailCacheRef.current, sequenceSessionId, event);
+				} else if ("seq" in event && socketRef.current?.readyState === WebSocket.OPEN) {
+					webApi.unsubscribeSession(socketRef.current, sequenceSessionId);
+				}
+			}
 			if (
 				sequenceSessionId &&
 				sequenceSessionId === stateRef.current.sessionId &&
@@ -433,6 +449,10 @@ export function useWorkbenchStreamActions({
 			}
 			if (event.type === "connection_state") {
 				console.info("Web Runtime 连接状态", { connected: event.connected, message: event.message, time: new Date().toISOString() });
+				if (!event.connected) {
+					for (const [sessionId, cached] of sessionDetailCacheRef.current)
+						invalidateCachedSessionSubscription(sessionId, cached);
+				}
 				const current = stateRef.current;
 				const sessionId = current.sessionId;
 				const shouldRestoreSubscription = event.connected && Boolean(sessionId) && !current.sessionReady;
@@ -867,6 +887,29 @@ export function useWorkbenchStreamActions({
 		],
 	);
 
+	const restoreCachedSession = useCallback((sessionId: string): boolean => {
+		const cached = sessionDetailCacheRef.current.get(sessionId);
+		const subscription = cached?.subscription;
+		const current = stateRef.current;
+		if (!cached || !subscription || subscription.socket !== socketRef.current ||
+			subscription.socket.readyState !== WebSocket.OPEN || !current.connected || current.reconnecting ||
+			!cached.detail.sessionReady || !cached.detail.transcriptPageLoaded || !cached.detail.lease ||
+			cached.detail.readOnly || current.sessionId !== sessionId) return false;
+		const events = cached.pendingEvents;
+		cached.pendingEvents = [];
+		cached.subscription = undefined;
+		cached.bytes = approximateValueBytes(cached.detail);
+		updateState((value) => ({ ...value, lease: cached.detail.lease, readOnly: false, statusText: cached.detail.statusText }));
+		for (const event of events) handleEvent(event);
+		flushPendingTextProgress();
+		const restored = stateRef.current;
+		if (restored.readOnly || !restored.lease || restored.sessionError || restored.transcriptError || restored.subagentsError)
+			return false;
+		sessionDetailSeqRef.current.set(sessionId, subscription.seq);
+		updateState((value) => ({ ...value, sessionReady: true }));
+		recordBrowserDiagnostic("session.selection.cached", { sessionId, selection: selectionRef.current, events: events.length, seq: subscription.seq });
+		return true;
+	}, [flushPendingTextProgress, handleEvent, updateState]);
 	return {
 		scheduleTranscriptRefresh,
 		cancelScheduledTranscriptRefresh,
@@ -875,6 +918,7 @@ export function useWorkbenchStreamActions({
 		subscribeSessionAndWait,
 		completeSessionSubscription,
 		restoreSelectedSessionSubscription,
+		restoreCachedSession,
 		handleEvent,
 	};
 }

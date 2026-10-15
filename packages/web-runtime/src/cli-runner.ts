@@ -133,18 +133,12 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			return;
 		}
 		if (command === "stdio" || command === "serve") {
-			service = new WebRuntimeService(
-				new CodingAgentRuntimeAdapter({
-					agentDir,
-					preferSessionOwnership: serviceProfile === "development",
-				}),
-				{
-					agentDir,
-					journalPath: runtimeOperationJournalPath(agentDir, serviceProfile),
-					persistent: command === "serve",
-					...(startupSessionPath ? { startupSessionPath } : {}),
-				},
-			);
+			service = new WebRuntimeService(new CodingAgentRuntimeAdapter({ agentDir }), {
+				agentDir,
+				journalPath: runtimeOperationJournalPath(agentDir, serviceProfile),
+				persistent: command === "serve",
+				...(startupSessionPath ? { startupSessionPath } : {}),
+			});
 			if (command === "stdio") {
 				await runStdioRuntime(service);
 			} else {

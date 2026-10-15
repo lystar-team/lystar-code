@@ -32,6 +32,8 @@ export class ServiceEventLog {
 	private retryAt = 0;
 	private disabled = false;
 	readonly path: string;
+	private lastWriteAt?: string;
+	private lastWriteError?: string;
 	private readonly profile: string;
 	private readonly version: string;
 
@@ -194,9 +196,12 @@ export class ServiceEventLog {
 				this.database!.exec("ROLLBACK");
 				throw error;
 			}
+			this.lastWriteAt = new Date().toISOString();
+			this.lastWriteError = undefined;
 			this.pending.splice(0, batch.length);
 			this.retryAt = 0;
 		} catch (error) {
+			this.lastWriteError = error instanceof Error ? error.message : String(error);
 			this.retryAt = Date.now() + 5_000;
 			if (this.disabled) this.pending.length = 0;
 			process.stderr.write(
@@ -204,6 +209,18 @@ export class ServiceEventLog {
 			);
 		}
 		if (this.pending.length > 0) this.schedule();
+	}
+
+	health(): ServiceEventFields {
+		return {
+			path: this.path,
+			disabled: this.disabled,
+			pendingEvents: this.pending.length,
+			droppedEvents: this.dropped,
+			retryAt: this.retryAt || undefined,
+			lastWriteAt: this.lastWriteAt,
+			lastWriteError: this.lastWriteError,
+		};
 	}
 
 	close(): void {
@@ -226,6 +243,10 @@ process.once("exit", () => currentLog?.close());
 
 export function configuredServiceEventLogPath(): string | undefined {
 	return currentLog?.path;
+}
+
+export function serviceEventLogHealth(): ServiceEventFields {
+	return currentLog?.health() ?? { disabled: true };
 }
 
 export function configureServiceEventLog(

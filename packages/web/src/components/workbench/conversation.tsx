@@ -7,7 +7,7 @@ import {
 	Sparkles,
 	WrenchIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { CompactionCard } from "./compaction-card";
 import { Composer } from "./composer";
@@ -92,6 +92,34 @@ export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queue
 
 const EMPTY_LIVE_STEPS = Object.freeze({}) as WorkbenchState["liveSteps"];
 
+function AgentStepDuration({ step, clientClockOffsetMs }: Pick<AgentStepRenderItem, "step" | "clientClockOffsetMs">) {
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		if (step.status !== "running") return;
+		setNow(Date.now());
+		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+		return () => window.clearInterval(timer);
+	}, [step.startedAt, step.status]);
+	const duration = formatElapsedDuration((step.endedAt ?? now - (clientClockOffsetMs ?? 0)) - step.startedAt);
+	return duration ? <span className="shrink-0 text-xs text-muted-foreground">{duration}</span> : null;
+}
+
+const AgentStepItemContent = memo(
+	function AgentStepItemContent({ entry, open, renderItem }: {
+		entry: AgentStepChildRenderItem;
+		open: boolean;
+		renderItem: (entry: AgentStepChildRenderItem) => ReactNode;
+	}) {
+		return <div
+			className={entry.kind === "message" ? "min-w-0 py-2" : "min-w-0"}
+			data-transcript-anchor-key={open ? entry.key : undefined}
+		>
+			{renderItem(entry)}
+		</div>;
+	},
+	(previous, next) => previous.open === next.open && previous.renderItem === next.renderItem &&
+		conversationRenderItemEqual(previous.entry, next.entry),
+);
 function AgentStepContent({
 	entry,
 	open,
@@ -103,16 +131,6 @@ function AgentStepContent({
 	onOpenChange: (open: boolean) => void;
 	renderItem: (entry: AgentStepChildRenderItem) => ReactNode;
 }) {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		if (entry.step.status !== "running") return;
-		setNow(Date.now());
-		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-		return () => window.clearInterval(timer);
-	}, [entry.step.startedAt, entry.step.status]);
-	const duration = formatElapsedDuration(
-		(entry.step.endedAt ?? now - (entry.clientClockOffsetMs ?? 0)) - entry.step.startedAt,
-	);
 	const StatusIcon =
 		entry.step.status === "running" ? LoaderCircle : entry.step.status === "completed" ? CheckCircle2 : CircleX;
 
@@ -138,20 +156,14 @@ function AgentStepContent({
 						}`}
 					/>
 					<span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">{entry.step.title}</span>
-					{duration ? <span className="shrink-0 text-xs text-muted-foreground">{duration}</span> : null}
+					<AgentStepDuration step={entry.step} clientClockOffsetMs={entry.clientClockOffsetMs} />
 					<ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/agent-step:rotate-180" />
 				</button>
 			</CollapsibleTrigger>
 			<GsapCollapsibleContent open={open} className="pt-1" data-transcript-resize-anchor>
 				<div className="ml-[7px] grid min-w-0 gap-0 border-l border-border/60 pl-4">
 					{entry.items.map((item) => (
-						<div
-							className={item.kind === "message" ? "min-w-0 py-2" : "min-w-0"}
-							data-transcript-anchor-key={open ? item.key : undefined}
-							key={item.key}
-						>
-							{renderItem(item)}
-						</div>
+						<AgentStepItemContent key={item.key} entry={item} open={open} renderItem={renderItem} />
 					))}
 				</div>
 			</GsapCollapsibleContent>
@@ -247,6 +259,36 @@ function toolBatchToolsEqual(previous: readonly ToolBatchTool[], next: readonly 
 	});
 }
 
+type ConversationToolRowProps = {
+	tool: ToolBatchTool;
+	initialOpen: boolean;
+	sessionId?: string;
+	onOpenChange: (toolId: string, open: boolean) => void;
+	onOpenPath: ConversationActions["openResource"];
+	onOpenSubagent?: ConversationActions["openSubagent"];
+	onOpenSession?: ConversationActions["selectSession"];
+};
+
+const ConversationToolRow = memo(
+	function ConversationToolRow({ tool, initialOpen, sessionId, onOpenChange, onOpenPath, onOpenSubagent, onOpenSession }: ConversationToolRowProps) {
+		const tools = useMemo(() => [tool], [tool]);
+		const handleOpenChange = useCallback((open: boolean) => onOpenChange(tool.id, open), [onOpenChange, tool.id]);
+		return <ToolBatch
+			className="tool-batch-render-item"
+			tools={tools}
+			initialOpen={initialOpen}
+			onOpenChange={handleOpenChange}
+			sessionId={sessionId}
+			onOpenPath={onOpenPath}
+			onOpenSubagent={onOpenSubagent}
+			onOpenSession={onOpenSession}
+		/>;
+	},
+	(previous, next) => previous.initialOpen === next.initialOpen && previous.sessionId === next.sessionId &&
+		previous.onOpenChange === next.onOpenChange && previous.onOpenPath === next.onOpenPath &&
+		previous.onOpenSubagent === next.onOpenSubagent && previous.onOpenSession === next.onOpenSession &&
+		toolBatchToolsEqual([previous.tool], [next.tool]),
+);
 function conversationRenderItemEqual(previous: ConversationRenderItem, next: ConversationRenderItem): boolean {
 	if (previous.kind !== next.kind || previous.key !== next.key) return false;
 	if (previous.kind === "message" && next.kind === "message") {
@@ -546,14 +588,13 @@ function ConversationBody({
 				return (
 					<div className="tool-batch-stack">
 						{tools.map((tool) => (
-							<ToolBatch
+							<ConversationToolRow
 								key={tool.id}
-								className="tool-batch-render-item"
-								tools={[tool]}
+								tool={tool}
 								initialOpen={expandedToolRows.get(tool.id) ?? false}
-								onOpenChange={(open) => updateExpandedToolRow(tool.id, open)}
+								onOpenChange={updateExpandedToolRow}
 								sessionId={current.sessionId}
-								onOpenPath={(path) => void openResource(path)}
+								onOpenPath={openResource}
 								onOpenSubagent={openSubagent}
 								onOpenSession={openSession}
 							/>

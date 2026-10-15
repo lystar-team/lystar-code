@@ -884,6 +884,7 @@ export function useWorkbench() {
 		subscribeSessionAndWait,
 		completeSessionSubscription,
 		restoreSelectedSessionSubscription,
+		restoreCachedSession,
 		handleEvent,
 	} = useWorkbenchStreamActions({
 		stateRef,
@@ -1301,6 +1302,8 @@ export function useWorkbench() {
 		readSelectedSession,
 		subscribeSessionAndWait,
 		completeSessionSubscription,
+		restoreCachedSession,
+		flushPendingTextProgress,
 		scheduleTranscriptRefresh,
 		selectionRef,
 		selectionInFlightRef,

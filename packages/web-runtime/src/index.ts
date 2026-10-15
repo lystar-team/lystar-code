@@ -1,4 +1,5 @@
 export * from "./cli-runner.ts";
+export { watchServiceEventLoop } from "./connection-log.ts";
 export * from "./content-store.ts";
 export * from "./ipc.ts";
 export * from "./lease-manager.ts";
