@@ -9,7 +9,7 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.2.0-lystar.3`，上一正式 Tag 为 `v1.2.0-lystar.2`。
+- 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前产品版本为 `1.2.0-lystar.4`，上一正式 Tag 为 `v1.2.0-lystar.3`。
 
 ## 1.2.0-lystar.3 自动发布验证
 
