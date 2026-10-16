@@ -104,6 +104,9 @@ const MAX_CONCURRENT_MODEL_CALLS = 4;
  * `InternalError: out of memory` inside the script.
  */
 const CODEMODE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
+// Shared across calls and sessions. Allow one replacement while a cancelled worker is still exiting.
+const MAX_CONCURRENT_CODEMODE_WORKERS = 2;
+let activeCodemodeWorkers = 0;
 const MODEL_TYPES: ReadonlySet<string> = new Set<ModelType>(["chat", "image", "classifier"]);
 
 function truncateText(text: string, maxChars: number): string {
@@ -626,6 +629,17 @@ export async function executeCodemode(
 		memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES,
 		wasm: loadQuickJSWasm(getQuickJSWasmPath()),
 		workerUrl: getCodemodeWorkerSpecifier(),
+		acquireWorker: () => {
+			if (activeCodemodeWorkers >= MAX_CONCURRENT_CODEMODE_WORKERS) {
+				throw new Error(
+					`Codemode worker limit reached (${MAX_CONCURRENT_CODEMODE_WORKERS} workers are still running or shutting down). Retry after they exit.`,
+				);
+			}
+			activeCodemodeWorkers++;
+			return () => {
+				activeCodemodeWorkers--;
+			};
+		},
 	});
 
 	let store: Record<string, unknown>;

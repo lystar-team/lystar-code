@@ -238,6 +238,15 @@ export const LYSTAR_SETTINGS_CATALOG: readonly LystarSettingDefinition[] = [
 				({ auto: "自动", sse: "SSE", websocket: "WebSocket", "websocket-cached": "WebSocket（缓存）" })[value],
 		},
 	),
+	enumSetting(
+		"share-destination",
+		"会话分享位置",
+		"选择 /share 上传会话的位置；自动模式优先使用已登录的 Radius。",
+		["auto", "gist", "radius"],
+		(settings) => settings.getSessionShareDestination(),
+		(settings, value) => settings.setSessionShareDestination(value),
+		{ format: (value) => ({ auto: "自动", gist: "GitHub Gist", radius: "Radius" })[value] },
+	),
 	integerSetting(
 		"runtime-read-concurrency",
 		"Runtime 读取并发",

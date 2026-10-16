@@ -11,6 +11,12 @@
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
 - 上游 Pi 基线为 `v1.2.0`（`06a466935536f8c9bcacb2d5efc0fc021be1bdff`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.2.0-lystar.4`，上一正式 Tag 为 `v1.2.0-lystar.3`。
 
+## Pi v1.3.0 合并验证（2026-10-16，Linux x64）
+
+- 合入 upstream Tag `v1.3.0`；保留 LYStar 产品发行配置、中文全屏 TUI、Web 工作台、角色协作、来源上下文、Codemode steering、ultra 思考级别和安装更新入口。模型数据使用该 Tag 的固定 typed catalog，经现有 hydrate 工具生成，避免实时目录删除现有默认模型。
+- `npm run build:offline`、完整 `npm run check` 通过；Agent 定向测试 76 项、模型请求定向测试 102 项、Coding Agent 设置/工具恢复/分享/协作定向测试 165 项通过，共 343 项。清理 10 个固定名称、过时界面或事件快照用例及两处重复快照断言；未新增测试。
+- `./test.sh` 全量未通过；仍有来源上下文、旧工具列表、edit 终止、实验 PTY/remote、Web 组件和 Runtime 缓存/投影等测试失败，未将其记为通过。
+
 ## 1.2.0-lystar.4 自动发布验证
 
 - 记录时间：2026-10-15T17:39:17.202Z。Annotated Tag `v1.2.0-lystar.4` 指向 `9b3f69a9e387e47dbf7d1dad19de9606e915b0a5`；Release workflow `38776524507` 的全部 job 成功，公开 Release 不是 draft/prerelease。

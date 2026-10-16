@@ -32,6 +32,7 @@ import type {
 	FullscreenExitOutput,
 	MermaidRenderingMode,
 	QuietStartup,
+	SessionShareDestination,
 	SettingsManager,
 	TuiMode,
 	WarningSettings,
@@ -95,6 +96,7 @@ export interface SettingsConfig {
 	thinkingLevel?: ThinkingLevel;
 	availableThinkingLevels?: ThinkingLevel[];
 	modelThinkingLevels?: Record<string, ThinkingLevel>;
+	sessionShareDestination?: SessionShareDestination;
 	currentTheme: string;
 	terminalTheme: TerminalTheme;
 	availableThemes: string[];
@@ -137,6 +139,7 @@ export interface SettingsCallbacks {
 	onModelThinkingLevelChange?: (provider: string, modelId: string, level: ThinkingLevel) => void;
 	onModelThinkingLevelRemove?: (provider: string, modelId: string) => void;
 	onThemeChange?: (theme: string) => void;
+	onSessionShareDestinationChange?: (destination: SessionShareDestination) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange?: (hidden: boolean) => void;
 	onMermaidRenderingModeChange?: (mode: MermaidRenderingMode) => void;
@@ -618,6 +621,14 @@ export class SettingsSelectorComponent extends Container {
 				values: ["sse", "websocket", "websocket-cached", "auto"],
 			},
 			{
+				id: "share-destination",
+				label: "Session share destination",
+				description:
+					"Where to upload sessions with /share (auto prefers Radius when authenticated, otherwise GitHub Gist)",
+				currentValue: config.sessionShareDestination ?? "auto",
+				values: ["auto", "gist", "radius"],
+			},
+			{
 				id: "http-idle-timeout",
 				label: "HTTP idle timeout",
 				description:
@@ -1015,6 +1026,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "transport":
 						callbacks.onTransportChange?.(newValue as Transport);
+						break;
+					case "share-destination":
+						callbacks.onSessionShareDestinationChange?.(newValue as SessionShareDestination);
 						break;
 					case "http-idle-timeout": {
 						const choice = HTTP_IDLE_TIMEOUT_CHOICES.find((item) => item.label === newValue);

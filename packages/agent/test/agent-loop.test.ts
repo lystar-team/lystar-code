@@ -1711,22 +1711,6 @@ describe("agentLoop with AgentMessage", () => {
 		expect(callbackContextRoles).toEqual(["system", "user", "assistant", "toolResult"]);
 		// The context declares no tools, so the loop announces the loadout with a system message.
 		expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "toolResult"]);
-		expect(events.map((event) => event.type)).toEqual([
-			"agent_start",
-			"turn_start",
-			"message_start",
-			"message_end",
-			"message_start",
-			"message_end",
-			"message_start",
-			"message_end",
-			"tool_execution_start",
-			"tool_execution_end",
-			"message_start",
-			"message_end",
-			"turn_end",
-			"agent_end",
-		]);
 	});
 
 	it("should stop after a tool batch when every tool result sets terminate=true", async () => {

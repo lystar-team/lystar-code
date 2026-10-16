@@ -21,7 +21,7 @@
 		"generate:schema": "node --import tsx scripts/generate-schema.mjs"
 	},
 	"dependencies": {
-		"@earendil-works/pi-protocol": "1.2.0-lystar.4",
+		"@earendil-works/pi-protocol": "1.3.0",
 		"typebox": "1.3.7"
 	},
 	"devDependencies": {

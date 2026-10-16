@@ -102,6 +102,7 @@ describe("SettingsSelectorComponent", () => {
 		}
 	});
 
+
 	it("keeps the configured fixed theme marked while browsing", () => {
 		const config = {
 			settingsManager: SettingsManager.inMemory(),

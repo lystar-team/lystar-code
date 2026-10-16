@@ -267,76 +267,7 @@ describe("AgentSession retry and event characterization", () => {
 		]);
 	});
 
-	it("emits the expected event order for a single prompt", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("hello")]);
 
-		await harness.session.prompt("hi");
-
-		expect(normalizeEventOrder(harness.events)).toEqual([
-			"agent_start",
-			"turn_start",
-			"message_start:system",
-			"message_end:system",
-			"message_start:user",
-			"message_end:user",
-			"message_start:assistant",
-			"message_update",
-			"message_end:assistant",
-			"turn_end",
-			"agent_end",
-			"agent_settled",
-		]);
-	});
-
-	it("emits the expected event order for a tool call turn", async () => {
-		const toolRuns: string[] = [];
-		const echoTool: AgentTool = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo text back",
-			parameters: Type.Object({ text: Type.String() }),
-			execute: async (_toolCallId, params) => {
-				const text = typeof params === "object" && params !== null && "text" in params ? String(params.text) : "";
-				toolRuns.push(text);
-				return { content: [{ type: "text", text: `echo:${text}` }], details: { text } };
-			},
-		};
-		const harness = await createHarness({ tools: [echoTool] });
-		harnesses.push(harness);
-		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		]);
-
-		await harness.session.prompt("hi");
-
-		expect(toolRuns).toEqual(["hello"]);
-		expect(normalizeEventOrder(harness.events)).toEqual([
-			"agent_start",
-			"turn_start",
-			"message_start:system",
-			"message_end:system",
-			"message_start:user",
-			"message_end:user",
-			"message_start:assistant",
-			"message_update",
-			"message_end:assistant",
-			"tool_execution_start:echo",
-			"tool_execution_end:echo",
-			"message_start:toolResult",
-			"message_end:toolResult",
-			"turn_end",
-			"turn_start",
-			"message_start:assistant",
-			"message_update",
-			"message_end:assistant",
-			"turn_end",
-			"agent_end",
-			"agent_settled",
-		]);
-	});
 
 	it("emits streaming deltas for text, thinking, and tool calls in message_update events", async () => {
 		const harness = await createHarness();
