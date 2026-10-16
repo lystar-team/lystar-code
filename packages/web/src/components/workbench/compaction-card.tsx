@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, CircleX, ChevronDown, LoaderCircle, RotateCw, Sparkles } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, useState } from "react";
+import { useState } from "react";
 import type { LiveCompactionState } from "../../state/compaction-state";
 import { cn } from "../../lib/utils";
 import { MessageResponse } from "../ai-elements/message";
@@ -31,14 +31,6 @@ function statusClassName(state: LiveCompactionState): string {
 		: state.status === "cancelled"
 			? "text-muted-foreground"
 			: "text-foreground";
-}
-
-function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
-	if (event.defaultPrevented) return false;
-	const target = event.target;
-	if (target instanceof Element && target.closest("button, a, input, textarea, select, [role=button]")) return false;
-	const selection = window.getSelection();
-	return !selection || selection.isCollapsed;
 }
 
 export function CompactionCard({
@@ -119,6 +111,7 @@ export function CompactionSummaryCard({
 
 	return (
 		<Collapsible
+			collapseOnContentClick
 			className={cn(
 				"group/compaction relative min-w-0 w-full",
 				open && "overflow-hidden rounded-md border border-border/60 bg-muted/20",
@@ -142,10 +135,6 @@ export function CompactionSummaryCard({
 			</CollapsibleTrigger>
 			<CollapsibleContent
 				className="relative min-w-0 overflow-hidden bg-muted/20 pb-0.5 pl-6 pr-1 pt-0 data-[state=closed]:animate-out data-[state=open]:animate-in"
-				onClick={(event) => {
-					event.stopPropagation();
-					if (canCollapseFromContent(event)) setOpen(false);
-				}}
 			>
 				<div className="min-w-0 pb-2 text-sm">
 					<MessageResponse

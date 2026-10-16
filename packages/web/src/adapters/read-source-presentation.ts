@@ -23,16 +23,21 @@ export function readSourcePresentation(tool: Pick<ToolBatchTool, "state" | "summ
 			!Number.isSafeInteger(totalLines) || totalLines < endLine
 		) return undefined;
 
-		const lineCount = endLine - startLine + 1;
-		if (lines.length < lineCount + 1) return undefined;
+		const lineCount = Math.min(endLine - startLine + 1, lines.length - 1);
 		const sourceLines: string[] = [];
 		for (let index = 0; index < lineCount; index++) {
 			const line = lines[index + 1];
 			const prefix = `${startLine + index}| `;
-			if (!line.startsWith(prefix)) return undefined;
+			if (!line.startsWith(prefix)) {
+				// 历史预览可能在行号前缀中截断，末尾省略号交给未显示行数提示。
+				if (index === lines.length - 2 && line.endsWith("…") && prefix.startsWith(line.slice(0, -1))) break;
+				return undefined;
+			}
 			sourceLines.push(line.slice(prefix.length));
 		}
-		return { code: sourceLines.join("\n"), startLine, endLine, remainingLines: totalLines - endLine };
+		if (sourceLines.length === 0) return undefined;
+		const displayedEndLine = startLine + sourceLines.length - 1;
+		return { code: sourceLines.join("\n"), startLine, endLine: displayedEndLine, remainingLines: totalLines - displayedEndLine };
 	}
 
 	let startLine = 1;

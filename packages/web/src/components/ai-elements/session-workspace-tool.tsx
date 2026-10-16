@@ -98,7 +98,7 @@ export function SessionWorkspaceToolDetail({ tool, onOpenSession, onOpenPath }: 
 		</div>
 	);
 	return (
-		<div className="grid min-w-0 gap-2" onClick={(event) => event.stopPropagation()}>
+		<div className="grid min-w-0 gap-2">
 			{content}
 			{tool.name === "session_accept_result" && sessionId && onOpenSession ? <Button className="h-7 w-fit px-1 text-xs" onClick={() => onOpenSession(sessionId)} type="button" variant="ghost">查看子会话</Button> : null}
 		</div>

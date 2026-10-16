@@ -3,8 +3,6 @@ import { ArrowDown, ArrowUp, Gauge, Layers3 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import type { WorkbenchState } from "../../state/workbench-types";
-import { Tabs, TabsContent } from "../ui/tabs";
-import { WorkbenchTabBar } from "./workbench-tab-bar";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 type Metric = "tps" | "cache" | "input" | "output";
@@ -99,7 +97,7 @@ export function ComposerSessionStats({
 }) {
 	const [tokens, setTokens] = useState<Tokens>();
 	const [openMetric, setOpenMetric] = useState<Metric>();
-	const [mobileMetric, setMobileMetric] = useState<Metric>("tps");
+	const [selectedMetric, setSelectedMetric] = useState<Metric>("tps");
 	const [visibleMetricCount, setVisibleMetricCount] = useState(0);
 	const [statsOpen, setStatsOpen] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -199,16 +197,29 @@ export function ComposerSessionStats({
 					className="max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border-border bg-popover p-3 shadow-md"
 				>
 					<div className="mb-2 text-sm font-medium">会话统计</div>
-					<Tabs value={mobileMetric} onValueChange={(value) => setMobileMetric(value as Metric)} className="min-w-0 gap-0">
-						<WorkbenchTabBar
-							activeId={mobileMetric}
-							tabs={metrics.map((metric) => ({ value: metric, icon: metricIcons[metric], label: `${labels[metric]} ${values[metric]}` }))}
-							label="选择统计项"
-						/>
-						<TabsContent value={mobileMetric} className="mt-3 border-t border-border pt-3">
-							<MetricBreakdown metric={mobileMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} />
-						</TabsContent>
-					</Tabs>
+					<div role="group" aria-label="选择统计项" className="grid min-w-0 grid-cols-2 gap-1">
+						{metrics.map((metric) => {
+							const Icon = metricIcons[metric];
+							return (
+								<button
+									key={metric}
+									type="button"
+									aria-pressed={selectedMetric === metric}
+									onClick={() => setSelectedMetric(metric)}
+									className="flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-2 text-left text-[11px]! leading-4! text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-muted aria-pressed:text-foreground"
+								>
+									<span className="flex items-center gap-1.5">
+										<Icon className="size-3.5 shrink-0" aria-hidden="true" />
+										{labels[metric]}
+									</span>
+									<span className="max-w-full break-words font-medium tabular-nums text-foreground">{values[metric]}</span>
+								</button>
+							);
+						})}
+					</div>
+					<div className="mt-3 border-t border-border pt-3">
+						<MetricBreakdown metric={selectedMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} />
+					</div>
 				</PopoverContent>
 			</Popover>
 			<div ref={metricRowRef} className="flex w-max shrink-0 items-center gap-0.5 whitespace-nowrap text-xs">

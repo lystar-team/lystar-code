@@ -23,7 +23,7 @@ export function shouldHighlightCode(code: string): boolean {
 	return true;
 }
 
-const supportedLanguages = new Set<string>(bundledLanguagesInfo.map((language) => language.id));
+const supportedLanguages = new Set<string>(bundledLanguagesInfo.flatMap(({ id, aliases }) => [id, ...(aliases ?? [])]));
 
 export interface TokenizedCode {
 	bg: string;

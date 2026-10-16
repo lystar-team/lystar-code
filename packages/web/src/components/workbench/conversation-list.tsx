@@ -1,4 +1,4 @@
-import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, elementScroll, observeElementOffset, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import type { ReactNode, RefCallback } from "react";
 import type { ConversationGroupEntry, ConversationListContent, ConversationListModel, ConversationListNode } from "./conversation-list-model";
@@ -54,6 +54,8 @@ export function ConversationList({
 }: ConversationListProps) {
 	const scroller = useRef<HTMLDivElement>(null);
 	const initial = useRef(initialSnapshot).current;
+	const offsetObserver = useRef<((offset: number, isScrolling: boolean) => void)>();
+	const offsetReadFrame = useRef<number>();
 	const getItemKey = useCallback((index: number) => model.rows[index]!.key, [model.rows]);
 	const rangeExtractor = useCallback((range: Range) => {
 		const indexes = new Set(defaultRangeExtractor(range));
@@ -83,12 +85,35 @@ export function ConversationList({
 		getItemKey,
 		estimateSize: (index) => model.rows[index]!.height,
 		initialMeasurementsCache: initial?.measurements ?? [],
+		observeElementOffset: (instance, onOffset) => {
+			offsetObserver.current = onOffset;
+			const cleanup = observeElementOffset(instance, onOffset);
+			return () => {
+				if (offsetReadFrame.current !== undefined) window.cancelAnimationFrame(offsetReadFrame.current);
+				offsetReadFrame.current = undefined;
+				offsetObserver.current = undefined;
+				cleanup?.();
+			};
+		},
+		scrollToFn: (offset, options, instance) => {
+			const element = instance.scrollElement;
+			const previousOffset = element?.scrollTop;
+			elementScroll(offset, options, instance);
+			if (!element || options.behavior === "smooth" || element.scrollTop !== previousOffset) return;
+			// 未移动的定位不会触发 scroll；提交布局后读回浏览器实际接受的位置。
+			if (offsetReadFrame.current !== undefined) window.cancelAnimationFrame(offsetReadFrame.current);
+			offsetReadFrame.current = window.requestAnimationFrame(() => {
+				offsetReadFrame.current = undefined;
+				offsetObserver.current?.(element.scrollTop, instance.isScrolling);
+			});
+		},
 		initialOffset: () => {
 			if (initial && !initial.atBottom) {
 				const item = restoredMeasurements.find((candidate) => candidate.key === initial.anchor?.key);
 				return item && initial.anchor ? Math.max(0, item.start - initial.anchor.offset) : initial.offset;
 			}
-			return Math.max(0, (restoredMeasurements.at(-1)?.end ?? EDGE_PADDING) + EDGE_PADDING - (scroller.current?.clientHeight ?? 0));
+			// 首次渲染还没有容器高度；挂载后由 scrollToEnd 完成底部定位。
+			return 0;
 		},
 		paddingStart: EDGE_PADDING,
 		paddingEnd: EDGE_PADDING,
@@ -139,13 +164,22 @@ export function ConversationList({
 	});
 	const intent = useConversationScrollIntent({
 		onPause, onUp, onDown, onCancel: cancelScroll, onExpansion: onPause,
-		onUserPosition: (element) => {
-			if (element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD) onResume();
+		onUserPosition: (element, endOffset) => {
+			const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD;
+			const reachedPreviousEnd = endOffset !== undefined && Math.abs(element.scrollTop - endOffset) <= BOTTOM_THRESHOLD;
+			if (!following && endOffset !== undefined && (atBottom || reachedPreviousEnd)) {
+				onResume();
+				virtualizer.scrollToEnd();
+			}
 			publishPosition();
 		},
 	}, scroller);
-	const visible = new Set(virtualizer.getVirtualItems().map((item) => item.index));
+	const virtualItems = virtualizer.getVirtualItems();
+	const visible = new Set(virtualItems.map((item) => item.index));
 	const measurements = virtualizer.measurementsCache;
+	const firstItem = virtualItems[0];
+	// iOS 手势暂缓位置补偿时，公开的行坐标已扣除这段偏移。
+	const contentShift = firstItem ? firstItem.start - measurements[firstItem.index]!.start : 0;
 	const renderNode = (node: ConversationListNode): ReactNode => {
 		if (node.children && node.entry) {
 			if (!visible.has(node.start)) return spacer(node);
@@ -187,7 +221,7 @@ export function ConversationList({
 		style={{ height: "100%", width: "100%", overflowAnchor: "none" }}>
 		{header ? <div className="pointer-events-none absolute top-0 right-0 left-0 z-10 mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 pt-2 sm:px-10"><div className="pointer-events-auto">{header}</div></div> : null}
 		<div aria-hidden="true" style={{ height: EDGE_PADDING }} />
-		<div className="conversation-content mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 sm:px-10">
+		<div className="conversation-content mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 sm:px-10" style={{ marginTop: contentShift }}>
 			{renderNodes(model.nodes)}
 		</div>
 		<div style={{ height: EDGE_PADDING }}>

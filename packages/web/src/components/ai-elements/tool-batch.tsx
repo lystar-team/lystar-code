@@ -24,7 +24,7 @@ import {
 	WrenchIcon,
 	XCircleIcon,
 } from "lucide-react";
-import { type ComponentProps, type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model.ts";
@@ -59,6 +59,7 @@ import { CodemodeToolDetail } from "./codemode-tool";
 import { CodemodeStoreDetail } from "./codemode-store";
 import { SessionCollaborationToolDetail } from "./session-collaboration-tool";
 import { SessionWorkspaceToolDetail } from "./session-workspace-tool";
+import { ToolOutputBlock } from "./tool-output-block";
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
 
@@ -85,14 +86,6 @@ export interface ToolBatchProps {
 
 function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
 	return typeof value === "function" ? value() : value;
-}
-
-function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
-	if (event.defaultPrevented) return false;
-	const target = event.target;
-	if (target instanceof Element && target.closest("button, a, input, textarea, select, summary, details, [role=button], [role=tab]")) return false;
-	const selection = window.getSelection();
-	return !selection || selection.isCollapsed;
 }
 
 type AnsiStyleState = {
@@ -549,7 +542,7 @@ export function ToolActivityRow({
 	const outcomeUncertain = tool.name === "bash" && tool.state === "output-available" && commandPresentation(commandFromToolSummary(tool.summary)).resultUncertain;
 	const status = toolRowStatus(tool);
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
+		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className="min-w-0">
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
 					aria-label={`${title}，${status}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
@@ -598,10 +591,6 @@ export function ToolActivityRow({
 					open={open}
 					duration={tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch" ? 0 : undefined}
 					className="min-w-0 pb-1 pl-4 pt-0.5"
-					onClick={(event) => {
-						event.stopPropagation();
-						if (canCollapseFromContent(event)) setOpen(false);
-					}}
 				>
 					<StabilityBoundary
 						scope={`tool-activity-detail:${tool.name}`}
@@ -661,7 +650,7 @@ export function ToolActivityGroup({
 				? <PencilIcon className="size-4 text-muted-foreground" />
 				: <FileTextIcon className="size-4 text-muted-foreground" />;
 	return (
-		<Collapsible className={cn("group/tool-activity min-w-0 w-full", className)} open={open} onOpenChange={onOpenChange}>
+		<Collapsible collapseOnContentClick className={cn("group/tool-activity min-w-0 w-full", className)} open={open} onOpenChange={onOpenChange}>
 			<CollapsibleTrigger asChild>
 				<button
 					{...headerProps}
@@ -935,8 +924,12 @@ function CommandToolDetail({
 	command,
 	output,
 	imagePreview,
+	preparing,
+	streaming,
 }: {
 	command: string;
+	preparing?: boolean;
+	streaming: boolean;
 	output?: string;
 	imagePreview: ReactNode;
 }) {
@@ -949,6 +942,7 @@ function CommandToolDetail({
 					className="tool-command-block my-0 rounded-none border-0 bg-transparent shadow-none"
 					code={`$ ${command}`}
 					language={"bash" as BundledLanguage}
+					plainText={preparing}
 					transparent
 					wrap
 				>
@@ -962,9 +956,17 @@ function CommandToolDetail({
 				{output ? (
 					<div className="border-t border-border/50 bg-background/50">
 						<div className="px-3 pt-2 font-mono text-xs text-muted-foreground">输出</div>
-						<pre className="tool-command-output max-h-80 overflow-auto whitespace-pre-wrap break-words px-3 pb-3 pt-1 font-mono text-[13px] leading-5 text-foreground">
-							<AnsiOutput>{output}</AnsiOutput>
-						</pre>
+						<ToolOutputBlock
+							className="tool-command-block my-0 max-h-80 overflow-auto rounded-none border-0 bg-transparent shadow-none"
+							code={output}
+							streaming={streaming}
+							transparent
+							fallback={
+								<pre className="tool-command-output max-h-80 overflow-auto whitespace-pre-wrap break-words px-3 pb-3 pt-1 font-mono text-[13px] leading-5 text-foreground">
+									<AnsiOutput>{output}</AnsiOutput>
+								</pre>
+							}
+						/>
 					</div>
 				) : null}
 			</div>
@@ -1033,7 +1035,7 @@ function ToolDetail({
 		return (
 			<CodemodeToolDetail tool={tool} imagePreview={imagePreview}>
 				{tool.codemode?.calls.length ? (
-					<div aria-label="脚本执行过程" className="grid min-w-0 gap-0 pb-2" onClick={(event) => event.stopPropagation()}>
+					<div aria-label="脚本执行过程" className="grid min-w-0 gap-0 pb-2">
 						{tool.codemode.calls.map((call) => (
 							<ToolBatchRow
 								key={call.id}
@@ -1118,20 +1120,20 @@ function ToolDetail({
 	}
 
 	if (tool.name === "bash") {
-		return <CommandToolDetail command={title} output={tool.detail} imagePreview={imagePreview} />;
+		return <CommandToolDetail command={title} output={tool.detail} imagePreview={imagePreview} preparing={tool.preparing} streaming={plainText} />;
 	}
 
 	const parameters = parseToolSummary(tool.summary);
-	const input = parameters ? JSON.stringify(parameters, null, 2) : undefined;
+	const input = parameters ? tool.summary : undefined;
 	const context = input ? undefined : toolPresentationContext(tool);
 	return (
 		<div className="grid min-w-0 gap-1">
-			{input ? <CodeBlock className="my-0 border-border/60 bg-muted/25" code={input} language={"json" as BundledLanguage} plainText>
+			{input ? <ToolOutputBlock className="my-0 border-border/60 bg-muted/25" code={input} streaming={tool.preparing}>
 				<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
 					<CodeBlockTitle className="text-foreground">调用参数</CodeBlockTitle>
 					<CodeBlockActions><CodeBlockCopyButton aria-label="复制调用参数" /></CodeBlockActions>
 				</CodeBlockHeader>
-			</CodeBlock> : null}
+			</ToolOutputBlock> : null}
 			{context ? <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{context}</p> : null}
 			{imagePreview}
 			{tool.preparing && (tool.name === "edit" || tool.name === "write") && !filePathFromTool(tool) ? (
@@ -1146,19 +1148,18 @@ function ToolDetail({
 				/>
 			) : null}
 			{!diff && detail ? (
-				<CodeBlock
+				<ToolOutputBlock
 					className="my-0 border-border/60 bg-muted/25"
 					code={detail}
-					language={"text" as BundledLanguage}
-					plainText
+					streaming={plainText}
 				>
 					<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
 						<CodeBlockTitle className="text-foreground">结果</CodeBlockTitle>
 						<CodeBlockActions>
-							<CodeBlockCopyButton aria-label="复制结果" />
+							<CodeBlockCopyButton aria-label="复制结果" code={detail} />
 						</CodeBlockActions>
 					</CodeBlockHeader>
-				</CodeBlock>
+				</ToolOutputBlock>
 			) : null}
 			{!diff && !detail && isActiveFileChange(tool) ? (
 				<span className="text-xs text-muted-foreground">修改内容生成中</span>
@@ -1236,7 +1237,7 @@ function ToolBatchRow({
 	}, [active, autoCollapseWhenComplete, tool.name]);
 
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
+		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
 			<CollapsibleTrigger asChild>
 				<button
 					data-transcript-resize-anchor
@@ -1309,10 +1310,6 @@ function ToolBatchRow({
 							? "overflow-visible"
 							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto",
 					)}
-					onClick={(event) => {
-						event.stopPropagation();
-						if (canCollapseFromContent(event)) setOpen(false);
-					}}
 				>
 					<StabilityBoundary
 						scope={`tool-detail:${tool.name}`}
@@ -1436,6 +1433,7 @@ export const ToolBatch = memo(function ToolBatch({
 			: `已查看 ${imageCount} 张图像`;
 		return (
 			<Collapsible
+				collapseOnContentClick
 				className={cn("group/tool-batch min-w-0 w-full", className)}
 				open={open}
 				onOpenChange={setOpen}
@@ -1456,9 +1454,6 @@ export const ToolBatch = memo(function ToolBatch({
 					open={open}
 					data-transcript-resize-anchor
 					className="min-w-0 overflow-hidden pb-0"
-					onClick={(event) => {
-						if (canCollapseFromContent(event)) setOpen(false);
-					}}
 				>
 					<ImageToolGallery
 						tools={tools}
@@ -1493,6 +1488,7 @@ export const ToolBatch = memo(function ToolBatch({
 
 	return (
 		<Collapsible
+			collapseOnContentClick
 			className={cn("group/tool-batch min-w-0 w-full", className)}
 			open={open}
 			onOpenChange={setOpen}
@@ -1520,10 +1516,6 @@ export const ToolBatch = memo(function ToolBatch({
 				open={open}
 				data-transcript-resize-anchor
 				className="relative min-w-0 max-h-[min(34rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto pb-0"
-				onClick={(event) => {
-					event.stopPropagation();
-					if (canCollapseFromContent(event)) setOpen(false);
-				}}
 			>
 				<div className="relative z-0 grid min-w-0 gap-0">
 					{tools.map((tool) => (

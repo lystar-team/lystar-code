@@ -103,7 +103,7 @@ export function ThinkingBlock({
 
 	const label = preview || (isStreaming ? "思考中" : "思考内容");
 	return (
-		<Collapsible open={open} onOpenChange={onOpenChange} className="group/thinking min-w-0 w-full max-w-full" data-thinking-block>
+		<Collapsible collapseOnContentClick open={open} onOpenChange={onOpenChange} className="group/thinking min-w-0 w-full max-w-full" data-thinking-block>
 			<CollapsibleTrigger asChild>
 				<button
 					type="button"

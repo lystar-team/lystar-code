@@ -46,7 +46,7 @@ export function CodemodeToolDetail({
 	const parameterPreview = !waiting && source === undefined && tool.summary !== tool.name ? tool.summary : undefined;
 
 	return (
-		<Tabs className="min-w-0 gap-0" value={tab} onValueChange={setTab} onClick={(event) => event.stopPropagation()}>
+		<Tabs className="min-w-0 gap-0" value={tab} onValueChange={setTab}>
 			{waiting ? <p className="mb-2 text-xs leading-5 text-muted-foreground">继续收集之前脚本的结果，不会重新执行脚本。{tool.codemode?.status === "running" && !active ? "脚本仍在运行，尚未返回最终结果。" : ""}</p> : null}
 			{children}
 			<WorkbenchTabBar activeId={tab} tabs={waiting ? CODEMODE_WAIT_TABS : CODEMODE_TABS} label={waiting ? "脚本等待详情" : "脚本执行详情"} className="mb-2 !w-44 !self-start" compact />

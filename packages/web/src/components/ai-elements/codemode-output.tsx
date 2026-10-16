@@ -204,7 +204,7 @@ function ResultCard({ value, index }: { value: JsonValue; index: number }) {
 	const result = normalizeResult(value, index);
 	const title = `结果 ${result.index + 1}`;
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0 rounded-md border border-border/60 bg-background/45">
+		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className="min-w-0 rounded-md border border-border/60 bg-background/45">
 			<CollapsibleTrigger asChild>
 				<button
 					aria-label={`${title}，${open ? "收起" : "展开"}`}
@@ -236,7 +236,7 @@ export function CodemodeOutput({ output }: { output: string }) {
 	const [raw, setRaw] = useState(false);
 	const { body, segments, hasJson } = useMemo(() => parseOutput(output), [output]);
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="my-0 min-w-0 overflow-hidden rounded-md border border-border/60 bg-muted/25">
+		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className="my-0 min-w-0 overflow-hidden rounded-md border border-border/60 bg-muted/25">
 			<div className="flex min-h-9 items-center justify-between gap-2 px-3 py-1.5">
 				<CollapsibleTrigger asChild>
 					<Button aria-label={`返回结果，${open ? "收起" : "展开"}`} className="h-6 min-w-0 justify-start gap-1.5 px-0 text-xs font-medium" size="xs" type="button" variant="ghost">

@@ -5,7 +5,7 @@ export function CodemodeStoreDetail({ detail }: { detail?: string }) {
 	const changes = codemodeStoreChanges(detail);
 	const savedCount = changes ? Object.keys(changes.set).length : 0;
 	return (
-		<div className="grid min-w-0 gap-3 py-1" onClick={(event) => event.stopPropagation()}>
+		<div className="grid min-w-0 gap-3 py-1">
 			<p className="text-xs leading-5 text-muted-foreground">
 				这是脚本保存的数据，不是项目文件修改。后续脚本可通过 load() 读取，恢复当前会话后仍可使用。
 			</p>
