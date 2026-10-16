@@ -2,18 +2,39 @@
 
 [返回文档首页](../README.md)
 
-完成[安装](installation.md)后，进入准备让 LYStar 处理的项目目录。
+完成[安装](installation.md)后，可以使用浏览器工作台或终端界面。`lc` 与 `lystar` 完全等价，以下示例使用 `lc`。
+
+## 使用 WebUI
+
+在终端执行：
+
+```bash
+lc web
+```
+
+1. 按提示设置白名单、Web 端口、Runtime 端口和连接密码，两个默认端口分别为 `1420`、`1422`。
+2. 在本机浏览器打开 `http://127.0.0.1:1420`，输入连接密码；改过端口时使用终端输出的地址。
+3. 打开“模型与认证”，配置供应商 API Key。使用订阅登录时，先在终端运行 `lc` 并执行 `/login`。
+4. 点击“添加项目”，选择运行 LYStar 的电脑上的目录，再新建对话、选择模型并发送任务。
+
+```text
+阅读这个项目，告诉我使用了什么技术栈、如何启动、如何运行测试。先不要修改文件。
+```
+
+WebUI 默认在后台运行。手机或另一台电脑可通过 `http://<运行 LYStar 的电脑 IP>:1420` 连接；设备需要网络互通，访问地址须在白名单内。更多操作见 [WebUI 使用指南](../usage/webui.md)。
+
+## 使用终端
+
+进入准备处理的项目目录：
 
 ```bash
 cd /path/to/project
 lc
 ```
 
-`lystar` 是完全等价的完整命令名，后续示例统一使用较短的 `lc`。
-
 LYStar 默认拥有读取、写入、编辑文件和执行 Bash 命令的能力。建议在 Git 仓库中使用，并在较大修改前保留提交。
 
-## 1. 登录 Provider
+### 1. 登录 Provider
 
 在输入区执行：
 
@@ -25,7 +46,7 @@ LYStar 默认拥有读取、写入、编辑文件和执行 Bash 命令的能力�
 
 Provider 和国内模型服务配置见 [Provider 与 API Key](providers.md)。
 
-## 2. 选择模型
+### 2. 选择模型
 
 ```text
 /model
@@ -33,7 +54,7 @@ Provider 和国内模型服务配置见 [Provider 与 API Key](providers.md)。
 
 也可以按 `Ctrl+L` 打开模型选择器。`Shift+Tab` 切换当前模型支持的思考强度。
 
-## 3. 发送第一条任务
+### 3. 发送第一条任务
 
 输入一条范围明确、结果可验证的任务：
 
@@ -47,7 +68,7 @@ Provider 和国内模型服务配置见 [Provider 与 API Key](providers.md)。
 lc @README.md "检查这份安装说明有没有遗漏"
 ```
 
-## 常用动作
+### 终端常用动作
 
 | 动作 | 操作 |
 |---|---|
@@ -87,4 +108,4 @@ lc --name "修复登录问题"
 
 Pi 与 LYStar 可以读取同一数据目录，但不要同时写同一个 Session 文件。
 
-下一步阅读[交互界面与快捷键](../usage/interactive-tui.md)或[安装 Skill 与 Extension](../ecosystem/overview.md)。
+下一步阅读 [WebUI 使用指南](../usage/webui.md)、[终端界面与快捷键](../usage/interactive-tui.md)或[安装 Skill 与 Extension](../ecosystem/overview.md)。

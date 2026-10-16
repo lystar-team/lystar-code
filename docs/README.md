@@ -1,6 +1,6 @@
 # LYStar Code 文档
 
-这里是 LYStar Code 的中文用户与维护文档。第一次使用按“安装 -> 快速开始 -> Provider”顺序阅读。
+这里是 LYStar Code 的中文用户与维护文档。第一次使用按“安装 → 快速开始 → 配置模型”阅读；使用浏览器或手机时，查看 [WebUI 使用指南](usage/webui.md)。
 
 ## 第一次使用
 
@@ -11,7 +11,8 @@
 
 ## 日常使用
 
-- [交互界面与快捷键](usage/interactive-tui.md)
+- [WebUI 使用指南](usage/webui.md)：浏览器与手机连接、项目和模型设置、后台服务与命令。
+- [终端界面与快捷键](usage/interactive-tui.md)
 - [Session 与项目规则](usage/sessions-and-project-instructions.md)
 - [Tool Recovery 与恢复经验](usage/tool-recovery.md)
 - [配置](usage/configuration.md)
