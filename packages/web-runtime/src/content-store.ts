@@ -113,7 +113,7 @@ export class ContentStore {
 		const assistant =
 			message && typeof message === "object" && !Array.isArray(message) && message.role === "assistant";
 		const payload = assistant ? this.compactValue(sessionPath, source) : source;
-		if (view?.type !== "assistant") return assistant ? { ...item, payload } : item;
+		if (view?.type !== "assistant" && view?.type !== "thinking") return assistant ? { ...item, payload } : item;
 		if (view.text.length <= 16 * 1024) return { ...item, payload };
 		const reference = this.createReference(
 			sessionPath,

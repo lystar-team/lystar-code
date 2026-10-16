@@ -1,5 +1,6 @@
 import { ChevronDown, CircleAlert, TriangleAlert, Wrench } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { codemodeStoreTitle } from "../../adapters/codemode-store-presentation";
 import type { ExtensionEntryGroupRenderItem, TranscriptItemRenderItem } from "./conversation-render-model";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
@@ -23,7 +24,7 @@ export function ExtensionEntryGroup({
 	const warnings = notifications.filter((notification) => notification.type === "warning").length;
 	const names = [...new Set(entry.items.flatMap(({ item }) =>
 		item.view?.type === "extension_entry"
-			? [item.view.notification ? { info: "扩展提示", warning: "扩展警告", error: "扩展错误" }[item.view.notification.type] : item.view.customType]
+			? [item.view.notification ? { info: "扩展提示", warning: "扩展警告", error: "扩展错误" }[item.view.notification.type] : item.view.customType === "codemode-store" ? codemodeStoreTitle(item.view.details) : item.view.customType]
 			: [],
 	))];
 	const summary = `${names.slice(0, 2).join("、")}${names.length > 2 ? " 等" : ""}`;
@@ -37,7 +38,6 @@ export function ExtensionEntryGroup({
 				<button
 					aria-label={`扩展记录：${summary}，${entry.items.length} 条${issueLabel ? `，${issueLabel}` : ""}，${open ? "收起" : "展开"}`}
 					className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-					data-transcript-anchor-key={entry.key}
 					data-transcript-resize-anchor
 					type="button"
 				>

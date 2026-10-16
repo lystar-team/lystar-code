@@ -7,10 +7,8 @@ import {
 	preserveConversationToolStackKeys,
 	type TranscriptToolStackRenderItem,
 } from "../src/components/workbench/conversation-render-model.ts";
-import {
-	captureConversationContentAnchor,
-	restoreConversationContentAnchor,
-} from "../src/components/workbench/prepend-anchored-transcript.tsx";
+import { Virtualizer } from "@tanstack/react-virtual";
+import { buildConversationListModel, type ConversationListModel } from "../src/components/workbench/conversation-list-model.ts";
 import { reconcileCommittedTurn } from "../src/state/chat-lifecycle.ts";
 import {
 	decorateTranscriptItems,
@@ -108,42 +106,33 @@ describe("conversation review regressions", () => {
 		expect(next[0]).toMatchObject({ state: { status: "completed" } });
 	});
 
-	it("工具组 key 变化、组内插入和异步增高时，恢复内容块的视口偏移", () => {
-		let scrollTop = 70;
-		let contentTop = 150;
-		const child = {
-			dataset: { transcriptAnchorKey: "tool:read-1" },
-			getBoundingClientRect: () => ({
-				top: contentTop - scrollTop,
-				bottom: contentTop - scrollTop + 100,
-				height: 100,
-			}),
-			contains: () => false,
-		};
-		const group = {
-			dataset: { transcriptAnchorKey: "old-group" },
-			getBoundingClientRect: () => ({ top: -scrollTop, bottom: 1000 - scrollTop, height: 1000 }),
-			contains: (element: unknown) => element === child,
-		};
-		const scroller = {
-			get scrollTop() {
-				return scrollTop;
-			},
-			set scrollTop(value: number) {
-				scrollTop = value;
-			},
-			getBoundingClientRect: () => ({ top: 100, bottom: 600 }),
-			querySelectorAll: () => [group, child],
-		} as unknown as HTMLElement;
-		const anchor = captureConversationContentAnchor(scroller)!;
-		expect(anchor).toEqual({ key: "tool:read-1", offset: -20 });
-		group.dataset.transcriptAnchorKey = "new-group";
-		contentTop += 240;
-		restoreConversationContentAnchor(scroller, anchor);
-		expect(child.getBoundingClientRect().top - 100).toBe(-20);
-		contentTop += 37.5;
-		restoreConversationContentAnchor(scroller, anchor);
-		expect(child.getBoundingClientRect().top - 100).toBe(-20);
+	it("工具组 key 变化与内部补页时，由 TanStack 保持正文行偏移", () => {
+		const project = (ids: string[]) => buildConversationListModel([{
+			kind: "tool-stack", key: ids[0]!, live: false, collapseForResult: false,
+			batches: [{ kind: "tool-batch", key: ids[0]!, tools: ids.map((id) => ({ id, name: "read", summary: id, state: "input-available" })) }],
+		}], {
+			expandedAgentSteps: new Map(), expandedWorkProcesses: new Map(), expandedThinking: new Map(), expandedToolBatches: new Map(), retainedGroups: new Set(),
+			toolActivityPresentation: () => ({ kind: "file", repeatedFileReads: false }), toolPresentation: () => "group", gap: () => 0,
+		});
+		const scroller = { scrollTop: 42, scrollHeight: 1000, clientHeight: 24 } as HTMLElement;
+		const options = (model: ConversationListModel) => ({
+			count: model.rows.length, getItemKey: (index: number) => model.rows[index]!.key,
+			getScrollElement: () => scroller, estimateSize: (index: number) => model.rows[index]!.height,
+			initialRect: { width: 500, height: 24 }, initialOffset: 42, anchorTo: "end" as const,
+			observeElementRect: () => undefined, observeElementOffset: () => undefined, scrollToFn: () => {},
+		});
+		const original = project(["read-2", "read-3"]);
+		const virtualizer = new Virtualizer<HTMLElement, HTMLElement>(options(original));
+		virtualizer._willUpdate();
+		virtualizer.getVirtualItems();
+		const before = virtualizer.measurementsCache.find((row) => row.key === "tool:read-2")!.start - virtualizer.scrollOffset!;
+		const prepended = project(["read-1", "read-2", "read-3"]);
+		virtualizer.setOptions(options(prepended));
+		virtualizer.getVirtualItems();
+		expect(virtualizer.measurementsCache.find((row) => row.key === "tool:read-2")!.start - virtualizer.scrollOffset!).toBe(before);
+		virtualizer.resizeItem(0, 65);
+		virtualizer.getVirtualItems();
+		expect(virtualizer.measurementsCache.find((row) => row.key === "tool:read-2")!.start - virtualizer.scrollOffset!).toBe(before);
 	});
 
 	it("工具组补入历史后复用组 key，展开状态不因第一条工具改变而丢失", () => {

@@ -5372,6 +5372,36 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 4096
+                    },
+                    "executionId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "parentToolCallId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "running"
+                        },
+                        {
+                          "type": "string",
+                          "const": "completed"
+                        },
+                        {
+                          "type": "string",
+                          "const": "failed"
+                        }
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "maxLength": 1048576
                     }
                   },
                   "additionalProperties": false
@@ -7113,6 +7143,36 @@
                                     "type": "string",
                                     "minLength": 1,
                                     "maxLength": 4096
+                                  },
+                                  "executionId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                  },
+                                  "parentToolCallId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                  },
+                                  "status": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "const": "running"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "completed"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "failed"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "type": "string",
+                                    "maxLength": 1048576
                                   }
                                 },
                                 "additionalProperties": false
@@ -7826,6 +7886,11 @@
                                     "type": "string",
                                     "maxLength": 16384
                                   },
+                                  "contentRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                  },
                                   "contentIndices": {
                                     "type": "array",
                                     "items": {
@@ -8449,6 +8514,36 @@
                                         "type": "string",
                                         "minLength": 1,
                                         "maxLength": 4096
+                                      },
+                                      "executionId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 4096
+                                      },
+                                      "parentToolCallId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 4096
+                                      },
+                                      "status": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "const": "running"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "completed"
+                                          },
+                                          {
+                                            "type": "string",
+                                            "const": "failed"
+                                          }
+                                        ]
+                                      },
+                                      "source": {
+                                        "type": "string",
+                                        "maxLength": 1048576
                                       }
                                     },
                                     "additionalProperties": false
@@ -13949,6 +14044,36 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "executionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "running"
+                      },
+                      {
+                        "type": "string",
+                        "const": "completed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "failed"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "maxLength": 1048576
                   }
                 },
                 "additionalProperties": false
@@ -14694,6 +14819,36 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "executionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "running"
+                      },
+                      {
+                        "type": "string",
+                        "const": "completed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "failed"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "maxLength": 1048576
                   }
                 },
                 "additionalProperties": false
@@ -15439,6 +15594,36 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "executionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "running"
+                      },
+                      {
+                        "type": "string",
+                        "const": "completed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "failed"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "maxLength": 1048576
                   }
                 },
                 "additionalProperties": false
@@ -16192,6 +16377,36 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 4096
+                      },
+                      "executionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "parentToolCallId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "status": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "running"
+                          },
+                          {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          {
+                            "type": "string",
+                            "const": "failed"
+                          }
+                        ]
+                      },
+                      "source": {
+                        "type": "string",
+                        "maxLength": 1048576
                       }
                     },
                     "additionalProperties": false
@@ -16954,6 +17169,36 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 4096
+                      },
+                      "executionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "parentToolCallId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "status": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "running"
+                          },
+                          {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          {
+                            "type": "string",
+                            "const": "failed"
+                          }
+                        ]
+                      },
+                      "source": {
+                        "type": "string",
+                        "maxLength": 1048576
                       }
                     },
                     "additionalProperties": false
@@ -17708,6 +17953,36 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "executionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "parentToolCallId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "running"
+                      },
+                      {
+                        "type": "string",
+                        "const": "completed"
+                      },
+                      {
+                        "type": "string",
+                        "const": "failed"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "maxLength": 1048576
                   }
                 },
                 "additionalProperties": false
@@ -18688,6 +18963,36 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 4096
+                      },
+                      "executionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "parentToolCallId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "status": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "running"
+                          },
+                          {
+                            "type": "string",
+                            "const": "completed"
+                          },
+                          {
+                            "type": "string",
+                            "const": "failed"
+                          }
+                        ]
+                      },
+                      "source": {
+                        "type": "string",
+                        "maxLength": 1048576
                       }
                     },
                     "additionalProperties": false

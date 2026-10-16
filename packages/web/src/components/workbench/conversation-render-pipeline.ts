@@ -27,6 +27,7 @@ export type ConversationRenderCacheEntry = {
 	liveCompaction: WorkbenchState["liveCompaction"];
 	liveTurnId: number;
 	responseActive: boolean;
+	thinkingActive?: boolean,
 	canEditPrompts: boolean;
 	editingEntryId?: string;
 	settledTurns?: WorkbenchState["settledTurns"];
@@ -50,6 +51,7 @@ export type ConversationRenderPipelineInput = {
 	liveCompaction: WorkbenchState["liveCompaction"];
 	liveTurnId: number;
 	responseActive: boolean;
+	thinkingActive?: boolean,
 	canEditPrompts: boolean;
 	editingEntryId?: string;
 	settledTurns?: WorkbenchState["settledTurns"];
@@ -233,6 +235,7 @@ export class ConversationRenderPipeline {
 			input.observedElapsed,
 			input.editingEntryId,
 			input.settledTurns?.[input.liveTurnId],
+			input.thinkingActive,
 		);
 		const renderItems = preserveConversationToolStackKeys(computedRenderItems, cached?.renderItems ?? []);
 		const liveBytes =
@@ -250,6 +253,7 @@ export class ConversationRenderPipeline {
 			liveCompaction: input.liveCompaction,
 			liveTurnId: input.liveTurnId,
 			responseActive: input.responseActive,
+			thinkingActive: input.thinkingActive,
 			canEditPrompts: input.canEditPrompts,
 			editingEntryId: input.editingEntryId,
 			settledTurns: input.settledTurns,
@@ -341,6 +345,7 @@ function matchesConversationRenderInput(
 		cached.liveCompaction === input.liveCompaction &&
 		cached.liveTurnId === input.liveTurnId &&
 		cached.responseActive === input.responseActive &&
+		cached.thinkingActive === input.thinkingActive &&
 		cached.canEditPrompts === input.canEditPrompts &&
 		cached.editingEntryId === input.editingEntryId &&
 		cached.settledTurns === input.settledTurns

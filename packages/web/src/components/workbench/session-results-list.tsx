@@ -21,7 +21,12 @@ export function SessionResultsList({
 	selectedSessionId,
 	retainedUnread,
 	visibleCount,
+	pageSize,
 	onLoadMore,
+	onCollapse,
+	onMarkAllRead,
+	markingAllRead,
+	markAllReadDisabled,
 	query,
 	loading,
 	scrollRef,
@@ -33,7 +38,12 @@ export function SessionResultsList({
 	selectedSessionId?: string;
 	retainedUnread?: { sessionId: string; index: number };
 	visibleCount: number;
+	pageSize: number;
 	onLoadMore: () => void;
+	onCollapse: () => void;
+	onMarkAllRead: () => void;
+	markingAllRead: boolean;
+	markAllReadDisabled: boolean;
 	query: string;
 	loading: boolean;
 	scrollRef: ScrollRef;
@@ -65,12 +75,25 @@ export function SessionResultsList({
 	}, [entries, unreadSessionIds, retainedUnread, selectedSessionId, query]);
 	const unreadCount = waiting.filter(({ session }) => isSessionUnread(session, unreadSessionIds)).length;
 	const shown = waiting.slice(0, visibleCount);
-
+	const hasMore = waiting.length > shown.length;
+	const canCollapse = visibleCount > pageSize && waiting.length > pageSize;
 	return (
 		<div className="grid gap-4 pb-5">
 			<section aria-label="待查看结果">
-				<div className="flex items-center justify-between px-2 pb-2 text-xs font-medium text-muted-foreground">
-					<span>待查看</span><span>{unreadCount}</span>
+				<div className="flex items-center justify-between gap-2 px-2 pb-2 text-xs font-medium text-muted-foreground">
+					<span>待查看</span>
+					<div className="flex items-center gap-2">
+						<Button
+							className="h-8 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
+							variant="ghost"
+							disabled={markingAllRead || markAllReadDisabled}
+							aria-busy={markingAllRead}
+							onClick={onMarkAllRead}
+						>
+							{markingAllRead ? "正在标记" : "全部已读"}
+						</Button>
+						<span>{unreadCount}</span>
+					</div>
 				</div>
 				{shown.length ? (
 					<VirtualizedSessionList
@@ -82,10 +105,29 @@ export function SessionResultsList({
 						renderItem={(entry, index) => renderEntry(entry, index)}
 					/>
 				) : <p className="px-2 py-3 text-xs text-muted-foreground">{loading ? "正在加载会话结果" : query ? "没有匹配的待查看结果" : "没有待查看的结果"}</p>}
-				{waiting.length > shown.length ? (
-					<Button className="h-8 w-full justify-start !pl-8 text-xs text-muted-foreground" variant="ghost" onClick={onLoadMore}>
-						加载更多
-					</Button>
+				{hasMore || canCollapse ? (
+					<div className="mt-0.5 flex min-w-0 items-center gap-1" role="group" aria-label="结果列表分页">
+						{hasMore ? (
+							<Button
+								className="h-8 min-w-0 flex-1 justify-start gap-2 py-1 pr-2 !pl-8 text-left text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
+								variant="ghost"
+								onClick={onLoadMore}
+							>
+								<span className="project-list-item-label min-w-0 flex-1 truncate">加载更多</span>
+							</Button>
+						) : (
+							<span className="min-w-0 flex-1" aria-hidden="true" />
+						)}
+						{canCollapse ? (
+							<Button
+								className="h-8 shrink-0 justify-end px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
+								variant="ghost"
+								onClick={onCollapse}
+							>
+								<span className="project-list-item-label">收起更多</span>
+							</Button>
+						) : null}
+					</div>
 				) : null}
 			</section>
 			<section aria-label="最近查看结果">

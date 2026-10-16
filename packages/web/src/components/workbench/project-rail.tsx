@@ -252,6 +252,7 @@ export const ProjectRail = memo(function ProjectRail({
 	const handledFocusRef = useRef<number>();
 	const [focusRequest, setFocusRequest] = useState<{ tab: SessionListTab; sessionId?: string; scrollTop: number; id: number }>();
 	const [retainedUnread, setRetainedUnread] = useState<{ sessionId: string; index: number }>();
+	const [markingAllResultsRead, setMarkingAllResultsRead] = useState(false);
 	const pendingNewSessionRef = useRef<{ projectId: string; knownIds: Set<string> }>();
 	const changeSessionTab = useCallback((tab: SessionListTab, sessionId?: string) => {
 		if (tab === sessionTab && !sessionId) return;
@@ -299,6 +300,9 @@ export const ProjectRail = memo(function ProjectRail({
 	const resultEntries = useMemo(() => projects.flatMap((project) =>
 		searchProjectSessions(project, "all", "", roomAgentSessionIds, state.unreadSessionIds)
 			.map((session) => ({ project, session }))), [projects, roomAgentSessionIds, state.unreadSessionIds]);
+	const unreadResults = useMemo(() => resultEntries
+		.filter(({ session }) => isSessionUnread(session, state.unreadSessionIds))
+		.map(({ session }) => session.result!), [resultEntries, state.unreadSessionIds]);
 	const tabCounts = useMemo(
 		() => countSessionsByTab(searchedSessionsByProject, state.unreadSessionIds),
 		[searchedSessionsByProject, state.unreadSessionIds],
@@ -1568,7 +1572,23 @@ export const ProjectRail = memo(function ProjectRail({
 							selectedSessionId={state.sessionId}
 							retainedUnread={retainedUnread}
 							visibleCount={sessionVisibleCounts.results ?? SESSION_PAGE_SIZE}
+							pageSize={SESSION_PAGE_SIZE}
 							onLoadMore={() => setSessionVisibleCounts((current) => ({ ...current, results: (current.results ?? SESSION_PAGE_SIZE) + SESSION_PAGE_SIZE }))}
+							onCollapse={() => setSessionVisibleCounts((current) => ({ ...current, results: SESSION_PAGE_SIZE }))}
+							markingAllRead={markingAllResultsRead}
+							markAllReadDisabled={!state.connected || state.loading || !unreadResults.length || projects.some((project) => project.sessionsLoaded === false)}
+							onMarkAllRead={async () => {
+								if (markingAllResultsRead) return;
+								setMarkingAllResultsRead(true);
+								setRetainedUnread(undefined);
+								try {
+									await actions.markSessionResultsRead(unreadResults);
+								} catch (error) {
+									actions.showToast(error instanceof Error ? error.message : String(error), "error");
+								} finally {
+									setMarkingAllResultsRead(false);
+								}
+							}}
 							query={normalizedQuery}
 							loading={state.loading || projects.some((project) => project.sessionsLoaded === false)}
 							scrollRef={sessionViewportRef}

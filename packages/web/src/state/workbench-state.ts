@@ -239,8 +239,10 @@ export function mergeProjectSessions(current: WebProject[], incoming: readonly W
 		if (!previous) return project;
 		const incomplete = project.sessionsLoaded === false;
 		const knownIds = incomplete ? new Set(previous.sessions.map((session) => session.id)) : undefined;
+		const incomingById = incomplete ? new Map(project.sessions.map((session) => [session.id, session])) : undefined;
 		const sessions = mergeSessionSummaries(previous.sessions, incomplete
-			? [...previous.sessions, ...project.sessions.filter((session) => !knownIds!.has(session.id))]
+			? [...previous.sessions.map((session) => incomingById!.get(session.id) ?? session),
+				...project.sessions.filter((session) => !knownIds!.has(session.id))]
 			: project.sessions);
 		const next = { ...project, sessions,
 			...(incomplete && previous.sessionsLoaded !== false ? { sessionsLoaded: true } : {}),

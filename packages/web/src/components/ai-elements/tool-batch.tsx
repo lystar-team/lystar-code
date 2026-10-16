@@ -7,6 +7,7 @@ import {
 	CheckCircleIcon,
 	ChevronDownIcon,
 	Code2Icon,
+	DatabaseIcon,
 	ExternalLinkIcon,
 	EyeIcon,
 	FileCode2Icon,
@@ -23,7 +24,7 @@ import {
 	WrenchIcon,
 	XCircleIcon,
 } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type MouseEvent as ReactMouseEvent, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model.ts";
@@ -55,7 +56,9 @@ import { commandPresentation } from "./command-presentation";
 import { commandFromToolSummary, filePathFromTool, toolPresentationContext, toolPresentationTitle } from "./tool-presentation.ts";
 import { Source } from "./sources";
 import { CodemodeToolDetail } from "./codemode-tool";
+import { CodemodeStoreDetail } from "./codemode-store";
 import { SessionCollaborationToolDetail } from "./session-collaboration-tool";
+import { SessionWorkspaceToolDetail } from "./session-workspace-tool";
 
 export type ToolBatchAutoCollapse = boolean | (() => boolean);
 
@@ -82,15 +85,6 @@ export interface ToolBatchProps {
 
 function resolveAutoCollapse(value: ToolBatchAutoCollapse): boolean {
 	return typeof value === "function" ? value() : value;
-}
-
-function transcriptAnchorKey(tool: ToolBatchTool): string {
-	let hash = 2166136261;
-	for (const character of `${tool.name}:${tool.id}`) {
-		hash ^= character.charCodeAt(0);
-		hash = Math.imul(hash, 16777619);
-	}
-	return `tool:${(hash >>> 0).toString(36)}`;
 }
 
 function canCollapseFromContent(event: ReactMouseEvent<HTMLElement>): boolean {
@@ -192,7 +186,9 @@ const commandIcons = {
 } as const;
 
 function toolIcon(name: string, className?: string, skill = false, images = false, command?: string): ReactNode {
-	const Icon = name === "codemode"
+	const Icon = name === "codemode-store"
+		? DatabaseIcon
+		: name === "codemode" || name === "codemode_wait"
 		? Code2Icon
 		: images
 		? ImagesIcon
@@ -344,14 +340,7 @@ function toolRowActionLabel(name: string, state: ToolBatchState): string {
 }
 
 export function toolRowTitle(tool: ToolBatchTool): string {
-	if (tool.name !== "read") return toolPresentationTitle(tool);
-	if (tool.images?.length) return `已查看 ${tool.images.length} 张图像`;
-	const skillName = skillNameFromTool(tool);
-	if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
-	const title = toolTitle(tool);
-	const action = toolRowActionLabel(tool.name, tool.state);
-	const namedFile = parseToolSummary(tool.summary)?.path === title;
-	return title && (title !== tool.name || namedFile) ? `${action} ${title}` : action;
+	return toolPresentationTitle(tool);
 }
 
 export function toolBatchSummaryLabel(tools: readonly ToolBatchTool[]): string {
@@ -457,7 +446,16 @@ function ToolDiffOutput({
 	);
 }
 
-type ToolActivityKind = "read" | "command" | "mutation";
+export type ToolActivityKind = "read" | "command" | "mutation";
+
+export function toolBatchActivityPresentation(tools: readonly ToolBatchTool[]): { kind?: ToolActivityKind; repeatedFileReads: boolean } {
+	const ordinaryReads = tools.length > 1 && tools.every((tool) => tool.name === "read" && !tool.images?.length && !skillNameFromTool(tool));
+	const repeatedFileReads = ordinaryReads && new Set(tools.map(toolTitle)).size < tools.length;
+	const kind = ordinaryReads && !repeatedFileReads ? "read"
+		: tools.length > 1 && tools.every((tool) => tool.name === "bash" && !tool.images?.length) ? "command"
+		: tools.length > 1 && tools.every((tool) => tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch") ? "mutation" : undefined;
+	return { kind, repeatedFileReads };
+}
 
 function activityPathParts(tool: ToolBatchTool): { filename: string; directory?: string } {
 	const title = toolTitle(tool).replaceAll("\\", "/");
@@ -477,6 +475,7 @@ function activityStatusLabel(state: ToolBatchState, preparing = false): string {
 }
 
 function toolRowStatus(tool: ToolBatchTool): string {
+	if (tool.name === "codemode_wait" && tool.state === "output-available" && tool.codemode?.status === "running") return "脚本仍在运行";
 	if (tool.name === "bash" && tool.state === "output-available" && commandPresentation(commandFromToolSummary(tool.summary)).resultUncertain) return "已执行";
 	return activityStatusLabel(tool.state, tool.preparing && tool.name !== "edit");
 }
@@ -526,7 +525,7 @@ function toolBatchStatusLabel(tools: readonly ToolBatchTool[]): string {
 	return statusLabels[state];
 }
 
-function ToolActivityRow({
+export function ToolActivityRow({
 	tool,
 	sessionId,
 	onOpenPath,
@@ -550,7 +549,7 @@ function ToolActivityRow({
 	const outcomeUncertain = tool.name === "bash" && tool.state === "output-available" && commandPresentation(commandFromToolSummary(tool.summary)).resultUncertain;
 	const status = toolRowStatus(tool);
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0" data-transcript-anchor-key={transcriptAnchorKey(tool)}>
+		<Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
 			<CollapsibleTrigger asChild disabled={!hasDetails}>
 				<button
 					aria-label={`${title}，${status}${hasDetails ? `，${open ? "收起" : "展开"}详情` : ""}`}
@@ -616,7 +615,7 @@ function ToolActivityRow({
 	);
 }
 
-function ToolActivityGroup({
+export function ToolActivityGroup({
 	tools,
 	kind,
 	open,
@@ -627,6 +626,10 @@ function ToolActivityGroup({
 	sessionId,
 	onOpenPath,
 	className,
+	headerProps,
+	padding,
+	children,
+	onCollapseComplete,
 }: {
 	tools: readonly ToolBatchTool[];
 	kind: ToolActivityKind;
@@ -638,6 +641,10 @@ function ToolActivityGroup({
 	sessionId?: string;
 	onOpenPath?: (path: string) => void;
 	className?: string;
+	headerProps?: ComponentProps<"button"> & { "data-index"?: number; "data-conversation-row"?: string };
+	padding?: ReactNode;
+	children?: ReactNode;
+	onCollapseComplete?: () => void;
 }) {
 	const active = tools.some((tool) => tool.state === "input-available");
 	const label = toolActivityBatchLabel(tools, kind);
@@ -657,6 +664,7 @@ function ToolActivityGroup({
 		<Collapsible className={cn("group/tool-activity min-w-0 w-full", className)} open={open} onOpenChange={onOpenChange}>
 			<CollapsibleTrigger asChild>
 				<button
+					{...headerProps}
 					aria-label={`${label}，${status}，${open ? "收起" : "展开"}`}
 					data-transcript-resize-anchor
 					className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -671,9 +679,10 @@ function ToolActivityGroup({
 					</span>
 				</button>
 			</CollapsibleTrigger>
-			<GsapCollapsibleContent open={open} duration={kind === "mutation" ? 0 : undefined} className="pt-1.5">
+			<GsapCollapsibleContent open={open} onCollapseComplete={onCollapseComplete} duration={kind === "mutation" ? 0 : undefined} className={padding === undefined ? "pt-1.5" : undefined}>
+				{padding}
 				<div className="relative ml-1 grid min-w-0 gap-0 pl-4 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-border">
-					{tools.map((tool) => (
+					{children ?? tools.map((tool) => (
 						<ToolActivityRow
 							key={tool.id}
 							tool={tool}
@@ -1020,7 +1029,7 @@ function ToolDetail({
 		/>
 	) : null;
 
-	if (tool.name === "codemode") {
+	if (tool.name === "codemode" || tool.name === "codemode_wait") {
 		return (
 			<CodemodeToolDetail tool={tool} imagePreview={imagePreview}>
 				{tool.codemode?.calls.length ? (
@@ -1039,6 +1048,10 @@ function ToolDetail({
 				) : null}
 			</CodemodeToolDetail>
 		);
+	}
+	if (tool.name === "codemode-store") return <CodemodeStoreDetail detail={tool.detail} />;
+	if (tool.name === "session_accept_result" || tool.name === "session_workspaces") {
+		return <SessionWorkspaceToolDetail tool={{ ...tool, name: tool.name }} onOpenSession={onOpenSession} onOpenPath={onOpenPath} />;
 	}
 	if (isSessionTool(tool.name)) {
 		return (
@@ -1204,7 +1217,7 @@ function ToolBatchRow({
 	const hasDetails = !sessionNavigation &&
 		(isSessionTool(tool.name)
 			? true
-			: tool.name === "image_gen" || tool.name === "codemode"
+			: tool.name === "image_gen" || tool.name === "codemode" || tool.name === "codemode_wait" || tool.name === "codemode-store"
 				? true
 				: tool.name === "web_search"
 				? true
@@ -1223,7 +1236,7 @@ function ToolBatchRow({
 	}, [active, autoCollapseWhenComplete, tool.name]);
 
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)} data-transcript-anchor-key={transcriptAnchorKey(tool)}>
+		<Collapsible open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>
 			<CollapsibleTrigger asChild>
 				<button
 					data-transcript-resize-anchor
@@ -1292,7 +1305,7 @@ function ToolBatchRow({
 					data-transcript-resize-anchor
 					className={cn(
 						"min-w-0 pb-0.5 pl-6 pr-0 pt-0",
-						tool.name === "image_gen" || tool.name === "codemode"
+						tool.name === "image_gen" || tool.name === "codemode" || tool.name === "codemode_wait"
 							? "overflow-visible"
 							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto",
 					)}
@@ -1341,20 +1354,10 @@ export const ToolBatch = memo(function ToolBatch({
 }: ToolBatchProps) {
 	const active = tools.some((tool) => tool.state === "input-available" || tool.state === "input-queued");
 	const aggregateState = batchState(tools);
-	const imageGallery = tools.length > 0 && tools.every((tool) => tool.name !== "codemode" && tool.images?.length);
+	const imageGallery = tools.length > 0 && tools.every((tool) => tool.name !== "codemode" && tool.name !== "codemode_wait" && tool.images?.length);
 	const imageGeneration = tools.some((tool) => tool.name === "image_gen");
-	const ordinaryReads =
-		tools.length > 1 &&
-		tools.every((tool) => tool.name === "read" && !tool.images?.length && !skillNameFromTool(tool));
-	const repeatedFileReads = ordinaryReads && new Set(tools.map(toolTitle)).size < tools.length;
-	const readActivity = ordinaryReads && !repeatedFileReads;
-	const commandActivity = tools.length > 1 && tools.every((tool) => tool.name === "bash" && !tool.images?.length);
-	const mutationActivity =
-		tools.length > 1 &&
-		tools.every((tool) =>
-			tool.name === "edit" || tool.name === "write" || tool.name === "apply_patch",
-		);
-	const compactActivity = readActivity || commandActivity || mutationActivity;
+	const { kind: activityKind, repeatedFileReads } = toolBatchActivityPresentation(tools);
+	const compactActivity = activityKind !== undefined;
 	const userOpened = useRef(initialOpen || controlledOpen === true);
 	const preserveExpanded = tools.length !== 1 || tools[0]?.name !== "read";
 	const [open, setOpen] = useControllableState({
@@ -1374,11 +1377,11 @@ export const ToolBatch = memo(function ToolBatch({
 	}, [active, autoCollapseWhenComplete, imageGeneration, preserveExpanded]);
 
 	if (!tools.length) return null;
-	if (readActivity || commandActivity || mutationActivity) {
+	if (activityKind) {
 		return (
 			<ToolActivityGroup
 				tools={tools}
-				kind={readActivity ? "read" : commandActivity ? "command" : "mutation"}
+				kind={activityKind}
 				open={open}
 				onOpenChange={setOpen}
 				toolOpen={toolOpen}

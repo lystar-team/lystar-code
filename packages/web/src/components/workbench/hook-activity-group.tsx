@@ -11,7 +11,6 @@ export function HookActivityGroup({ entry }: { entry: HookActivityGroupRenderIte
 	return (
 		<div
 			className="flex min-w-0 max-w-full items-start gap-2 py-1 text-sm text-destructive"
-			data-transcript-anchor-key={entry.key}
 			role="status"
 		>
 			<CircleAlert className="mt-0.5 size-4 shrink-0" />

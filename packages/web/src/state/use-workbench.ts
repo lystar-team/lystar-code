@@ -1,4 +1,4 @@
-import { MAX_TRANSCRIPT_PAGE_SIZE, type SessionProgress } from "@lystar/code-web-protocol";
+import { MAX_TRANSCRIPT_PAGE_SIZE, type SessionProgress, type SessionResultState } from "@lystar/code-web-protocol";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import type { ProjectGroup, TranscriptResponse, UiRequestEvent, WebLease, WebOperation, WebProject } from "../types.ts";
@@ -203,7 +203,14 @@ export function useWorkbench() {
 			next = { ...next, displayedResultRevision: undefined };
 		}
 		if (next.projects !== current.projects) {
-			next = { ...next, unreadSessionIds: sessionUnreadIndex(next.projects, current.unreadSessionIds) };
+			const previousProjects = new Map(current.projects.map((project) => [project.id, project]));
+			const projects = next.projects.map((project) => {
+				const previous = previousProjects.get(project.id);
+				if (!previous || previous === project) return project;
+				const sessions = mergeSessionSummaries(previous.sessions, project.sessions);
+				return sessions === project.sessions ? project : { ...project, sessions };
+			});
+			next = { ...next, projects, unreadSessionIds: sessionUnreadIndex(projects, current.unreadSessionIds) };
 		}
 		stateRef.current = next;
 		// 后台仍接收完整状态；控制权、连接和交互请求继续驱动原有副作用。
@@ -1490,6 +1497,15 @@ export function useWorkbench() {
 		return tracked;
 	}, [updateState]);
 
+	const markSessionResultsRead = useCallback(async (results: readonly Pick<SessionResultState, "sessionId" | "revision">[]): Promise<void> => {
+		const outcomes = await Promise.allSettled(results.map(async ({ sessionId, revision }) => {
+			const { result } = await webApi.markSessionResultRead(sessionId, revision);
+			if (mountedRef.current) updateState((current) => applySessionResult(current, result));
+		}));
+		const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+		if (failures.length) throw new Error(`${failures.length} 个结果未能标记为已读：${errorMessage(failures[0]!.reason)}`);
+	}, [updateState]);
+
 	const actions = useMemo(
 		() => ({
 			selectProject,
@@ -1674,7 +1690,7 @@ export function useWorkbench() {
 			showToast,
 		],
 	);
-	const actionsWithFastMode = useMemo(() => ({ ...actions, updateFastMode, markSessionResultRead }), [actions, updateFastMode, markSessionResultRead]);
+	const actionsWithFastMode = useMemo(() => ({ ...actions, updateFastMode, markSessionResultRead, markSessionResultsRead }), [actions, updateFastMode, markSessionResultRead, markSessionResultsRead]);
 
 
 	useEffect(() => {

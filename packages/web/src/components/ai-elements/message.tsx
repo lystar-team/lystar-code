@@ -18,7 +18,7 @@ import type { UIMessage } from "ai";
 import { cjk } from "@streamdown/cjk";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { Virtuoso } from "react-virtuoso";
+import { VirtualList } from "../ui/virtual-list";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, NamedExoticComponent, ReactElement } from "react";
 import {
@@ -521,10 +521,11 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 		);
 		const response = virtualized ? (
 			<div className={cn("h-full w-full", className)}>
-				<Virtuoso
-					data={markdownBlocks}
-					increaseViewportBy={600}
-					itemContent={(index, block) => (
+				<VirtualList
+					items={markdownBlocks}
+					getKey={(_block, index) => String(index)}
+					estimateSize={() => 160}
+					renderItem={(block, index) => (
 						<div
 							className="mx-auto w-full max-w-4xl px-1 py-2 sm:px-4 sm:py-4"
 							data-markdown-block={index}
@@ -532,7 +533,6 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 							{renderStreamdown(block)}
 						</div>
 					)}
-					style={{ height: "100%", width: "100%" }}
 				/>
 			</div>
 		) : renderStreamdown(children ?? "", className);

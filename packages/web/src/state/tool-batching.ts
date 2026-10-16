@@ -86,6 +86,8 @@ const sessionToolActions: Record<string, string> = {
 	session_list: "查看智能体会话",
 	session_profiles: "查看智能体配置",
 	session_stop: "停止智能体",
+	session_accept_result: "接收智能体产物",
+	session_workspaces: "查看协作工作区",
 	room_create: "创建协作空间",
 	room_join: "加入协作空间",
 	room_leave: "退出协作空间",

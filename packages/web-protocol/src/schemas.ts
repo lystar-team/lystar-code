@@ -391,6 +391,11 @@ export type TranscriptCodemodeCall = Static<typeof TranscriptCodemodeCallSchema>
 const TranscriptCodemodeDetailsSchema = StrictObject({
 	calls: Type.Array(TranscriptCodemodeCallSchema, { maxItems: 128 }),
 	fullOutputPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+	executionId: Type.Optional(Id),
+	parentToolCallId: Type.Optional(Id),
+	status: Type.Optional(Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed")])),
+	/** 等待结果按 parentToolCallId 关联的原始脚本；仅在调用上下文可用时提供。 */
+	source: Type.Optional(WorkspaceText),
 });
 export type TranscriptCodemodeDetails = Static<typeof TranscriptCodemodeDetailsSchema>;
 
@@ -756,6 +761,7 @@ export const TranscriptViewItemSchema = Type.Union([
 	StrictObject({
 		type: Type.Literal("thinking"),
 		text: TranscriptViewTextSchema,
+		contentRef: Type.Optional(Id),
 		contentIndices: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
 	}),
 	TranscriptWebSearchSchema,

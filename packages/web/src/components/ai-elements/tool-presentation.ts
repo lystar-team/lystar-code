@@ -1,10 +1,12 @@
 import type { ToolBatchTool } from "../../types.ts";
+import { codemodeStoreTitle } from "../../adapters/codemode-store-presentation.ts";
 import {
 	isSessionTool,
 	parseSessionToolInput,
 	parseSessionToolResult,
 	sessionToolAgent,
 	sessionToolAction,
+	skillNameFromTool,
 } from "../../state/tool-batching.ts";
 import { commandRowLabel } from "./command-presentation.ts";
 
@@ -80,6 +82,8 @@ function sessionTitle(tool: ToolBatchTool, input: Record<string, unknown> | unde
 		return `等待${count > 1 ? ` ${count} 个智能体` : nickname ? ` ${nickname} ` : "智能体"}返回结果`;
 	}
 	if (tool.name === "session_stop") return `停止 ${agent} 的任务`;
+	if (tool.name === "session_accept_result") return "接收智能体产物";
+	if (tool.name === "session_workspaces") return input?.action === "cleanup" ? "回收协作工作区" : "查看协作工作区";
 	return sessionToolAction(tool.name) ?? tool.name;
 }
 
@@ -121,7 +125,20 @@ function roomToolTitle(tool: ToolBatchTool, input: Record<string, unknown> | und
 
 export function toolPresentationTitle(tool: ToolBatchTool): string {
 	if (tool.name === "codemode") return "执行 JavaScript 脚本";
+	if (tool.name === "codemode_wait") return "等待脚本返回结果";
+	if (tool.name === "codemode-store") return codemodeStoreTitle(tool.detail);
 	const input = inputRecord(tool.summary);
+	if (tool.name === "read") {
+		if (tool.images?.length) return `已查看 ${tool.images.length} 张图像`;
+		const skillName = skillNameFromTool(tool);
+		if (skillName && tool.state === "output-available") return `已加载 ${skillName} 技能`;
+		const path = filePathFromTool(tool) ?? stringValue(input?.url);
+		const title = path ?? (tool.summary === tool.name
+			? tool.preparing ? "文件路径尚未返回" : "文件路径未记录"
+			: tool.summary || tool.name);
+		const action = tool.state === "input-available" ? "正在读取" : tool.state === "input-queued" ? "已排队" : "已读取";
+		return title && (title !== tool.name || input?.path === title) ? `${action} ${title}` : action;
+	}
 	if (tool.images?.length && tool.name !== "image_gen") return `已查看 ${tool.images.length} 张图像`;
 	if (tool.name === "bash") {
 		const command = commandFromToolSummary(tool.summary);

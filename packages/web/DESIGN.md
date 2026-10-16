@@ -179,22 +179,29 @@ Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5r
 
 ### 5.4 对话区
 
-虚拟滚动列表（react-virtuoso），顶部加载更早消息，底部跟随流式输出，用户离开底部时出现「回到最新消息」按钮。相邻活动行间距为 0，正文行间距 `DEFAULT_TRANSCRIPT_GAP = 12px`。
+主聊天列表使用 TanStack Virtual，顶部加载更早消息，底部跟随流式输出，用户离开底部时出现「回到最新消息」按钮。相邻活动行间距为 0，正文行间距 `DEFAULT_TRANSCRIPT_GAP = 12px`。
+
+消息分组由渲染模型决定；可见行投影把展开的步骤、工作过程和工具活动拆为稳定 key 的测量行。列表引擎统一负责测量、历史插入锚定与实际滚动；用户跟随意图、历史请求、会话位置缓存和收起动画生命周期分别维护。用户上翻暂停跟随，主动滚回底部或点击按钮恢复跟随，Agent 结束不关闭底部保持。会话位置与展开选择按会话及历史代次保存。
+
+全部虚拟列表统一使用 TanStack Virtual。运行记录、会话列表（含搜索、树和结果入口）与长 Markdown 预览复用 `ui/virtual-list.tsx`；会话行尺寸由调用方指定，长正文行高动态测量。外部滚动容器中的列表用自身起点计算定位偏移，业务组件不再维护窗口范围或滚动补偿。
 
 内容层级，从重到轻：
 
 | 层 | 承载 | 规则 |
 | --- | --- | --- |
-| 工作过程 | `work-process` 折叠组，默认收起 | 只放工具、Hook、Extension 活动，不放正文结论 |
+| 工作过程 | `work-process` 折叠组，默认收起 | 放思考、工具、Hook、Extension 和过程消息，最终回复留在组外；思考已展开时保持可见 |
 | 结果分界 | `result-boundary` 分隔线 | 工作过程与最终结果之间只有一条分隔线 |
-| Agent 步骤 | `AgentStepContent` 折叠块 | 运行中默认展开，完成后保留用户选择；展开时标题吸顶 |
+| Agent 步骤 | `ConversationGroup` 折叠块 | 运行中默认展开，完成后保留用户选择；展开时标题吸顶 |
 | 正文消息 | `TranscriptMessageView` | 用户消息 `max-w-[84%]` 右对齐、使用 `--bg-soft`；Agent 正文不套卡片 |
 | 工具活动 | `ToolBatch` | 单工具单行，多工具成组；相邻工具不重复画线 |
+| 思考内容 | `ThinkingBlock` | 默认收起，显示第一条非空行；接收时显示 Shimmer，展开后按 Markdown 阅读 |
 | 压缩、Hook、Extension | `CompactionCard`、`HookActivityGroup`、`extension-activity-card` | 平面容器，保留真实状态文案 |
 
 消息动作（复制、编辑、删除）默认 `opacity-0`，悬停或聚焦时显示，不常驻占位。用户消息附附件缩略图与投递状态；Agent 消息下方显示本次耗时，两者都是 `text-xs` 次要文字。
 
 用户消息里的引用由 `prompt-token` 高亮：`@[路径]`、`$[技能]`、`/skill:名称`、`@"文件名"`、`@路径` 归类为技能或文件，只改样式不改原文，点击后走已有的打开入口。运行中还有 `live-elapsed-header` 显示实时耗时，回合结束交回下方「本次耗时」。
+
+思考内容不按模型拆分组件：GPT 可见摘要与 DeepSeek 长篇思考共用首行预览和全文。预览去除 Markdown 结构标记，尾部换行不清空首行。思考阶段结束后停止 Shimmer，保留文字；减少动效时显示静态预览。收起行和展开正文均为 13px、20px 行高，图标 16px，与工具详情一致；标题用字重区分层级，不额外放大。思考区域限制在聊天容器内，长路径换行，代码和表格在自身区域滚动。用户展开选择按稳定块标识保留，实时转历史时复用该标识；历史长篇思考通过 `contentRef` 按需读取全文，复制使用完整原文。
 
 首屏没读到记录时显示四条左右交替的脉冲骨架（`h-14/h-12 animate-pulse rounded-2xl bg-muted/35`）而不是空白，加载完成后换成真实内容，不在骨架上叠加提示卡片。
 
@@ -211,6 +218,10 @@ Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5r
 - 工具图标映射在 `tool-batch.tsx` 的 `toolIcon`；新增工具时在此登记，不在组件里散落条件。
 - 工具状态由 `adapters/live-tool-view-model.ts` 把协议 `ToolActivityState` 映射为展示状态。展示层不自行推断状态。
 - 图片生成结果用 `components/agents/image-generation.tsx`（引自 beUI，使用 `motion/react` 动效），由 `tool-batch.tsx` 接入；其余已安装的 beUI / AI Elements 能力没有接入工作台，见第 8 节。
+- `codemode-store` 是脚本保存数据的扩展记录，标题显示保存或删除项数，展开后说明用途，并分别展示保存值与删除键；记录分组使用相同标题。内容不完整时保留收到的原文。
+- `codemode_wait` 复用脚本输出与内部调用详情，标题为「等待脚本返回结果」。结果按 `parentToolCallId` 关联原调用；调用上下文可用时在「原脚本」页签展示脚本，不可用时明确说明。工具已返回但脚本状态仍为 `running` 时显示「脚本仍在运行」，不称脚本完成。
+- `session_accept_result` 展示任务结果、成果接收状态、变更文件及工作区状态，并提供查看子会话入口；任务完成不等于成果已接收，接收不等于工作区已回收。
+- `session_workspaces` 区分预览与回收动作，逐项展示模式、状态、目录、占用大小、回收条件与保留原因，回收数量仅取结果中的 `released`。复用工作区管理的模式、状态与大小显示，不在历史工具详情中新增接收或回收按钮。
 
 ### 5.6 代码、Diff 与终端输出
 
@@ -224,7 +235,7 @@ Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5r
 输入区是常驻底部区域，容器与对话区同宽。
 
 - 结构：排队消息区在上；运行状态位于输入框内部、输入内容上方；附件与输入内容位于其下。桌面会话统计放在底部上传按钮旁并左对齐，窄屏放在输入框右上角。无运行状态时不保留状态区域或其 padding；窄屏空闲时「统计」入口与输入内容顶部同排。
-- 运行状态文字使用 14px，与底部控件字号一致；默认只显示阶段、耗时与信息图标。状态 Header 不保留底部 padding，输入内容顶部间距为 6px；加载图标旋转，等待确认和异常图标静止，减少动效时关闭旋转。最后进展、连接确认及重试等明细放在 Tooltip 中。悬停、键盘聚焦或点击图标查看，再次点击、点击外部或按 Escape 关闭；Tooltip 与统计详情一样优先朝输入框外上方展开，按视口避让，不占用右侧分栏。
+- 运行状态文字使用 14px，与底部控件字号一致；默认只显示阶段、耗时与信息图标。工具阶段与工具卡片共用 `tool-presentation.ts` 的动作标题，优先读取运行中工具及脚本内调用的参数；Tooltip 的「当前工具」沿用同一标题。状态 Header 不保留底部 padding，输入内容顶部间距为 6px；加载图标旋转，等待确认和异常图标静止，减少动效时关闭旋转。最后进展、连接确认及重试等明细放在 Tooltip 中。悬停、键盘聚焦或点击图标查看，再次点击、点击外部或按 Escape 关闭；Tooltip 与统计详情一样优先朝输入框外上方展开，按视口避让，不占用右侧分栏。
 - 排队消息与输入框属于同一编辑面板，`src/styles.css` 把两者圆角拼合并共用边框；不要给排队消息单独卡片样式。
 - 发送 / 停止复用同一圆形主按钮；发送方式（立即调整、完成后发送）在 Popover 中选择。
 - 模型选择使用带搜索的 `ModelSelector`；思考强度下拉只展示模型实际支持的档位（`VISIBLE_THINKING_LEVELS`）。
@@ -331,7 +342,7 @@ Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5r
 | --- | --- | --- |
 | GSAP、`components/motion` | 会话切换、折叠、面板入场 | 已接入，主实现 |
 | `motion/react` | 图片生成结果（`agents/image-generation.tsx`） | 已接入，仅此一处 |
-| react-virtuoso | 会话长列表虚拟滚动 | 已接入 |
+| TanStack Virtual | 主聊天记录、运行记录、会话列表和长 Markdown 预览的虚拟滚动 | 已接入，统一引擎 |
 | Monaco | 文件与 Markdown 编辑 | 已接入 |
 | tokenlens | `ContextRing` 上下文用量 | 已接入 |
 | `@ant-design/plots` | 设置 → 诊断的运行状态折线图 | 已接入 |

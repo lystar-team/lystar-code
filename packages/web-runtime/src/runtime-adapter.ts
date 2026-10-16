@@ -1501,7 +1501,7 @@ function bashOutput(value: unknown): string | undefined {
 }
 
 export function projectRuntimeProgress(event: AgentSessionEvent, blockId?: string): SessionProgress[] {
-	if ("toolName" in event && AGENT_STEP_TOOL_NAMES.has(event.toolName)) return [];
+	if ("toolName" in event && (AGENT_STEP_TOOL_NAMES.has(event.toolName) || event.toolName === "codemode")) return [];
 	switch (event.type) {
 		case "message_start":
 			if (event.message.role === "assistant") return [{ type: "phase", phase: "turn" }];
@@ -1561,7 +1561,12 @@ export function projectRuntimeProgress(event: AgentSessionEvent, blockId?: strin
 				event.message.role === "assistant"
 			) {
 				const content = event.message.content[stream.contentIndex];
-				if (content?.type === "toolCall" && !AGENT_STEP_TOOL_NAMES.has(content.name)) {
+				// codemode 只由 tool_activity 更新，避免截断的旧式事件覆盖完整脚本及执行状态。
+				if (
+					content?.type === "toolCall" &&
+					content.name !== "codemode" &&
+					!AGENT_STEP_TOOL_NAMES.has(content.name)
+				) {
 					const summary = isDiffTool(content.name)
 						? (toolPath(content.arguments) ?? content.name)
 						: boundedStatus(content.arguments);

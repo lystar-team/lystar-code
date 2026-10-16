@@ -83,7 +83,7 @@ describe("compact tool presentation", () => {
 			tool("read", { path: "src/state/index.ts", offset: 1, limit: 100 }),
 			tool("read", { path: "src/state/index.ts", offset: 101, limit: 100 }),
 		]);
-		expect(html.match(/data-transcript-anchor-key=/gu)).toHaveLength(2);
+		expect(html.match(/data-slot="collapsible-trigger"/gu)).toHaveLength(2);
 		expect(html).toContain("第1-100行");
 		expect(html).toContain("第101-200行");
 		expect(html).not.toContain("次）");
@@ -96,7 +96,7 @@ describe("compact tool presentation", () => {
 			tool("read", { path: "src/state/index.ts", offset: 101, limit: 100 }),
 			tool("read", { path: "test/state/index.ts", offset: 1, limit: 100 }),
 		]);
-		expect(html.match(/data-transcript-anchor-key=/gu)).toHaveLength(3);
+		expect(html.match(/data-slot="collapsible-trigger"/gu)).toHaveLength(3);
 		expect(html).toContain("src/state/");
 		expect(html).toContain("test/state/");
 		expect(html).not.toContain("次）");

@@ -1,47 +1,38 @@
-import {
-	ArrowDownIcon,
-	CheckCircle2,
-	ChevronDownIcon,
-	CircleX,
-	LoaderCircle,
-	Sparkles,
-	WrenchIcon,
-} from "lucide-react";
-import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDownIcon, LoaderCircle, Sparkles } from "lucide-react";
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { CompactionCard } from "./compaction-card";
 import { Composer } from "./composer";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
-import { ToolBatch, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
+import { ToolBatch, ToolActivityGroup, ToolActivityRow, toolBatchActivityPresentation, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import {
 	appendLiveRenderItems,
 	buildConversationRenderItems,
 	buildPersistedRenderItems,
-	type AgentStepChildRenderItem,
-	type AgentStepRenderItem,
 	type CompactionRenderItem,
 	type ConversationContentRenderItem,
 	type ConversationRenderItem,
 	type MessageRenderItem,
+	type ThinkingRenderItem,
 	type TranscriptToolStackRenderItem,
 } from "./conversation-render-model";
 export { appendLiveRenderItems, buildConversationRenderItems, buildPersistedRenderItems };
 import { ConversationRenderPipeline } from "./conversation-render-pipeline";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
-import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { GsapReveal } from "../ui/gsap-reveal";
 import { ACTIVE_OPERATION_STATUSES } from "./constants";
-import { activeThinkingText, ThinkingBlock } from "./live-turn";
+import { activeThinkingBlock, ThinkingBlock } from "./live-turn";
 import { AgentErrorCard, TranscriptItemView, TranscriptMessageView } from "./transcript";
-import { PrependAnchoredConversationTranscript } from "./prepend-anchored-transcript";
-import { DEFAULT_TRANSCRIPT_GAP } from "./virtualized-transcript";
+import { ConversationList, type ConversationGroupLayout } from "./conversation-list";
+import { buildConversationListModel, DEFAULT_TRANSCRIPT_GAP, type ConversationListContent } from "./conversation-list-model";
+import { ConversationGroup } from "./conversation-group";
+import { useConversationHistory } from "./use-conversation-history";
 import type { PromptEditRequest, WorkbenchActions } from "./types";
-import { HISTORY_LOAD_THRESHOLD, useConversationScroll } from "./use-conversation-scroll";
+import { useConversationScroll } from "./use-conversation-scroll";
 import { useConversationExpansion } from "./use-conversation-expansion";
-export { shouldLoadEarlierHistory } from "./use-conversation-scroll";
+import { useConversationGroupTransitions } from "./use-conversation-group-transitions";
+export { shouldLoadEarlierHistory } from "./use-conversation-history";
 export { initialToolStackPresentation } from "./use-conversation-expansion";
-import { formatElapsedDuration } from "./conversation-format";
 import { LiveElapsedHeader } from "./live-elapsed-header";
 import { HookActivityGroup } from "./hook-activity-group";
 import { ExtensionEntryGroup } from "./extension-entry-group";
@@ -55,9 +46,10 @@ export type ConversationState = {
 	connected: boolean;
 	sessionReady: boolean;
 	readOnly: boolean;
-	session?: Pick<NonNullable<WorkbenchState["session"]>, "activity">;
+	session?: Pick<NonNullable<WorkbenchState["session"]>, "activity" | "execution">;
 	sessionError?: string;
 	transcript: WorkbenchState["transcript"];
+	transcriptGeneration?: string;
 	agentSteps: WorkbenchState["agentSteps"];
 	transcriptPageLoaded: boolean;
 	transcriptLoading: boolean;
@@ -92,84 +84,6 @@ export type ConversationActions = Pick<WorkbenchActions, "openResource" | "queue
 
 const EMPTY_LIVE_STEPS = Object.freeze({}) as WorkbenchState["liveSteps"];
 
-function AgentStepDuration({ step, clientClockOffsetMs }: Pick<AgentStepRenderItem, "step" | "clientClockOffsetMs">) {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		if (step.status !== "running") return;
-		setNow(Date.now());
-		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-		return () => window.clearInterval(timer);
-	}, [step.startedAt, step.status]);
-	const duration = formatElapsedDuration((step.endedAt ?? now - (clientClockOffsetMs ?? 0)) - step.startedAt);
-	return duration ? <span className="shrink-0 text-xs text-muted-foreground">{duration}</span> : null;
-}
-
-const AgentStepItemContent = memo(
-	function AgentStepItemContent({ entry, open, renderItem }: {
-		entry: AgentStepChildRenderItem;
-		open: boolean;
-		renderItem: (entry: AgentStepChildRenderItem) => ReactNode;
-	}) {
-		return <div
-			className={entry.kind === "message" ? "min-w-0 py-2" : "min-w-0"}
-			data-transcript-anchor-key={open ? entry.key : undefined}
-		>
-			{renderItem(entry)}
-		</div>;
-	},
-	(previous, next) => previous.open === next.open && previous.renderItem === next.renderItem &&
-		conversationRenderItemEqual(previous.entry, next.entry),
-);
-function AgentStepContent({
-	entry,
-	open,
-	onOpenChange,
-	renderItem,
-}: {
-	entry: AgentStepRenderItem;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
-	renderItem: (entry: AgentStepChildRenderItem) => ReactNode;
-}) {
-	const StatusIcon =
-		entry.step.status === "running" ? LoaderCircle : entry.step.status === "completed" ? CheckCircle2 : CircleX;
-
-	return (
-		<Collapsible className="group/agent-step min-w-0 w-full" onOpenChange={onOpenChange} open={open}>
-			<CollapsibleTrigger asChild>
-				<button
-					aria-label={`${entry.step.title}，${open ? "收起" : "展开"}`}
-					className={`flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-						open ? "sticky top-0 z-[5] bg-background" : ""
-					}`}
-					data-transcript-anchor-key={!open || entry.items.length === 0 ? entry.key : undefined}
-					data-transcript-resize-anchor
-					type="button"
-				>
-					<StatusIcon
-						className={`size-4 shrink-0 ${
-							entry.step.status === "running"
-								? "animate-spin text-muted-foreground"
-								: entry.step.status === "completed"
-									? "text-emerald-600 dark:text-emerald-500"
-									: "text-muted-foreground"
-						}`}
-					/>
-					<span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">{entry.step.title}</span>
-					<AgentStepDuration step={entry.step} clientClockOffsetMs={entry.clientClockOffsetMs} />
-					<ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/agent-step:rotate-180" />
-				</button>
-			</CollapsibleTrigger>
-			<GsapCollapsibleContent open={open} className="pt-1" data-transcript-resize-anchor>
-				<div className="ml-[7px] grid min-w-0 gap-0 border-l border-border/60 pl-4">
-					{entry.items.map((item) => (
-						<AgentStepItemContent key={item.key} entry={item} open={open} renderItem={renderItem} />
-					))}
-				</div>
-			</GsapCollapsibleContent>
-		</Collapsible>
-	);
-}
 
 type InitialTranscriptDisplayState = "ready" | "loading" | "error";
 
@@ -182,7 +96,7 @@ export function initialTranscriptDisplayState(
 }
 
 function isActivityRow(entry: ConversationRenderItem): boolean {
-	if (entry.kind === "tool-stack" || entry.kind === "agent-step" || entry.kind === "compaction" || entry.kind === "extension-group") return true;
+	if (entry.kind === "thinking" || entry.kind === "tool-stack" || entry.kind === "agent-step" || entry.kind === "compaction" || entry.kind === "extension-group") return true;
 	if (entry.kind !== "item") return false;
 	switch (entry.item.view?.type) {
 		case "tool_call":
@@ -289,8 +203,9 @@ const ConversationToolRow = memo(
 		previous.onOpenSubagent === next.onOpenSubagent && previous.onOpenSession === next.onOpenSession &&
 		toolBatchToolsEqual([previous.tool], [next.tool]),
 );
-function conversationRenderItemEqual(previous: ConversationRenderItem, next: ConversationRenderItem): boolean {
+function conversationRenderItemEqual(previous: ConversationListContent, next: ConversationListContent): boolean {
 	if (previous.kind !== next.kind || previous.key !== next.key) return false;
+	if (previous.kind === "tool-activity-row" && next.kind === "tool-activity-row") return toolBatchToolsEqual([previous.tool], [next.tool]);
 	if (previous.kind === "message" && next.kind === "message") {
 		return (
 			previous.live === next.live &&
@@ -308,6 +223,9 @@ function conversationRenderItemEqual(previous: ConversationRenderItem, next: Con
 			previous.sources.join("\u0000") === next.sources.join("\u0000") &&
 			attachmentListsEqual(previous.attachments, next.attachments)
 		);
+	}
+	if (previous.kind === "thinking" && next.kind === "thinking") {
+		return previous.text === next.text && previous.streaming === next.streaming && previous.contentRef === next.contentRef;
 	}
 	if (previous.kind === "tool-stack" && next.kind === "tool-stack") {
 		return (
@@ -392,6 +310,7 @@ export function ConversationView({
 	allowPromptEditing?: boolean;
 }) {
 	const responseActive = isConversationResponseActive(state);
+	const thinkingActive = responseActive && state.session?.execution?.phase === "thinking";
 	const canEditPrompts =
 		allowPromptEditing &&
 		state.connected &&
@@ -436,6 +355,7 @@ export function ConversationView({
 				liveCompaction: state.liveCompaction,
 				liveTurnId: state.liveTurnId,
 				responseActive,
+				thinkingActive,
 				canEditPrompts,
 				editingEntryId,
 				settledTurns: state.settledTurns,
@@ -448,6 +368,7 @@ export function ConversationView({
 			pipeline,
 			resolveObservedElapsed,
 			responseActive,
+			thinkingActive,
 			state.agentSteps,
 			state.liveCompaction,
 			state.liveTools,
@@ -511,47 +432,23 @@ function ConversationBody({
 	onEditComplete?: () => void;
 }) {
 	const responseActive = isConversationResponseActive(state);
-	const thinkingText = activeThinkingText(state.liveTurnItems);
+	const waitingForThinking = responseActive && state.session?.execution?.phase === "thinking" && !activeThinkingBlock(state.liveTurnItems);
 	const openResource = actions.openResource;
+	const sessionKey = JSON.stringify([state.sessionId ?? "empty", state.transcriptGeneration ?? null]);
+	const { retainedGroups, changeGroup, finishCollapse, syncGroups } = useConversationGroupTransitions(sessionKey);
 	const {
-		expandedWorkProcesses,
-		expandedAgentSteps,
-		expandedToolBatches,
-		expandedToolRows,
-		getToolStackPresentation,
-		resetExpandedState,
-		updateExpandedWorkProcess,
-		updateExpandedAgentStep,
-		updateExpandedToolBatch,
-		updateExpandedToolRow,
-	} = useConversationExpansion();
+		expandedWorkProcesses, expandedAgentSteps, expandedThinking, expandedToolBatches, expandedToolRows,
+		getToolStackPresentation, updateExpandedWorkProcess, updateExpandedAgentStep,
+		updateExpandedThinking, updateExpandedToolBatch, updateExpandedToolRow,
+	} = useConversationExpansion(sessionKey);
 	const {
-		followOutput,
-		handleAtBottomStateChange,
-		handleAtTopStateChange,
-		handleReturnToBottom,
-		handleScrollStateCapture,
-		handleTranscriptScrollerRef,
-		handleUserScrollAway,
-		handleUserScrollDown,
-		handleUserScrollIntent,
-		handleUserScrollUp,
-		handleVirtuosoRef,
-		pauseFollowOutput,
-		isAtBottom,
-		requestEarlierHistory,
-		scrollState,
-	} = useConversationScroll({
-		sessionId: state.sessionId,
-		promptScrollRequest: state.promptScrollRequest,
-		hasMorePrevious: state.hasMorePrevious,
-		loadingEarlier: state.loadingEarlier,
-		previousCursor: state.previousCursor,
-		transcriptError: state.transcriptError,
-		responseActive,
-		loadEarlier: actions.loadEarlier,
-		showToast: actions.showToast,
-		resetExpandedState,
+		following, isAtBottom, initialSnapshot, handleListRef, handleSnapshot, handleAtBottomStateChange,
+		pauseFollowing: pauseFollowOutput, resumeFollowing, handleReturnToBottom,
+	} = useConversationScroll({ sessionKey, promptScrollRequest: state.promptScrollRequest });
+	const { requestEarlierHistory, handleAtTopStateChange, handleUserScrollUp, handleUserScrollDown } = useConversationHistory({
+		sessionKey, hasMorePrevious: state.hasMorePrevious, loadingEarlier: state.loadingEarlier,
+		previousCursor: state.previousCursor, transcriptError: state.transcriptError,
+		loadEarlier: actions.loadEarlier, showToast: actions.showToast,
 	});
 	const resultVersion = state.projects?.flatMap((project) => project.sessions).find((session) => session.id === state.sessionId)?.result?.version;
 	useEffect(() => {
@@ -739,32 +636,26 @@ function ConversationBody({
 		/>,
 		[expandedToolBatches, renderTranscriptItem, updateExpandedToolBatch],
 	);
-	const renderAgentStepItem = useCallback(
-		(entry: AgentStepChildRenderItem) => {
-			return <div className="min-w-0" data-transcript-anchor-key={entry.key}>
-				{entry.kind === "message" ? renderMessage(entry) : entry.kind === "tool-stack" ? renderToolStack(entry) :
-					entry.kind === "compaction" ? renderCompaction(entry) : entry.kind === "extension-group" ? renderExtensionGroup(entry) : renderTranscriptItem(entry)}
-			</div>;
-		},
-		[renderCompaction, renderExtensionGroup, renderMessage, renderToolStack, renderTranscriptItem],
+	const renderThinking = useCallback(
+		(entry: ThinkingRenderItem) => <ThinkingBlock
+			text={entry.text}
+			isStreaming={entry.streaming}
+			open={expandedThinking.get(entry.key) ?? false}
+			onOpenChange={(open) => { pauseFollowOutput(); updateExpandedThinking(entry.key, open); }}
+			contentRef={entry.contentRef}
+			sessionId={renderStateRef.current.sessionId}
+			projectId={renderStateRef.current.projectId}
+			onOpenPath={openResource}
+		/>,
+		[expandedThinking, openResource, pauseFollowOutput, updateExpandedThinking],
 	);
 	const renderConversationContentItem = useCallback(
 		(entry: ConversationContentRenderItem) => {
-			if (entry.kind === "agent-step") {
-				const open = expandedAgentSteps.get(entry.key) ?? entry.step.status === "running";
-				return (
-					<AgentStepContent
-						entry={entry}
-						onOpenChange={(nextOpen) => updateExpandedAgentStep(entry.key, nextOpen)}
-						open={open}
-						renderItem={renderAgentStepItem}
-					/>
-				);
-			}
+			if (entry.kind === "agent-step") return null;
 			if (entry.kind === "hook-group") return <HookActivityGroup entry={entry} />;
 			if (entry.kind === "extension-group") return renderExtensionGroup(entry);
 			const content =
-				entry.kind === "message" ? (
+				entry.kind === "thinking" ? renderThinking(entry) : entry.kind === "message" ? (
 					renderMessage(entry)
 				) : entry.kind === "tool-stack" ? (
 					renderToolStack(entry)
@@ -774,24 +665,27 @@ function ConversationBody({
 					renderTranscriptItem(entry)
 				);
 			return (
-				<div className="min-w-0" data-transcript-anchor-key={entry.key}>
+				<div className="min-w-0">
 					{content}
 				</div>
 			);
 		},
 		[
-			expandedAgentSteps,
-			renderAgentStepItem,
 			renderCompaction,
 			renderExtensionGroup,
 			renderMessage,
+			renderThinking,
 			renderToolStack,
 			renderTranscriptItem,
-			updateExpandedAgentStep,
 		],
 	);
 	const renderConversationItem = useCallback(
-		(entry: ConversationRenderItem) => {
+		(entry: ConversationListContent) => {
+			if (entry.kind === "tool-activity-row") return <ToolActivityRow
+				tool={entry.tool} sessionId={renderStateRef.current.sessionId} onOpenPath={openResource}
+				initialOpen={expandedToolRows.get(entry.tool.id) ?? false}
+				onOpenChange={(open) => updateExpandedToolRow(entry.tool.id, open)}
+			/>;
 			if (entry.kind === "live-elapsed") {
 				return (
 					<LiveElapsedHeader
@@ -806,64 +700,32 @@ function ConversationBody({
 					<div
 						aria-label="工作过程与最终结果分界"
 						className="w-full border-t border-border/50"
-						data-transcript-anchor-key={entry.key}
 						role="separator"
 					/>
 				);
 			}
-			if (entry.kind === "work-process") {
-				const open = expandedWorkProcesses.get(entry.key) ?? false;
-				return (
-					<Collapsible
-						className="group/work-process min-w-0 w-full"
-						onOpenChange={(nextOpen) => updateExpandedWorkProcess(entry.key, nextOpen)}
-						open={open}
-					>
-						<CollapsibleTrigger asChild>
-							<button
-								aria-label={`工作过程，${open ? "收起" : "展开"}`}
-								className="flex min-h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-								data-transcript-anchor-key={!open || entry.items.length === 0 ? entry.key : undefined}
-								data-transcript-resize-anchor
-								type="button"
-							>
-								<WrenchIcon className="size-4 shrink-0" />
-								<span className="min-w-0 flex-1 text-[13px]">工作过程</span>
-								<ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-[state=open]/work-process:rotate-180" />
-							</button>
-						</CollapsibleTrigger>
-						<GsapCollapsibleContent open={open} className="pt-2" data-transcript-resize-anchor>
-							<div className="grid min-w-0">
-								{entry.items.map((item, index) => (
-									<div
-										className="min-w-0"
-										key={item.key}
-										style={index > 0 ? { marginTop: activityRowGap(entry.items[index - 1]!, item) } : undefined}
-									>
-										{renderConversationContentItem(item)}
-									</div>
-								))}
-							</div>
-						</GsapCollapsibleContent>
-					</Collapsible>
-				);
-			}
+			if (entry.kind === "work-process") return null;
 			return renderConversationContentItem(entry);
 		},
-		[expandedWorkProcesses, renderConversationContentItem, updateExpandedWorkProcess],
+		[expandedToolRows, liveElapsedChange, openResource, renderConversationContentItem, updateExpandedToolRow],
 	);
-	const transcriptItemKey = useCallback((entry: ConversationRenderItem) => entry.key, []);
-	const estimateTranscriptItemHeight = useCallback(
-		(entry: ConversationRenderItem) =>
-			entry.kind === "result-boundary"
-				? 1
-				: entry.kind === "live-elapsed"
-					? 32
-				: entry.kind === "work-process" || entry.kind === "hook-group" || isActivityRow(entry)
-					? 32
-					: 80,
-		[],
-	);
+	const renderGroup = useCallback((layout: ConversationGroupLayout) => {
+		const entry = layout.entry;
+		if (entry.kind === "tool-stack") return <ToolActivityGroup
+			tools={entry.batches.flatMap((batch) => batch.tools)} kind={entry.activityKind}
+			open={layout.open} onOpenChange={(open) => { pauseFollowOutput(); changeGroup(entry.key, open); updateExpandedToolBatch(entry.key, open); }}
+			onCollapseComplete={() => finishCollapse(entry.key)}
+			className="tool-batch-render-item" sessionId={renderStateRef.current.sessionId}
+			headerProps={{ ref: layout.headerRef, "data-index": layout.headerIndex, "data-conversation-row": entry.key }}
+			padding={layout.padding}
+		>{layout.children}</ToolActivityGroup>;
+		return <ConversationGroup {...layout} entry={entry} onOpenChange={(open) => {
+			pauseFollowOutput();
+			changeGroup(entry.key, open);
+			if (entry.kind === "agent-step") updateExpandedAgentStep(entry.key, open);
+			else updateExpandedWorkProcess(entry.key, open);
+		}} onCollapseComplete={() => finishCollapse(entry.key)} />;
+	}, [changeGroup, finishCollapse, pauseFollowOutput, updateExpandedAgentStep, updateExpandedToolBatch, updateExpandedWorkProcess]);
 
 	const transcriptGap = useCallback(
 		(previous: ConversationRenderItem, current: ConversationRenderItem) => {
@@ -873,7 +735,13 @@ function ConversationBody({
 		},
 		[],
 	);
-
+	const listModel = useMemo(() => buildConversationListModel(renderItems, {
+		expandedAgentSteps, expandedWorkProcesses, expandedThinking, expandedToolBatches, retainedGroups,
+		toolPresentation: getToolStackPresentation,
+		toolActivityPresentation: (entry) => toolBatchActivityPresentation(entry.batches.flatMap((batch) => batch.tools)),
+		gap: transcriptGap,
+	}), [expandedAgentSteps, expandedWorkProcesses, expandedThinking, expandedToolBatches, getToolStackPresentation, renderItems, retainedGroups, transcriptGap]);
+	syncGroups(listModel.nodes);
 	const historyStatus = state.loadingEarlier ? (
 		<div className="mx-auto flex items-center gap-2 py-2 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
 			<LoaderCircle className="size-4 animate-spin" />
@@ -894,34 +762,25 @@ function ConversationBody({
 	if (showTranscript) {
 		return (
 			<>
-				<PrependAnchoredConversationTranscript
-					items={renderItems}
-					getKey={transcriptItemKey}
-					estimateHeight={estimateTranscriptItemHeight}
-					footer={
-						<div className="grid gap-3">
-							<ThinkingBlock text={thinkingText} />
-						</div>
-					}
-					gap={transcriptGap}
+				<ConversationList
+					key={sessionKey}
+					model={listModel}
+					sessionKey={sessionKey}
+					following={following}
+					initialSnapshot={initialSnapshot}
 					header={historyStatus}
-					historyCursor={state.previousCursor}
-					renderItem={renderConversationItem}
+					footer={waitingForThinking ? <ThinkingBlock text="" isStreaming /> : null}
+					renderContent={renderConversationItem}
 					isItemEqual={conversationRenderItemEqual}
-					atBottomStateChange={handleAtBottomStateChange}
-					atTopStateChange={handleAtTopStateChange}
-					atTopThreshold={HISTORY_LOAD_THRESHOLD}
-					followOutput={followOutput}
-					scrollState={scrollState}
-					onScrollStateCapture={handleScrollStateCapture}
-					onScrollerRef={handleTranscriptScrollerRef}
-					onUserScrollAway={handleUserScrollAway}
-					onUserScrollDown={handleUserScrollDown}
-					onUserScrollIntent={handleUserScrollIntent}
-					onUserScrollUp={handleUserScrollUp}
-					onExpansionIntent={pauseFollowOutput}
-					sessionKey={state.sessionId ?? "empty"}
-					virtuosoRef={handleVirtuosoRef}
+					renderGroup={renderGroup}
+					onListRef={handleListRef}
+					onSnapshot={handleSnapshot}
+					onAtBottom={handleAtBottomStateChange}
+					onAtTop={handleAtTopStateChange}
+					onPause={pauseFollowOutput}
+					onResume={resumeFollowing}
+					onUp={handleUserScrollUp}
+					onDown={handleUserScrollDown}
 				/>
 				{!isAtBottom ? (
 					<Button

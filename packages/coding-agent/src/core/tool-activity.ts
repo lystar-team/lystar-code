@@ -394,6 +394,8 @@ function serializedText(value: unknown): string {
 
 export function toolInputSummary(name: string, value: unknown): string {
 	const input = toolRecord(value);
+	// 脚本是卡片正文，不能按通用摘要截断，否则参数 JSON 和后续增量都会丢失。
+	if (name === "codemode" && typeof input?.code === "string") return JSON.stringify({ code: input.code });
 	if (name === "bash" && typeof input?.command === "string") return boundedText(input.command);
 	if (name === "read") {
 		const path = toolPath(value);
@@ -550,8 +552,11 @@ export class ToolActivityTracker {
 			activity.summary = this.summary(event.toolName, event.args, activity.summary);
 			activity.progress =
 				textFromResult(event.partialResult) ??
-				(event.toolName === "codemode" ? undefined : toolOutputSummary(event.partialResult, event.toolName));
-			if (event.toolName === "codemode") activity.details = event.partialResult.details;
+				(event.toolName === "codemode" || event.toolName === "codemode_wait"
+					? undefined
+					: toolOutputSummary(event.partialResult, event.toolName));
+			if (event.toolName === "codemode" || event.toolName === "codemode_wait")
+				activity.details = event.partialResult.details;
 			activity.diff = toolProgressDiff(event.toolName, event.args, event.partialResult) ?? activity.diff;
 			activity.startedAt ??= Date.now();
 			return [this.touch(activity)];
@@ -563,7 +568,8 @@ export class ToolActivityTracker {
 			activity.state = cancelled ? "cancelled" : event.isError ? "error" : "success";
 			// 终态摘要继续表示工具输入，结果单独放在 output，避免文件内容或命令输出替换标题。
 			activity.output = output;
-			if (event.toolName === "codemode") activity.details = event.result.details ?? activity.details;
+			if (event.toolName === "codemode" || event.toolName === "codemode_wait")
+				activity.details = event.result.details ?? activity.details;
 			activity.error = event.isError ? output || "工具调用失败" : undefined;
 			const terminalDiff = toolProgressDiff(event.toolName, activity.args, event.result);
 			if (activity.summary === event.toolName) {

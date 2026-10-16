@@ -76,7 +76,7 @@ export class SessionResultRegistry {
 			const changed = new Map<string, SessionResultState>();
 			for (const summary of summaries) {
 				if (!isSessionResultActivity(summary.activity)) continue;
-				const updatedAt = summary.operationUpdatedAt ?? summary.updatedAt;
+				const updatedAt = Math.max(summary.operationUpdatedAt ?? 0, summary.updatedAt);
 				const previous = results[summary.id];
 				if (previous && updatedAt <= previous.updatedAt) continue;
 				const revision = (previous?.revision ?? 0) + 1;

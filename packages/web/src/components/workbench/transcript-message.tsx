@@ -244,7 +244,7 @@ function TranscriptAttachments({
 	);
 }
 
-async function copyTextToClipboard(text: string): Promise<void> {
+export async function copyTextToClipboard(text: string): Promise<void> {
 	const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
 	if (clipboard?.writeText) {
 		try {

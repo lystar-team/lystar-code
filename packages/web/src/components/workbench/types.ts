@@ -1,4 +1,4 @@
-import type { GitMutation } from "@lystar/code-web-protocol";
+import type { GitMutation, SessionResultState } from "@lystar/code-web-protocol";
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../../state/use-workbench";
 import type { ShowToast } from "../../state/workbench-types";
 import type {
@@ -24,6 +24,7 @@ export interface WorkbenchActions {
 	selectProject: (projectId: string) => Promise<void>;
 	selectSession: (sessionId: string) => Promise<void>;
 	markSessionResultRead: (sessionId: string, revision: number) => Promise<void>;
+	markSessionResultsRead: (results: readonly Pick<SessionResultState, "sessionId" | "revision">[]) => Promise<void>;
 	createSession: (agentProfile?: Pick<SubagentConfig, "id" | "name" | "icon">) => Promise<string | undefined>;
 	sendMessage: (
 		text: string,

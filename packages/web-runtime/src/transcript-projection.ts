@@ -1,4 +1,4 @@
-import type { ToolActivitySnapshot } from "@earendil-works/pi-coding-agent/core";
+import { type ToolActivitySnapshot, toolInputSummary } from "@earendil-works/pi-coding-agent/core";
 import type {
 	AgentStep,
 	JsonValue,
@@ -130,6 +130,7 @@ function subagentReferences(details: JsonValue | undefined): TranscriptSubagentR
 export function projectedCodemodeDetails(
 	value: unknown,
 	nestedCalls?: JsonValue,
+	toolCalls?: TranscriptToolCallIndex,
 ): TranscriptCodemodeDetails | undefined {
 	let source = toolRecord(value);
 	if (!source && typeof value === "string") {
@@ -201,13 +202,37 @@ export function projectedCodemodeDetails(
 		];
 	});
 	const fullOutputPath = typeof source.fullOutputPath === "string" ? bounded(source.fullOutputPath) : undefined;
-	if (calls.length === 0 && !fullOutputPath) return undefined;
-	return { calls, ...(fullOutputPath ? { fullOutputPath } : {}) };
+	const executionId = typeof source.executionId === "string" ? bounded(source.executionId) : undefined;
+	const parentToolCallId = typeof source.parentToolCallId === "string" ? bounded(source.parentToolCallId) : undefined;
+	const status =
+		source.status === "running" || source.status === "completed" || source.status === "failed"
+			? source.status
+			: undefined;
+	let script: string | undefined;
+	const parent = parentToolCallId ? toolCalls?.get(parentToolCallId) : undefined;
+	if (parent?.name === "codemode") {
+		try {
+			const input = toolRecord(JSON.parse(parent.summary));
+			if (typeof input?.code === "string") script = input.code;
+		} catch {
+			// 参数预览可能被截断；不把不完整 JSON 显示为原脚本。
+		}
+	}
+	if (calls.length === 0 && !fullOutputPath && !executionId && !parentToolCallId && !status) return undefined;
+	return {
+		calls,
+		...(fullOutputPath ? { fullOutputPath } : {}),
+		...(executionId ? { executionId } : {}),
+		...(parentToolCallId ? { parentToolCallId } : {}),
+		...(status ? { status } : {}),
+		...(script !== undefined ? { source: script } : {}),
+	};
 }
 
 export function projectedToolActivity(source: ToolActivitySnapshot): ToolActivity {
 	const { details, ...activity } = source;
-	const codemode = activity.name === "codemode" ? projectedCodemodeDetails(details) : undefined;
+	const codemode =
+		activity.name === "codemode" || activity.name === "codemode_wait" ? projectedCodemodeDetails(details) : undefined;
 	return { ...activity, ...(codemode ? { codemode } : {}) };
 }
 
@@ -463,6 +488,7 @@ function mergeToolDiff(previous: ToolDiff | undefined, next: ToolDiff | undefine
 }
 
 function toolCallSummary(name: string, argumentsValue: JsonValue | undefined): string {
+	if (name === "codemode") return toolInputSummary(name, argumentsValue);
 	const argumentsRecord = record(argumentsValue);
 	if (name === "bash" && typeof argumentsRecord?.command === "string") return argumentsRecord.command;
 	if (name === "read" || name === "edit" || name === "write" || name === "apply_patch") {
@@ -673,7 +699,7 @@ function assistantViews(
 
 	const flushThinking = () => {
 		if (thinkingParts.length > 0) {
-			views.push({ type: "thinking", text: bounded(thinkingParts.join("\n\n")), contentIndices: thinkingIndices });
+			views.push({ type: "thinking", text: thinkingParts.join("\n\n"), contentIndices: thinkingIndices });
 			thinkingParts = [];
 			thinkingIndices = [];
 		}
@@ -903,7 +929,9 @@ function projectTranscriptViews(
 				: generatedImageSummary(name, call, entryMessage.details);
 		const subagents = name === "subagent" ? subagentReferences(entryMessage.details) : [];
 		const codemode =
-			name === "codemode" ? projectedCodemodeDetails(entryMessage.details, entryMessage.nestedCalls) : undefined;
+			name === "codemode" || name === "codemode_wait"
+				? projectedCodemodeDetails(entryMessage.details, entryMessage.nestedCalls, toolCalls)
+				: undefined;
 		return [
 			{
 				type: "tool_result",

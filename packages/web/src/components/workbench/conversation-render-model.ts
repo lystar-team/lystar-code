@@ -30,6 +30,15 @@ export type MessageRenderItem = {
 	editable: boolean;
 	editing?: boolean;
 };
+export type ThinkingRenderItem = {
+	kind: "thinking";
+	key: string;
+	entryId?: string;
+	live: boolean;
+	streaming: boolean;
+	text: string;
+	contentRef?: string;
+};
 export type TranscriptItemRenderItem = { kind: "item"; key: string; item: WorkbenchState["transcript"][number] };
 type TranscriptBatchRenderItem = {
 	kind: "tool-batch";
@@ -71,6 +80,7 @@ export type ExtensionEntryGroupRenderItem = {
 };
 export type AgentStepChildRenderItem =
 	| MessageRenderItem
+	| ThinkingRenderItem
 	| TranscriptToolStackRenderItem
 	| CompactionRenderItem
 	| TranscriptItemRenderItem
@@ -86,6 +96,7 @@ export type AgentStepRenderItem = {
 };
 export type ConversationContentRenderItem =
 	| MessageRenderItem
+	| ThinkingRenderItem
 	| TranscriptItemRenderItem
 	| TranscriptToolStackRenderItem
 	| AgentStepRenderItem
@@ -105,6 +116,7 @@ export type ConversationRenderItem =
 	| LiveElapsedRenderItem;
 type RawRenderItem =
 	| MessageRenderItem
+	| ThinkingRenderItem
 	| TranscriptItemRenderItem
 	| TranscriptBatchRenderItem
 	| ActivityBoundaryRenderItem
@@ -143,7 +155,7 @@ function groupPersistedToolBatches(rendered: Array<RawRenderItem>): GroupedPersi
 		if (entry.kind === "tool-batch") {
 			const toolBatchKind = persistedToolBatchKind(entry);
 			// 渲染按服务端顺序从旧到新遍历：同组批次依次 push，组 key 取该组在全量历史里的首批次。
-			// 补入更早历史必然导致组 key 前移：Virtuoso 靠 firstItemIndex 补偿位置，不靠组 key 稳定。
+			// 历史补页的阅读位置由内部工具记录的稳定 key 保持；渲染管线另行复用已有组 key。
 			if (
 				previousToolStack &&
 				previousToolStack.stepId === entry.stepId &&
@@ -234,7 +246,7 @@ function groupAgentSteps(
 			} else target.push(item);
 			continue;
 		}
-		if ((item.kind === "message" || item.kind === "compaction") && item.entryId) {
+		if ((item.kind === "message" || item.kind === "thinking" || item.kind === "compaction") && item.entryId) {
 			let stepId = stepIdByMessageEntryId.get(item.entryId);
 			if (!stepId && item.kind === "compaction" && item.timestamp) {
 				const time = Date.parse(item.timestamp);
@@ -380,7 +392,11 @@ export function buildPersistedRenderItems(
 		const viewModel = toSessionItemViewModel(item, toolIndex.statuses);
 		if (viewModel.kind === "reasoning") {
 			flushBatch();
-			rendered.push({ kind: "activity-boundary", key: `activity-boundary:${item.renderId}` });
+			rendered.push({
+				kind: "thinking", key: item.renderId, entryId: item.entryId, live: false, streaming: false,
+				text: viewModel.text,
+				...(item.view?.type === "thinking" && item.view.contentRef ? { contentRef: item.view.contentRef } : {}),
+			});
 			continue;
 		}
 		if (viewModel.kind === "message") {
@@ -540,6 +556,7 @@ export function appendLiveRenderItems(
 	liveCompaction: LiveCompactionState | undefined,
 	liveTurnId: number,
 	liveSteps: WorkbenchState["liveSteps"] = {},
+	thinkingActive = true,
 ): ConversationContentRenderItem[] {
 	// 渲染计算不修改输入：复制顶层数组与可能被追加的步骤对象，调用方传入的历史对象保持不变。
 	const next = rendered.map((entry) => {
@@ -574,6 +591,12 @@ export function appendLiveRenderItems(
 		}
 		return true;
 	};
+	let latestContent: LiveTurnItem | undefined;
+	for (let index = liveItems.length - 1; index >= 0; index--) {
+		if (liveItems[index]?.kind === "user") continue;
+		latestContent = liveItems[index];
+		break;
+	}
 	for (const item of liveItems) {
 		if (item.kind === "user") {
 			if (hasRenderItemKey(item.id)) continue;
@@ -594,7 +617,15 @@ export function appendLiveRenderItems(
 			if (!item.stepId || !appendStepItem(item.stepId, message)) next.push(message);
 			continue;
 		}
-		if (item.kind === "thinking") continue;
+		if (item.kind === "thinking") {
+			if (hasRenderItemKey(item.id)) continue;
+			const thinking: ThinkingRenderItem = {
+				kind: "thinking", key: item.id, live: true, text: item.parts.join(""),
+				streaming: thinkingActive && item.turnId === liveTurnId && item === latestContent,
+			};
+			if (!item.stepId || !appendStepItem(item.stepId, thinking)) next.push(thinking);
+			continue;
+		}
 		if (item.kind === "compaction") {
 			if (item.turnId !== liveTurnId || !liveCompaction) continue;
 			const compaction: CompactionRenderItem = { kind: "compaction", key: item.id, live: true, state: liveCompaction };
@@ -838,6 +869,7 @@ export function buildConversationRenderItems(
 	observedElapsed?: (sentAt: number) => number | undefined,
 	editingEntryId?: string,
 	settledOutcome?: "completed" | "failed" | "aborted",
+	thinkingActive = responseActive,
 ): ConversationRenderItem[] {
 	const withLive = appendLiveRenderItems(
 		persistedItems,
@@ -847,6 +879,7 @@ export function buildConversationRenderItems(
 		liveCompaction,
 		liveTurnId,
 		liveSteps,
+		thinkingActive,
 	);
 	for (let index = 0; index < withLive.length; index++) {
 		const entry = withLive[index];

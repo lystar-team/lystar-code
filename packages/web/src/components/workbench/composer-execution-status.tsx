@@ -1,6 +1,9 @@
 import { CircleAlert, Clock3, Info, LoaderCircle } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
+import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model";
+import { toLiveToolViewModel } from "../../adapters/live-tool-view-model";
+import { toolPresentationTitle } from "../ai-elements/tool-presentation";
 import { hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { WorkbenchState } from "../../state/workbench-types";
 import type { WebSessionSnapshot } from "../../types";
@@ -110,6 +113,13 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 		["accepted", "running", "waiting_for_input"].includes(state.currentOperation.status) ? state.currentOperation : undefined;
 	const execution = operation && candidateExecution &&
 		operation.acceptedAt > candidateExecution.lastProgressAt ? undefined : candidateExecution;
+	const activeTools = execution?.phase === "tool" ? Object.values(state.liveTools).reverse() : [];
+	const liveTool = activeTools.find((tool) => tool.name === execution?.toolName && tool.state === "running");
+	const nestedCall = liveTool ? undefined : activeTools.flatMap((tool) => tool.codemode?.calls ?? []).reverse()
+		.find((call) => call.name === execution?.toolName && call.status === "running");
+	const currentTool = liveTool ? toLiveToolViewModel(liveTool) : nestedCall ? toCodemodeToolViewModel(nestedCall)
+		: execution?.toolName ? { id: execution.toolName, name: execution.toolName, summary: "", state: "input-available" as const } : undefined;
+	const toolLabel = currentTool ? toolPresentationTitle(currentTool) : undefined;
 	const observedAt = check.session?.observedAt;
 	const clockOffset = observedAt !== undefined && check.receivedAt !== undefined ? check.receivedAt - observedAt : 0;
 	const serverNow = now - clockOffset;
@@ -130,7 +140,7 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 	if (connected && sessionReady && !stopping && !waiting && execution) {
 		if (stale && execution.phase === "thinking") label = "等待新的思考内容";
 		if (stale && execution.phase === "responding") label = "等待新的回复内容";
-		if (execution.phase === "tool" && execution.toolName) label = `正在执行 ${execution.toolName}`;
+		if (execution.phase === "tool" && toolLabel) label = toolLabel.startsWith("正在") ? toolLabel : `正在${toolLabel}`;
 		if (execution.phase === "retry" && retryRemaining === 0) label = "等待重试进展";
 	}
 	const statusUnknown = !connected || !sessionReady || check.error !== undefined;
@@ -184,7 +194,7 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 						<StatusDetail label={phaseStartedAt !== undefined ? "阶段耗时" : "任务已等待"} value={elapsed ?? "尚未确认"} />
 						<StatusDetail label="最后进展" value={silence ? `${silence}前` : "尚未确认"} />
 						<StatusDetail label="模型最近事件" value={execution?.lastModelEventAt === undefined ? "尚未收到" : `${formatElapsedDuration(Math.max(0, serverNow - execution.lastModelEventAt))}前`} />
-						{execution?.toolName ? <StatusDetail label="当前工具" value={execution.toolName} /> : null}
+						{toolLabel ? <StatusDetail label="当前工具" value={toolLabel} /> : null}
 						{execution?.retryAttempt ? <StatusDetail label="重试次数" value={execution.retryMaxAttempts ? `${execution.retryAttempt}/${execution.retryMaxAttempts}` : String(execution.retryAttempt)} /> : null}
 						{scheduledRetry ? <StatusDetail label="下次重试" value={`${retryRemaining}秒后`} /> : null}
 						<StatusDetail label="连接确认" value={connectionLabel} />

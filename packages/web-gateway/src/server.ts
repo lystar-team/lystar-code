@@ -37,6 +37,7 @@ import {
 	type ImageModelSettings,
 	isGitMutation,
 	isSessionResultActivity,
+	isSessionResultOperation,
 	type JsonValue,
 	MAX_TRANSCRIPT_PAGE_SIZE,
 	type ModelOptions,
@@ -5134,7 +5135,11 @@ export class WebGatewayServer {
 	}
 
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
-		if (event.type === "operation_updated" && isSessionResultActivity(event.operation.status)) {
+		if (
+			event.type === "operation_updated" &&
+			isSessionResultOperation(event.operation) &&
+			isSessionResultActivity(event.operation.status)
+		) {
 			const sessionId = this.sessionIdsByPath.get(event.operation.sessionPath);
 			if (sessionId) {
 				void this.sessionResults
@@ -5631,7 +5636,8 @@ export class WebGatewayServer {
 			return;
 		}
 		const activity = sessionActivityFromOperation(event.operation.status);
-		if (activity) this.broadcastSessionActivity(context, sessionId, activity, event.operation.updatedAt);
+		if (activity && isSessionResultOperation(event.operation))
+			this.broadcastSessionActivity(context, sessionId, activity, event.operation.updatedAt);
 		this.recordSessionDetail(context, sessionId, event);
 	}
 

@@ -11,12 +11,14 @@ type GsapCollapsibleContentProps = Omit<
 	children: ReactNode;
 	duration?: number;
 	open: boolean;
+	onCollapseComplete?: () => void;
 };
 
 export function GsapCollapsibleContent({
 	children,
 	duration = 0.18,
 	open,
+	onCollapseComplete,
 	style,
 	...props
 }: GsapCollapsibleContentProps) {
@@ -24,7 +26,12 @@ export function GsapCollapsibleContent({
 	const previousOpenRef = useRef(open);
 	const fullyCollapsedRef = useRef(!open);
 	const [mounted, setMounted] = useState(open);
+	const collapseComplete = useRef(onCollapseComplete);
+	collapseComplete.current = onCollapseComplete;
 
+	useLayoutEffect(() => () => {
+		if (!previousOpenRef.current) collapseComplete.current?.();
+	}, []);
 	useLayoutEffect(() => {
 		const element = elementRef.current;
 		if (!element) return;
@@ -54,6 +61,7 @@ export function GsapCollapsibleContent({
 				} else {
 					fullyCollapsedRef.current = true;
 					setMounted(false);
+					collapseComplete.current?.();
 				}
 				return;
 			}
@@ -92,6 +100,7 @@ export function GsapCollapsibleContent({
 				onComplete: () => {
 					fullyCollapsedRef.current = true;
 					setMounted(false);
+					collapseComplete.current?.();
 				},
 			});
 		});

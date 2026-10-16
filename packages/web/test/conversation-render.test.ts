@@ -12,14 +12,10 @@ import {
 	LiveElapsedHeader,
 } from "../src/components/workbench/conversation.tsx";
 import { HookActivityGroup } from "../src/components/workbench/hook-activity-group.tsx";
-import { activeThinkingText, THINKING_SHIMMER_HEIGHT, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
+import { activeThinkingText, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
+import type { ToolBatchTool } from "../src/components/ai-elements/tool-batch.tsx";
+import { buildConversationListModel, DEFAULT_TRANSCRIPT_GAP } from "../src/components/workbench/conversation-list-model.ts";
 import { TranscriptItemView, TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
-import {
-	buildTranscriptHeightEstimates,
-	CONVERSATION_EDGE_PADDING,
-	DEFAULT_TRANSCRIPT_GAP,
-	resolveTranscriptFirstItemIndex,
-} from "../src/components/workbench/virtualized-transcript.tsx";
 import type { WorkbenchState } from "../src/state/use-workbench";
 
 const thinking = { id: "thinking-1", kind: "thinking" as const, parts: ["先分析任务"], turnId: 1 };
@@ -73,13 +69,12 @@ describe("conversation render items", () => {
 		).toBe("ready");
 	});
 
-	it("将实时 Thinking 放入固定底部槽而不是新增虚拟列表行", () => {
+	it("实时 Thinking 保持事件顺序，正文开始后结束底部预览", () => {
 		const rendered = appendLiveRenderItems([], [thinking, text], {}, new Set(), undefined, 1);
-
-		expect(rendered.map((item) => item.kind)).toEqual(["message"]);
+		expect(rendered.map((item) => item.kind)).toEqual(["thinking", "message"]);
+		expect(rendered[0]).toMatchObject({ key: "thinking-1", text: "先分析任务", live: true });
 		expect(activeThinkingText([thinking])).toBe("先分析任务");
 		expect(activeThinkingText([thinking, text])).toBe("");
-		expect(CONVERSATION_EDGE_PADDING).toBeGreaterThanOrEqual(THINKING_SHIMMER_HEIGHT);
 	});
 
 	it("把调整方向 Prompt 固定在发送时的实时输出位置", () => {
@@ -113,13 +108,13 @@ describe("conversation render items", () => {
 		expect(rendered[1]).toMatchObject({ statusLabel: "已发出 · 等待当前步骤结束" });
 	});
 
-	it("忽略工具之间没有可见内容的实时文本和 Thinking 项", () => {
+	it("空正文不占行，Thinking 保留原事件位置的状态行", () => {
 		const toolId = "live-tool-1";
 		const rendered = appendLiveRenderItems(
 			[],
 			[
 				{ id: "blank-text", kind: "text", parts: ["\n", "  "], turnId: 1 },
-				{ id: "blank-thinking", kind: "thinking", parts: ["已完成检查\n"], turnId: 1 },
+				{ id: "blank-thinking", kind: "thinking", parts: ["\n", "  "], turnId: 1 },
 				{ id: "live-tools", kind: "tools", turnId: 1, batchId: "batch-1", toolIds: [toolId] },
 			],
 			{
@@ -137,22 +132,20 @@ describe("conversation render items", () => {
 			1,
 		);
 
-		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toMatchObject({ kind: "tool-stack", live: true });
+		expect(rendered).toHaveLength(2);
+		expect(rendered[0]).toMatchObject({ kind: "thinking", key: "blank-thinking", live: true });
+		expect(rendered[1]).toMatchObject({ kind: "tool-stack", live: true });
 	});
 
-	it("只呈现最新一行 Shimmer Thinking 内容并始终保留固定高度", () => {
-		const html = renderToStaticMarkup(
-			createElement(ThinkingBlock, { text: "旧过程\n**Implementing LRU session caching helper**" }),
-		);
-		const emptyHtml = renderToStaticMarkup(createElement(ThinkingBlock, { text: "" }));
-
-		expect(html).toContain("Implementing LRU session caching helper");
-		expect(html).not.toContain("旧过程");
-		expect(html).not.toContain("思考过程");
-		expect(html).not.toContain("<button");
-		expect(html).toContain(`height:${THINKING_SHIMMER_HEIGHT}px`);
-		expect(emptyHtml).toContain(`height:${THINKING_SHIMMER_HEIGHT}px`);
+	it("Thinking 默认以第一行显示可展开标题，空内容保留状态行", () => {
+		const html = renderToStaticMarkup(createElement(ThinkingBlock, { text: "**先检查会话缓存**\n然后核对后续输出" }));
+		const emptyHtml = renderToStaticMarkup(createElement(ThinkingBlock, { text: "", isStreaming: true }));
+		expect(html).toContain("先检查会话缓存，展开思考内容");
+		expect(html).toContain('data-state="closed"');
+		expect(html).not.toContain("然后核对后续输出");
+		expect(html).not.toContain("**");
+		expect(emptyHtml).toContain("思考中");
+		expect(emptyHtml).toContain('aria-busy="true"');
 	});
 
 	it("在最终 Agent 回复下显示本次耗时", () => {
@@ -410,7 +403,6 @@ describe("conversation render items", () => {
 			"tool-stack",
 			"compaction",
 		]);
-		expect(buildTranscriptHeightEstimates(activity, () => 32, activityRowGap)).toEqual([32, 32, 32, 32, 32, 32]);
 		expect(process.items.map((entry) => entry.kind)).toEqual(activity.map((entry) => entry.kind));
 		for (let index = 1; index < process.items.length; index++) {
 			expect(activityRowGap(process.items[index - 1]!, process.items[index]!)).toBe(0);
@@ -1481,12 +1473,11 @@ describe("conversation render items", () => {
 
 		expect(previousFirstKey).toBe("work-process:boundary-final:0");
 		expect(prependedPage.findIndex((item) => item.key === previousFirstKey)).toBe(1);
-		expect(
-			resolveTranscriptFirstItemIndex(
-				{ firstItemIndex: 1_000, itemKeys: tailPage.map((item) => item.key) },
-				prependedPage.map((item) => item.key),
-			),
-		).toBe(999);
+		const projected = buildConversationListModel(prependedPage, {
+			expandedAgentSteps: new Map(), expandedWorkProcesses: new Map(), expandedThinking: new Map(), expandedToolBatches: new Map(), retainedGroups: new Set(),
+			toolActivityPresentation: () => ({ repeatedFileReads: false }), toolPresentation: () => "group", gap: activityRowGap,
+		});
+		expect(projected.rows.some((row) => row.key === previousFirstKey && row.kind === "header")).toBe(true);
 	});
 
 	it("更早工具并入已有组时批次顺序不变，组 key 取自服务端首批次", () => {

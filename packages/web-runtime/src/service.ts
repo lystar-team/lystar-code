@@ -25,6 +25,7 @@ import {
 	type ClientMessage,
 	type CompletionResult,
 	isSessionProgress,
+	isSessionResultOperation,
 	type JsonValue,
 	type OperationSnapshot,
 	RUNTIME_PROTOCOL_VERSION,
@@ -3445,6 +3446,7 @@ export class WebRuntimeService {
 	private latestOperation(sessionPath: string): OperationSnapshot | undefined {
 		return this.journal
 			.list(sessionPath)
+			.filter(isSessionResultOperation)
 			.reduce<OperationSnapshot | undefined>(
 				(latest, operation) => (!latest || operation.updatedAt > latest.updatedAt ? operation : latest),
 				undefined,

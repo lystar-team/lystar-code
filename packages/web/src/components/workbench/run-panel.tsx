@@ -33,7 +33,7 @@ import {
 } from "../ui/dialog";
 import { ACTIVE_OPERATION_STATUSES, THINKING_LEVEL_LABELS } from "./constants";
 import { OperationDetailSection, type OperationDetail } from "./operation-detail-section";
-import { VirtualizedTranscript } from "./virtualized-transcript";
+import { VirtualList } from "../ui/virtual-list";
 import type { WorkbenchActions } from "./types";
 
 type ScrollRef = { current: HTMLDivElement | null };
@@ -502,10 +502,10 @@ export const RunPanel = memo(function RunPanel({ state, actions, scrollRef }: Ru
 			</div>
 			{operations.length ? (
 				<div className="min-w-0 max-w-full overflow-hidden">
-					<VirtualizedTranscript
+					<VirtualList
 						items={operations}
 						getKey={operationKey}
-						estimateHeight={estimateOperationHeight}
+						estimateSize={estimateOperationHeight}
 						gap={4}
 						isItemEqual={operationEqual}
 						renderItem={renderOperation}
