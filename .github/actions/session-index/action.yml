@@ -1,0 +1,31 @@
+name: Build or restore session index
+description: Reuse the platform session index when its source and Go toolchain match
+inputs:
+  go-version:
+    description: Go toolchain version
+    default: "1.24.4"
+outputs:
+  cache-hit:
+    description: Whether the compiled index was restored
+    value: ${{ steps.index.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Restore native session index
+      id: index
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: packages/coding-agent/dist/native/session-index
+        key: session-index-${{ runner.os }}-${{ runner.arch }}-go${{ inputs.go-version }}-${{ hashFiles('packages/web-runtime/native/session-index/**', 'scripts/build-session-index.mjs') }}
+
+    - name: Setup Go (build only)
+      if: steps.index.outputs.cache-hit != 'true'
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache-dependency-path: packages/web-runtime/native/session-index/go.sum
+
+    - name: Build native session index
+      if: steps.index.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/build-session-index.mjs

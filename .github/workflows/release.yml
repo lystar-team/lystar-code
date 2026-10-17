@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*-lystar.*"
+      - "release-ci/**"
     branches:
       - "release-ci/**"
   workflow_dispatch:
@@ -25,8 +26,7 @@ permissions:
 
 env:
   NODE_VERSION: 24.18.0
-  GO_VERSION: 1.24.4
-  PUBLISH_RELEASE: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish == true }}
+  PUBLISH_RELEASE: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish == true }}
 
 jobs:
   build-shared:
@@ -102,23 +102,8 @@ jobs:
           cache: npm
           cache-dependency-path: .artifacts/npm-cache-key.json
 
-      - name: Restore native session index
-        id: native-index
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: packages/coding-agent/dist/native/session-index
-          key: session-index-${{ runner.os }}-${{ runner.arch }}-go${{ env.GO_VERSION }}-${{ hashFiles('packages/web-runtime/native/session-index/**', 'scripts/build-session-index.mjs') }}
-
-      - name: Setup Go (build only)
-        if: steps.native-index.outputs.cache-hit != 'true'
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: packages/web-runtime/native/session-index/go.sum
-
-      - name: Build native session index
-        if: steps.native-index.outputs.cache-hit != 'true'
-        run: node scripts/build-session-index.mjs
+      - name: Build or restore session index
+        uses: ./.github/actions/session-index
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -133,12 +118,12 @@ jobs:
         id: shared
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/wait-release-shared.mjs
+        run: node scripts/wait-workflow-artifacts.mjs "Build shared JavaScript and Web" "release-shared-${{ github.run_attempt }}"
 
       - name: Download shared build
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: ${{ steps.shared.outputs.artifact-id }}
+          artifact-ids: ${{ steps.shared.outputs.artifact-ids }}
           path: .artifacts/shared
           merge-multiple: true
 
