@@ -27,10 +27,13 @@ New-Item -ItemType Directory -Force $BundleDir | Out-Null
 
 try {
     Push-Location $Root
+    $StageTimer = [Diagnostics.Stopwatch]::StartNew()
     # Windows CI 安装 baseline Bun；原生编译直接复用当前 runtime，避免再次下载 target executable。
     # 使用无源码路径别名的配置，避免 dist 入口再次导入 src 并产生两份运行时状态。
     & bun build --compile --no-compile-autoload-bunfig --tsconfig-override=tsconfig.base.json --windows-icon=packages/coding-agent/assets/lystar-windows-icon.ico scripts/lystar-bun-cli.mjs packages/coding-agent/src/utils/image-resize-worker.ts --outfile (Join-Path $BundleDir "lc.exe")
     if ($LASTEXITCODE -ne 0) { throw "lc.exe 构建失败。" }
+    Write-Host ("CI_TIMING bun-compile {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
+    $StageTimer.Restart()
 
     $BundleAlias = @'
 @echo off
@@ -40,6 +43,8 @@ try {
 
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-terminal.ps1") -OutputDir $BundleDir
     if ($LASTEXITCODE -ne 0) { throw "lystar-terminal.exe 构建失败。" }
+    Write-Host ("CI_TIMING terminal-total {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
+    $StageTimer.Restart()
 
     $ServiceCommand = @"
 @echo off
@@ -57,6 +62,8 @@ cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE "$Servic
     finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $ServiceCommandPath
     }
+    Write-Host ("CI_TIMING service-compile {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
+    $StageTimer.Restart()
     Copy-Item (Join-Path $PackageDir "package.json") $BundleDir
     & node (Join-Path $Root "scripts\prepare-release-package.mjs") (Join-Path $BundleDir "package.json") $Version $Repository
     Copy-Item (Join-Path $PackageDir "README.md"), (Join-Path $PackageDir "CHANGELOG.md"), (Join-Path $Root "LICENSE"), (Join-Path $Root "THIRD_PARTY_LICENSES.md") $BundleDir
@@ -87,9 +94,12 @@ cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE "$Servic
         if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
     }
 
+    Write-Host ("CI_TIMING copy-assets {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
+    $StageTimer.Restart()
     $Archive = Join-Path $OutputDir "lystar-agent-v$Version-windows-x64.zip"
     Remove-Item -Force -ErrorAction SilentlyContinue $Archive
     Compress-Archive -Path $BundleDir -DestinationPath $Archive -CompressionLevel Optimal
+    Write-Host ("CI_TIMING zip-compress {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
     Write-Host "Windows release built: $Archive"
 }
 finally {

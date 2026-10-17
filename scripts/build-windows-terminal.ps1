@@ -17,11 +17,13 @@ try {
     $PackageZip = Join-Path $Temp "Microsoft.Web.WebView2.zip"
     $PackageDir = Join-Path $Temp "webview2"
     $Uri = "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$($WebView2Version.ToLowerInvariant())/microsoft.web.webview2.$($WebView2Version.ToLowerInvariant()).nupkg"
+    $SdkTimer = [Diagnostics.Stopwatch]::StartNew()
     Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Package
     $ActualSha256 = (Get-FileHash -Algorithm SHA256 $Package).Hash.ToLowerInvariant()
     if ($ActualSha256 -ne $WebView2Sha256) { throw "WebView2 SDK SHA-256 校验失败：$ActualSha256" }
     Copy-Item $Package $PackageZip
     Expand-Archive -Path $PackageZip -DestinationPath $PackageDir
+    Write-Host ("CI_TIMING webview-sdk {0:N2}s" -f $SdkTimer.Elapsed.TotalSeconds)
 
     $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (!(Test-Path $VsWhere)) { throw "找不到 Visual Studio Build Tools。" }
@@ -45,8 +47,10 @@ cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE /I "$Inc
 "@
     $CommandPath = Join-Path $Temp "build-terminal.cmd"
     [IO.File]::WriteAllText($CommandPath, $Command, [Text.UTF8Encoding]::new($true))
+    $CompileTimer = [Diagnostics.Stopwatch]::StartNew()
     & cmd.exe /d /c $CommandPath
     if ($LASTEXITCODE -ne 0 -or !(Test-Path $Executable)) { throw "lystar-terminal.exe 构建失败。" }
+    Write-Host ("CI_TIMING terminal-compile {0:N2}s" -f $CompileTimer.Elapsed.TotalSeconds)
     $WebViewLicense = Get-ChildItem -Path $PackageDir -Filter "LICENSE*" -File | Select-Object -First 1
     if ($WebViewLicense) { Copy-Item $WebViewLicense.FullName (Join-Path $OutputDir "WebView2-LICENSE.txt") }
 }

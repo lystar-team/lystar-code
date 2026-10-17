@@ -83,6 +83,8 @@ if (base && !/^0+$/.test(base)) {
 			path === "scripts/check-env-changes.mjs" ||
 			path === "scripts/build-workspace.mjs" ||
 			path === "scripts/write-npm-cache-key.mjs" ||
+			path === "scripts/wait-workflow-artifacts.mjs" ||
+			path.startsWith(".github/actions/env-dependencies/") ||
 			[...directories].some((directory) => path.startsWith(`${directory}/`));
 		if (!relevant) continue;
 		if (status === "M") {
