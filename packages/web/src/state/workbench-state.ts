@@ -56,10 +56,20 @@ export function savedModelProviderVisibilityOverrides(): ModelProviderVisibility
 	}
 }
 
-export function savedHiddenModelProviders(): string[] {
-	return Object.entries(savedModelProviderVisibilityOverrides())
-		.filter(([, visible]) => !visible)
-		.map(([providerId]) => providerId);
+let modelProviderVisibilityMigration: Promise<void> | undefined;
+
+export function migrateModelProviderVisibility(): Promise<void> {
+	if (modelProviderVisibilityMigration) return modelProviderVisibilityMigration;
+	const overrides = savedModelProviderVisibilityOverrides();
+	if (Object.keys(overrides).length === 0) return Promise.resolve();
+	const request = webApi.importModelProviderVisibility(overrides).then(() => {
+		window.localStorage.removeItem(MODEL_PROVIDER_VISIBILITY_KEY);
+	});
+	const tracked = request.finally(() => {
+		if (modelProviderVisibilityMigration === tracked) modelProviderVisibilityMigration = undefined;
+	});
+	modelProviderVisibilityMigration = tracked;
+	return tracked;
 }
 
 export function resolveHiddenModelProviders(
@@ -528,7 +538,7 @@ export function initialState(): WorkbenchState {
 		modelCatalogRevision: 0,
 		models: [],
 		providers: [],
-		hiddenModelProviders: savedHiddenModelProviders(),
+		hiddenModelProviders: [],
 		modelSettingsLoading: false,
 		sessionNameSettings: undefined,
 		sessionNameSettingsLoading: false,

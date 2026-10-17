@@ -120,7 +120,6 @@ export function composerStateEqual(previous: WorkbenchState, next: WorkbenchStat
 		previous.connected === next.connected &&
 		previous.currentOperation === next.currentOperation &&
 		previous.currentProjectId === next.currentProjectId &&
-		previous.hiddenModelProviders === next.hiddenModelProviders &&
 		previous.liveCompaction === next.liveCompaction &&
 		previous.liveTools === next.liveTools &&
 		previous.liveTurnActive === next.liveTurnActive &&
@@ -329,7 +328,6 @@ export const Composer = memo(function Composer({
 	const modelsByProvider = useMemo(() => {
 		const groups = new Map<string, typeof state.modelOptions>();
 		for (const model of state.modelOptions) {
-			if (state.hiddenModelProviders.includes(model.provider)) continue;
 			groups.set(model.provider, [...(groups.get(model.provider) ?? []), model]);
 		}
 		return [...groups.entries()].sort(([left], [right]) => {
@@ -338,7 +336,7 @@ export const Composer = memo(function Composer({
 			if (leftProvider?.builtIn !== rightProvider?.builtIn) return leftProvider?.builtIn ? 1 : -1;
 			return (leftProvider?.name ?? left).localeCompare(rightProvider?.name ?? right, "zh-CN");
 		});
-	}, [state.hiddenModelProviders, state.modelOptionProviders, state.modelOptions]);
+	}, [state.modelOptionProviders, state.modelOptions]);
 	const sessionStats = !inline && !roomMode && state.sessionId ? (
 		<ComposerSessionStats
 			key={state.sessionId}

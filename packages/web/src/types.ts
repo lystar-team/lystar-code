@@ -401,12 +401,14 @@ export interface ModelsResponse {
 	models: ModelSummary[];
 	providers: (ModelProviderSummary & { catalogProvider?: string })[];
 	imageModelProviders?: ImageModelSettings;
+	providerVisibility: Record<string, boolean>;
 }
 
 export interface ModelOptionsResponse {
 	revision: number;
 	models: ModelOption[];
 	providers: ModelOptionProvider[];
+	providerVisibility: Record<string, boolean>;
 }
 
 export type WebThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";

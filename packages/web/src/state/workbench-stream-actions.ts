@@ -472,6 +472,11 @@ export function useWorkbenchStreamActions({
 							: { lease: undefined, readOnly: Boolean(value.sessionId), sessionReady: false }),
 					};
 				});
+				if (event.connected) {
+					void refreshModelOptionsRef.current().catch((error) => showToast(errorMessage(error), "error"));
+					if (next.settingsOpen && next.settingsTab === "models")
+						void refreshModelSettingsRef.current().catch((error) => showToast(errorMessage(error), "error"));
+				}
 				if (event.connected && !sessionId && next.connected) reconnectAttemptRef.current = 0;
 				if (
 					event.connected &&

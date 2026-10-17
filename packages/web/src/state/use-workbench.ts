@@ -45,7 +45,7 @@ import {
 	updateSessionSummaryFirstMessage,
 	projectInspectorStateForSelection,
 	resolveHiddenModelProviders,
-	savedModelProviderVisibilityOverrides,
+	migrateModelProviderVisibility,
 	sessionTitle,
 	shouldClearLiveTurn,
 	transcriptText,
@@ -126,6 +126,8 @@ export function useWorkbench() {
 	const projectTreeRefreshPromisesRef = useRef(new Map<string, Promise<void>>());
 	const modelOptionsPromiseRef = useRef<Promise<void>>();
 	const modelSettingsPromiseRef = useRef<Promise<void>>();
+	const modelOptionsRefreshRef = useRef(0);
+	const modelSettingsRefreshRef = useRef(0);
 	const gitDiffRequestRef = useRef(0);
 	const gitStatusRequestRef = useRef(0);
 	const gitBranchesRequestRef = useRef(0);
@@ -1014,25 +1016,24 @@ export function useWorkbench() {
 	]);
 
 	const refreshModelOptions = useCallback((): Promise<void> => {
+		modelOptionsRefreshRef.current += 1;
 		const pending = modelOptionsPromiseRef.current;
 		if (pending) return pending;
 		const run = (async () => {
-			const visibilityOverrides = savedModelProviderVisibilityOverrides();
-			const result = await webApi.modelOptions(
-				Object.entries(visibilityOverrides).flatMap(([provider, visible]) => (visible ? [provider] : [])),
-			);
-			updateState((current) => {
-				const visibilityProviders = current.providers.length
-					? current.providers
-					: result.providers.map((provider) => ({ ...provider, authenticated: true }));
-				return {
+			let refreshVersion: number;
+			do {
+				refreshVersion = modelOptionsRefreshRef.current;
+				await migrateModelProviderVisibility();
+				const result = await webApi.modelOptions();
+				if (refreshVersion !== modelOptionsRefreshRef.current) continue;
+				updateState((current) => ({
 					...current,
 					modelOptions: result.models,
 					modelOptionProviders: result.providers,
 					modelCatalogRevision: result.revision,
-					hiddenModelProviders: resolveHiddenModelProviders(visibilityProviders, visibilityOverrides),
-				};
-			});
+					hiddenModelProviders: resolveHiddenModelProviders(current.providers, result.providerVisibility),
+				}));
+			} while (refreshVersion !== modelOptionsRefreshRef.current);
 		})();
 		const tracked = run.finally(() => {
 			if (modelOptionsPromiseRef.current === tracked) modelOptionsPromiseRef.current = undefined;
@@ -1042,25 +1043,27 @@ export function useWorkbench() {
 	}, [updateState]);
 
 	const refreshModelSettings = useCallback((): Promise<void> => {
+		modelSettingsRefreshRef.current += 1;
 		const pending = modelSettingsPromiseRef.current;
 		if (pending) return pending;
 		updateState((current) => ({ ...current, modelSettingsLoading: true, modelSettingsError: undefined }));
 		const run = (async () => {
 			try {
-				const result = await webApi.models();
-				const visibilityOverrides = savedModelProviderVisibilityOverrides();
-				updateState((current) => {
-					const hiddenModelProviders = resolveHiddenModelProviders(result.providers, visibilityOverrides);
-					return {
+				let refreshVersion: number;
+				do {
+					refreshVersion = modelSettingsRefreshRef.current;
+					await migrateModelProviderVisibility();
+					const result = await webApi.models();
+					if (refreshVersion !== modelSettingsRefreshRef.current) continue;
+					updateState((current) => ({
 						...current,
 						models: result.models,
 						providers: result.providers,
 						imageModelProviders: result.imageModelProviders?.providers,
-						modelCatalogRevision: result.revision,
-						hiddenModelProviders,
+						hiddenModelProviders: resolveHiddenModelProviders(result.providers, result.providerVisibility),
 						modelSettingsLoading: false,
-					};
-				});
+					}));
+				} while (refreshVersion !== modelSettingsRefreshRef.current);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				updateState((current) => ({ ...current, modelSettingsLoading: false, modelSettingsError: message }));
@@ -1118,7 +1121,7 @@ export function useWorkbench() {
 				applyBootstrap(data);
 				connectStream();
 				void refreshGitCredentialAuthorization();
-				void refreshModelOptions().catch(() => undefined);
+				void refreshModelOptions().catch((error) => showToast(errorMessage(error), "error"));
 				const initialSelection = selectionRef.current;
 				const lastSession = readLastSession();
 				const requestedSessionId = new URLSearchParams(window.location.search).get("sessionId");
@@ -1225,6 +1228,9 @@ export function useWorkbench() {
 		}
 		const socket = socketRef.current;
 		if (socket?.readyState === WebSocket.OPEN) {
+			void refreshModelOptionsRef.current().catch((error) => showToast(errorMessage(error), "error"));
+			if (stateRef.current.settingsOpen && stateRef.current.settingsTab === "models")
+				void refreshModelSettingsRef.current().catch((error) => showToast(errorMessage(error), "error"));
 			const { sessionId, currentProjectId, connected } = stateRef.current;
 			if (currentProjectId) webApi.subscribeProject(socket, currentProjectId);
 			if (!connected || !sessionId) void refreshBootstrap().catch(() => socket.close(4002, "连接核对失败"));
@@ -1240,7 +1246,7 @@ export function useWorkbench() {
 			return;
 		}
 		void initializeRef.current();
-	}, [connectStream, refreshBootstrap, restoreSelectedSessionSubscription, updateState]);
+	}, [connectStream, refreshBootstrap, restoreSelectedSessionSubscription, showToast, updateState]);
 	resumeConnectionRef.current = resumeConnection;
 
 	const submitToken = useCallback(
@@ -1456,7 +1462,6 @@ export function useWorkbench() {
 		updateState,
 		showToast,
 		refreshModelOptions,
-		refreshModelOptionsRef,
 		refreshModelSettings,
 		loadSubagent,
 		loadEarlierSubagent,

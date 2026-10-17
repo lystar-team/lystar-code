@@ -80,7 +80,7 @@ test("Prompt 模型接口缓存轻量结果并在目录变更后刷新", async (
 		const capture = responseCapture();
 		await routes.handleApi(request("GET"), capture.response, new URL("http://localhost/api/model-options"), context);
 		assert.equal(capture.status(), 200);
-		assert.equal(Buffer.byteLength(capture.body()), Buffer.byteLength(JSON.stringify({ revision: 1, ...options })));
+		assert.equal(Buffer.byteLength(capture.body()), Buffer.byteLength(JSON.stringify({ revision: 1, ...options, providerVisibility: {} })));
 		assert.ok(Buffer.byteLength(capture.body()) < 10 * 1024);
 	}
 	assert.equal(commands.filter((command) => command.command === "list_model_options").length, 1);

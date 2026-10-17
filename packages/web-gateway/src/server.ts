@@ -112,6 +112,7 @@ import {
 	getMacosPermissionsStatus,
 	requestMacosPermission,
 } from "./macos-permissions.ts";
+import { ModelProviderVisibilityRegistry } from "./model-provider-visibility-registry.ts";
 import { ProductUpdateController } from "./product-update.ts";
 import {
 	mergeProgress,
@@ -1020,6 +1021,7 @@ export class WebGatewayServer {
 	readonly registry: ProjectRegistry;
 	readonly projectGroups: ProjectGroupRegistry;
 	private readonly sessionResults: SessionResultRegistry;
+	private readonly modelProviderVisibility: ModelProviderVisibilityRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
 	private readonly bootstrapProjectRefreshes = new WeakMap<BrowserContext, BootstrapProjectRefreshState>();
 	private readonly roomMembershipCache = new Map<string, readonly RoomSessionMembership[]>();
@@ -1063,6 +1065,7 @@ export class WebGatewayServer {
 		this.config = { ...config, host: DEFAULT_WEB_HOST };
 		this.registry = new ProjectRegistry(config.agentDir);
 		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
+		this.modelProviderVisibility = new ModelProviderVisibilityRegistry(config.agentDir);
 		this.sessionResults = new SessionResultRegistry(config.agentDir, (result) => {
 			for (const context of this.contexts.values()) {
 				context.bootstrapCache = undefined;
@@ -1088,6 +1091,7 @@ export class WebGatewayServer {
 	async listen(): Promise<void> {
 		await this.registry.load();
 		await this.projectGroups.load();
+		await this.modelProviderVisibility.load();
 		await this.sessionResults.load();
 		await this.pushNotifications.load();
 		await new Promise<void>((resolvePromise, reject) => {
@@ -1324,9 +1328,9 @@ export class WebGatewayServer {
 		if (context.sockets.size === 0) this.invalidateSessionDetails(context);
 	}
 
-	private invalidateAllBootstraps(): void {
+	private invalidateAllBootstraps(projectId?: string): void {
 		for (const context of this.contexts.values()) {
-			this.invalidateBootstrap(context);
+			this.invalidateBootstrap(context, projectId);
 			if (context.sockets.size > 0) void this.pushBootstrap(context);
 		}
 	}
@@ -1353,7 +1357,13 @@ export class WebGatewayServer {
 	}
 
 	private async modelOptions(context: BrowserContext, includeProviders: readonly string[]): Promise<ModelOptions> {
-		const normalizedProviders = [...new Set(includeProviders)].sort();
+		const overrides = this.modelProviderVisibility.read();
+		const normalizedProviders = [
+			...new Set([
+				...includeProviders,
+				...Object.entries(overrides).flatMap(([provider, visible]) => (visible ? [provider] : [])),
+			]),
+		].sort();
 		const key = normalizedProviders.join("\0");
 		const cached = this.modelOptionsCache.get(key);
 		if (cached?.revision === this.modelCatalogRevision) return cached.value;
@@ -1366,18 +1376,20 @@ export class WebGatewayServer {
 				...(normalizedProviders.length > 0 ? { includeProviders: normalizedProviders } : {}),
 			}),
 		);
-		this.modelOptionsPromises.set(key, promise);
-		try {
-			const value = await promise;
-			if (revision !== this.modelCatalogRevision) {
-				if (this.modelOptionsPromises.get(key) === promise) this.modelOptionsPromises.delete(key);
-				return this.modelOptions(context, normalizedProviders);
-			}
-			this.modelOptionsCache.set(key, { revision, value });
-			return value;
-		} finally {
-			if (this.modelOptionsPromises.get(key) === promise) this.modelOptionsPromises.delete(key);
-		}
+		const tracked = promise
+			.then(async (value) => {
+				if (revision !== this.modelCatalogRevision) {
+					if (this.modelOptionsPromises.get(key) === tracked) this.modelOptionsPromises.delete(key);
+					return this.modelOptions(context, includeProviders);
+				}
+				this.modelOptionsCache.set(key, { revision, value });
+				return value;
+			})
+			.finally(() => {
+				if (this.modelOptionsPromises.get(key) === tracked) this.modelOptionsPromises.delete(key);
+			});
+		this.modelOptionsPromises.set(key, tracked);
+		return tracked;
 	}
 
 	private async modelSettings(context: BrowserContext): Promise<ModelSettingsResult> {
@@ -1392,18 +1404,20 @@ export class WebGatewayServer {
 			]);
 			return { models, providers, imageModelProviders: imageModelProviders.imageModelProviders };
 		});
-		this.modelSettingsPromise = promise;
-		try {
-			const value = await promise;
-			if (revision !== this.modelCatalogRevision) {
-				if (this.modelSettingsPromise === promise) this.modelSettingsPromise = undefined;
-				return this.modelSettings(context);
-			}
-			this.modelSettingsCache = { revision, value };
-			return value;
-		} finally {
-			if (this.modelSettingsPromise === promise) this.modelSettingsPromise = undefined;
-		}
+		const tracked = promise
+			.then(async (value) => {
+				if (revision !== this.modelCatalogRevision) {
+					if (this.modelSettingsPromise === tracked) this.modelSettingsPromise = undefined;
+					return this.modelSettings(context);
+				}
+				this.modelSettingsCache = { revision, value };
+				return value;
+			})
+			.finally(() => {
+				if (this.modelSettingsPromise === tracked) this.modelSettingsPromise = undefined;
+			});
+		this.modelSettingsPromise = tracked;
+		return tracked;
 	}
 
 	private ensureProjectWatcher(project: WebProject): void {
@@ -2678,13 +2692,43 @@ export class WebGatewayServer {
 			await this.handleOperations(request, response, url, context, parts);
 			return;
 		}
+		if (parts.length === 2 && parts[1] === "model-provider-visibility") {
+			const body = await parseJsonBody(request);
+			if (request.method === "PATCH") {
+				const provider = stringValue(body.provider);
+				if (!provider || typeof body.visible !== "boolean")
+					throw new HttpError(400, "model_provider_visibility_invalid", "Provider 和显示状态不能为空");
+				if (await this.modelProviderVisibility.set(provider, body.visible)) this.invalidateModelCatalog();
+				sendJson(response, 200, { providerVisibility: this.modelProviderVisibility.read() });
+				return;
+			}
+			if (request.method === "POST") {
+				const overrides = object(body.overrides);
+				if (
+					!overrides ||
+					Object.entries(overrides).some(([provider, visible]) => !provider.trim() || typeof visible !== "boolean")
+				)
+					throw new HttpError(400, "model_provider_visibility_invalid", "模型 Provider 显示设置无效");
+				const imported = await this.modelProviderVisibility.importOnce(overrides as Record<string, boolean>);
+				if (imported) this.invalidateModelCatalog();
+				sendJson(response, 200, { imported });
+				return;
+			}
+			throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
+		}
 		if (parts[1] === "model-options" && request.method === "GET") {
 			const includeProviders = url.searchParams
 				.getAll("includeProvider")
 				.map((provider) => provider.trim())
 				.filter(Boolean);
 			const options = await this.modelOptions(context, includeProviders);
-			sendJson(response, 200, { revision: this.modelCatalogRevision, ...options });
+			const providerVisibility = this.modelProviderVisibility.read();
+			sendJson(response, 200, {
+				revision: this.modelCatalogRevision,
+				providerVisibility,
+				models: options.models.filter((model) => providerVisibility[model.provider] !== false),
+				providers: options.providers.filter((provider) => providerVisibility[provider.id] !== false),
+			});
 			return;
 		}
 		if (parts[1] === "image-model" && request.method === "POST") {
@@ -2720,6 +2764,11 @@ export class WebGatewayServer {
 					clientInstanceId: context.id,
 					clientRequestId: randomUUID(),
 				});
+				if (
+					!result.some((candidate) => candidate.id === provider) &&
+					(await this.modelProviderVisibility.remove(provider))
+				)
+					this.invalidateModelCatalog();
 				sendJson(response, 200, { providers: result });
 				return;
 			}
@@ -2813,7 +2862,11 @@ export class WebGatewayServer {
 		}
 		if (parts[1] === "models" && request.method === "GET") {
 			const settings = await this.modelSettings(context);
-			sendJson(response, 200, { revision: this.modelCatalogRevision, ...settings });
+			sendJson(response, 200, {
+				revision: this.modelCatalogRevision,
+				...settings,
+				providerVisibility: this.modelProviderVisibility.read(),
+			});
 			return;
 		}
 		if (parts[1] === "about" && request.method === "GET") {
@@ -2949,7 +3002,7 @@ export class WebGatewayServer {
 			const client = await this.getClient(context);
 			const listing = await client.request<HostDirectoryListing>({ command: "list_directories", path: cwd });
 			const project = await this.registry.add({ id: randomUUID(), cwd: listing.path, name: stringValue(body.name) });
-			this.invalidateBootstrap(context, project.id);
+			this.invalidateAllBootstraps(project.id);
 			const sessions = await this.listProjectSessions(context, project);
 			sendJson(response, 201, { project: this.publicProject(project, sessions) });
 			return;
@@ -2959,7 +3012,7 @@ export class WebGatewayServer {
 			if (!Array.isArray(body.projectIds) || body.projectIds.some((id) => typeof id !== "string"))
 				throw new HttpError(400, "project_order_invalid", "项目顺序数据无效");
 			await this.registry.reorderProjects(body.projectIds);
-			this.invalidateBootstrap(context);
+			this.invalidateAllBootstraps();
 			sendJson(response, 200, { orderedProjectIds: this.registry.list().map((candidate) => candidate.id) });
 			return;
 		}
@@ -2977,7 +3030,7 @@ export class WebGatewayServer {
 					: undefined,
 				archived: body.archived === true,
 			});
-			this.invalidateBootstrap(context, projectId);
+			this.invalidateAllBootstraps(projectId);
 			sendJson(response, 200, {
 				project: this.publicProject(update, await this.listProjectSessions(context, update)),
 			});
@@ -3018,7 +3071,7 @@ export class WebGatewayServer {
 			)
 				throw new HttpError(400, "session_order_invalid", "会话顺序必须包含当前项目的全部会话");
 			await this.registry.setSessionOrder(projectId, sessionIds);
-			this.invalidateBootstrap(context, projectId);
+			this.invalidateAllBootstraps(projectId);
 			const orderedSessions = orderSessionSummaries(sessions, sessionIds);
 			sendJson(response, 200, {
 				sessions: orderedSessions.map((session) =>
@@ -3034,7 +3087,7 @@ export class WebGatewayServer {
 				throw new HttpError(404, "session_not_found", "未找到项目中的会话");
 			const body = await parseJsonBody(request);
 			const updated = await this.registry.setSessionPinned(projectId, sessionId, body.pinned === true);
-			this.invalidateBootstrap(context, projectId);
+			this.invalidateAllBootstraps(projectId);
 			sendJson(response, 200, {
 				project: this.publicProject(updated, sessions),
 			});
@@ -5121,7 +5174,12 @@ export class WebGatewayServer {
 		if (context.bootstrapPushPromise) return context.bootstrapPushPromise;
 		const promise = (async () => {
 			try {
-				const bootstrap = await this.buildBootstrap(context);
+				let generation: number;
+				let bootstrap: BootstrapResponse;
+				do {
+					generation = context.bootstrapGeneration;
+					bootstrap = await this.buildBootstrap(context);
+				} while (generation !== context.bootstrapGeneration);
 				if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
 				context.bootstrapRetryTimer = undefined;
 				context.bootstrapRetryAttempt = 0;

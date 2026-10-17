@@ -861,6 +861,19 @@ export class WebApi {
 		return this.request<ModelsResponse>("/api/models");
 	}
 
+	async importModelProviderVisibility(overrides: Record<string, boolean>): Promise<{ imported: boolean }> {
+		return this.request("/api/model-provider-visibility", {
+			method: "POST",
+			body: JSON.stringify({ overrides }),
+		});
+	}
+
+	async setModelProviderVisibility(provider: string, visible: boolean): Promise<{ providerVisibility: Record<string, boolean> }> {
+		return this.request("/api/model-provider-visibility", {
+			method: "PATCH",
+			body: JSON.stringify({ provider, visible }),
+		});
+	}
 	async modelProvider(input: {
 		provider: string;
 		name?: string;

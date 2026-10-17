@@ -2,6 +2,7 @@ import { ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "../ui/button";
 import { VirtualList } from "../ui/virtual-list";
+import { CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
 
 export type JsonOutputNode = {
 	id: number;
@@ -80,24 +81,28 @@ export function JsonOutput({ root }: { root: JsonOutputNode }) {
 	}, [root, view.all, view.expanded]);
 	return (
 		<div data-json-output className="min-w-0">
-			<div className="flex items-center gap-1 border-b border-border/50 px-2 py-1">
-				<Button
-					className="h-7 px-2 text-xs"
-					size="sm"
-					variant="ghost"
-					onClick={() => setView({ root, all: true, expanded: new Map() })}
-				>
-					全部展开
-				</Button>
-				<Button
-					className="h-7 px-2 text-xs"
-					size="sm"
-					variant="ghost"
-					onClick={() => setView({ root, all: false, expanded: new Map() })}
-				>
-					全部折叠
-				</Button>
-			</div>
+			<CodeBlockHeader className="gap-2 border-border/50 bg-transparent px-2 py-1 font-sans">
+				<CodeBlockTitle className="shrink-0">JSON</CodeBlockTitle>
+				<CodeBlockActions className="ml-auto gap-0">
+					<Button
+						className="h-7 px-1.5 font-normal"
+						size="xs"
+						variant="ghost"
+						onClick={() => setView({ root, all: true, expanded: new Map() })}
+					>
+						全部展开
+					</Button>
+					<Button
+						className="h-7 px-1.5 font-normal"
+						size="xs"
+						variant="ghost"
+						onClick={() => setView({ root, all: false, expanded: new Map() })}
+					>
+						全部折叠
+					</Button>
+					<CodeBlockCopyButton aria-label="复制 JSON 原文" />
+				</CodeBlockActions>
+			</CodeBlockHeader>
 			<div style={{ height: Math.min(320, rows.length * 24 + 8) }} className="min-w-0 py-1">
 				<VirtualList
 					items={rows}
@@ -113,17 +118,17 @@ export function JsonOutput({ root }: { root: JsonOutputNode }) {
 								? `${node.value}${open && expandable ? "" : close}`
 								: node.value;
 						const text = (
-							<>
+							<span className="min-w-0 whitespace-pre-wrap break-all">
 								{!closing && node.label !== undefined ? (
-									<span className="shrink-0 text-muted-foreground">{node.label}: </span>
+									<span className="text-muted-foreground">{node.label}: </span>
 								) : null}
-								<span className="min-w-0 whitespace-pre-wrap break-all">{value}</span>
+								<span>{value}</span>
 								{!closing && node.children ? (
-									<span className="ml-2 shrink-0 font-sans text-xs text-muted-foreground">
+									<span className="ml-2 inline-block whitespace-nowrap font-sans text-xs text-muted-foreground">
 										{node.children.length} 项
 									</span>
 								) : null}
-							</>
+							</span>
 						);
 						const style = { paddingLeft: 8 + depth * 16 };
 						return expandable && !closing ? (
@@ -132,7 +137,7 @@ export function JsonOutput({ root }: { root: JsonOutputNode }) {
 								data-json-toggle
 								aria-expanded={open}
 								aria-label={`${node.label ?? "JSON"}，${open ? "折叠" : "展开"}`}
-								className="flex min-h-6 w-full items-start gap-1 rounded-sm pr-2 text-left font-mono text-[13px] leading-6 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								className="grid min-h-6 w-full grid-cols-[16px_minmax(0,1fr)] items-start gap-1 rounded-sm pr-2 text-left font-mono! text-[13px]! leading-6! hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 								style={style}
 								onClick={() =>
 									setView((current) => ({
@@ -145,8 +150,8 @@ export function JsonOutput({ root }: { root: JsonOutputNode }) {
 								{text}
 							</button>
 						) : (
-							<div className="flex min-h-6 items-start gap-1 pr-2 font-mono text-[13px] leading-6" style={style}>
-								<span className="w-4 shrink-0" />
+							<div className="grid min-h-6 grid-cols-[16px_minmax(0,1fr)] items-start gap-1 pr-2 font-mono text-[13px] leading-6" style={style}>
+								<span aria-hidden className="size-4" />
 								{text}
 							</div>
 						);

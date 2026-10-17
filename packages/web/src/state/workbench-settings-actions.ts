@@ -10,7 +10,7 @@ import type {
 	WebProviderModelInput,
 	WebThinkingLevel,
 } from "../types.ts";
-import { applyTheme, errorMessage, MODEL_PROVIDER_VISIBILITY_KEY, savedModelProviderVisibilityOverrides } from "./workbench-state.ts";
+import { applyTheme, errorMessage } from "./workbench-state.ts";
 import { createSubagentConversationState } from "./workbench-live-state.ts";
 import type { ComposerMode, SettingsTab, ShowToast, ThemeMode, WorkbenchState } from "./workbench-types.ts";
 
@@ -35,7 +35,6 @@ export interface WorkbenchSettingsActionsContext {
 	updateState: UpdateState;
 	showToast: ShowToast;
 	refreshModelOptions: () => Promise<void>;
-	refreshModelOptionsRef: { current: () => Promise<void> };
 	refreshModelSettings: () => Promise<void>;
 	loadSubagent: (agentId: string, sessionId?: string) => Promise<void>;
 	loadEarlierSubagent: (agentId: string) => Promise<void>;
@@ -46,28 +45,20 @@ export function useWorkbenchSettingsActions({
 	updateState,
 	showToast,
 	refreshModelOptions,
-	refreshModelOptionsRef,
 	refreshModelSettings,
 	loadSubagent,
 	loadEarlierSubagent,
 }: WorkbenchSettingsActionsContext) {
 	const setModelProviderVisibility = useCallback(
-		(providerId: string, visible: boolean) => {
-			updateState((current) => {
-				const hidden = new Set(current.hiddenModelProviders);
-				if (visible) hidden.delete(providerId);
-				else hidden.add(providerId);
-				const hiddenModelProviders = [...hidden];
-				if (typeof window !== "undefined") {
-					const overrides = savedModelProviderVisibilityOverrides();
-					overrides[providerId] = visible;
-					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(overrides));
-				}
-				return { ...current, hiddenModelProviders };
-			});
-			void refreshModelOptionsRef.current().catch(() => {});
+		async (providerId: string, visible: boolean) => {
+			try {
+				await webApi.setModelProviderVisibility(providerId, visible);
+				await Promise.all([refreshModelSettings(), refreshModelOptions()]);
+			} catch (error) {
+				showToast(errorMessage(error), "error");
+			}
 		},
-		[updateState],
+		[refreshModelOptions, refreshModelSettings, showToast],
 	);
 
 	const saveModelProvider = useCallback(
@@ -83,21 +74,10 @@ export function useWorkbenchSettingsActions({
 		async (providerId: string) => {
 			const result = await webApi.removeModelProvider(providerId);
 			const removed = !result.providers.some((provider) => provider.id === providerId);
-			if (removed) {
-				if (typeof window !== "undefined") {
-					const overrides = savedModelProviderVisibilityOverrides();
-					delete overrides[providerId];
-					window.localStorage.setItem(MODEL_PROVIDER_VISIBILITY_KEY, JSON.stringify(overrides));
-				}
-				updateState((current) => ({
-					...current,
-					hiddenModelProviders: current.hiddenModelProviders.filter((id) => id !== providerId),
-				}));
-			}
 			await Promise.all([refreshModelSettings(), refreshModelOptions()]);
 			showToast(removed ? "Provider 已删除" : "Provider 自定义配置已清除", "success");
 		},
-		[refreshModelOptions, refreshModelSettings, showToast, updateState],
+		[refreshModelOptions, refreshModelSettings, showToast],
 	);
 
 	const saveImageModelProviders = useCallback(
@@ -607,7 +587,7 @@ export function useWorkbenchSettingsActions({
 			updateState((current) => ({ ...current, settingsOpen: true, settingsTab: tab }));
 			if (tab === "models") {
 				const tasks: Promise<void>[] = [];
-				if (stateRef.current.models.length === 0) tasks.push(refreshModelSettings());
+				tasks.push(refreshModelSettings());
 				if (!stateRef.current.sessionNameSettings) tasks.push(refreshSessionNameSettings());
 				if (!stateRef.current.toolRecoverySettings) tasks.push(refreshToolRecoverySettings());
 				await Promise.all(tasks);
