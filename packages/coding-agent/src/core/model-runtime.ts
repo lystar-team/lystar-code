@@ -233,7 +233,6 @@ export class ModelRuntime implements Models {
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore, authContext });
 		this.imageModels = builtinProviderCatalog.builtinImagesModels({ credentials, authContext });
-		this.rebuildProviders();
 	}
 
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {

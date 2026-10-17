@@ -1100,9 +1100,9 @@ export class WebApi {
 	}
 
 	async setSetting(sessionId: string, id: string, value: boolean | number | string): Promise<unknown> {
-		return this.request("/api/settings", {
+		return this.request(`/api/settings?sessionId=${encodeURIComponent(sessionId)}`, {
 			method: "POST",
-			body: JSON.stringify({ sessionId, id, value, clientRequestId: createUuid() }),
+			body: JSON.stringify({ id, value, clientRequestId: createUuid() }),
 		});
 	}
 

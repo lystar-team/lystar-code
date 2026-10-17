@@ -143,6 +143,8 @@ export async function createAgentSessionServices(
 		(await ModelRuntime.create({
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
+			// 扩展供应商注册完成后统一刷新，避免初始化时重复读取目录和认证。
+			refreshOnCreate: false,
 			signal: options.modelRuntimeSignal,
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);

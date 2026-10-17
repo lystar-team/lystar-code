@@ -9,6 +9,7 @@ export {
 	CONFIG_DIR_NAME,
 	ENV_TOOL_RECOVERY_MODE,
 	getAgentDir,
+	getSessionIndexBinaryPath,
 	getSessionsDir,
 	getToolRecoveryMode,
 	PACKAGE_NAME,

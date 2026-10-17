@@ -3,11 +3,13 @@ import { collaborationAlias } from "@lystar/code-web-protocol";
 import { useEffect, useState } from "react";
 import type { RoomWorkspaceController } from "../../state/use-room-workspace";
 import type { WebRoomMember, WebRoomTask, WebRoomTaskStatus, WebSessionSummary, WebSessionWorkspaceMode } from "../../types";
+import { MessageResponse } from "../ai-elements/message";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
-import { formatWorkspaceSize, SessionWorkspaceActions, workspaceModeLabel, workspaceStatusLabel } from "./session-workspaces";
+import { workspaceModeLabel, workspaceStatusLabel } from "./session-workspaces";
+import type { WorkbenchActions } from "./types";
 
 const COLUMNS: ReadonlyArray<{ status: WebRoomTaskStatus; title: string }> = [
 	{ status: "todo", title: "待认领" },
@@ -16,9 +18,15 @@ const COLUMNS: ReadonlyArray<{ status: WebRoomTaskStatus; title: string }> = [
 	{ status: "done", title: "已完成" },
 ];
 
+const WORKSPACE_DESCRIPTIONS = {
+	shared: "只读调查与评审。成员读取当前项目，提交结论和验证结果。",
+	worktree: "在独立工作区修改代码，由主会话核对并接收改动。非 Git 项目使用补丁交付。",
+	patch: "在项目副本中修改，由主会话核对并接收补丁。",
+} satisfies Record<WebSessionWorkspaceMode, string>;
+
 function memberName(members: readonly WebRoomMember[], sessionId: string): string {
 	const member = members.find((item) => item.sessionId === sessionId);
-	return member?.role === "owner" ? "你" : member?.nickname?.trim() || collaborationAlias(sessionId);
+	return member?.role === "owner" ? "协作负责人" : member?.nickname?.trim() || member?.profileName || collaborationAlias(sessionId);
 }
 
 function TaskDetail({
@@ -26,20 +34,16 @@ function TaskDetail({
 	members,
 	controller,
 	projectId,
-	sessions,
+	openResource,
 	onOpenSession,
-	onRefreshSessions,
-	onToast,
 	onClose,
 }: {
 	task: WebRoomTask;
 	members: readonly WebRoomMember[];
 	controller: RoomWorkspaceController;
 	projectId?: string;
-	sessions: readonly WebSessionSummary[];
+	openResource: WorkbenchActions["openResource"];
 	onOpenSession: (sessionId: string) => void;
-	onRefreshSessions: (projectId: string) => Promise<void>;
-	onToast: (message: string) => void;
 	onClose: () => void;
 }) {
 	const [status, setStatus] = useState<WebRoomTaskStatus>(task.status);
@@ -53,8 +57,8 @@ function TaskDetail({
 	useEffect(() => { setStatus(task.status); }, [task.status]);
 	useEffect(() => { setAssigneeSessionId(task.assigneeSessionId ?? ""); }, [task.assigneeSessionId]);
 	const changed = title.trim() !== task.title || description.trim() !== task.description || assigneeSessionId !== (task.assigneeSessionId ?? "");
-	const executionSession = sessions.find((session) => session.id === task.execution?.sessionId);
-	const workspace = executionSession?.workspace ?? task.execution?.workspace;
+	const result = task.execution?.result;
+	const patchPath = result?.patchPath ?? result?.workspace?.patchPath;
 
 	const submit = async (action: () => Promise<void>) => {
 		setSubmitting(true);
@@ -65,100 +69,78 @@ function TaskDetail({
 	};
 
 	return (
-		<Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-			<DialogContent className="sm:max-w-xl">
+		<Dialog open onOpenChange={(open) => { if (!open && !submitting) onClose(); }}>
+			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader><DialogTitle className="pr-6">{task.title}</DialogTitle></DialogHeader>
-				<div className="grid max-h-[65dvh] gap-5 overflow-y-auto py-1">
-					<div className="grid gap-2 border-b border-border/70 pb-3">
-						<div className="flex flex-wrap justify-between gap-x-4 gap-y-1 text-sm">
-							<span className="text-muted-foreground">任务工作区模式</span>
-							<span>{task.workspaceMode ? workspaceModeLabel(task.workspaceMode) : "未记录"}</span>
+				<div className="grid max-h-[65dvh] min-w-0 gap-5 overflow-y-auto py-1">
+					<section className="grid min-w-0 gap-3" aria-label="任务结果">
+						<div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+							<span>{COLUMNS.find((column) => column.status === task.status)?.title}</span>
+							<span className="text-muted-foreground">负责人：{task.assigneeSessionId ? memberName(members, task.assigneeSessionId) : "待认领"}</span>
 						</div>
-						{task.execution?.sessionId ? (
-							<>
-								{workspace ? (
-									<div className="grid gap-1 text-xs text-muted-foreground">
-										<p>执行工作区：{workspaceModeLabel(workspace.mode)}，{workspaceStatusLabel(workspace.status)}</p>
-										<p>大小：{formatWorkspaceSize(workspace.sizeBytes)}</p>
-										{workspace.retainedReason ? <p className="break-words">保留原因：{workspace.retainedReason}</p> : null}
-										<p className="break-all">信任来源：{workspace.trustSource ?? "未提供"}</p>
-									</div>
-								) : <p className="text-xs text-muted-foreground">执行会话尚未提供工作区状态。</p>}
-								<div className="flex flex-wrap items-center gap-2">
-									<Button variant="outline" size="sm" onClick={() => onOpenSession(task.execution!.sessionId!)}>
-										<ArrowRight className="size-4" aria-hidden="true" />打开执行会话
-									</Button>
-									{executionSession?.workspace && projectId ? (
-										<SessionWorkspaceActions
-											projectId={projectId}
-											session={executionSession}
-											sessions={sessions}
-											onRefresh={onRefreshSessions}
-											onToast={onToast}
-										/>
-									) : null}
+						{task.status === "doing" && result?.outcome === "completed" && !result.error ? <p className="text-sm text-muted-foreground">结果已提交，由主会话核对与接收。</p> : null}
+						{result?.error ? <p className="whitespace-pre-wrap break-words text-sm text-destructive">执行失败：{result.error}</p> : null}
+						{task.resultText ? <MessageResponse className="sd-prose min-w-0 max-w-full break-words text-sm leading-6" projectId={projectId} onOpenPath={(path) => void openResource(path)}>{task.resultText}</MessageResponse> : null}
+						{result?.changedFiles?.length ? <div className="grid gap-1 text-sm"><h3 className="font-medium">变更文件（{result.changedFiles.length}）</h3><ul className="list-inside list-disc break-all font-mono text-xs">{result.changedFiles.map((path) => <li key={path}>{path}</li>)}</ul></div> : null}
+						<div className="flex flex-wrap gap-2">
+							{patchPath ? <Button variant="outline" size="sm" onClick={() => void openResource(patchPath)}>查看补丁</Button> : null}
+							{task.execution?.sessionId ? <Button variant="outline" size="sm" onClick={() => onOpenSession(task.execution!.sessionId!)}><ArrowRight className="size-4" aria-hidden="true" />打开执行会话</Button> : null}
+						</div>
+					</section>
+					{task.description ? <section className="grid min-w-0 gap-2 border-t border-border pt-3" aria-label="任务内容"><h3 className="text-sm font-medium">任务内容</h3><MessageResponse className="sd-prose min-w-0 max-w-full break-words text-sm leading-6" projectId={projectId} onOpenPath={(path) => void openResource(path)}>{task.description}</MessageResponse></section> : null}
+					{task.updates.length ? (
+						<section className="grid min-w-0 gap-3 border-t border-border pt-3" aria-label="进展与评论">
+							<h3 className="text-sm font-medium">进展与评论</h3>
+							{task.updates.map((update, index) => (
+								<div key={`${update.createdAt}-${index}`} className="grid min-w-0 gap-1 text-sm">
+									<span className="text-muted-foreground">{memberName(members, update.actorSessionId)} · {update.kind === "comment" ? "评论" : COLUMNS.find((column) => column.status === update.status)?.title}</span>
+									{update.note ? <MessageResponse className="sd-prose min-w-0 max-w-full break-words text-sm leading-6" projectId={projectId} onOpenPath={(path) => void openResource(path)}>{update.note}</MessageResponse> : null}
 								</div>
-							</>
-						) : <p className="text-xs text-muted-foreground">任务尚未开始执行。</p>}
-					</div>
-					<div className="grid gap-2">
-						<label htmlFor="room-task-edit-title" className="text-sm font-medium">标题</label>
-						<Input id="room-task-edit-title" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
-						<label htmlFor="room-task-edit-description" className="text-sm font-medium">任务内容</label>
-						<Textarea id="room-task-edit-description" maxLength={8000} rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
-						<label htmlFor="room-task-assignee" className="text-sm font-medium">负责人</label>
-						<select id="room-task-assignee" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={assigneeSessionId} onChange={(event) => setAssigneeSessionId(event.target.value)}>
-							<option value="">待认领</option>
-							{members.filter((member) => member.role === "member" && !member.leftAt).map((member) => (
-								<option key={member.sessionId} value={member.sessionId}>{memberName(members, member.sessionId)}</option>
 							))}
-						</select>
-						<Button
-							variant="outline"
-							className="justify-self-end"
-							disabled={submitting || !title.trim() || !changed || (task.status === "done" && assigneeSessionId !== (task.assigneeSessionId ?? ""))}
-							onClick={() => void submit(async () => {
-								await controller.editRoomTask(task.id, {
-									title: title.trim(),
-									description: description.trim(),
-									assigneeSessionId: assigneeSessionId || null,
-								});
-							})}
-						>
-							保存任务
-						</Button>
-					</div>
-				{task.resultText ? <div className="grid gap-2 border-t border-border pt-3"><h3 className="text-sm font-medium">任务结果</h3><p className="whitespace-pre-wrap break-words text-sm leading-6">{task.resultText}</p></div> : null}
-				{task.updates.length ? (
-					<div className="grid gap-2 border-t border-border pt-3">
-						<h3 className="text-sm font-medium">进展与评论</h3>
-						{task.updates.map((update, index) => (
-							<div key={`${update.createdAt}-${index}`} className="text-sm">
-								<span className="text-muted-foreground">{memberName(members, update.actorSessionId)} · {update.kind === "comment" ? "评论" : COLUMNS.find((column) => column.status === update.status)?.title}</span>
-								{update.note ? <p className="mt-1 whitespace-pre-wrap break-words">{update.note}</p> : null}
-							</div>
-						))}
-					</div>
-				) : null}
-				<div className="grid gap-2 border-t border-border pt-3">
-					<label htmlFor="room-task-comment" className="text-sm font-medium">评论</label>
-					<Textarea id="room-task-comment" value={comment} onChange={(event) => setComment(event.target.value)} maxLength={8000} rows={2} placeholder="输入 @智能体名称 可提醒对方" />
-					<Button variant="outline" className="justify-self-end" disabled={submitting || !comment.trim()} onClick={() => void submit(async () => { await controller.commentRoomTask(task.id, comment.trim()); setComment(""); })}>发送评论</Button>
+						</section>
+					) : null}
+					<details className="border-t border-border pt-3">
+						<summary className="cursor-pointer text-sm font-medium">发表评论</summary>
+						<div className="mt-3 grid gap-2">
+							<label htmlFor="room-task-comment" className="text-sm font-medium">评论</label>
+							<Textarea id="room-task-comment" value={comment} onChange={(event) => setComment(event.target.value)} maxLength={8000} rows={2} placeholder="输入 @智能体名称 可提醒对方" />
+							<Button variant="outline" className="justify-self-end" disabled={submitting || !comment.trim()} onClick={() => void submit(async () => { await controller.commentRoomTask(task.id, comment.trim()); setComment(""); })}>发送评论</Button>
+						</div>
+					</details>
+					<details className="border-t border-border pt-3">
+						<summary className="cursor-pointer text-sm font-medium">编辑任务</summary>
+						<div className="mt-3 grid gap-2">
+							<label htmlFor="room-task-edit-title" className="text-sm font-medium">标题</label>
+							<Input id="room-task-edit-title" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
+							<label htmlFor="room-task-edit-description" className="text-sm font-medium">任务内容</label>
+							<Textarea id="room-task-edit-description" maxLength={8000} rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
+							<label htmlFor="room-task-assignee" className="text-sm font-medium">负责人</label>
+							<select id="room-task-assignee" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={assigneeSessionId} onChange={(event) => setAssigneeSessionId(event.target.value)}>
+								<option value="">待认领</option>
+								{members.filter((member) => member.role === "member" && !member.leftAt).map((member) => <option key={member.sessionId} value={member.sessionId}>{memberName(members, member.sessionId)}</option>)}
+							</select>
+							<Button variant="outline" className="justify-self-end" disabled={submitting || !title.trim() || !changed || (task.status === "done" && assigneeSessionId !== (task.assigneeSessionId ?? ""))} onClick={() => void submit(async () => {
+								await controller.editRoomTask(task.id, { title: title.trim(), description: description.trim(), assigneeSessionId: assigneeSessionId || null });
+							})}>保存任务</Button>
+						</div>
+					</details>
+					<details className="border-t border-border pt-3">
+						<summary className="cursor-pointer text-sm font-medium">调整进展</summary>
+						<div className="mt-3 grid gap-2">
+							<label htmlFor="room-task-status" className="text-sm font-medium">状态</label>
+							<select id="room-task-status" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={status} onChange={(event) => setStatus(event.target.value as WebRoomTaskStatus)}>
+								{COLUMNS.filter((column) => column.status !== "done" || task.status === "done").map((column) => <option key={column.status} value={column.status} disabled={!task.assigneeSessionId && column.status !== "todo"}>{column.title}</option>)}
+							</select>
+							<label htmlFor="room-task-note" className="text-sm font-medium">进展记录</label>
+							<Textarea id="room-task-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={8000} rows={3} placeholder="记录进展或阻塞原因" />
+							{status === "todo" && task.assigneeSessionId ? <p className="text-xs text-muted-foreground">移至待认领会释放当前负责人。</p> : null}
+							<Button variant="outline" className="justify-self-end" disabled={submitting || (status === task.status && !note.trim())} onClick={() => void submit(async () => { await controller.updateRoomTask(task.id, status, note.trim() || undefined); if (status === "todo") setAssigneeSessionId(""); setNote(""); })}>保存进展</Button>
+						</div>
+					</details>
+					{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
 				</div>
-				<div className="grid gap-2 border-t border-border pt-3">
-					<label htmlFor="room-task-status" className="text-sm font-medium">状态</label>
-					<select id="room-task-status" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={status} onChange={(event) => setStatus(event.target.value as WebRoomTaskStatus)}>
-						{COLUMNS.map((column) => <option key={column.status} value={column.status} disabled={!task.assigneeSessionId && column.status !== "todo"}>{column.title}</option>)}
-					</select>
-					<label htmlFor="room-task-note" className="text-sm font-medium">进展记录</label>
-					<Textarea id="room-task-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={8000} rows={3} placeholder="记录进展或阻塞原因" />
-					{status === "todo" && task.assigneeSessionId ? <p className="text-xs text-muted-foreground">移至待认领会释放当前负责人。</p> : null}
-					<Button variant="outline" className="justify-self-end" disabled={submitting || (status === task.status && !note.trim())} onClick={() => void submit(async () => { await controller.updateRoomTask(task.id, status, note.trim() || undefined); if (status === "todo") setAssigneeSessionId(""); setNote(""); })}>保存状态</Button>
-				</div>
-				{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-			</div>
-			<DialogFooter><Button variant="outline" onClick={onClose} disabled={submitting}>关闭</Button></DialogFooter>
-		</DialogContent>
+				<DialogFooter><Button variant="outline" onClick={onClose} disabled={submitting}>关闭</Button></DialogFooter>
+			</DialogContent>
 		</Dialog>
 	);
 }
@@ -168,15 +150,13 @@ export function RoomTaskBoard({
 	projectId,
 	sessions,
 	onOpenSession,
-	onRefreshSessions,
-	onToast,
+	openResource,
 }: {
 	controller: RoomWorkspaceController;
 	projectId?: string;
 	sessions: readonly WebSessionSummary[];
 	onOpenSession: (sessionId: string) => void;
-	onRefreshSessions: (projectId: string) => Promise<void>;
-	onToast: (message: string) => void;
+	openResource: WorkbenchActions["openResource"];
 }) {
 	const [createOpen, setCreateOpen] = useState(false);
 	const [title, setTitle] = useState("");
@@ -225,7 +205,7 @@ export function RoomTaskBoard({
 									<div className="grid min-h-0 flex-1 content-start gap-2.5 overflow-y-auto">
 										{tasks.map((task) => {
 											const executionSession = sessions.find((session) => session.id === task.execution?.sessionId);
-											const workspace = executionSession?.workspace ?? task.execution?.workspace;
+											const workspace = task.execution?.result?.workspace ?? executionSession?.workspace ?? task.execution?.workspace;
 											return (
 												<button
 													key={task.id}
@@ -241,6 +221,7 @@ export function RoomTaskBoard({
 															执行状态：{workspaceStatusLabel(workspace.status)}
 														</span>
 													) : null}
+												{task.execution?.result?.error ? <span className="mt-2 line-clamp-2 text-xs text-destructive">{task.execution.result.error}</span> : task.status === "doing" && task.execution?.result?.outcome === "completed" ? <span className="mt-2 block text-xs text-muted-foreground">结果已提交</span> : null}
 												</button>
 											);
 										})}
@@ -258,10 +239,8 @@ export function RoomTaskBoard({
 					members={members}
 					controller={controller}
 					projectId={projectId}
-					sessions={sessions}
+					openResource={openResource}
 					onOpenSession={onOpenSession}
-					onRefreshSessions={onRefreshSessions}
-					onToast={onToast}
 					onClose={() => setSelectedId(undefined)}
 				/>
 			) : null}
@@ -278,10 +257,11 @@ export function RoomTaskBoard({
 						<Textarea id="room-task-description" maxLength={8000} rows={5} value={description} onChange={(event) => setDescription(event.target.value)} />
 						<label htmlFor="room-task-workspace-mode" className="text-sm font-medium">工作区模式</label>
 						<select id="room-task-workspace-mode" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as WebSessionWorkspaceMode)}>
-							<option value="shared">共享工作区</option>
+							<option value="shared">只读调查与评审</option>
 							<option value="worktree">独立 worktree</option>
 							<option value="patch">补丁交付</option>
 						</select>
+						<p className="text-sm text-muted-foreground">{WORKSPACE_DESCRIPTIONS[workspaceMode]}</p>
 						{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
 					</div>
 					<DialogFooter>

@@ -19,6 +19,7 @@ import {
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
 import { isDiffTool, toolProgressDiff, toolRecord } from "./tool-progress.ts";
+import { joinTranscriptText, type TranscriptTextPart, transcriptTextPart } from "./transcript-content-reference.ts";
 
 const INTERNAL_FILE_REFERENCE_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gu;
 const FILE_ATTRIBUTE_PATTERN = /\bname="([^"]*)"/u;
@@ -282,6 +283,9 @@ function text(value: JsonValue | undefined): string {
 					if (!item) return typeof part === "string" ? part : "";
 					if (item.type === "image") return typeof item.alt === "string" ? item.alt : "";
 					if (typeof item.text === "string") return item.text;
+					const referencedText = record(item.text);
+					if (referencedText?.type === "content_ref" && typeof referencedText.previewHead === "string")
+						return referencedText.previewHead;
 					if (item.type === "content_ref")
 						return typeof item.previewHead === "string" ? item.previewHead : "内容引用";
 					return JSON.stringify(item);
@@ -685,28 +689,39 @@ function assistantViews(
 	stepByToolCall: ReadonlyMap<string, string>,
 ): TranscriptViewItem[] {
 	if (!Array.isArray(content)) {
-		return [{ type: "assistant", text: text(content), ...(images.length > 0 ? { images } : {}) }];
+		const referenced = typeof content === "object" ? transcriptTextPart(content) : undefined;
+		return [
+			{
+				type: "assistant",
+				...(referenced ? joinTranscriptText([referenced], "\n") : { text: text(content) }),
+				...(images.length > 0 ? { images } : {}),
+			},
+		];
 	}
 
 	const views: TranscriptViewItem[] = [];
 	const citations = webSearchCitations(content);
-	let thinkingParts: string[] = [];
+	let thinkingParts: TranscriptTextPart[] = [];
 	let thinkingIndices: number[] = [];
-	let textParts: string[] = [];
+	let textParts: TranscriptTextPart[] = [];
 	let textIndices: number[] = [];
 	let toolCalls: JsonRecord[] = [];
 	let projectedToolCallCount = 0;
 
 	const flushThinking = () => {
 		if (thinkingParts.length > 0) {
-			views.push({ type: "thinking", text: thinkingParts.join("\n\n"), contentIndices: thinkingIndices });
+			views.push({
+				type: "thinking",
+				...joinTranscriptText(thinkingParts, "\n\n"),
+				contentIndices: thinkingIndices,
+			});
 			thinkingParts = [];
 			thinkingIndices = [];
 		}
 	};
 	const flushText = () => {
 		if (textParts.length > 0) {
-			views.push({ type: "assistant", text: textParts.join("\n"), contentIndices: textIndices });
+			views.push({ type: "assistant", ...joinTranscriptText(textParts, "\n"), contentIndices: textIndices });
 			textParts = [];
 			textIndices = [];
 		}
@@ -729,20 +744,22 @@ function assistantViews(
 	for (const [contentIndex, part] of content.entries()) {
 		const item = record(part);
 		if (!item) continue;
-		if (item.type === "thinking" && typeof item.thinking === "string") {
+		const thinkingPart = transcriptTextPart(item.thinking);
+		const textPart = transcriptTextPart(item.text);
+		if (item.type === "thinking" && thinkingPart !== undefined) {
 			flushText();
 			flushToolCalls();
-			if (item.thinking.trim()) {
-				thinkingParts.push(item.thinking);
+			if (typeof thinkingPart !== "string" || thinkingPart.trim()) {
+				thinkingParts.push(thinkingPart);
 				thinkingIndices.push(contentIndex);
 			}
 			continue;
 		}
-		if (item.type === "text" && typeof item.text === "string") {
+		if (item.type === "text" && textPart !== undefined) {
 			flushThinking();
 			flushToolCalls();
-			if (item.text.trim()) {
-				textParts.push(item.text);
+			if (typeof textPart !== "string" || textPart.trim()) {
+				textParts.push(textPart);
 				textIndices.push(contentIndex);
 			}
 			continue;

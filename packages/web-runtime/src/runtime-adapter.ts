@@ -178,6 +178,7 @@ import {
 	rebindSessionAttachments,
 	sessionAttachmentDirectory,
 } from "./session-attachments.ts";
+import { SessionProgressCoalescer } from "./session-progress-coalescing.ts";
 import { SessionReadIndex } from "./session-read-index.ts";
 import { isDiffTool, toolCallUpdate, toolPath, toolProgressDiff, toolRecord } from "./tool-progress.ts";
 import { projectedToolActivity } from "./transcript-projection.ts";
@@ -1831,6 +1832,10 @@ class CoreRuntimeSession implements RuntimeSession {
 	}> = [];
 	private completedExtensionActivities = new Map<string, CompletedExtensionActivity>();
 	private stateRevision = 0;
+	private stateChangedTimer?: ReturnType<typeof setTimeout>;
+	private readonly progress = new SessionProgressCoalescer((progress) =>
+		this.emit({ type: "progress", payload: progress }),
+	);
 	private committedEntryCount = 0;
 	private lastTranscriptGeneration?: string;
 	private lastTranscriptRevision = 0;
@@ -2657,6 +2662,9 @@ class CoreRuntimeSession implements RuntimeSession {
 		this.unsubscribeSubagents = undefined;
 		this.unsubscribeExtensionActivities?.();
 		this.unsubscribeExtensionActivities = undefined;
+		if (this.stateChangedTimer) clearTimeout(this.stateChangedTimer);
+		this.stateChangedTimer = undefined;
+		this.progress.clear();
 		const companion = this.companion;
 		this.companion = undefined;
 		this.externalClientCount = 0;
@@ -2670,6 +2678,9 @@ class CoreRuntimeSession implements RuntimeSession {
 	}
 
 	private async bindCurrentSession(): Promise<void> {
+		if (this.stateChangedTimer) clearTimeout(this.stateChangedTimer);
+		this.stateChangedTimer = undefined;
+		this.progress.clear();
 		this.outputSpeed.start();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -2764,9 +2775,9 @@ class CoreRuntimeSession implements RuntimeSession {
 		});
 		this.unsubscribeSteps = this.stepController.onChange((step) => {
 			this.stateRevision++;
-			this.emit({ type: "progress", payload: { type: "agent_step", step } });
+			this.progress.push({ type: "agent_step", step });
 			queueMicrotask(() => this.emitCommittedEntries());
-			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
+			this.publishStateChanged();
 		});
 		const conversationStream = getWebConversationStream(session);
 		this.unsubscribe = session.subscribe((event) => {
@@ -2779,7 +2790,7 @@ class CoreRuntimeSession implements RuntimeSession {
 					execution.lastProgressAt - (this.publishedExecution?.lastProgressAt ?? 0) >= 1_000)
 			) {
 				this.publishedExecution = execution;
-				this.emit({ type: "progress", payload: { type: "execution", execution } });
+				this.progress.push({ type: "execution", execution });
 			}
 			conversationStream.apply(event);
 			this.stateRevision++;
@@ -2877,26 +2888,25 @@ class CoreRuntimeSession implements RuntimeSession {
 				event,
 				contentIndex === undefined ? undefined : conversationStream.blockId(contentIndex),
 			)) {
-				this.emit({ type: "progress", payload: progressWithAgentStep(progress, this.stepController) });
+				this.progress.push(progressWithAgentStep(progress, this.stepController));
 			}
-			if (liveOutputSpeed)
-				this.emit({ type: "progress", payload: { type: "usage", usage: { outputSpeed: liveOutputSpeed } } });
+			if (liveOutputSpeed) this.progress.push({ type: "usage", usage: { outputSpeed: liveOutputSpeed } });
 			if (event.type === "message_end" && event.message.role === "assistant") {
 				const outputSpeed = this.outputSpeed.finish(
 					visibleOutputTokens(event.message.usage.output, event.message.usage.reasoning),
 					event.message.stopReason,
 				);
-				this.emit({
-					type: "progress",
-					payload: {
-						type: "usage",
-						usage: {
-							outputSpeed: outputSpeed ? { ...outputSpeed, estimated: false, streaming: false } : null,
-						},
-					},
+				this.progress.push({
+					type: "usage",
+					usage: { outputSpeed: outputSpeed ? { ...outputSpeed, estimated: false, streaming: false } : null },
 				});
 			}
-			this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
+			this.publishStateChanged(
+				event.type === "message_update" ||
+					event.type === "tool_execution_update" ||
+					(event.type === "tool_activity" &&
+						(event.activity.state === "preparing" || event.activity.state === "running")),
+			);
 		});
 		const parentSessionPath = session.sessionFile;
 		if (parentSessionPath) {
@@ -3067,10 +3077,27 @@ class CoreRuntimeSession implements RuntimeSession {
 
 	private emitStateChanged(): void {
 		this.stateRevision++;
+		this.publishStateChanged();
+	}
+
+	private publishStateChanged(defer = false): void {
+		if (defer) {
+			if (this.stateChangedTimer) return;
+			// 进度已单独发送；完整快照只按窗口生成，不能在每个模型片段上重算并复制。
+			this.stateChangedTimer = setTimeout(() => {
+				this.stateChangedTimer = undefined;
+				if (!this.disposed) this.publishStateChanged();
+			}, 250);
+			this.stateChangedTimer.unref?.();
+			return;
+		}
+		if (this.stateChangedTimer) clearTimeout(this.stateChangedTimer);
+		this.stateChangedTimer = undefined;
 		this.emit({ type: "state_changed", payload: jsonValue(this.getSnapshot("owned")) });
 	}
 
 	private emit(event: RuntimeEvent): void {
+		if (event.type !== "progress") this.progress.flush();
 		for (const listener of this.listeners) listener(event);
 	}
 }
@@ -3125,7 +3152,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		this.preferSessionOwnership = options.preferSessionOwnership === true;
 		this.sessionCoordinator = options.sessionCoordinator;
 	}
-	private getSessionReadIndex(): SessionReadIndex {
+	getSessionReadIndex(): SessionReadIndex {
 		this.sessionReadIndex ??= new SessionReadIndex(this.agentDir);
 		return this.sessionReadIndex;
 	}

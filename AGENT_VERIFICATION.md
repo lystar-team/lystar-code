@@ -11,6 +11,17 @@
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
 - 上游 Pi 基线为 `v1.3.0`（`71023aec1546d6d677a65669c5665c0927ce0dd0`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.3.0-lystar.2`，上一正式 Tag 为 `v1.3.0-lystar.1`。
 
+## 智能体协作修复验证（2026-10-16，Linux x64）
+
+- 协作回合逐条传递发送者类型、成员名称、回复关系与任务关联，并向模型补充真人用户、主智能体和同事智能体的身份规则。普通 `room_send` 的可选参数允许显式 `null`，解决真实模型因必填参数补入能力租约、随后被普通消息路径拒绝的问题。
+- 看板保留待认领、进行中、阻塞和已完成四列。任务结果与评论渲染 Markdown，变更文件提供补丁预览；编辑与评论默认收起。主智能体核对产物后，通过 `room_task_update` 接收或退回重做。
+- 讨论、认领和执行沿用角色的工具配置；恢复协作会话时不再沿用历史临时工具集，回合开始前完成扩展启动。执行会话调用 Room 工具时使用负责成员的身份。认领成功后由 Runtime 结束成员回合并启动工作区执行，不依赖模型自行停止。
+- 同一问题已通过 `room_send` 回答时，不再自动追加答案。过期认领通知跳过投递，认领回合不自动回复，避免旧消息触发重复执行。执行结果持久化并完成 Runtime 清理后再通知等待方，避免接收时仍持有写锁。
+- 最新完整 `npm run check` 通过；Coding Agent 的 4 个既有测试文件、11 项通过，Runtime 的 6 个既有测试文件、33 项通过。只同步原有夹具和失配断言，没有新增测试文件、用例或放宽完成标准。日志为 `/tmp/lystar-tools-core2.log` 与 `/tmp/lystar-tools-runtime-verified.log`。
+- 在独立 Agent 目录和临时非 Git 项目中，使用当前角色的 `upstream / gpt-6-luna / high` 完成真实问答、patch 任务认领、工作区执行、主会话接收和目录回收。同一问题提问一次、回答一次；执行会话实际成功调用 Bash、Codemode、MCP 状态查询、Room 任务工具、Write 和 Read。成员回合未写文件，`create_agent`、`session_create` 在全部四个会话中均不可用，其余角色工具保留。`delivery.txt` 已接收到主项目，任务为 done、工作区为 released，待投递消息为零。结果为 `/tmp/lystar-room-tools-live-bbV4Hv/result.json`，日志为 `/tmp/lystar-room-tools-live-verified.log`。
+- agent-browser 已检查简化后的四列看板、Markdown 代码块、评论标题/表格/列表、补丁预览和默认折叠状态；桌面与手机 390px 页面无横向溢出，浏览器无异常。截图为 `/tmp/lystar-simplify-markdown-desktop.png` 与 `/tmp/lystar-simplify-task-mobile.png`。
+- 当前证据覆盖定向用例和一次最终真实链路，未验证长时并发；索引关闭时偶发的未处理拒绝尚未定位。真实模型只覆盖 patch 模式；Git worktree 的改动保留与冲突接收沿用既有用例证据。
+
 ## 1.3.0-lystar.2 自动发布验证
 
 - 记录时间：2026-10-16T04:42:37.503Z。Annotated Tag `v1.3.0-lystar.2` 指向 `5e2853fe6797694070d7357e342cfa88ff78eeb1`；Release workflow `38850440360` 的全部 job 成功，公开 Release 不是 draft/prerelease。

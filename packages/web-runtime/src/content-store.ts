@@ -78,17 +78,18 @@ export class ContentStore {
 	private readonly artifacts = new Map<string, StoredArtifact>();
 	private totalBytes = 0;
 
-	compactTranscriptItem(sessionPath: string, item: TranscriptItem): TranscriptItem {
+	compactTranscriptItem(sessionPath: string, item: TranscriptItem, contentCompacted = false): TranscriptItem {
+		if (contentCompacted) return { ...item, payload: this.compactPromptImages(sessionPath, item.payload) };
 		const imagePayload = this.compactImages(sessionPath, item.payload, toolResultArtifactPath(item));
 		const payload = this.compactPromptImages(sessionPath, imagePayload);
 		return { ...item, payload: isToolResult(item) ? this.compactValue(sessionPath, payload) : payload };
 	}
 
-	compactAssistantTranscriptItem(sessionPath: string, item: TranscriptItem): TranscriptItem {
+	compactAssistantTranscriptItem(sessionPath: string, item: TranscriptItem, retainPayload = true): TranscriptItem {
 		const view = item.view;
 		const source = item.payload;
 		if (view?.type === "extension_entry" && view.input) {
-			const payload = this.compactValue(sessionPath, source);
+			const payload = retainPayload ? this.compactValue(sessionPath, source) : source;
 			if (view.input.text.length <= 16 * 1024) return { ...item, payload };
 			const reference = this.createReference(
 				sessionPath,
@@ -112,7 +113,7 @@ export class ContentStore {
 		const message = source && typeof source === "object" && !Array.isArray(source) ? source.message : undefined;
 		const assistant =
 			message && typeof message === "object" && !Array.isArray(message) && message.role === "assistant";
-		const payload = assistant ? this.compactValue(sessionPath, source) : source;
+		const payload = assistant && retainPayload ? this.compactValue(sessionPath, source) : source;
 		if (view?.type !== "assistant" && view?.type !== "thinking") return assistant ? { ...item, payload } : item;
 		if (view.text.length <= 16 * 1024) return { ...item, payload };
 		const reference = this.createReference(

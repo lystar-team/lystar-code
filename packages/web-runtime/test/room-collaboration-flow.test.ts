@@ -36,7 +36,7 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 		const last = context.messages.at(-1);
 		if (last?.role === "toolResult" && last.isError) errors.push(getMessageText(last));
 		const input = getMessageText(context.messages.findLast((message) => message.role === "user"));
-		if (toolNames.includes("write")) {
+		if (toolNames.includes("write") && input.includes("提交任务产物和验证结果，未完成时说明阻塞。")) {
 			if (last?.role === "toolResult" && last.toolName === "write")
 				return fauxAssistantMessage("已生成交付文件，并核对字段。验证：文件内容包含 A 的字段结论。");
 			executionCalls++;
@@ -75,7 +75,8 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 		if (
 			toolNames.includes("room_task_create") &&
 			input.includes("角色：member") &&
-			input.includes("本轮输入：\n依据 A 的结论执行交付")
+			input.includes("本轮输入：") &&
+			input.includes("\n依据 A 的结论执行交付\n")
 		) {
 			bSawA = input.includes("接口结论：字段 orderId");
 			return fauxAssistantMessage(
@@ -90,7 +91,7 @@ it("真实 Session 工具链：B 使用 A 的结论，认领任务并交付隔�
 				{ stopReason: "toolUse" },
 			);
 		}
-		if (input.includes("本轮输入：\n请给出接口结论")) {
+		if (input.includes("本轮输入：") && input.includes("\n请给出接口结论\n")) {
 			if (last?.role === "toolResult" && last.toolName === "room_read" && !failedAfterRead) {
 				failedAfterRead = true;
 				return fauxAssistantMessage("", { stopReason: "error", errorMessage: "读取后临时 502" });

@@ -41,6 +41,9 @@ test("工作区同步失败时在 Runtime 仍连接的情况下重试并恢复�
 	const socket = {
 		readyState: WebSocket.OPEN,
 		bufferedAmount: 0,
+		on() {
+			return this;
+		},
 		send(payload: string, callback?: (error?: Error) => void) {
 			messages.push(JSON.parse(payload));
 			callback?.();

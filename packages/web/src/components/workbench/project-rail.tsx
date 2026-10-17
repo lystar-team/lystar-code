@@ -216,7 +216,16 @@ export const ProjectRail = memo(function ProjectRail({
 	workspaceMode,
 	onWorkspaceModeChange,
 }: ProjectRailProps) {
-	const [query, setQuery] = useState("");
+	const [query, setQueryValue] = useState("");
+	const [searchExpansion, setSearchExpansion] = useState<{
+		projects: Record<string, boolean>;
+		groups: Record<string, boolean>;
+		ungrouped?: boolean;
+	}>({ projects: {}, groups: {} });
+	const setQuery = useCallback((value: string) => {
+		setQueryValue(value);
+		setSearchExpansion({ projects: {}, groups: {} });
+	}, []);
 	const [sessionTab, setSessionTab] = useState<SessionListTab>("all");
 	const [showArchived, setShowArchived] = useState(false);
 	const [ungroupedOpen, setUngroupedOpen] = useState(true);
@@ -279,6 +288,7 @@ export const ProjectRail = memo(function ProjectRail({
 	}, [sessionTab, state.sessionId, selectedSessionActivity, changeSessionTab]);
 
 	const normalizedQuery = query.trim().toLowerCase();
+	const ungroupedExpanded = normalizedQuery ? (searchExpansion.ungrouped ?? true) : ungroupedOpen;
 	const archivedProjects = state.projects.filter((project) => project.archived);
 	const searchedSessionsByProject = useMemo(
 		() =>
@@ -331,7 +341,7 @@ export const ProjectRail = memo(function ProjectRail({
 		pendingNewSessionRef.current = undefined;
 		setQuery("");
 		changeSessionTab("all", state.sessionId);
-	}, [state.sessionId, state.currentProjectId, changeSessionTab]);
+	}, [state.sessionId, state.currentProjectId, changeSessionTab, setQuery]);
 
 	useLayoutEffect(() => {
 		if (!focusRequest || focusRequest.tab !== sessionTab || handledFocusRef.current === focusRequest.id) return;
@@ -462,22 +472,6 @@ export const ProjectRail = memo(function ProjectRail({
 			ungrouped: projectSections.ungrouped.filter((project) => visibleIds.has(project.id)),
 		};
 	}, [projectSections, visibleProjects, sessionTab, normalizedQuery]);
-
-	useEffect(() => {
-		if (!normalizedQuery) return;
-		setExpandedGroupIds((current) => {
-			const next = new Set(current);
-			for (const section of filteredProjectSections.groups) next.add(section.group.id);
-			return next.size === current.size ? current : next;
-		});
-		if (filteredProjectSections.ungrouped.length) setUngroupedOpen(true);
-		if (!sessionMatchedProjectIds.size) return;
-		setExpandedProjectIds((current) => {
-			const next = new Set(current);
-			for (const id of sessionMatchedProjectIds) next.add(id);
-			return next.size === current.size ? current : next;
-		});
-	}, [normalizedQuery, filteredProjectSections, sessionMatchedProjectIds]);
 
 	const displayedProjectIds = useMemo(
 		() => [
@@ -873,7 +867,9 @@ export const ProjectRail = memo(function ProjectRail({
 
 	const renderProject = (project: WebProject, nested = false) => {
 		const selected = selectedProjectId === project.id;
-		const expanded = expandedProjectIds.has(project.id);
+		const expanded = normalizedQuery
+			? (searchExpansion.projects[project.id] ?? (expandedProjectIds.has(project.id) || sessionMatchedProjectIds.has(project.id)))
+			: expandedProjectIds.has(project.id);
 		const projectActionsVisible = openProjectMenuId === project.id;
 		const sessions = matchingSessionsByProject.get(project.id)!;
 		const topLevelSessionList = topLevelSessionsByProject.get(project.id)!;
@@ -899,6 +895,10 @@ export const ProjectRail = memo(function ProjectRail({
 						<Collapsible
 							open={expanded}
 							onOpenChange={(open) => {
+								if (normalizedQuery) {
+									setSearchExpansion((current) => ({ ...current, projects: { ...current.projects, [project.id]: open } }));
+									return;
+								}
 								setExpandedProjectIds((current) => {
 									const next = new Set(current);
 									if (open) next.add(project.id);
@@ -1277,7 +1277,7 @@ export const ProjectRail = memo(function ProjectRail({
 	};
 
 	const renderGroup = (group: ProjectGroup, groupProjects: WebProject[]) => {
-		const expanded = expandedGroupIds.has(group.id);
+		const expanded = normalizedQuery ? (searchExpansion.groups[group.id] ?? true) : expandedGroupIds.has(group.id);
 		const groupDrop = groupDropTarget?.groupId === group.id;
 		const visibleGroupSessions = groupProjects.map((project) => matchingSessionsByProject.get(project.id)!);
 		const groupRunningSessionCount = visibleGroupSessions.reduce(
@@ -1303,14 +1303,18 @@ export const ProjectRail = memo(function ProjectRail({
 				<div className="min-w-0">
 						<Collapsible
 							open={expanded}
-							onOpenChange={(open) =>
+							onOpenChange={(open) => {
+								if (normalizedQuery) {
+									setSearchExpansion((current) => ({ ...current, groups: { ...current.groups, [group.id]: open } }));
+									return;
+								}
 								setExpandedGroupIds((current) => {
 									const next = new Set(current);
 									if (open) next.add(group.id);
 									else next.delete(group.id);
 									return next;
-								})
-							}
+								});
+							}}
 						>
 							<fieldset
 								aria-label={group.name}
@@ -1648,7 +1652,10 @@ export const ProjectRail = memo(function ProjectRail({
 					<div className="grid gap-0.5">
 						{filteredProjectSections.groups.map((section) => renderGroup(section.group, section.projects))}
 						{state.projectGroups.length > 0 && filteredProjectSections.ungrouped.length > 0 ? (
-							<Collapsible open={ungroupedOpen} onOpenChange={setUngroupedOpen}>
+							<Collapsible open={ungroupedExpanded} onOpenChange={(open) => {
+								if (normalizedQuery) setSearchExpansion((current) => ({ ...current, ungrouped: open }));
+								else setUngroupedOpen(open);
+							}}>
 								<fieldset
 									aria-label="未分组项目"
 									className={cn("group relative rounded-md border-0 p-0")}
@@ -1660,7 +1667,7 @@ export const ProjectRail = memo(function ProjectRail({
 													className="h-8 w-full min-w-0 justify-start gap-2 px-2 py-1 text-xs"
 													variant="ghost"
 												>
-											<ProjectRailChevron className="size-3.5 shrink-0" open={ungroupedOpen} />
+											<ProjectRailChevron className="size-3.5 shrink-0" open={ungroupedExpanded} />
 											<FolderTree className="size-4 shrink-0 text-muted-foreground" />
 											<span className="project-list-item-label min-w-0 flex-1 truncate text-left font-medium">
 												未分组
@@ -1670,7 +1677,7 @@ export const ProjectRail = memo(function ProjectRail({
 											</span>
 										</Button>
 									</CollapsibleTrigger>
-									<GsapCollapsibleContent open={ungroupedOpen}>
+								<GsapCollapsibleContent open={ungroupedExpanded}>
 										<ProjectRailItems
 											projects={filteredProjectSections.ungrouped}
 											renderProject={renderProject}

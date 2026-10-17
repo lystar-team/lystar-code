@@ -55,6 +55,7 @@ export interface SessionRoomMessage {
 	body: string;
 	attachments?: readonly SessionRoomAttachment[];
 	taskId?: string;
+	taskAction?: "offer" | "execute";
 	capabilities?: AgentCapabilityLease;
 	replyToMessageId?: string;
 	basedOnSeq?: number;
@@ -158,6 +159,7 @@ export interface SessionRoomApi {
 		body: string;
 		attachments?: readonly SessionRoomAttachment[];
 		taskId?: string;
+		taskAction?: "offer" | "execute";
 		capabilities?: AgentCapabilityLease;
 		replyToMessageId?: string;
 		basedOnSeq?: number;

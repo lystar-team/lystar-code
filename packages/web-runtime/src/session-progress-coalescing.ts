@@ -15,7 +15,7 @@ export function sessionProgressKey(progress: SessionProgress): string | undefine
 		case "tool_update":
 			return `${progress.type}:${progress.toolCallId}`;
 		case "tool_state":
-			return `${progress.type}:${progress.activity.toolCallId}`;
+			return `${progress.type}:${progress.activity.activityEpoch}:${progress.activity.toolCallId}`;
 		default:
 			return undefined;
 	}
@@ -35,6 +35,7 @@ export function shouldSendProgressImmediately(progress: SessionProgress): boolea
 	return (
 		(progress.activity.state === "running" &&
 			progress.activity.progress === undefined &&
+			progress.activity.codemode === undefined &&
 			progress.activity.output === undefined &&
 			progress.activity.error === undefined) ||
 		["success", "error", "cancelled", "interrupted"].includes(progress.activity.state)
@@ -78,4 +79,56 @@ export function mergeSessionProgress(left: SessionProgress, right: SessionProgre
 			...((right.blockId ?? left.blockId) ? { blockId: right.blockId ?? left.blockId } : {}),
 		};
 	return right;
+}
+
+export class SessionProgressCoalescer {
+	private readonly emit: (progress: SessionProgress) => void;
+	private readonly pending: Array<{ key?: string; progress: SessionProgress }> = [];
+	private timer?: ReturnType<typeof setTimeout>;
+
+	constructor(emit: (progress: SessionProgress) => void) {
+		this.emit = emit;
+	}
+
+	push(progress: SessionProgress): void {
+		if (shouldSendProgressImmediately(progress)) {
+			this.flush();
+			this.emit(progress);
+			return;
+		}
+		const key = sessionProgressKey(progress);
+		const textDelta = progress.type === "assistant_delta" || progress.type === "thinking_delta";
+		const previousIndex = key
+			? textDelta
+				? this.pending.length - 1
+				: this.pending.findIndex((entry) => entry.key === key)
+			: -1;
+		const previous = this.pending[previousIndex];
+		if (key && previous?.key === key) {
+			this.pending.splice(previousIndex, 1);
+			this.pending.push({ key, progress: mergeSessionProgress(previous.progress, progress) });
+		} else {
+			this.pending.push({ key, progress });
+		}
+		const latest = this.pending.at(-1)?.progress;
+		if (this.pending.length >= 64 || (textDelta && latest && "text" in latest && latest.text.length >= 16 * 1024)) {
+			this.flush();
+			return;
+		}
+		if (this.timer) return;
+		this.timer = setTimeout(() => this.flush(), 50);
+		this.timer.unref?.();
+	}
+
+	flush(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = undefined;
+		for (const entry of this.pending.splice(0)) this.emit(entry.progress);
+	}
+
+	clear(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = undefined;
+		this.pending.length = 0;
+	}
 }

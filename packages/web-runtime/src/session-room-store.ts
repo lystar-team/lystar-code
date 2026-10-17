@@ -53,6 +53,7 @@ function messageMatchesDraft(message: SessionRoomMessage, draft: SessionRoomMess
 		message.body === draft.body &&
 		JSON.stringify(message.attachments ?? []) === JSON.stringify(draft.attachments ?? []) &&
 		message.taskId === draft.taskId &&
+		message.taskAction === draft.taskAction &&
 		JSON.stringify(message.capabilities ?? null) === JSON.stringify(draft.capabilities ?? null) &&
 		message.replyToMessageId === draft.replyToMessageId &&
 		message.basedOnSeq === draft.basedOnSeq
@@ -102,6 +103,7 @@ export interface SessionRoomMessageDraft {
 	body: string;
 	attachments?: SessionRoomMessage["attachments"];
 	taskId?: string;
+	taskAction?: SessionRoomMessage["taskAction"];
 	capabilities?: SessionRoomMessage["capabilities"];
 	replyToMessageId?: string;
 	basedOnSeq?: number;
@@ -301,7 +303,7 @@ export class SessionRoomStore {
 									item.taskId === draft.taskId &&
 									item.kind === "task" &&
 									item.targetSessionIds.includes(draft.senderSessionId) &&
-									item.capabilities?.allowedTools.includes("room_task_update"),
+									item.taskAction === "execute",
 							)
 					: undefined;
 			const isTaskResult =
@@ -318,6 +320,7 @@ export class SessionRoomStore {
 				body: draft.body,
 				...(draft.attachments?.length ? { attachments: clone(draft.attachments) } : {}),
 				...(draft.taskId ? { taskId: draft.taskId } : {}),
+				...(draft.taskAction ? { taskAction: draft.taskAction } : {}),
 				...(draft.capabilities ? { capabilities: clone(draft.capabilities) } : {}),
 				...(draft.replyToMessageId ? { replyToMessageId: draft.replyToMessageId } : {}),
 				...(draft.basedOnSeq !== undefined ? { basedOnSeq: draft.basedOnSeq } : {}),
@@ -505,6 +508,37 @@ export class SessionRoomStore {
 		});
 	}
 
+	validateTaskUpdate(
+		roomId: string,
+		taskId: string,
+		sessionId: string,
+		status: SessionRoomTaskStatus,
+		note?: string,
+	): SessionRoomTask {
+		const member = this.activeMember(roomId, sessionId);
+		const task = this.task(roomId, taskId);
+		if (member.role !== "owner" && task.assigneeSessionId !== sessionId)
+			throw roomError("任务只能由负责人或智能体协作的创建者更新", "room_task_not_assignee");
+		if (status !== "todo" && !task.assigneeSessionId) throw roomError("任务尚未认领", "room_task_unclaimed");
+		if (task.status === "done" && member.role !== "owner")
+			throw roomError("已完成任务只能由智能体协作的创建者调整", "room_task_done");
+		if (status === "done" && !task.resultText?.trim() && !note?.trim())
+			throw roomError("完成任务前必须提交结果", "room_task_result_required");
+		if (status === "done" && task.execution && !task.execution.result)
+			throw roomError("任务执行尚未结束", "room_task_execution_active");
+		if (
+			status === "done" &&
+			task.execution?.result &&
+			(task.execution.result.outcome !== "completed" || task.execution.result.error)
+		)
+			throw roomError("任务执行未成功，不能标记完成", "room_task_execution_failed");
+		if (status === "done" && task.execution && member.role !== "owner")
+			throw roomError("执行结果已提交，只有协作负责人可以验收并接收", "room_task_owner_required");
+		if (status === "done" && task.execution && task.status === "blocked")
+			throw roomError("请先按退回意见重新执行，再验收结果", "room_task_review_required");
+		return task;
+	}
+
 	updateTask(
 		roomId: string,
 		taskId: string,
@@ -513,23 +547,7 @@ export class SessionRoomStore {
 		note?: string,
 	): SessionRoomTask {
 		return this.transaction(() => {
-			const member = this.activeMember(roomId, sessionId);
-			const task = this.task(roomId, taskId);
-			if (member.role !== "owner" && task.assigneeSessionId !== sessionId)
-				throw roomError("任务只能由负责人或智能体协作的创建者更新", "room_task_not_assignee");
-			if (status !== "todo" && !task.assigneeSessionId) throw roomError("任务尚未认领", "room_task_unclaimed");
-			if (task.status === "done" && member.role !== "owner")
-				throw roomError("已完成任务只能由智能体协作的创建者调整", "room_task_done");
-			if (status === "done" && !task.resultText?.trim() && !note?.trim())
-				throw roomError("完成任务前必须提交结果", "room_task_result_required");
-			if (status === "done" && task.execution && !task.execution.result)
-				throw roomError("任务执行尚未结束", "room_task_execution_active");
-			if (
-				status === "done" &&
-				task.execution?.result &&
-				(task.execution.result.outcome !== "completed" || task.execution.result.error)
-			)
-				throw roomError("任务执行未成功，不能标记完成", "room_task_execution_failed");
+			const task = this.validateTaskUpdate(roomId, taskId, sessionId, status, note);
 			if (status === task.status && !note) return task;
 			const now = new Date().toISOString();
 			const next: SessionRoomTask = {
@@ -542,9 +560,15 @@ export class SessionRoomStore {
 							resultText: undefined,
 							execution: undefined,
 						}
-					: status === "done" && !task.resultText
-						? { resultText: note }
-						: {}),
+					: status === "doing" && (task.status === "blocked" || task.status === "done") && task.execution?.result
+						? {
+								resultText: undefined,
+								resultMessageId: undefined,
+								execution: { ...task.execution, state: "starting", result: undefined, leaseId: undefined },
+							}
+						: status === "done" && !task.resultText
+							? { resultText: note }
+							: {}),
 				updatedAt: now,
 				updates: [
 					...task.updates,

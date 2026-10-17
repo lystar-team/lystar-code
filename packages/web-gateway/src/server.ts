@@ -126,6 +126,7 @@ import { PushNotifications, parsePushSubscription } from "./push-notifications.t
 import { markRoomAgentSessions, type RoomSessionMembership } from "./room-session-visibility.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 import { SessionResultRegistry } from "./session-result-registry.ts";
+import { WebSocketWriter } from "./websocket-writer.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
@@ -1049,6 +1050,7 @@ export class WebGatewayServer {
 	private lastRuntimeModelCatalogEvent?: string;
 	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
 	private readonly socketIds = new WeakMap<WebSocket, string>();
+	private readonly socketWriters = new WeakMap<WebSocket, WebSocketWriter>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private readonly projectSubscriptions = new WeakMap<WebSocket, Set<string>>();
 	private previousCpuSnapshot?: CpuSnapshot;
@@ -1227,13 +1229,27 @@ export class WebGatewayServer {
 			return;
 		}
 		const key = progressCoalescingKey(event);
-		const previous = context.pendingProgress.at(-1);
+		const textDelta = event.progress.type === "assistant_delta" || event.progress.type === "thinking_delta";
+		const previousIndex = key
+			? textDelta
+				? context.pendingProgress.length - 1
+				: context.pendingProgress.findIndex((entry) => entry.key === key)
+			: -1;
+		const previous = context.pendingProgress[previousIndex];
 		if (key && previous?.key === key) {
-			previous.event = { ...event, progress: mergeProgress(previous.event.progress, event.progress) };
+			context.pendingProgress.splice(previousIndex, 1);
+			context.pendingProgress.push({
+				key,
+				event: { ...event, progress: mergeProgress(previous.event.progress, event.progress) },
+			});
 		} else {
 			context.pendingProgress.push({ key, event });
 		}
-		if (context.pendingProgress.length >= 64 || JSON.stringify(context.pendingProgress).length >= 16 * 1024) {
+		const pendingText = context.pendingProgress.at(-1)?.event.progress;
+		if (
+			context.pendingProgress.length >= 64 ||
+			(textDelta && pendingText && "text" in pendingText && pendingText.text.length >= 16 * 1024)
+		) {
 			this.flushPendingProgress(context);
 			return;
 		}
@@ -5427,26 +5443,23 @@ export class WebGatewayServer {
 		return undefined;
 	}
 
-	private sendWebSocket(socket: WebSocket, payload: string): void {
-		if (socket.readyState !== WebSocket.OPEN) return;
-		if (socket.bufferedAmount + Buffer.byteLength(payload) > MAX_WEBSOCKET_BUFFER_BYTES) {
-			logGatewayConnection("websocket_backpressure", {
-				socketId: this.socketIds.get(socket),
-				bufferedBytes: socket.bufferedAmount,
-				payloadBytes: Buffer.byteLength(payload),
-			});
-			socket.terminate();
-			return;
+	private sendWebSocket(socket: WebSocket, payload: string, replacementKey?: string): void {
+		let writer = this.socketWriters.get(socket);
+		if (!writer) {
+			writer = new WebSocketWriter(
+				socket,
+				MAX_WEBSOCKET_BUFFER_BYTES,
+				(fields) =>
+					logGatewayConnection("websocket_backpressure", { socketId: this.socketIds.get(socket), ...fields }),
+				(error) =>
+					logGatewayConnection("websocket_send_failed", {
+						socketId: this.socketIds.get(socket),
+						error: error.message,
+					}),
+			);
+			this.socketWriters.set(socket, writer);
 		}
-		socket.send(payload, (error) => {
-			if (error) {
-				logGatewayConnection("websocket_send_failed", {
-					socketId: this.socketIds.get(socket),
-					error: error.message,
-				});
-				socket.terminate();
-			}
-		});
+		writer.send(payload, replacementKey);
 	}
 
 	private subscriptionsFor(socket: WebSocket): Set<string> {
@@ -5486,9 +5499,17 @@ export class WebGatewayServer {
 
 	private recordSessionDetail(context: BrowserContext, sessionId: string, value: unknown): void {
 		const state = this.detailStateFor(context, sessionId);
+		const event = object(value) ?? {};
+		const progress = event.type === "session_progress" ? (event.progress as SessionProgress) : undefined;
+		const replacementKey =
+			event.type === "session_snapshot"
+				? `snapshot:${sessionId}`
+				: progress?.type === "tool_state"
+					? `tool:${sessionId}:${progress.activity.activityEpoch}:${progress.activity.toolCallId}`
+					: undefined;
 		const seq = state.nextSeq + 1;
 		state.nextSeq = seq;
-		const payload = JSON.stringify({ ...(object(value) ?? {}), seq });
+		const payload = JSON.stringify({ ...event, seq });
 		const bytes = Buffer.byteLength(payload);
 		if (bytes <= MAX_SESSION_DETAIL_BYTES) {
 			while (
@@ -5506,7 +5527,7 @@ export class WebGatewayServer {
 			state.bytes = 0;
 		}
 		for (const socket of context.sockets) {
-			if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
+			if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload, replacementKey);
 		}
 	}
 
@@ -5530,7 +5551,9 @@ export class WebGatewayServer {
 				lastSeq > currentSeq ||
 				(currentSeq > lastSeq && oldestSeq === undefined) ||
 				(oldestSeq !== undefined && lastSeq < oldestSeq - 1) ||
-				socket.bufferedAmount + replayBytes + Buffer.byteLength(JSON.stringify(acknowledgement)) >
+				(this.socketWriters.get(socket)?.bufferedBytes ?? socket.bufferedAmount) +
+					replayBytes +
+					Buffer.byteLength(JSON.stringify(acknowledgement)) >
 					MAX_WEBSOCKET_BUFFER_BYTES;
 			if (!gap) {
 				for (const event of replay) this.sendWebSocket(socket, event.payload);

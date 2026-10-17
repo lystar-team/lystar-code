@@ -70,20 +70,25 @@ function readManifest(path, errors) {
 	}
 }
 
-export function releaseMetadataErrors(outputArg, version, repository) {
+export function releaseMetadataErrors(outputArg, version, repository, selectedPlatform) {
 	const outputDir = resolve(outputArg);
 	const errors = [];
 	const expectedAssets = releaseAssetNames(version);
 	const expectedArchives = RELEASE_PLATFORMS.map((platform) => archiveName(version, platform));
 	const expectedEntries = new Set([...expectedAssets, "VERSION"]);
 
+	const requiredAssets = selectedPlatform
+		? expectedAssets.filter((name) => !expectedArchives.includes(name) || name === archiveName(version, selectedPlatform))
+		: expectedAssets;
+
+	if (selectedPlatform && !RELEASE_PLATFORMS.includes(selectedPlatform)) errors.push(`unsupported platform: ${selectedPlatform}`);
 	if (!repository) errors.push("release repository is required for verification");
 	if (!existsSync(outputDir)) return [...errors, `release directory is missing: ${outputDir}`];
 	for (const entry of readdirSync(outputDir, { withFileTypes: true })) {
 		if (!expectedEntries.has(entry.name)) errors.push(`unexpected release directory entry: ${entry.name}`);
 		if (expectedAssets.includes(entry.name) && !entry.isFile()) errors.push(`release asset is not a file: ${entry.name}`);
 	}
-	for (const name of expectedAssets) {
+	for (const name of requiredAssets) {
 		if (!existsSync(join(outputDir, name))) errors.push(`release asset is missing: ${name}`);
 	}
 	if (errors.length > 0) return errors;
@@ -110,12 +115,22 @@ export function releaseMetadataErrors(outputArg, version, repository) {
 				continue;
 			}
 			if (asset.file !== file) errors.push(`manifest asset filename mismatch: ${platform}`);
-			if (asset.size !== statSync(path).size) errors.push(`manifest asset size mismatch: ${platform}`);
-			if (asset.sha256 !== sha256(path)) errors.push(`manifest asset SHA-256 mismatch: ${platform}`);
+			if (!Number.isSafeInteger(asset.size) || asset.size <= 0) errors.push(`invalid manifest asset size: ${platform}`);
+			if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sha256)) errors.push(`invalid manifest asset SHA-256: ${platform}`);
+			if (!selectedPlatform || selectedPlatform === platform) {
+				if (asset.size !== statSync(path).size) errors.push(`manifest asset size mismatch: ${platform}`);
+				if (asset.sha256 !== sha256(path)) errors.push(`manifest asset SHA-256 mismatch: ${platform}`);
+			}
 		}
 	}
 
-	const expectedSums = expectedArchives.map((file) => `${sha256(join(outputDir, file))}  ${file}`);
+	const expectedSums = RELEASE_PLATFORMS.map((platform) => {
+		const file = archiveName(version, platform);
+		const hash = !selectedPlatform || selectedPlatform === platform
+			? sha256(join(outputDir, file))
+			: manifestAssets?.[platform]?.sha256;
+		return `${hash}  ${file}`;
+	});
 	const actualSums = readFileSync(join(outputDir, "SHA256SUMS"), "utf8").trimEnd().split("\n");
 	if (actualSums.length !== expectedSums.length || expectedSums.some((sum, index) => actualSums[index] !== sum)) {
 		errors.push("SHA256SUMS must contain exactly the five current platform archives");
@@ -131,20 +146,23 @@ export function releaseMetadataErrors(outputArg, version, repository) {
 }
 
 function usage() {
-	console.error("Usage: node scripts/generate-release-metadata.mjs [--verify] <output-dir> <version> [owner/repo]");
+	console.error("Usage: node scripts/generate-release-metadata.mjs [--verify | --verify-platform <platform>] <output-dir> <version> [owner/repo]");
 	process.exit(2);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-	const [mode, outputArg, version, repository = ""] = process.argv.slice(2);
-	if (mode === "--verify") {
-		if (!outputArg || !version || !repository) usage();
-		const errors = releaseMetadataErrors(outputArg, version, repository);
+	const args = process.argv.slice(2);
+	const mode = args[0];
+	if (mode === "--verify" || mode === "--verify-platform") {
+		const selectedPlatform = mode === "--verify-platform" ? args.splice(1, 1)[0] : undefined;
+		const [, outputArg, version, repository] = args;
+		if (!outputArg || !version || !repository || (mode === "--verify-platform" && !selectedPlatform)) usage();
+		const errors = releaseMetadataErrors(outputArg, version, repository, selectedPlatform);
 		if (errors.length > 0) throw new Error(errors.join("\n"));
-		console.log("Release metadata, checksums, installers, and public assets are consistent");
+		console.log(`Release metadata, ${selectedPlatform ?? "all platform"} checksums, and installers are consistent`);
 	} else {
-		const [legacyOutputArg, legacyVersion, legacyRepository = ""] = process.argv.slice(2);
-		if (!legacyOutputArg || !legacyVersion) usage();
-		generateReleaseMetadata(legacyOutputArg, legacyVersion, legacyRepository);
+		const [outputArg, version, repository = ""] = args;
+		if (!outputArg || !version) usage();
+		generateReleaseMetadata(outputArg, version, repository);
 	}
 }

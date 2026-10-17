@@ -80,8 +80,10 @@ cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE "$Servic
     Copy-Item (Join-Path $Root "node_modules\@xterm\addon-fit\LICENSE") (Join-Path $BundleDir "terminal\XTERM-ADDON-FIT-LICENSE.txt")
 
     Copy-Item -Recurse (Join-Path $Root "packages\tui\native\win32\prebuilds\win32-x64\*") (Join-Path $BundleDir "native\win32\prebuilds\win32-x64")
+    New-Item -ItemType Directory -Force (Join-Path $BundleDir "native\session-index") | Out-Null
+    Copy-Item -Recurse (Join-Path $PackageDir "dist\native\session-index\win32-x64") (Join-Path $BundleDir "native\session-index")
 
-    foreach ($RequiredFile in @("lc.exe", "lystar-web-service.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "skills\imagegen\SKILL.md")) {
+    foreach ($RequiredFile in @("lc.exe", "lystar-web-service.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "skills\imagegen\SKILL.md", "native\session-index\win32-x64\lystar-session-index.exe")) {
         if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
     }
 

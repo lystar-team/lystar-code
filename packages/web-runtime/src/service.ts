@@ -52,6 +52,7 @@ import {
 	sessionProgressKey,
 	shouldSendProgressImmediately,
 } from "./session-progress-coalescing.ts";
+import { SessionReadIndex } from "./session-read-index.ts";
 import { roomAttachmentInput } from "./session-room-attachments.ts";
 import { SessionRoomCoordinator } from "./session-room-coordinator.ts";
 import { SESSION_ROOM_EXECUTION_RENEW_MS, SessionRoomStore } from "./session-room-store.ts";
@@ -103,38 +104,6 @@ const MAX_OPERATION_MESSAGE_LENGTH = 16 * 1024;
 const SESSION_HANDOFF_RECONNECT_INTERVAL_MS = 100;
 const SESSION_HANDOFF_RECONNECT_TIMEOUT_MS = 60_000;
 const SESSION_HANDOFF_LOCAL_FALLBACK_MS = 5_000;
-const ROOM_READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
-const ROOM_DISCUSSION_TOOL_NAMES = [
-	...ROOM_READ_ONLY_TOOL_NAMES,
-	"room_read",
-	"room_send",
-	"room_claim",
-	"room_task_create",
-	"room_task_list",
-	"room_task_update",
-] as const;
-const ROOM_EXECUTION_TOOL_NAMES = [...ROOM_READ_ONLY_TOOL_NAMES, "edit", "write", "bash"] as const;
-const ROOM_ALLOWED_TOOL_NAMES = new Set([
-	...ROOM_READ_ONLY_TOOL_NAMES,
-	"edit",
-	"write",
-	"session_create",
-	"session_send",
-	"session_wait",
-	"session_list",
-	"session_profiles",
-	"session_stop",
-	"room_create",
-	"room_join",
-	"room_leave",
-	"room_list",
-	"room_read",
-	"room_send",
-	"room_claim",
-	"room_task_create",
-	"room_task_list",
-	"room_task_update",
-]);
 
 const ACTIVE_OPERATION_STATUSES = new Set<OperationSnapshot["status"]>(["accepted", "running", "waiting_for_input"]);
 const BOOTSTRAP_OPERATION_LIMIT = 200;
@@ -431,7 +400,8 @@ export class WebRuntimeService {
 	private readonly pendingProgress = new Map<string, PendingSessionProgress[]>();
 	private readonly pendingUi = new Map<string, PendingUiRequest>();
 	private readonly leases = new LeaseManager();
-	private readonly transcriptReader = new TranscriptReader();
+	private readonly transcriptReader: TranscriptReader;
+	private readonly sessionReadIndex: SessionReadIndex;
 	private readonly contentStore = new ContentStore();
 	private readonly collaborationWorkspaces: CollaborationWorkspaceManager;
 	private readonly roomCoordinator: SessionRoomCoordinator;
@@ -486,6 +456,8 @@ export class WebRuntimeService {
 	) {
 		this.adapter = adapter;
 		this.agentDir = options.agentDir;
+		this.sessionReadIndex = adapter.getSessionReadIndex?.() ?? new SessionReadIndex(options.agentDir);
+		this.transcriptReader = new TranscriptReader(undefined, this.sessionReadIndex);
 		this.runtimeSettings = SettingsManager.create(this.agentDir, this.agentDir);
 		this.collaborationWorkspaces = new CollaborationWorkspaceManager(this.agentDir);
 		this.roomStore = new SessionRoomStore(join(this.agentDir, "host", "collaboration-rooms.jsonl"), (change) => {
@@ -499,7 +471,11 @@ export class WebRuntimeService {
 			acceptTaskResult: (task, ownerSessionId) => this.acceptRoomTaskResult(task, ownerSessionId),
 			onDeliverySettled: (cwd) => this.retryPendingWorkspaceReleases(cwd),
 			deliver: (input) =>
-				this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message, input.messages),
+				measureRuntimePhaseAsync(
+					"room.deliver",
+					{ roomId: input.message.roomId, messageId: input.message.id, targetSessionId: input.targetSessionId },
+					() => this.deliverSessionRoomMessage(input.cwd, input.targetSessionId, input.message, input.messages),
+				),
 		});
 		this.adapter.setSessionCoordinator?.(this.createSessionCoordinator());
 		this.persistent = options.persistent === true;
@@ -648,10 +624,14 @@ export class WebRuntimeService {
 				workspace = await this.collaborationWorkspaces.resume(workspace);
 				await runtime.updateCollaborationWorkspace(workspace);
 			}
+			const promptText =
+				workspace?.mode === "shared"
+					? `${text}\n\n当前工作区用于只读调查或评审。可使用角色配置中的工具完成查询，不修改项目文件；需要写入时向主会话说明，改用 worktree 或 patch 任务。`
+					: text;
 			if (roomMessage) {
 				if (!runtime.promptWithOrigin) throw new Error("任务执行会话不支持结构化输入");
 				await this.runRoomModelTurn(runtime, () =>
-					runtime.promptWithOrigin!(text, undefined, {
+					runtime.promptWithOrigin!(promptText, undefined, {
 						inputId: roomMessage.id,
 						origin: {
 							type: "room",
@@ -662,18 +642,9 @@ export class WebRuntimeService {
 							senderSessionId: roomMessage.senderSessionId,
 							taskId: roomMessage.taskId,
 						},
-						activeToolNames:
-							workspace?.mode === "shared" ? ["read", "grep", "find", "ls"] : ROOM_EXECUTION_TOOL_NAMES,
 					}),
 				);
-			} else if (workspace?.mode === "shared") {
-				if (!runtime.promptWithOrigin) throw new Error("当前 Runtime 不支持只读协作任务");
-				await runtime.promptWithOrigin(text, undefined, {
-					inputId: randomUUID(),
-					origin: { type: "user", channel: "rpc" },
-					activeToolNames: ["read", "grep", "find", "ls"],
-				});
-			} else await runtime.prompt(text);
+			} else await runtime.prompt(promptText);
 			promptSucceeded = true;
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
@@ -792,16 +763,21 @@ export class WebRuntimeService {
 			})
 			.finally(async () => {
 				if (this.coordinatorTasks.get(sessionPath) !== tracked) return;
-				this.coordinatorTasks.delete(sessionPath);
 				this.coordinatorDemand.delete(sessionPath);
-				this.notifyCoordinatorSessionChanged(sessionPath);
-				const runtime = this.runtimes.get(sessionPath);
-				if (runtime) {
-					await this.sendSessionSnapshots(runtime);
-					await this.broadcast({ type: "transcript_changed", sessionPath });
-					await this.broadcast({ type: "sessions_changed", cwd: runtimeReadState(runtime).cwd });
+				try {
+					const runtime = this.runtimes.get(sessionPath);
+					if (runtime) {
+						await this.sendSessionSnapshots(runtime);
+						await this.broadcast({ type: "transcript_changed", sessionPath });
+						await this.broadcast({ type: "sessions_changed", cwd: runtimeReadState(runtime).cwd });
+					}
+					await this.disposeRuntimeIfUnused(sessionPath);
+				} finally {
+					if (this.coordinatorTasks.get(sessionPath) === tracked) {
+						this.coordinatorTasks.delete(sessionPath);
+						this.notifyCoordinatorSessionChanged(sessionPath);
+					}
 				}
-				await this.disposeRuntimeIfUnused(sessionPath);
 			});
 		this.coordinatorTasks.set(sessionPath, tracked);
 		void tracked.catch(() => {});
@@ -913,9 +889,23 @@ export class WebRuntimeService {
 
 	private async acceptRoomTaskResult(
 		task: SessionRoomTask,
-		_ownerSessionId: string,
+		ownerSessionId: string,
 	): Promise<SessionCollaborationResult> {
-		const result = task.execution?.result;
+		const current = this.roomStore.validateTaskUpdate(task.roomId, task.id, ownerSessionId, "done", "验收执行成果");
+		if (this.roomStore.room(task.roomId).ownerSessionId !== ownerSessionId)
+			throw Object.assign(new Error("只有协作负责人可以接收任务产物"), {
+				code: "room_task_owner_required",
+				retryable: false,
+			});
+		if (
+			current.execution?.sessionId !== task.execution?.sessionId ||
+			current.execution?.result?.taskId !== task.execution?.result?.taskId
+		)
+			throw Object.assign(new Error("任务执行结果已变化，请重新查看"), {
+				code: "room_task_execution_conflict",
+				retryable: false,
+			});
+		const result = current.execution?.result;
 		if (!result || result.outcome !== "completed" || result.error)
 			throw Object.assign(new Error("任务没有可接收的成功结果"), {
 				code: "room_task_result_invalid",
@@ -923,7 +913,7 @@ export class WebRuntimeService {
 			});
 		if (!task.execution?.sessionId) throw new Error("任务缺少执行会话");
 		const cwd = this.roomStore.room(task.roomId).cwd;
-		return this.acceptCoordinatorResult(cwd, task.execution.sessionId);
+		return this.acceptCoordinatorResult(cwd, task.execution.sessionId, ownerSessionId);
 	}
 
 	private async transitionWorkspace<T>(sessionPath: string, run: () => Promise<T>): Promise<T> {
@@ -1019,7 +1009,21 @@ export class WebRuntimeService {
 		const found = await this.findCoordinatorSession(cwd, sessionId);
 		return this.transitionWorkspace(found.path, async () => {
 			const current = await this.findCoordinatorSession(cwd, sessionId);
-			if (callerSessionId && current.base.parentId !== callerSessionId) throw new Error("只能接收自己的子会话产物");
+			const roomTasks = this.roomStore.listAllRooms(cwd).flatMap(({ room }) =>
+				this.roomStore
+					.listTasks(room.id)
+					.filter((task) => task.execution?.sessionId === sessionId)
+					.map((task) => ({ room, task })),
+			);
+			if (
+				callerSessionId &&
+				(roomTasks.length
+					? roomTasks.some(({ room }) => room.ownerSessionId !== callerSessionId)
+					: current.base.parentId !== callerSessionId)
+			)
+				throw new Error(roomTasks.length ? "只有协作负责人可以接收任务产物" : "只能接收自己的子会话产物");
+			for (const { room, task } of roomTasks)
+				this.roomStore.validateTaskUpdate(room.id, task.id, room.ownerSessionId, "done", "验收执行成果");
 			const result = current.base.collaborationResult;
 			if (!result || result.outcome !== "completed" || result.error) throw new Error("会话没有可接收的成功结果");
 			if (!result.workspace || result.workspace.status === "released") return result;
@@ -1038,6 +1042,10 @@ export class WebRuntimeService {
 			const finalResult = { ...accepted, workspace: released ?? workspace };
 			const live = this.runtimes.get(current.path);
 			if (live) await this.persistCoordinatorResult(live, finalResult);
+			for (const { room, task } of roomTasks) {
+				this.roomStore.recordTaskAcceptance(room.id, task.id, room.ownerSessionId, finalResult);
+				this.roomStore.updateTask(room.id, task.id, room.ownerSessionId, "done", "已验收并接收执行成果");
+			}
 			await this.broadcast({ type: "sessions_changed", cwd });
 			return finalResult;
 		});
@@ -1123,7 +1131,7 @@ export class WebRuntimeService {
 			}
 		}
 		const attachment = await roomAttachmentInput(message);
-		const description = `${context.text}\n\n${attachment.text}\n\n提交任务产物和验证结果，未完成时说明阻塞。不要创建下级会话。`;
+		const description = `${context.text}\n\n${this.roomCoordinator.formatMessageIdentity(message)}\n${attachment.text}\n\n提交任务产物和验证结果，未完成时说明阻塞。不要创建下级会话。`;
 		if (!executionSessionPath) {
 			const member = this.roomStore.member(message.roomId, targetSessionId);
 			const parent = await this.findCoordinatorSession(cwd, targetSessionId);
@@ -1268,7 +1276,7 @@ export class WebRuntimeService {
 		const request = messages.findLast(
 			(input) => input.kind === "task" || input.kind === "message" || input.kind === "question",
 		);
-		if (message.kind === "task" && message.taskId && message.capabilities?.allowedTools.includes("room_task_update"))
+		if (message.kind === "task" && message.taskId && message.taskAction === "execute")
 			return this.executeRoomTask(cwd, targetSessionId, message);
 		const found = await this.findCoordinatorSession(cwd, targetSessionId);
 		const sessionPath = canonicalSessionPath(found.path);
@@ -1281,6 +1289,13 @@ export class WebRuntimeService {
 		this.roomDeliveryDemand.add(sessionPath);
 		try {
 			await previousDelivery;
+			if (
+				message.taskAction === "offer" &&
+				message.taskId &&
+				this.roomStore.task(message.roomId, message.taskId).status !== "todo"
+			) {
+				return message.seq;
+			}
 			const runtime = await this.ensureRuntime(
 				sessionPath,
 				this.coordinatorUiHandler(sessionPath, { suppressInfoNotifications: true }),
@@ -1291,18 +1306,7 @@ export class WebRuntimeService {
 					code: "room_structured_input_unsupported",
 					retryable: false,
 				});
-			const runtimeCwd = runtimeReadState(runtime).cwd;
-			const capabilities = message.capabilities ?? {
-				allowedTools: ROOM_DISCUSSION_TOOL_NAMES,
-				readRoots: [runtimeCwd],
-				writeRoots: [],
-				shell: "disabled" as const,
-			};
-			if (capabilities.allowedTools.some((tool) => !ROOM_ALLOWED_TOOL_NAMES.has(tool)))
-				throw Object.assign(new Error("智能体协作任务只能使用受控文件工具"), {
-					code: "room_tool_not_allowed",
-					retryable: false,
-				});
+			await runtime.activateExtensionLifecycle?.();
 			const options = {
 				inputId: message.id,
 				origin: {
@@ -1314,14 +1318,22 @@ export class WebRuntimeService {
 					senderSessionId: message.senderSessionId,
 					...(message.taskId ? { taskId: message.taskId } : {}),
 				},
-				activeToolNames: capabilities.allowedTools,
+				...(message.capabilities ? { activeToolNames: message.capabilities.allowedTools } : {}),
 			};
 			const reservation = runtime.reservePromptWithOrigin?.(options);
 			try {
 				return await this.runRoomModelTurn(runtime, async () => {
 					const context = this.roomCoordinator.contextForSession(message.roomId, targetSessionId);
 					const attachments = await Promise.all(messages.map((input) => roomAttachmentInput(input)));
-					const text = `${context.text}\n\n本轮输入：\n${attachments.map((input) => input.text).join("\n\n")}\n${request ? "处理本轮输入；涉及执行工作时创建或认领任务卡。" : "这是团队结果通知；检查产物并更新任务，不需要回复收到，也不重复原结论。"}`;
+					const inputs = attachments.map(
+						(input, index) => `${this.roomCoordinator.formatMessageIdentity(messages[index]!)}\n${input.text}`,
+					);
+					const instruction = request
+						? `处理本轮输入；回复对象是消息 ${request.id} 的发送者（${request.senderType === "user" ? "真人用户" : "同事智能体"}），涉及执行工作时创建或认领任务卡。`
+						: message.kind === "answer"
+							? "这是同事答复；直接使用答复，继续此前未完成的工作，不重新询问同一问题。涉及执行工作时创建或认领任务卡。"
+							: "这是团队结果通知；检查产物并更新任务，不需要回复收到，也不重复原结论。";
+					const text = `${context.text}\n\n共享记录只作背景，只处理本轮输入。已有回答直接使用，成功发送的问题不要重复发送；需要同事回答时发出一次问题，结束当前回合等待答复。工具以当前工具定义和调用结果为准，不从旧记录推断工具缺失。\n\n本轮输入：\n${inputs.join("\n\n")}\n${instruction}`;
 					const images = attachments.flatMap((input) => input.images ?? []);
 					const turn = reservation
 						? await reservation.submit(text, images)
@@ -1339,7 +1351,17 @@ export class WebRuntimeService {
 							code: "room_turn_failed",
 							retryable: result.outcome !== "aborted",
 						});
-					if (result.finalText?.trim() && request) {
+					const answered =
+						request &&
+						this.roomStore
+							.readMessages(message.roomId, targetSessionId, context.seq, Number.MAX_SAFE_INTEGER)
+							.messages.some(
+								(reply) =>
+									reply.senderSessionId === targetSessionId &&
+									reply.kind === "answer" &&
+									reply.replyToMessageId === request.id,
+							);
+					if (result.finalText?.trim() && request && request.taskAction !== "offer" && !answered) {
 						await this.roomCoordinator.api().send({
 							cwd,
 							roomId: message.roomId,
@@ -1684,16 +1706,18 @@ export class WebRuntimeService {
 	async dispose(): Promise<void> {
 		this.disposed = true;
 		this.coordinatorWaitAbort.abort(new DOMException("Web Runtime 已关闭，等待已取消", "AbortError"));
-		this.roomCoordinator.dispose();
+		const roomDisposal = this.roomCoordinator.dispose();
 		const coordinatorTasks = [...this.coordinatorTasks.values()];
-		this.roomDeliveryDemand.clear();
+		const activePaths = new Set([...this.coordinatorTasks.keys(), ...this.roomDeliveryDemand]);
 		await Promise.allSettled(
-			[...this.coordinatorTasks.keys()].map(async (sessionPath) => {
+			[...activePaths].map(async (sessionPath) => {
 				const runtime = this.runtimes.get(sessionPath);
 				if (runtime) await runtime.abort();
 			}),
 		);
 		await Promise.allSettled(coordinatorTasks);
+		await roomDisposal;
+		this.roomDeliveryDemand.clear();
 		this.coordinatorTasks.clear();
 		this.coordinatorTaskErrors.clear();
 		this.coordinatorDemand.clear();
@@ -1727,6 +1751,7 @@ export class WebRuntimeService {
 		this.progressTimers.clear();
 		this.pendingProgress.clear();
 		this.contentStore.clear();
+		await this.sessionReadIndex.dispose();
 		await this.adapter.dispose?.();
 	}
 
@@ -2058,21 +2083,31 @@ export class WebRuntimeService {
 				const runtimeState = runtime ? runtimeReadState(runtime) : undefined;
 				const emptyGeneration = runtimeState?.transcriptGeneration;
 				return readTranscriptPageWithinFrameBudget(request.limit, async (limit, byteBudget) => {
-					const page = await this.transcriptReader.read(sessionPath, {
-						...request,
-						limit,
-						byteBudget,
-						emptyGeneration,
-						...(runtimeState ? { leafId: runtimeState.leafId } : {}),
-					});
+					const page = await measureRuntimePhaseAsync("transcript.native_read", { sessionPath, limit }, () =>
+						this.transcriptReader.read(sessionPath, {
+							...request,
+							limit,
+							byteBudget,
+							compact: true,
+							emptyGeneration,
+							...(runtimeState ? { leafId: runtimeState.leafId } : {}),
+						}),
+					);
 					const { contextCalls, ...transcriptPage } = page;
-					return {
-						...transcriptPage,
-						requestContext: request.context,
-						items: this.projectTranscriptItems(sessionPath, page.items, page.agentSteps, contextCalls).map(
-							({ payload: _payload, ...item }) => item,
-						),
-					};
+					const items = measureRuntimePhase("transcript.project", { sessionPath, items: page.items.length }, () =>
+						this.projectTranscriptItems(
+							sessionPath,
+							page.items,
+							page.agentSteps,
+							contextCalls,
+							undefined,
+							true,
+						).map(({ payload: _payload, ...item }) => item),
+					);
+					const resolvedItems = await measureRuntimePhaseAsync("transcript.content_join", { sessionPath }, () =>
+						this.sessionReadIndex.resolveJoinedText(sessionPath, items),
+					);
+					return { ...transcriptPage, requestContext: request.context, items: resolvedItems };
 				});
 			}
 			case "search_transcript": {
@@ -3117,6 +3152,13 @@ export class WebRuntimeService {
 			case "read_external_resource":
 				return this.adapter.readExternalResource(request.path, request.accessToken, request.offset, request.limit);
 			case "read_content":
+				if (request.contentRef.startsWith("native:"))
+					return this.sessionReadIndex.readContent(
+						canonicalSessionPath(request.sessionPath),
+						request.contentRef,
+						request.offset,
+						request.limit,
+					);
 				return this.contentStore.read(
 					canonicalSessionPath(request.sessionPath),
 					request.contentRef,
@@ -3153,6 +3195,8 @@ export class WebRuntimeService {
 				});
 			}
 			case "read_image_content":
+				if (request.contentRef.startsWith("native:"))
+					return this.sessionReadIndex.readImage(canonicalSessionPath(request.sessionPath), request.contentRef);
 				return this.contentStore.readImage(canonicalSessionPath(request.sessionPath), request.contentRef);
 			case "list_settings": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
@@ -3664,10 +3708,13 @@ export class WebRuntimeService {
 		agentSteps: readonly AgentStep[] = [],
 		contextCalls: readonly TranscriptItem[] = [],
 		pendingFileCalls?: Map<string, TranscriptToolCallProjection>,
+		contentCompacted = false,
 	): TranscriptItem[] {
-		const compactItems = items.map((item) => this.contentStore.compactTranscriptItem(sessionPath, item));
+		const compactItems = items.map((item) =>
+			this.contentStore.compactTranscriptItem(sessionPath, item, contentCompacted),
+		);
 		return projectTranscriptBatch(compactItems, agentSteps, contextCalls, pendingFileCalls).map((item) =>
-			this.contentStore.compactAssistantTranscriptItem(sessionPath, item),
+			this.contentStore.compactAssistantTranscriptItem(sessionPath, item, !contentCompacted),
 		);
 	}
 
@@ -4945,6 +4992,7 @@ export class WebRuntimeService {
 	}
 
 	private async disposeRuntimeIfUnused(sessionPath: string): Promise<void> {
+		if (this.disposed) return;
 		const runtime = this.runtimes.get(sessionPath);
 		if (!runtime || this.runtimeHasDemand(sessionPath, runtime)) {
 			this.retryPendingWorkspaceReleases();

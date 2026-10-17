@@ -1,29 +1,29 @@
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-	type AgentStep,
-	type JsonValue,
-	RUNTIME_MAX_FRAME_LENGTH,
-	type TranscriptItem,
-	type TranscriptPage,
-	type TranscriptSearchHit,
-	type TranscriptSearchResult,
+import type {
+	AgentStep,
+	JsonValue,
+	TranscriptItem,
+	TranscriptPage,
+	TranscriptSearchHit,
+	TranscriptSearchResult,
 } from "@lystar/code-web-protocol";
 
+import { SessionReadIndex } from "./session-read-index.ts";
+import type { SessionTranscriptOptions } from "./session-read-index-protocol.ts";
 import { projectedAgentStepFromItem, projectTranscriptItems, relevantAgentSteps } from "./transcript-projection.ts";
+
+let standaloneIndex: SessionReadIndex | undefined;
 
 const READ_BUFFER_SIZE = 64 * 1024;
 const DEFAULT_MAX_JSONL_LINE_BYTES = 128 * 1024 * 1024;
-const CURSOR_VERSION = 3;
 const SEARCH_CURSOR_VERSION = 3;
 const TRANSCRIPT_FINGERPRINT_BYTES = 64 * 1024;
-const OBSERVED_GENERATION_LIMIT = 512;
 const SEARCH_CACHE_LIMIT = 8;
 const SEARCH_CACHE_BYTES = 32 * 1024 * 1024;
 const SEARCH_CACHE_ENTRY_BYTES = 256 * 1024;
 const SEARCH_SNIPPET_LENGTH = 320;
-const AGENT_STEP_INDEX_LIMIT = 8;
 
 type RawEntry = Record<string, unknown> & { type: string; id?: string; parentId?: string | null; timestamp?: string };
 type RewriteGeneration = {
@@ -34,15 +34,6 @@ type RewriteGeneration = {
 	ctimeMs: number;
 	contentHash: string;
 	tailHash: string;
-};
-type ObservedGeneration = RewriteGeneration & { generation: string; sessionId: string };
-type TranscriptCursor = {
-	version: number;
-	sessionId: string;
-	leafId: string;
-	offset: number;
-	wantedId: string | null;
-	rewriteGeneration: RewriteGeneration;
 };
 type SearchCursor = {
 	version: number;
@@ -94,32 +85,6 @@ function parseLine(line: Buffer): RawEntry | null {
 function isVisible(entry: RawEntry): boolean {
 	if (["message", "custom", "compaction", "branch_summary"].includes(entry.type)) return true;
 	return entry.type === "custom_message";
-}
-
-function toTranscriptItem(entry: RawEntry): TranscriptItem {
-	return {
-		entryId: entry.id!,
-		parentId: typeof entry.parentId === "string" ? entry.parentId : null,
-		timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
-		kind: entry.type,
-		payload: entry as JsonValue,
-	};
-}
-
-function encodeCursor(cursor: TranscriptCursor): string {
-	return Buffer.from(JSON.stringify(cursor)).toString("base64url");
-}
-
-function decodeCursor(value: string): TranscriptCursor {
-	try {
-		const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as TranscriptCursor;
-		if (cursor.version !== CURSOR_VERSION || !cursor.sessionId || !cursor.leafId || !cursor.rewriteGeneration) {
-			throw new Error("invalid cursor");
-		}
-		return cursor;
-	} catch {
-		throw new TranscriptCursorInvalidError("Transcript cursor is malformed");
-	}
 }
 
 function encodeSearchCursor(cursor: SearchCursor): string {
@@ -180,27 +145,6 @@ async function hashWindow(handle: Awaited<ReturnType<typeof open>>, offset: numb
 	return hash.digest("base64url");
 }
 
-async function fileFingerprint(
-	handle: Awaited<ReturnType<typeof open>>,
-	size: number,
-): Promise<{ contentHash: string; tailHash: string }> {
-	const prefixSize = Math.min(size, TRANSCRIPT_FINGERPRINT_BYTES);
-	const prefix = await readAt(handle, 0, prefixSize);
-	const tailOffset = Math.max(0, size - TRANSCRIPT_FINGERPRINT_BYTES);
-	const tail = tailOffset === 0 ? prefix : await readAt(handle, tailOffset, size - tailOffset);
-	const contentHash = createHash("sha256")
-		.update("lystar-transcript-fingerprint\0")
-		.update(prefix)
-		.update(tail)
-		.digest("base64url");
-	const tailHash = createHash("sha256").update(tail).digest("base64url");
-	return { contentHash, tailHash };
-}
-
-function fileGeneration(sessionId: string, stat: { dev: number; ino: number; birthtimeMs: number }): string {
-	return `${sessionId}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
-}
-
 function finishLine(
 	chunks: readonly Buffer[],
 	length: number,
@@ -226,35 +170,6 @@ function appendLineSegment(
 	if (prepend) chunks.unshift(segment);
 	else chunks.push(segment);
 	return total;
-}
-
-async function scanForward(
-	handle: Awaited<ReturnType<typeof open>>,
-	offset: number,
-	maxLineBytes: number,
-	onLine: (line: Buffer) => boolean,
-): Promise<void> {
-	let start = 0;
-	let pending: Buffer[] = [];
-	let pendingLength = 0;
-	while (start < offset) {
-		const chunk = await readAt(handle, start, Math.min(READ_BUFFER_SIZE, offset - start));
-		let lineStart = 0;
-		for (let index = 0; index < chunk.length; index++) {
-			if (chunk[index] !== 0x0a) continue;
-			const segment = chunk.subarray(lineStart, index);
-			const line = finishLine(pending, pendingLength, segment, maxLineBytes);
-			pending = [];
-			pendingLength = 0;
-			if (onLine(line)) return;
-			lineStart = index + 1;
-		}
-		if (lineStart < chunk.length) {
-			const segment = chunk.subarray(lineStart);
-			pendingLength = appendLineSegment(pending, pendingLength, segment, maxLineBytes);
-		}
-		start += chunk.length;
-	}
 }
 
 async function scanReverse(
@@ -290,21 +205,6 @@ async function scanReverse(
 		onLine(Buffer.concat(pending, pendingLength), 0);
 	}
 	return 0;
-}
-
-async function readHeader(
-	handle: Awaited<ReturnType<typeof open>>,
-	completeSize: number,
-	maxLineBytes: number,
-): Promise<RawEntry | undefined> {
-	let header: RawEntry | undefined;
-	await scanForward(handle, completeSize, maxLineBytes, (line) => {
-		const entry = parseLine(line);
-		if (!entry) return false;
-		if (entry.type === "session") header = entry;
-		return true;
-	});
-	return header;
 }
 
 async function readTailId(
@@ -368,329 +268,40 @@ function searchEntry(entry: RawEntry, query: string): TranscriptSearchHit | unde
 }
 
 export class TranscriptReader {
-	private readonly observed = new Map<string, ObservedGeneration>();
 	private readonly searchIndexes = new Map<string, SearchIndex>();
-	private readonly agentStepIndexes = new Map<
-		string,
-		{ generation: string; revision: number; leafId: string; steps: AgentStep[] }
-	>();
+	private readonly index: SessionReadIndex;
 	private readonly maxJsonlLineBytes: number;
 	private searchCacheBytes = 0;
 
-	constructor(maxJsonlLineBytes = DEFAULT_MAX_JSONL_LINE_BYTES) {
+	constructor(maxJsonlLineBytes = DEFAULT_MAX_JSONL_LINE_BYTES, index?: SessionReadIndex) {
 		this.maxJsonlLineBytes = maxJsonlLineBytes;
+		if (index) this.index = index;
+		else {
+			standaloneIndex ??= new SessionReadIndex();
+			this.index = standaloneIndex;
+		}
 	}
 
 	async read(
 		sessionPath: string,
-		options: {
-			cursor?: string;
-			limit: number;
-			emptyGeneration?: string;
-			byteBudget?: number;
-			leafId?: string | null;
-		},
+		options: SessionTranscriptOptions,
 	): Promise<TranscriptPage & { contextCalls?: TranscriptItem[] }> {
-		const resolvedPath = resolve(sessionPath);
-		const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
-		let handle: Awaited<ReturnType<typeof open>>;
 		try {
-			handle = await open(resolvedPath, "r");
+			const { stepItems, ...page } = await this.index.readTranscript(sessionPath, options, this.maxJsonlLineBytes);
+			const steps = stepItems
+				.map(projectedAgentStepFromItem)
+				.filter((step): step is AgentStep => step !== undefined)
+				.sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
+			const agentSteps = relevantAgentSteps(page.items, steps);
+			return {
+				...page,
+				...(page.leafId === null || agentSteps.length > 0 ? { agentSteps } : {}),
+			};
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !options.emptyGeneration || cursor) throw error;
-			return {
-				items: [],
-				hasMorePrevious: false,
-				leafId: null,
-				transcriptGeneration: options.emptyGeneration,
-				transcriptRevision: 0,
-				complete: true,
-				agentSteps: [],
-			};
-		}
-		try {
-			const stat = await handle.stat();
-			const completeSize = await findCompleteSize(handle, stat.size);
-			const header = await readHeader(handle, completeSize, this.maxJsonlLineBytes);
-			if (!header || typeof header.id !== "string") throw new Error("Session file has no valid header");
-			const previous = this.remembered(this.observed, resolvedPath);
-			const unchangedSincePrevious =
-				previous?.sessionId === header.id &&
-				previous.device === stat.dev &&
-				previous.inode === stat.ino &&
-				previous.size === completeSize &&
-				previous.mtimeMs === stat.mtimeMs &&
-				previous.ctimeMs === stat.ctimeMs;
-			const fingerprint = unchangedSincePrevious
-				? { contentHash: previous.contentHash, tailHash: previous.tailHash }
-				: await fileFingerprint(handle, completeSize);
-			const contentHash = fingerprint.contentHash;
-			const persistedTailId = cursor ? null : await readTailId(handle, completeSize, this.maxJsonlLineBytes);
-			const rewriteGeneration: RewriteGeneration = {
-				size: completeSize,
-				device: stat.dev,
-				inode: stat.ino,
-				mtimeMs: stat.mtimeMs,
-				ctimeMs: stat.ctimeMs,
-				...fingerprint,
-			};
-			if (cursor) {
-				if (cursor.sessionId !== header.id || completeSize < cursor.rewriteGeneration.size) {
-					throw new TranscriptCursorInvalidError();
-				}
-				if (cursor.rewriteGeneration.device !== stat.dev || cursor.rewriteGeneration.inode !== stat.ino) {
-					throw new TranscriptCursorInvalidError();
-				}
-				if (completeSize === cursor.rewriteGeneration.size) {
-					if (
-						(cursor.rewriteGeneration.mtimeMs !== stat.mtimeMs ||
-							cursor.rewriteGeneration.ctimeMs !== stat.ctimeMs) &&
-						(stat.size <= completeSize ||
-							(await hashWindow(
-								handle,
-								completeSize - Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
-								Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
-							)) !== cursor.rewriteGeneration.tailHash)
-					) {
-						throw new TranscriptCursorInvalidError();
-					}
-				} else {
-					const tailSize = Math.min(cursor.rewriteGeneration.size, TRANSCRIPT_FINGERPRINT_BYTES);
-					if (
-						(await hashWindow(handle, cursor.rewriteGeneration.size - tailSize, tailSize)) !==
-						cursor.rewriteGeneration.tailHash
-					) {
-						throw new TranscriptCursorInvalidError();
-					}
-				}
+			if ((error as { code?: string }).code === "cursor_stale") {
+				throw new TranscriptCursorInvalidError(error instanceof Error ? error.message : undefined);
 			}
-			const sameFile =
-				previous?.sessionId === header.id && previous.device === stat.dev && previous.inode === stat.ino;
-			const appendOnly =
-				sameFile &&
-				completeSize >= previous.size &&
-				(completeSize > previous.size
-					? (await hashWindow(
-							handle,
-							previous.size - Math.min(previous.size, TRANSCRIPT_FINGERPRINT_BYTES),
-							Math.min(previous.size, TRANSCRIPT_FINGERPRINT_BYTES),
-						)) === previous.tailHash
-					: unchangedSincePrevious ||
-						(stat.size > completeSize &&
-							(await hashWindow(
-								handle,
-								completeSize - Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
-								Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),
-							)) === previous.tailHash));
-			const baseGeneration = fileGeneration(header.id, stat);
-			const generation =
-				!previous || appendOnly ? (previous?.generation ?? baseGeneration) : `${baseGeneration}:${contentHash}`;
-			this.rememberObserved(resolvedPath, { ...rewriteGeneration, generation, sessionId: header.id });
-			if (cursor && options.leafId !== undefined && cursor.leafId !== options.leafId) {
-				// 同一分支追加消息后，旧游标仍从原来的分页边界继续读取。
-				let currentWantedId = options.leafId;
-				await scanReverse(handle, completeSize, this.maxJsonlLineBytes, (line) => {
-					if (currentWantedId === cursor.leafId || currentWantedId === null) return true;
-					const entry = parseLine(line);
-					if (!entry || entry.type === "session" || entry.id !== currentWantedId) return false;
-					currentWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-					return currentWantedId === cursor.leafId || currentWantedId === null;
-				});
-				if (currentWantedId !== cursor.leafId) throw new TranscriptCursorInvalidError();
-			}
-			const leafId = cursor ? cursor.leafId : options.leafId !== undefined ? options.leafId : persistedTailId;
-			if (!leafId) {
-				return {
-					items: [],
-					hasMorePrevious: false,
-					leafId: null,
-					transcriptGeneration: generation,
-					transcriptRevision: completeSize,
-					complete: true,
-					agentSteps: [],
-				};
-			}
-			const cachedAgentSteps = this.agentStepIndexes.get(resolvedPath);
-			const sameAgentStepIndex =
-				cachedAgentSteps?.generation === generation &&
-				cachedAgentSteps.revision === completeSize &&
-				cachedAgentSteps.leafId === leafId;
-			const reusableAgentStepIndex =
-				cachedAgentSteps &&
-				(sameAgentStepIndex ||
-					(appendOnly &&
-						previous !== undefined &&
-						cachedAgentSteps.generation === generation &&
-						cachedAgentSteps.revision === previous.size &&
-						cachedAgentSteps.leafId === leafId))
-					? cachedAgentSteps
-					: undefined;
-			const latestAgentSteps = new Map((reusableAgentStepIndex?.steps ?? []).map((step) => [step.id, step]));
-			const rememberAgentStep = (entry: RawEntry): AgentStep | undefined => {
-				if (entry.type !== "custom") return undefined;
-				const step = projectedAgentStepFromItem({
-					entryId: entry.id ?? "",
-					parentId: typeof entry.parentId === "string" ? entry.parentId : null,
-					timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
-					kind: entry.type,
-					payload: entry as JsonValue,
-				});
-				if (step && !latestAgentSteps.has(step.id)) latestAgentSteps.set(step.id, step);
-				return step;
-			};
-			if (cursor && !reusableAgentStepIndex) {
-				let indexWantedId: string | null = leafId;
-				await scanReverse(handle, completeSize, this.maxJsonlLineBytes, (line) => {
-					if (indexWantedId === null || indexWantedId === cursor.wantedId) return true;
-					const entry = parseLine(line);
-					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== indexWantedId)
-						return false;
-					indexWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-					rememberAgentStep(entry);
-					return indexWantedId === cursor.wantedId;
-				});
-			}
-			const items: RawEntry[] = [];
-			let pageBytes = 0;
-			let wantedId: string | null = cursor?.wantedId ?? leafId;
-			let matched = wantedId === null;
-			const nextOffset = await scanReverse(
-				handle,
-				cursor?.offset ?? completeSize,
-				this.maxJsonlLineBytes,
-				(line) => {
-					if (options.byteBudget !== undefined && line.byteLength >= RUNTIME_MAX_FRAME_LENGTH)
-						throw new TranscriptLineTooLargeError(RUNTIME_MAX_FRAME_LENGTH);
-					const entry = parseLine(line);
-					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== wantedId)
-						return false;
-					matched = true;
-					wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-					const step = rememberAgentStep(entry);
-					if (isVisible(entry)) {
-						items.push(entry);
-						pageBytes += line.byteLength;
-					}
-					const splitsToolExchange =
-						entry.type === "message" && (entry.message as { role?: string } | undefined)?.role === "toolResult";
-					return (
-						(items.length >= options.limit ||
-							(options.byteBudget !== undefined && pageBytes >= options.byteBudget)) &&
-						!splitsToolExchange &&
-						!step
-					);
-				},
-			);
-			if (!matched || (nextOffset === 0 && wantedId !== null)) throw new TranscriptCursorInvalidError();
-			if (wantedId !== null && nextOffset > 0) {
-				let boundaryWantedId: string | null = wantedId;
-				await scanReverse(handle, nextOffset, this.maxJsonlLineBytes, (line) => {
-					if (boundaryWantedId === null) return true;
-					const entry = parseLine(line);
-					if (!entry || entry.type === "session" || typeof entry.id !== "string" || entry.id !== boundaryWantedId)
-						return false;
-					boundaryWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-					return !rememberAgentStep(entry) || boundaryWantedId === null;
-				});
-			}
-			const allAgentSteps = [...latestAgentSteps.values()].sort(
-				(left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id),
-			);
-			this.agentStepIndexes.delete(resolvedPath);
-			this.agentStepIndexes.set(resolvedPath, {
-				generation,
-				revision: completeSize,
-				leafId,
-				steps: allAgentSteps,
-			});
-			while (this.agentStepIndexes.size > AGENT_STEP_INDEX_LIMIT) {
-				const oldest = this.agentStepIndexes.keys().next().value;
-				if (oldest === undefined) break;
-				this.agentStepIndexes.delete(oldest);
-			}
-			items.reverse();
-			const transcriptItems = items.map(toTranscriptItem);
-			const missingFileCalls = new Set<string>();
-			for (const entry of items) {
-				const message = entry.message as
-					| { role?: string; toolCallId?: string; toolName?: string; content?: unknown }
-					| undefined;
-				if (
-					message?.role === "toolResult" &&
-					typeof message.toolCallId === "string" &&
-					(message.toolName === "read" || message.toolName === "edit" || message.toolName === "write")
-				) {
-					missingFileCalls.add(message.toolCallId);
-				}
-			}
-			for (const entry of items) {
-				const message = entry.message as { role?: string; content?: unknown } | undefined;
-				if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-				for (const part of message.content) {
-					if (part && typeof part === "object" && "id" in part && typeof part.id === "string") {
-						missingFileCalls.delete(part.id);
-					}
-				}
-			}
-			const contextCalls: TranscriptItem[] = [];
-			if (missingFileCalls.size > 0 && wantedId !== null && nextOffset > 0) {
-				let contextWantedId: string | null = wantedId;
-				await scanReverse(handle, nextOffset, this.maxJsonlLineBytes, (line) => {
-					if (contextWantedId === null) return true;
-					const entry = parseLine(line);
-					if (!entry || entry.type === "session" || entry.id !== contextWantedId) return false;
-					contextWantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-					const message = entry.message as { role?: string; content?: unknown } | undefined;
-					if (message?.role !== "assistant" || !Array.isArray(message.content)) return false;
-					const calls = message.content.filter(
-						(part) =>
-							part &&
-							typeof part === "object" &&
-							"type" in part &&
-							part.type === "toolCall" &&
-							"id" in part &&
-							typeof part.id === "string" &&
-							missingFileCalls.has(part.id),
-					);
-					if (calls.length === 0) return false;
-					contextCalls.push(
-						toTranscriptItem({
-							...entry,
-							message: { role: "assistant", content: calls },
-						}),
-					);
-					for (const call of calls) {
-						if (call && typeof call === "object" && "id" in call && typeof call.id === "string") {
-							missingFileCalls.delete(call.id);
-						}
-					}
-					return missingFileCalls.size === 0;
-				});
-			}
-			const pageAgentSteps = relevantAgentSteps(transcriptItems, allAgentSteps);
-			const hasMorePrevious = wantedId !== null && nextOffset > 0;
-			return {
-				items: transcriptItems,
-				...(contextCalls.length > 0 ? { contextCalls } : {}),
-				...(pageAgentSteps.length > 0 ? { agentSteps: pageAgentSteps } : {}),
-				previousCursor: hasMorePrevious
-					? encodeCursor({
-							version: CURSOR_VERSION,
-							sessionId: header.id,
-							leafId,
-							offset: nextOffset,
-							wantedId,
-							rewriteGeneration,
-						})
-					: undefined,
-				hasMorePrevious,
-				leafId,
-				transcriptGeneration: generation,
-				transcriptRevision: completeSize,
-				complete: true,
-			};
-		} finally {
-			await handle.close();
+			throw error;
 		}
 	}
 
@@ -909,12 +520,6 @@ export class TranscriptReader {
 			cache.set(path, value);
 		}
 		return value;
-	}
-
-	private rememberObserved(path: string, generation: ObservedGeneration): void {
-		this.observed.delete(path);
-		this.observed.set(path, generation);
-		while (this.observed.size > OBSERVED_GENERATION_LIMIT) this.observed.delete(this.observed.keys().next().value!);
 	}
 
 	private rememberSearchIndex(path: string, index: SearchIndex): void {

@@ -50,6 +50,7 @@ import type {
 	ThinkingLevel,
 } from "@lystar/code-web-protocol";
 
+import type { SessionReadIndex } from "./session-read-index.ts";
 export type QueueAction = "remove" | "steer";
 
 export interface RuntimeEvent {
@@ -282,6 +283,7 @@ export interface SkillSummary {
 
 export interface RuntimeAdapter {
 	dispose?(): Promise<void>;
+	getSessionReadIndex?(): SessionReadIndex;
 	createSession(
 		cwd: string,
 		onUiRequest: UiRequestHandler,

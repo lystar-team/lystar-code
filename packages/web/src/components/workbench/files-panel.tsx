@@ -13,6 +13,7 @@ import {
 	X,
 } from "lucide-react";
 import {
+	memo,
 	useEffect,
 	useMemo,
 	useRef,
@@ -268,7 +269,7 @@ function ProjectFolderRow({
 	);
 }
 
-export function FilesPanel({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
+export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const tree = state.fileTree;
 	const entries = tree?.entries ?? [];
 	const cachedTrees = state.fileTreeCache;
@@ -995,4 +996,14 @@ export function FilesPanel({ state, actions }: { state: WorkbenchState; actions:
 			</Dialog>
 		</>
 	);
-}
+}, (previous, next) =>
+	previous.actions === next.actions &&
+	previous.state.currentProjectId === next.state.currentProjectId &&
+	previous.state.projects === next.state.projects &&
+	previous.state.filePath === next.state.filePath &&
+	previous.state.fileTree === next.state.fileTree &&
+	previous.state.fileTreeCache === next.state.fileTreeCache &&
+	previous.state.fileTreeLoading === next.state.fileTreeLoading &&
+	previous.state.inspectorMode === next.state.inspectorMode &&
+	previous.state.inspectorOpen === next.state.inspectorOpen,
+);

@@ -10,7 +10,7 @@ export function progressCoalescingKey(event: WebSessionProgressEvent): string | 
 	switch (event.progress.type) {
 		case "assistant_delta":
 		case "thinking_delta":
-			return `${event.sessionId}:${event.progress.type}:${event.progress.stepId ?? ""}`;
+			return `${event.sessionId}:${event.progress.type}:${event.progress.stepId ?? ""}:${event.progress.blockId ?? ""}`;
 		case "phase":
 		case "queue_update":
 		case "status":
@@ -20,7 +20,7 @@ export function progressCoalescingKey(event: WebSessionProgressEvent): string | 
 		case "tool_update":
 			return `${event.sessionId}:${event.progress.type}:${event.progress.toolCallId}`;
 		case "tool_state":
-			return `${event.sessionId}:${event.progress.type}:${event.progress.activity.toolCallId}`;
+			return `${event.sessionId}:${event.progress.type}:${event.progress.activity.activityEpoch}:${event.progress.activity.toolCallId}`;
 		default:
 			return undefined;
 	}
@@ -40,6 +40,7 @@ export function shouldSendProgressImmediately(progress: SessionProgress): boolea
 	return (
 		(progress.activity.state === "running" &&
 			progress.activity.progress === undefined &&
+			progress.activity.codemode === undefined &&
 			progress.activity.output === undefined &&
 			progress.activity.error === undefined) ||
 		["success", "error", "cancelled", "interrupted"].includes(progress.activity.state)
@@ -65,12 +66,14 @@ export function mergeProgress(left: SessionProgress, right: SessionProgress): Se
 			type: "assistant_delta",
 			text: left.text + right.text,
 			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+			...((right.blockId ?? left.blockId) ? { blockId: right.blockId ?? left.blockId } : {}),
 		};
 	if (left.type === "thinking_delta" && right.type === "thinking_delta")
 		return {
 			type: "thinking_delta",
 			text: left.text + right.text,
 			...((right.stepId ?? left.stepId) ? { stepId: right.stepId ?? left.stepId } : {}),
+			...((right.blockId ?? left.blockId) ? { blockId: right.blockId ?? left.blockId } : {}),
 		};
 	return right;
 }

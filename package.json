@@ -23,6 +23,7 @@
 		"check": "npm run check:ci && npm run check:web && npm run check:browser-smoke",
 		"check:ci": "node scripts/biome-check.mjs --write && npm run check:pinned-deps && npm run check:runtime-deps && npm run check:entry-graphs && npm run check:ts-imports && npm run check:schema && npm run check:shrinkwrap && npm run check:install-lock:coding-agent && tsgo --noEmit",
 		"check:web": "npm run check --workspace=@lystar/code-web && npm run build --workspace=@lystar/code-web-gateway",
+		"check:release": "node scripts/check-lystar-release.mjs && npm run check:pinned-deps && npm run check:shrinkwrap && npm run check:install-lock:coding-agent",
 		"format": "biome check --write .",
 		"diagnose:web": "node scripts/diagnose-web-performance.mjs",
 		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",

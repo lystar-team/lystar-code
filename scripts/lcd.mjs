@@ -7,7 +7,7 @@ import { shouldBuildDevelopmentWeb, shouldStartDevelopmentWebStack } from "./lcd
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = resolve(repoRoot, "packages/coding-agent/src/cli.ts");
-const tsxLoader = resolve(repoRoot, "node_modules/tsx/dist/loader.mjs");
+const sourceResolver = resolve(repoRoot, "packages/coding-agent/src/experimental/source-resolver.ts");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const args = process.argv.slice(2);
 const developmentEnv = { ...process.env, LYSTAR_CLI_MODE: "development" };
@@ -22,7 +22,7 @@ function runSync(command, commandArgs, cwd = process.cwd()) {
 }
 
 function runCliSync(cliArgs) {
-	return runSync(process.execPath, ["--import", tsxLoader, cliPath, ...cliArgs]);
+	return runSync(process.execPath, ["--import", sourceResolver, cliPath, ...cliArgs]);
 }
 
 if (shouldBuildDevelopmentWeb(args)) {

@@ -29,7 +29,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "fs";
-import { open, readdir, stat } from "fs/promises";
+import { readdir, stat } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
@@ -44,7 +44,6 @@ import {
 import { isSessionWriterLocked, lockSessionWriter } from "./session-writer-lock.ts";
 import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 export const CURRENT_SESSION_VERSION = 3;
-const ASYNC_SESSION_READ_BUFFER_SIZE = 512 * 1024;
 
 export type SessionRelation = "collaboration" | "fork";
 export type SessionWorkspaceMode = "shared" | "worktree" | "patch";
@@ -902,50 +901,46 @@ export function readSessionSnapshot(filePath: string): ReadOnlySessionSnapshot {
 	});
 }
 
-/**
- * 异步分块读取 Session，避免整个文件解析期间持续占用事件循环。
- * 校验规则与 loadEntriesFromFile() 保持一致。
- */
+/** 按数据块读取并直接解析完整记录，避免逐行切换异步生成器。 */
 export async function loadEntriesFromFileAsync(filePath: string): Promise<FileEntry[]> {
 	const resolvedFilePath = normalizePath(filePath);
 	if (!existsSync(resolvedFilePath)) return [];
 
 	const entries: FileEntry[] = [];
-	const handle = await open(resolvedFilePath, "r");
-	let pending = "";
+	const input = createReadStream(resolvedFilePath, { highWaterMark: SESSION_READ_BUFFER_SIZE });
+	let parts: Buffer[] = [];
+	let length = 0;
+	const finishLine = () => {
+		const line = parts.length === 1 ? parts[0]!.toString("utf8") : Buffer.concat(parts, length).toString("utf8");
+		const entry = parseSessionEntryLine(line);
+		if (entry) entries.push(entry);
+		parts = [];
+		length = 0;
+	};
 	try {
-		const decoder = new StringDecoder("utf8");
-		const buffer = Buffer.allocUnsafe(ASYNC_SESSION_READ_BUFFER_SIZE);
-
-		while (true) {
-			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
-			if (bytesRead === 0) break;
-
-			pending += decoder.write(buffer.subarray(0, bytesRead));
-			let lineStart = 0;
-			let newlineIndex = pending.indexOf("\n", lineStart);
-			while (newlineIndex !== -1) {
-				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
-				if (entry) entries.push(entry);
-				lineStart = newlineIndex + 1;
-				newlineIndex = pending.indexOf("\n", lineStart);
+		for await (const chunk of input) {
+			const buffer = chunk as Buffer;
+			let start = 0;
+			while (start < buffer.length) {
+				const newline = buffer.indexOf(10, start);
+				const end = newline < 0 ? buffer.length : newline;
+				parts.push(buffer.subarray(start, end));
+				length += end - start;
+				if (newline < 0) break;
+				finishLine();
+				start = newline + 1;
 			}
-			pending = pending.slice(lineStart);
-
-			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
-
-		pending += decoder.end();
-		const finalEntry = parseSessionEntryLine(pending);
-		if (finalEntry) entries.push(finalEntry);
 	} finally {
-		await handle.close();
+		input.destroy();
 	}
+	const needsNewline = length > 0;
+	if (needsNewline) finishLine();
 
 	if (entries.length === 0) return entries;
 	const header = entries[0];
 	if (header.type !== "session" || typeof (header as { id?: unknown }).id !== "string") return [];
-	if (pending) appendFileSync(resolvedFilePath, "\n");
+	if (needsNewline) appendFileSync(resolvedFilePath, "\n");
 	return entries;
 }
 /**
@@ -1175,7 +1170,7 @@ async function* readSessionInfoLines(
 	toolResultMode: "skip" | "id" | "full" | "subagent" = "skip",
 	start = 0,
 	end?: number,
-): AsyncGenerator<{ line: string } | { toolResult: true; id?: string }> {
+): AsyncGenerator<({ line: string } | { toolResult: true; id?: string }) & { unterminated?: true }> {
 	const input = createReadStream(filePath, { signal, highWaterMark: SESSION_READ_BUFFER_SIZE, start, end });
 	let parts: Buffer[] = [];
 	let length = 0;
@@ -1229,7 +1224,7 @@ async function* readSessionInfoLines(
 				start = newline + 1;
 			}
 		}
-		if (length > 0) yield finishLine();
+		if (length > 0) yield { ...finishLine(), unterminated: true };
 	} finally {
 		input.destroy();
 	}

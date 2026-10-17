@@ -492,6 +492,17 @@ export function getBundledSkillsDir(): string {
 	return join(packageDir, srcOrDist, "skills");
 }
 
+/** 随发行包交付，运行时不查找或调用系统 Go 工具链。 */
+export function getSessionIndexBinaryPath(): string {
+	return join(
+		getPackageDir(),
+		...(isBunBinary ? [] : ["dist"]),
+		"native",
+		"session-index",
+		`${process.platform}-${process.arch}`,
+		process.platform === "win32" ? "lystar-session-index.exe" : "lystar-session-index",
+	);
+}
 let quickJSWasmPath: string | undefined;
 
 /** Called by the Bun entry with the path of the QuickJS wasm file embedded in the compiled executable. */

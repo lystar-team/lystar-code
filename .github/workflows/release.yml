@@ -44,7 +44,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -52,6 +51,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Setup Go (build only)
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.24.4"
+          cache-dependency-path: packages/web-runtime/native/session-index/go.sum
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -91,6 +95,8 @@ jobs:
           grep -Fxq 'lystar-agent/skills/imagegen/SKILL.md' archive-contents.txt
           grep -Fxq 'lystar-agent/web/index.html' archive-contents.txt
           grep -Fxq 'lystar-agent/web/version.json' archive-contents.txt
+           native_platform="${{ matrix.platform }}"
+           grep -Fxq "lystar-agent/native/session-index/${native_platform}/lystar-session-index" archive-contents.txt
           ! grep -Fxq 'lystar-agent/la' archive-contents.txt
           rm archive-contents.txt
 
@@ -109,7 +115,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -117,6 +122,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Setup Go (build only)
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.24.4"
+          cache-dependency-path: packages/web-runtime/native/session-index/go.sum
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -147,7 +157,7 @@ jobs:
           $Archives = @(Get-ChildItem packages/coding-agent/binaries -Filter "lystar-agent-*-windows-x64.zip")
           if ($Archives.Count -ne 1) { throw "Expected exactly one Windows release archive" }
           if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
-          foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json")) {
+           foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json", "native/session-index/win32-x64/lystar-session-index.exe")) {
             if (!(Test-Path "$Bundle/$RequiredFile")) { throw "Windows release bundle is missing $RequiredFile" }
           }
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
@@ -159,14 +169,17 @@ jobs:
           path: packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip
           if-no-files-found: error
 
-  verify-candidate:
+  publish:
+    name: Verify release candidate and publish
     needs: [build-unix, build-windows]
     if: ${{ needs.build-unix.result == 'success' && needs.build-windows.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       actions: read
-      contents: read
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -206,6 +219,7 @@ jobs:
           node scripts/generate-release-metadata.mjs --verify packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
 
       - name: Upload verified release candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.publish != true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-candidate-verified
@@ -213,30 +227,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  publish:
-    needs: verify-candidate
-    if: ${{ (inputs.publish == true || github.event_name == 'push') && needs.verify-candidate.result == 'success' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: write
-      id-token: write
-      attestations: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-          fetch-depth: 0
-
-      - name: Download verified release candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-candidate-verified
-          path: packages/coding-agent/binaries
-
       - name: Create version tag after candidate verification
+        if: github.event_name == 'push' || inputs.publish == true
         id: tag
         shell: bash
         run: |
@@ -271,6 +263,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Generate Chinese release notes
+        if: github.event_name == 'push' || inputs.publish == true
         id: release-notes
         shell: bash
         run: |
@@ -298,6 +291,7 @@ jobs:
           echo "path=$notes_path" >> "$GITHUB_OUTPUT"
 
       - name: Attest release artifacts
+        if: github.event_name == 'push' || inputs.publish == true
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
@@ -310,6 +304,7 @@ jobs:
             packages/coding-agent/binaries/install.cmd
 
       - name: Publish GitHub release
+        if: github.event_name == 'push' || inputs.publish == true
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

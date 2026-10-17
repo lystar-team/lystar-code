@@ -1,6 +1,7 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "./extensions/types.ts";
+import { roomSessionId } from "./room-tool-context.ts";
 import type { SessionCoordinator } from "./session-coordinator.ts";
 
 const ClaimParams = Type.Object({
@@ -26,7 +27,7 @@ export function createRoomClaimTool(
 				cwd,
 				roomId: params.roomId,
 				taskId: params.taskId,
-				sessionId: ctx.sessionManager.getSessionId(),
+				sessionId: roomSessionId(ctx),
 			});
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: null };
 		},

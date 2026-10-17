@@ -19,7 +19,7 @@
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
+		"build": "node ../../scripts/build-session-index.mjs && tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
 		"test": "vitest --run",
 		"test:required": "vitest --run --maxWorkers=1"
 	},

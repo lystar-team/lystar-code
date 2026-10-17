@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { SessionSummary } from "@lystar/code-web-protocol";
+import { JsonFileRegistry } from "./json-file-registry.ts";
 
 export interface WebProject {
 	id: string;
@@ -127,8 +126,7 @@ function normalizeProject(value: unknown): WebProject | undefined {
 	const name = stringValue(source.name);
 	const cwd = stringValue(source.cwd);
 	if (!id || !name || !cwd) return undefined;
-	const directory = validDirectory(cwd);
-	if (!directory) return undefined;
+	// 已保存项目的身份不随目录的临时可用状态改变。
 	const color = ["red", "orange", "green", "blue", "purple", "gray"].includes(String(source.color))
 		? (source.color as WebProject["color"])
 		: undefined;
@@ -137,7 +135,7 @@ function normalizeProject(value: unknown): WebProject | undefined {
 	return {
 		id,
 		name,
-		cwd: directory,
+		cwd,
 		...(source.pinned === true ? { pinned: true } : {}),
 		...(color ? { color } : {}),
 		...(source.archived === true ? { archived: true } : {}),
@@ -183,40 +181,34 @@ function importTauriProjects(): WebProject[] {
 
 export class ProjectRegistry {
 	readonly path: string;
-	private state: ProjectIndexFile = defaultIndex();
-	private loaded = false;
-	private saveQueue: Promise<void> = Promise.resolve();
+	private readonly storage: JsonFileRegistry<ProjectIndexFile>;
 
 	constructor(agentDir: string) {
 		this.path = join(agentDir, "web", "projects.json");
-	}
-
-	async load(): Promise<void> {
-		if (this.loaded) return;
-		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-		try {
-			const raw = JSON.parse(await readFile(this.path, "utf8")) as Record<string, unknown>;
-			this.state = {
+		this.storage = new JsonFileRegistry(
+			this.path,
+			defaultIndex,
+			(raw) => ({
 				version: 1,
 				projects: Array.isArray(raw.projects) ? raw.projects.flatMap((value) => normalizeProject(value) ?? []) : [],
 				...(raw.migration && typeof raw.migration === "object" ? { migration: { tauriImported: true } } : {}),
-			};
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Web 项目索引损坏：${this.path}`);
-			this.state = defaultIndex();
-		}
-		if (!this.state.migration?.tauriImported) {
+			}),
+			"Web 项目索引损坏",
+		);
+	}
+
+	async load(): Promise<void> {
+		await this.storage.update((state) => {
+			if (state.migration?.tauriImported) return;
 			const imported = importTauriProjects();
-			const existing = new Set(this.state.projects.map((project) => project.cwd));
-			this.state.projects.push(...imported.filter((project) => !existing.has(project.cwd)));
-			this.state.migration = { tauriImported: true };
-			await this.save();
-		}
-		this.loaded = true;
+			const existing = new Set(state.projects.map((project) => project.cwd));
+			state.projects.push(...imported.filter((project) => !existing.has(project.cwd)));
+			state.migration = { tauriImported: true };
+		});
 	}
 
 	list(): WebProject[] {
-		return this.state.projects.map((project) => ({
+		return this.storage.read().projects.map((project) => ({
 			...project,
 			...(project.pinnedSessionIds ? { pinnedSessionIds: project.pinnedSessionIds.slice() } : {}),
 			...(project.sessionOrder ? { sessionOrder: project.sessionOrder.slice() } : {}),
@@ -225,168 +217,159 @@ export class ProjectRegistry {
 	}
 
 	get(id: string): WebProject | undefined {
-		return this.state.projects.find((project) => project.id === id);
+		return this.storage.read().projects.find((project) => project.id === id);
 	}
 
 	async add(input: { id: string; name?: string; cwd: string }): Promise<WebProject> {
 		const directory = validDirectory(input.cwd);
 		if (!directory)
 			throw Object.assign(new Error("项目目录不存在或不是目录"), { code: "invalid_project_directory", status: 400 });
-		const existing = this.state.projects.find((project) => project.cwd === directory);
-		const project: WebProject = {
-			id: existing?.id ?? input.id,
-			name: input.name?.trim() || existing?.name || basename(directory) || directory,
-			cwd: directory,
-			...(existing?.pinned ? { pinned: true } : {}),
-			...(existing?.color ? { color: existing.color } : {}),
-			...(existing?.archived ? { archived: true } : {}),
-			...(existing?.recentSessions ? { recentSessions: existing.recentSessions } : {}),
-			...(existing?.pinnedSessionIds ? { pinnedSessionIds: existing.pinnedSessionIds } : {}),
-			...(existing?.sessionOrder ? { sessionOrder: existing.sessionOrder } : {}),
-		};
-		this.state.projects = [project, ...this.state.projects.filter((candidate) => candidate.id !== project.id)];
-		await this.save();
-		return { ...project };
+		return this.storage.update((state) => {
+			const existing = state.projects.find((project) => project.cwd === directory);
+			const project: WebProject = {
+				id: existing?.id ?? input.id,
+				name: input.name?.trim() || existing?.name || basename(directory) || directory,
+				cwd: directory,
+				...(existing?.pinned ? { pinned: true } : {}),
+				...(existing?.color ? { color: existing.color } : {}),
+				...(existing?.archived ? { archived: true } : {}),
+				...(existing?.recentSessions ? { recentSessions: existing.recentSessions } : {}),
+				...(existing?.pinnedSessionIds ? { pinnedSessionIds: existing.pinnedSessionIds } : {}),
+				...(existing?.sessionOrder ? { sessionOrder: existing.sessionOrder } : {}),
+			};
+			state.projects = [project, ...state.projects.filter((candidate) => candidate.id !== project.id)];
+			return { ...project };
+		});
 	}
 
 	async update(id: string, update: Pick<WebProject, "name" | "pinned" | "color" | "archived">): Promise<WebProject> {
-		const project = this.get(id);
-		if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
-		const name = update.name.trim();
-		if (!name) throw Object.assign(new Error("项目名称不能为空"), { code: "project_name_required", status: 400 });
-		const next = {
-			...project,
-			name,
-			pinned: update.pinned || undefined,
-			color: update.color,
-			archived: update.archived || undefined,
-		};
-		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
-		await this.save();
-		return { ...next };
+		return this.storage.update((state) => {
+			const project = state.projects.find((project) => project.id === id);
+			if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
+			const name = update.name.trim();
+			if (!name) throw Object.assign(new Error("项目名称不能为空"), { code: "project_name_required", status: 400 });
+			const next = {
+				...project,
+				name,
+				pinned: update.pinned || undefined,
+				color: update.color,
+				archived: update.archived || undefined,
+			};
+			state.projects = state.projects.map((candidate) => (candidate.id === id ? next : candidate));
+			return { ...next };
+		});
 	}
 
 	async reorderProjects(projectIds: readonly string[]): Promise<void> {
-		const existingIds = new Set(this.state.projects.map((project) => project.id));
-		const orderedIds = [...new Set(projectIds)].filter((id) => existingIds.has(id));
-		const orderedSet = new Set(orderedIds);
-		const nextProjects = [
-			...orderedIds.flatMap((id) => this.state.projects.filter((project) => project.id === id)),
-			...this.state.projects.filter((project) => !orderedSet.has(project.id)),
-		];
-		if (nextProjects.every((project, index) => project.id === this.state.projects[index]?.id)) return;
-		this.state.projects = nextProjects;
-		await this.save();
+		return this.storage.update((state) => {
+			const existingIds = new Set(state.projects.map((project) => project.id));
+			const orderedIds = [...new Set(projectIds)].filter((id) => existingIds.has(id));
+			const orderedSet = new Set(orderedIds);
+			const nextProjects = [
+				...orderedIds.flatMap((id) => state.projects.filter((project) => project.id === id)),
+				...state.projects.filter((project) => !orderedSet.has(project.id)),
+			];
+			if (nextProjects.every((project, index) => project.id === state.projects[index]?.id)) return;
+			state.projects = nextProjects;
+		});
 	}
 
 	async setSessionOrder(id: string, sessionIds: readonly string[]): Promise<void> {
-		const project = this.get(id);
-		if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
-		const nextOrder = [...new Set(sessionIds.filter((sessionId) => Boolean(sessionId.trim())))];
-		const currentOrder = project.sessionOrder ?? [];
-		if (JSON.stringify(currentOrder) === JSON.stringify(nextOrder)) return;
-		const recentById = new Map((project.recentSessions ?? []).map((session) => [session.id, session]));
-		const recentSessions = nextOrder.flatMap((sessionId) => {
-			const session = recentById.get(sessionId);
-			return session ? [session] : [];
+		return this.storage.update((state) => {
+			const project = state.projects.find((project) => project.id === id);
+			if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
+			const nextOrder = [...new Set(sessionIds.filter((sessionId) => Boolean(sessionId.trim())))];
+			const currentOrder = project.sessionOrder ?? [];
+			if (JSON.stringify(currentOrder) === JSON.stringify(nextOrder)) return;
+			const recentById = new Map((project.recentSessions ?? []).map((session) => [session.id, session]));
+			const recentSessions = nextOrder.flatMap((sessionId) => {
+				const session = recentById.get(sessionId);
+				return session ? [session] : [];
+			});
+			const next = {
+				...project,
+				...(nextOrder.length > 0 ? { sessionOrder: nextOrder } : { sessionOrder: undefined }),
+				...(project.recentSessions ? { recentSessions } : {}),
+			};
+			state.projects = state.projects.map((candidate) => (candidate.id === id ? next : candidate));
 		});
-		const next = {
-			...project,
-			...(nextOrder.length > 0 ? { sessionOrder: nextOrder } : { sessionOrder: undefined }),
-			...(project.recentSessions ? { recentSessions } : {}),
-		};
-		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
-		await this.save();
 	}
 
 	async setSessionPinned(id: string, sessionId: string, pinned: boolean): Promise<WebProject> {
-		const project = this.get(id);
-		if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
-		const currentIds = project.pinnedSessionIds ?? [];
-		const nextIds = pinned
-			? [...new Set([...currentIds, sessionId])]
-			: currentIds.filter((candidate) => candidate !== sessionId);
-		const next = {
-			...project,
-			...(nextIds.length > 0 ? { pinnedSessionIds: nextIds } : { pinnedSessionIds: undefined }),
-		};
-		if (JSON.stringify(currentIds) === JSON.stringify(nextIds)) return { ...project };
-		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
-		await this.save();
-		return { ...next };
+		return this.storage.update((state) => {
+			const project = state.projects.find((project) => project.id === id);
+			if (!project) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
+			const currentIds = project.pinnedSessionIds ?? [];
+			const nextIds = pinned
+				? [...new Set([...currentIds, sessionId])]
+				: currentIds.filter((candidate) => candidate !== sessionId);
+			const next = {
+				...project,
+				...(nextIds.length > 0 ? { pinnedSessionIds: nextIds } : { pinnedSessionIds: undefined }),
+			};
+			if (JSON.stringify(currentIds) === JSON.stringify(nextIds)) return { ...project };
+			state.projects = state.projects.map((candidate) => (candidate.id === id ? next : candidate));
+			return { ...next };
+		});
 	}
 
 	async remove(id: string): Promise<void> {
-		if (!this.get(id)) throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
-		this.state.projects = this.state.projects.filter((project) => project.id !== id);
-		await this.save();
+		return this.storage.update((state) => {
+			if (!state.projects.find((project) => project.id === id))
+				throw Object.assign(new Error("未找到项目"), { code: "project_not_found", status: 404 });
+			state.projects = state.projects.filter((project) => project.id !== id);
+		});
 	}
 
 	async setRecentSessions(id: string, sessions: SessionSummary[]): Promise<void> {
-		const project = this.get(id);
-		if (!project) return;
-		const previousRecentSessions = project.recentSessions ?? [];
-		const previousLatestCreatedAt = previousRecentSessions.reduce(
-			(latest, session) => Math.max(latest, session.createdAt),
-			-1,
-		);
-		const freshSessionIds = new Set(
-			sessions
-				.filter((session) => session.createdAt > previousLatestCreatedAt)
-				.sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
-				.map((session) => session.id),
-		);
-		const availableSessionIds = new Set(sessions.map((session) => session.id));
-		const existingOrder = project.sessionOrder ?? [];
-		const sessionOrder = [
-			...freshSessionIds,
-			...existingOrder.filter((sessionId) => availableSessionIds.has(sessionId) && !freshSessionIds.has(sessionId)),
-			...sessions
-				.map((session) => session.id)
-				.filter((sessionId) => !freshSessionIds.has(sessionId) && !existingOrder.includes(sessionId)),
-		];
-		const sessionsById = new Map(sessions.map((session) => [session.id, session]));
-		const orderedSessions = sessionOrder.flatMap((sessionId) => {
-			const session = sessionsById.get(sessionId);
-			return session ? [session] : [];
+		return this.storage.update((state) => {
+			const project = state.projects.find((project) => project.id === id);
+			if (!project) return;
+			const previousRecentSessions = project.recentSessions ?? [];
+			const previousLatestCreatedAt = previousRecentSessions.reduce(
+				(latest, session) => Math.max(latest, session.createdAt),
+				-1,
+			);
+			const freshSessionIds = new Set(
+				sessions
+					.filter((session) => session.createdAt > previousLatestCreatedAt)
+					.sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+					.map((session) => session.id),
+			);
+			const availableSessionIds = new Set(sessions.map((session) => session.id));
+			const existingOrder = project.sessionOrder ?? [];
+			const sessionOrder = [
+				...freshSessionIds,
+				...existingOrder.filter(
+					(sessionId) => availableSessionIds.has(sessionId) && !freshSessionIds.has(sessionId),
+				),
+				...sessions
+					.map((session) => session.id)
+					.filter((sessionId) => !freshSessionIds.has(sessionId) && !existingOrder.includes(sessionId)),
+			];
+			const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+			const orderedSessions = sessionOrder.flatMap((sessionId) => {
+				const session = sessionsById.get(sessionId);
+				return session ? [session] : [];
+			});
+			const recentSessions = orderedSessions.slice(0, 100);
+			const recentSessionIds = new Set(recentSessions.map((session) => session.id));
+			const pinnedSessionIds = (project.pinnedSessionIds ?? []).filter((sessionId) =>
+				recentSessionIds.has(sessionId),
+			);
+			const next = {
+				...project,
+				recentSessions,
+				...(sessionOrder.length > 0 ? { sessionOrder } : { sessionOrder: undefined }),
+				...(pinnedSessionIds.length > 0 ? { pinnedSessionIds } : { pinnedSessionIds: undefined }),
+			};
+			if (
+				JSON.stringify(project.recentSessions ?? []) === JSON.stringify(recentSessions) &&
+				JSON.stringify(project.sessionOrder ?? []) === JSON.stringify(sessionOrder) &&
+				JSON.stringify(project.pinnedSessionIds ?? []) === JSON.stringify(pinnedSessionIds)
+			)
+				return;
+			state.projects = state.projects.map((candidate) => (candidate.id === id ? next : candidate));
 		});
-		const recentSessions = orderedSessions.slice(0, 100);
-		const recentSessionIds = new Set(recentSessions.map((session) => session.id));
-		const pinnedSessionIds = (project.pinnedSessionIds ?? []).filter((sessionId) => recentSessionIds.has(sessionId));
-		const next = {
-			...project,
-			recentSessions,
-			...(sessionOrder.length > 0 ? { sessionOrder } : { sessionOrder: undefined }),
-			...(pinnedSessionIds.length > 0 ? { pinnedSessionIds } : { pinnedSessionIds: undefined }),
-		};
-		if (
-			JSON.stringify(project.recentSessions ?? []) === JSON.stringify(recentSessions) &&
-			JSON.stringify(project.sessionOrder ?? []) === JSON.stringify(sessionOrder) &&
-			JSON.stringify(project.pinnedSessionIds ?? []) === JSON.stringify(pinnedSessionIds)
-		)
-			return;
-		this.state.projects = this.state.projects.map((candidate) => (candidate.id === id ? next : candidate));
-		await this.save();
-	}
-
-	private async save(): Promise<void> {
-		const payload = `${JSON.stringify(this.state, null, 2)}\n`;
-		const save = this.saveQueue.then(async () => {
-			await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-			const temporaryPath = `${this.path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-			try {
-				await writeFile(temporaryPath, payload, {
-					encoding: "utf8",
-					mode: 0o600,
-					flag: "wx",
-				});
-				await rename(temporaryPath, this.path);
-				if (process.platform !== "win32") await chmod(this.path, 0o600);
-			} finally {
-				await unlink(temporaryPath).catch(() => {});
-			}
-		});
-		this.saveQueue = save.catch(() => {});
-		await save;
 	}
 }

@@ -4,6 +4,8 @@ import type { AuthStorageBackend } from "./auth-storage.ts";
 import type { ModelsJsonProvider } from "./model-config.ts";
 import { applyModelOverride, type ProviderConfigInput } from "./provider-composer.ts";
 
+// 相同内容只保留一份已解析目录，避免每次重建会话都重建模型索引。
+let cachedCatalog: { content: string; catalog: ModelsDevCatalog } | undefined;
 /** 使用现有原子写入和文件锁保存目录，不写用户的模型配置。 */
 export class ModelMetadataStore {
 	private readonly storage: AuthStorageBackend;
@@ -16,12 +18,15 @@ export class ModelMetadataStore {
 		return this.storage.withLockAsync(
 			async (content) => {
 				if (!content) return { result: undefined };
+				if (cachedCatalog?.content === content) return { result: cachedCatalog.catalog };
 				const value = JSON.parse(content) as { catalog?: unknown; checkedAt?: unknown };
 				if (value.catalog === undefined) return { result: undefined };
 				if (typeof value.checkedAt !== "number" || !Number.isFinite(value.checkedAt)) {
 					throw new Error("models.dev 缓存缺少有效的更新时间");
 				}
-				return { result: new ModelsDevCatalog(value.catalog, value.checkedAt) };
+				const catalog = new ModelsDevCatalog(value.catalog, value.checkedAt);
+				cachedCatalog = { content, catalog };
+				return { result: catalog };
 			},
 			{ signal },
 		);
@@ -55,7 +60,12 @@ export function withModelMetadata(
 		const models = provider.getAllModels?.() ?? provider.getModels();
 		const catalog = readCatalog();
 		if (!catalog) return models;
-		if (models === previousModels && catalog === previousCatalog) return enriched;
+		if (
+			catalog === previousCatalog &&
+			models.length === previousModels?.length &&
+			models.every((model, index) => model === previousModels?.[index])
+		)
+			return enriched;
 		previousModels = models;
 		previousCatalog = catalog;
 		enriched = models.map((model): AnyModel => {

@@ -70,6 +70,7 @@ export class SessionRoomCoordinator {
 	) => Promise<SessionCollaborationResult>;
 	private readonly onDeliverySettled?: (cwd: string) => void;
 	private readonly deliveriesInFlight = new Set<string>();
+	private readonly deliveryRuns = new Set<Promise<void>>();
 	private readonly timer: ReturnType<typeof setInterval>;
 	private retryTimer?: ReturnType<typeof setTimeout>;
 	private deliveryScheduled = false;
@@ -92,10 +93,12 @@ export class SessionRoomCoordinator {
 		this.timer.unref?.();
 	}
 
-	dispose(): void {
+	async dispose(): Promise<void> {
 		this.disposed = true;
 		clearInterval(this.timer);
 		if (this.retryTimer) clearTimeout(this.retryTimer);
+		await this.operationQueue;
+		await Promise.allSettled(this.deliveryRuns);
 	}
 
 	contextForSession(roomId: string, sessionId: string): { text: string; seq: number } {
@@ -105,17 +108,23 @@ export class SessionRoomCoordinator {
 		const names = new Map(
 			summary.members.map((candidate) => [
 				candidate.sessionId,
-				candidate.nickname || candidate.profileName || collaborationAlias(candidate.sessionId),
+				candidate.role === "owner"
+					? "主智能体"
+					: candidate.nickname || candidate.profileName || collaborationAlias(candidate.sessionId),
 			]),
 		);
 		let remaining = 32_000;
 		const lines: string[] = [];
 		for (const message of [...messages].reverse()) {
 			const line = JSON.stringify({
+				id: message.id,
 				seq: message.seq,
-				sender: names.get(message.senderSessionId),
-				senderType: message.senderType,
+				sender: message.senderType === "user" ? "用户" : names.get(message.senderSessionId),
+				senderSessionId: message.senderSessionId,
+				senderType: message.kind === "system" ? "system" : message.senderType,
 				kind: message.kind,
+				targetSessionIds: message.targetSessionIds,
+				replyToMessageId: message.replyToMessageId,
 				body: message.body.slice(0, remaining),
 				taskId: message.taskId,
 			});
@@ -128,16 +137,26 @@ export class SessionRoomCoordinator {
 			text: [
 				`协作空间：${summary.room.title}（${roomId}）`,
 				`你的成员身份：${names.get(sessionId)}（${sessionId}），角色：${member.role}`,
+				"你是智能体。owner 是协作负责人（主智能体），member 是同事智能体；用户通过主会话发言，但用户与主智能体是不同的发送者。按 senderType 和消息头识别对话对象。对同事使用成员名称；用户称呼规则只用于面向真人用户的回复。",
 				`读取位置：${member.lastReadSeq}；本轮共享消息边界：${summary.latestSeq}`,
 				`成员：${JSON.stringify(summary.members.filter((candidate) => !candidate.leftAt).map((candidate) => ({ sessionId: candidate.sessionId, name: names.get(candidate.sessionId), profile: candidate.profileName || candidate.profileId, responsibility: candidate.profileDescription, role: candidate.role })))}`,
-				`任务：${JSON.stringify(this.store.listTasks(roomId).map((task) => ({ id: task.id, title: task.title, status: task.status, assigneeSessionId: task.assigneeSessionId, resultText: task.resultText?.slice(0, 2_000), executionSessionId: task.execution?.sessionId })))}`,
+				`任务：${JSON.stringify(this.store.listTasks(roomId).map((task) => ({ id: task.id, title: task.title, status: task.status, assigneeSessionId: task.assigneeSessionId, resultText: task.resultText?.slice(0, 2_000), executionSessionId: task.execution?.sessionId, executionState: task.execution?.state, workspaceStatus: task.execution?.result?.workspace?.status, awaitingReview: task.status === "doing" && task.execution?.result?.outcome === "completed" && !task.execution.result.error })))}`,
 				"以下是已发布的共享消息，不包含其他成员的私有思考。需要更早的消息时使用 room_read。",
 				...lines,
-				"使用 room_send 向成员提问或发布结论；使用 room_task_create 创建执行任务。成员认领后，Runtime 会建立隔离执行工作区并回收结果，不需要你创建下级会话。不要重复其他成员已经交付的内容。",
+				"使用 room_send 向成员提问或发布结论，明确 targetSessionIds 和 replyToMessageId，并以本轮共享消息边界作为 basedOnSeq。需要对方采取行动时发送 question 或 message；发送问题后结束当前回合，回复会自动投递，不轮询或重复发送。结果和状态通知无须互相确认。使用 room_task_create 创建执行任务：shared 只读，worktree 或 patch 用于修改代码。成员认领后，Runtime 自动执行并提交结果；主智能体负责核对产物与验证结果，通过 room_task_update 将任务标为 done 时接收成果。需要返工时记录 blocked 和修改意见，再改为 doing 启动重做。正常接收与返工由主智能体在用户已授权的范围内决定，无需等待用户逐项验收；需求取舍不明或超出授权时向用户确认。不要重复其他成员已经交付的内容。",
 			].join("\n"),
 		};
 	}
-
+	formatMessageIdentity(message: SessionRoomMessage): string {
+		const sender = this.store.member(message.roomId, message.senderSessionId);
+		const name =
+			message.senderType === "user"
+				? "用户"
+				: sender.role === "owner"
+					? "主智能体"
+					: sender.nickname || sender.profileName || collaborationAlias(sender.sessionId);
+		return `消息身份：${JSON.stringify({ id: message.id, seq: message.seq, sender: name, senderType: message.kind === "system" ? "system" : message.senderType, senderSessionId: message.senderSessionId, role: message.senderType === "user" ? "human" : sender.role, targetSessionIds: message.targetSessionIds, kind: message.kind, replyToMessageId: message.replyToMessageId, taskId: message.taskId })}`;
+	}
 	api(): SessionRoomApi {
 		return {
 			create: (input) => this.enqueueOperation(() => this.create(input)),
@@ -334,13 +353,13 @@ export class SessionRoomCoordinator {
 			cwd: this.store.room(task.roomId).cwd,
 			roomId: task.roomId,
 			senderSessionId,
-			senderType: senderSessionId === this.store.room(task.roomId).ownerSessionId ? "user" : "agent",
+			senderType: "agent",
 			route,
 			targetSessionIds: candidates,
 			kind: "task",
 			taskId: task.id,
-			body: `待认领任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n使用 room_claim 认领；未认领不要执行。`,
-			capabilities: { allowedTools: ["room_claim"] },
+			taskAction: "offer",
+			body: `待认领任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n本轮只处理认领：职责匹配时使用 room_claim，未认领不要执行。认领成功后结束当前回合，Runtime 随后自动在任务工作区启动执行回合。工具沿用角色配置；当前回合不执行任务，不代表缺少工具。`,
 			idempotencyKey: `room-task-offer:${task.id}:${task.updatedAt}:${targetSessionId ?? "role"}`,
 		});
 	}
@@ -374,25 +393,14 @@ export class SessionRoomCoordinator {
 			targetSessionIds: [task.assigneeSessionId],
 			kind: "task",
 			taskId: task.id,
-			body: `任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n工作区模式：${task.workspaceMode ?? "worktree"}。此任务由 Runtime 按指定模式执行；提交实际产物、验证结果和阻塞，不创建下级会话。`,
-			capabilities: {
-				allowedTools: [
-					"read",
-					"grep",
-					"find",
-					"ls",
-					"session_create",
-					"session_send",
-					"session_wait",
-					"session_list",
-					"session_profiles",
-					"session_stop",
-					"room_read",
-					"room_send",
-					"room_task_list",
-					"room_task_update",
-				],
-			},
+			taskAction: "execute",
+			body: `任务：${task.title}\n${task.description}\n任务 ID：${task.id}\n智能体协作 ID：${task.roomId}\n最近进展与修改意见：\n${
+				task.updates
+					.filter((update) => update.note)
+					.slice(-5)
+					.map((update) => update.note)
+					.join("\n") || "无"
+			}\n工作区模式：${task.workspaceMode ?? "shared"}。此任务由 Runtime 按指定模式执行；提交实际产物、验证结果和阻塞，不创建下级会话。`,
 			idempotencyKey: `room-task-work:${task.id}:${task.updatedAt}`,
 		});
 	}
@@ -410,7 +418,7 @@ export class SessionRoomCoordinator {
 		this.checkedTaskRoom(input.cwd, input.roomId, input.sessionId);
 		const note = input.note?.trim();
 		if (note && note.length > 8000) throw roomError("任务进展超过长度限制", "room_task_note_too_large");
-		const previous = this.store.task(input.roomId, input.taskId);
+		const previous = this.store.validateTaskUpdate(input.roomId, input.taskId, input.sessionId, input.status, note);
 		if (
 			input.status === "done" &&
 			previous.execution?.result?.outcome === "completed" &&
@@ -467,7 +475,7 @@ export class SessionRoomCoordinator {
 				cwd: input.cwd,
 				roomId: input.roomId,
 				senderSessionId: input.sessionId,
-				senderType: input.sessionId === this.store.room(input.roomId).ownerSessionId ? "user" : "agent",
+				senderType: "agent",
 				route: "broadcast",
 				targetSessionIds: targets,
 				kind: "message",
@@ -538,6 +546,7 @@ export class SessionRoomCoordinator {
 			body: checkedBody(input.body),
 			...(input.attachments?.length ? { attachments: input.attachments } : {}),
 			...(input.taskId ? { taskId: input.taskId } : {}),
+			...(input.taskAction ? { taskAction: input.taskAction } : {}),
 			...(capabilities ? { capabilities } : {}),
 			...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
 			...(input.basedOnSeq !== undefined ? { basedOnSeq: input.basedOnSeq } : {}),
@@ -569,7 +578,11 @@ export class SessionRoomCoordinator {
 		setImmediate(() => {
 			this.deliveryScheduled = false;
 			if (this.disposed) return;
-			void this.resumeDeliveries().catch((error: unknown) => console.error("协作消息恢复失败", error));
+			const delivery = this.resumeDeliveries();
+			this.deliveryRuns.add(delivery);
+			void delivery
+				.catch((error: unknown) => console.error("协作消息恢复失败", error))
+				.finally(() => this.deliveryRuns.delete(delivery));
 		});
 	}
 

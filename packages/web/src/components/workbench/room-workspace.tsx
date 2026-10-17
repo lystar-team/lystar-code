@@ -266,8 +266,6 @@ export function RoomWorkspace({
 	onModeChange,
 	openResource,
 	onOpenSession,
-	onRefreshSessions,
-	onToast,
 	section,
 	onSectionChange,
 }: {
@@ -276,8 +274,6 @@ export function RoomWorkspace({
 	onModeChange: () => void;
 	openResource: WorkbenchActions["openResource"];
 	onOpenSession: (sessionId: string) => void;
-	onRefreshSessions: WorkbenchActions["refreshProjectSessions"];
-	onToast: WorkbenchActions["showToast"];
 	section: "chat" | "board";
 	onSectionChange: (section: "chat" | "board") => void;
 }) {
@@ -524,8 +520,7 @@ export function RoomWorkspace({
 						projectId={controller.selectedRoomProjectId}
 						sessions={selectedProject?.sessions ?? []}
 						onOpenSession={onOpenSession}
-						onRefreshSessions={onRefreshSessions}
-						onToast={onToast}
+						openResource={openResource}
 					/>
 				</TabsContent>
 			<InviteAgentDialog

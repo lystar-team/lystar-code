@@ -2,6 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "./extensions/types.ts";
 import { createRoomClaimTool } from "./room-claim-tool.ts";
+import { roomSessionId } from "./room-tool-context.ts";
 import type {
 	SessionCoordinator,
 	SessionCoordinatorSummary,
@@ -81,24 +82,29 @@ const RoomListParams = Type.Object({});
 const RoomSendParams = Type.Object({
 	roomId: Type.String({ minLength: 1, maxLength: 256 }),
 	route: SessionRoomRouteSchema,
-	targetSessionIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 32 })),
-	kind: Type.Optional(SessionRoomKindSchema),
-	body: Type.String({ minLength: 1, maxLength: 64 * 1024 }),
-	taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-	capabilities: Type.Optional(
-		Type.Object(
-			{
-				allowedTools: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 32 }),
-				readRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
-				writeRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
-				shell: Type.Optional(Type.Union([Type.Literal("disabled"), Type.Literal("sandboxed")])),
-			},
-			{ additionalProperties: false },
-		),
+	targetSessionIds: Type.Optional(
+		Type.Union([Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 32 }), Type.Null()]),
 	),
-	replyToMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-	basedOnSeq: Type.Optional(Type.Integer({ minimum: 0 })),
-	idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+	kind: Type.Optional(Type.Union([SessionRoomKindSchema, Type.Null()])),
+	body: Type.String({ minLength: 1, maxLength: 64 * 1024 }),
+	taskId: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 256 }), Type.Null()])),
+	capabilities: Type.Optional(
+		Type.Union([
+			Type.Object(
+				{
+					allowedTools: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 32 }),
+					readRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
+					writeRoots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 32 })),
+					shell: Type.Optional(Type.Union([Type.Literal("disabled"), Type.Literal("sandboxed")])),
+				},
+				{ additionalProperties: false },
+			),
+			Type.Null(),
+		]),
+	),
+	replyToMessageId: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 256 }), Type.Null()])),
+	basedOnSeq: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
+	idempotencyKey: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 256 }), Type.Null()])),
 });
 
 const RoomReadParams = Type.Object({
@@ -332,7 +338,7 @@ export function createRoomCreateTool(
 			return resultText(
 				await coordinator.room.create({
 					cwd: collaborationCwd(ctx),
-					ownerSessionId: ctx.sessionManager.getSessionId(),
+					ownerSessionId: roomSessionId(ctx),
 					...(params.title ? { title: params.title } : {}),
 					...(params.mode ? { mode: params.mode } : {}),
 				}),
@@ -357,7 +363,7 @@ export function createRoomJoinTool(
 				await coordinator.room.join({
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
-					sessionId: ctx.sessionManager.getSessionId(),
+					sessionId: roomSessionId(ctx),
 					profileId: params.profileId ?? ctx.sessionManager.getHeader()?.profile?.id,
 					profileName: ctx.sessionManager.getHeader()?.profile?.name,
 					...(params.nickname ? { nickname: params.nickname } : {}),
@@ -383,7 +389,7 @@ export function createRoomLeaveTool(
 				await coordinator.room.leave({
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
-					sessionId: ctx.sessionManager.getSessionId(),
+					sessionId: roomSessionId(ctx),
 				}),
 			);
 		},
@@ -402,9 +408,7 @@ export function createRoomListTool(
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx: ExtensionContext) {
 			const coordinator = getCoordinator();
 			if (!coordinator) return coordinatorUnavailable();
-			return resultText(
-				await coordinator.room.list({ cwd: collaborationCwd(ctx), sessionId: ctx.sessionManager.getSessionId() }),
-			);
+			return resultText(await coordinator.room.list({ cwd: collaborationCwd(ctx), sessionId: roomSessionId(ctx) }));
 		},
 	};
 }
@@ -415,7 +419,8 @@ export function createRoomSendTool(
 	return {
 		name: "room_send",
 		label: "发送协作消息",
-		description: "向智能体协作空间发送消息，支持定向、广播和 one-of-us 路由。",
+		description:
+			"向智能体协作空间发送消息，支持定向、广播和 one-of-us 路由。普通 message、question、answer、status、result 的 capabilities 传 null；仅 task 可携带能力租约。没有关联任务或回复消息时，taskId、replyToMessageId 传 null，不编造 ID。",
 		parameters: RoomSendParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -425,7 +430,7 @@ export function createRoomSendTool(
 				await coordinator.room.send({
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
-					senderSessionId: ctx.sessionManager.getSessionId(),
+					senderSessionId: roomSessionId(ctx),
 					route: params.route,
 					...(params.targetSessionIds ? { targetSessionIds: params.targetSessionIds } : {}),
 					...(params.kind ? { kind: params.kind } : {}),
@@ -433,7 +438,7 @@ export function createRoomSendTool(
 					...(params.taskId ? { taskId: params.taskId } : {}),
 					...(params.capabilities ? { capabilities: params.capabilities } : {}),
 					...(params.replyToMessageId ? { replyToMessageId: params.replyToMessageId } : {}),
-					...(params.basedOnSeq !== undefined ? { basedOnSeq: params.basedOnSeq } : {}),
+					...(params.basedOnSeq != null ? { basedOnSeq: params.basedOnSeq } : {}),
 					...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
 				}),
 			);
@@ -457,7 +462,7 @@ export function createRoomReadTool(
 				await coordinator.room.read({
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
-					sessionId: ctx.sessionManager.getSessionId(),
+					sessionId: roomSessionId(ctx),
 					...(params.afterSeq !== undefined ? { afterSeq: params.afterSeq } : {}),
 					...(params.limit !== undefined ? { limit: params.limit } : {}),
 					...(params.markRead !== undefined ? { markRead: params.markRead } : {}),
@@ -483,7 +488,7 @@ export function createRoomTaskListTool(
 				await coordinator.room.taskList({
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
-					sessionId: ctx.sessionManager.getSessionId(),
+					sessionId: roomSessionId(ctx),
 				}),
 			);
 		},
@@ -507,7 +512,7 @@ export function createRoomTaskCreateTool(
 				await coordinator.room.taskCreate({
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
-					sessionId: ctx.sessionManager.getSessionId(),
+					sessionId: roomSessionId(ctx),
 					title: params.title,
 					description: params.description,
 					workspaceMode: params.workspaceMode,
@@ -534,7 +539,7 @@ export function createRoomTaskUpdateTool(
 					cwd: collaborationCwd(ctx),
 					roomId: params.roomId,
 					taskId: params.taskId,
-					sessionId: ctx.sessionManager.getSessionId(),
+					sessionId: roomSessionId(ctx),
 					status: params.status,
 					note: params.note,
 				}),

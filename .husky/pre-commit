@@ -8,12 +8,16 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# Run the check script (formatting, linting, and type checking)
-echo "Running formatting, linting, and type checking..."
-npm run check
-if [ $? -ne 0 ]; then
-  echo "❌ Checks failed. Please fix the errors before committing."
-  exit 1
+# 发行脚本已检查版本提交；纯文档提交只检查差异。
+if [ "$PI_RELEASE_CHECKED" = "1" ]; then
+  echo "Release checks already passed."
+  git diff --cached --check || exit 1
+elif ! printf '%s\n' "$STAGED_FILES" | grep -qvE '(^$|\.md$)'; then
+  echo "Checking documentation changes..."
+  git diff --cached --check || exit 1
+else
+  echo "Running formatting, linting, and type checking..."
+  npm run check || exit 1
 fi
 
 # Restage files that were previously staged and may have been modified by formatting

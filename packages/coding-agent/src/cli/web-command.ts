@@ -122,7 +122,9 @@ function selfInvocation(args: string[]): RuntimeInvocation {
 		const sourceArgs = entrypoint.endsWith(".mjs") ? [entrypoint] : [];
 		return { command: process.execPath, args: [...sourceArgs, ...args], cwd: process.cwd() };
 	}
-	const sourceArgs = entrypoint.endsWith(".ts") ? ["--import", import.meta.resolve("tsx"), entrypoint] : [entrypoint];
+	const sourceArgs = entrypoint.endsWith(".ts")
+		? ["--import", import.meta.resolve("../experimental/source-resolver.ts"), entrypoint]
+		: [entrypoint];
 	return { command: process.execPath, args: [...sourceArgs, ...args], cwd: process.cwd() };
 }
 

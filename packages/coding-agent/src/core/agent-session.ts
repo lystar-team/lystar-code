@@ -559,6 +559,7 @@ export class AgentSession {
 	private _activeTurnContext?: AgentTurnContext;
 	private _lastTurnResult?: AgentTurnResult;
 	private _activeCapabilityLease?: AgentCapabilityLease;
+	private _roomTaskHandoff = false;
 	private readonly _entryIdsByMessage = new WeakMap<object, string>();
 	private readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	private _lastAssistantMessage: AssistantMessage | undefined;
@@ -740,7 +741,16 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
-		if (this._usesDefaultTools) this._restoreToolsFromTranscript(this._defaultToolModifiers);
+		// 协作会话使用当前角色配置，不能沿用历史调度回合的临时工具集。
+		const header = this.sessionManager.getHeader();
+		if (
+			this._usesDefaultTools &&
+			!this._extensionLifecycleDeferred &&
+			!header?.roomAgent &&
+			!header?.collaborationTask
+		) {
+			this._restoreToolsFromTranscript(this._defaultToolModifiers);
+		}
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -902,6 +912,9 @@ export class AgentSession {
 		{ toolCall, args }: BeforeToolCallContext,
 		parentToolCallId?: string,
 	): Promise<BeforeToolCallResult | undefined> {
+		if (this._roomTaskHandoff) {
+			return { block: true, reason: "任务已交接到执行会话，当前回合已结束。", terminate: true };
+		}
 		const capabilityViolation = this._capabilityViolation(toolCall.name, args as Record<string, unknown>);
 		if (capabilityViolation) return { block: true, reason: capabilityViolation, terminate: true };
 		const runner = this._extensionRunner;
@@ -949,6 +962,14 @@ export class AgentSession {
 			...(resizeOptions ? { resizeOptions } : {}),
 		});
 		const finalIsError = hookResult?.isError ?? isError;
+		if (
+			toolCall.name === "room_claim" &&
+			!finalIsError &&
+			this._activeTurnContext?.rootOrigin === "room" &&
+			!this.sessionManager.getHeader()?.collaborationTask
+		) {
+			this._roomTaskHandoff = true;
+		}
 		const injectedLessonIds = this._injectedToolRecoveryLessons.get(toolCall.name);
 		this._injectedToolRecoveryLessons.delete(toolCall.name);
 		if (injectedLessonIds && injectedLessonIds.length > 0 && !finalIsError) {
@@ -1414,6 +1435,7 @@ export class AgentSession {
 			this._boundaryDispatchedMessages.add(turn.message);
 			const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults);
 			const previousDecision = await previousFinishTurn?.(turn, signal);
+			if (this._roomTaskHandoff) return { action: "end" };
 			if (previousDecision?.action === "end") return previousDecision;
 			if (extensionContinue || previousDecision?.action === "continue") return { action: "continue" };
 			return undefined;
@@ -2565,6 +2587,7 @@ export class AgentSession {
 		this._toolRecoveryController?.beginTask?.();
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
+		this._roomTaskHandoff = false;
 		let messages: AgentMessage[];
 		try {
 			messages = await this._prepareRun(trigger, signal, toolLease);
@@ -2589,7 +2612,7 @@ export class AgentSession {
 		this._pendingToolNames.clear();
 		try {
 			await this.agent.prompt(messages);
-			while (!this._agentRunAbortRequested) {
+			while (!this._agentRunAbortRequested && !this._roomTaskHandoff) {
 				if (await raceWithAbortSignal(this._handlePostAgentRun(), controller.signal)) {
 					if (this._agentRunAbortRequested) break;
 					await this.agent.continue();

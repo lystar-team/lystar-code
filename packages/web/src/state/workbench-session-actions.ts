@@ -172,7 +172,10 @@ export function useWorkbenchSessionActions({
 	loadSessionTreeRef,
 }: WorkbenchSessionActionsContext) {
 	const acquireSelectedSessionControl = useCallback(
-		async (sessionId: string) => {
+		async (
+			sessionId: string,
+			applyControl: (current: WorkbenchState, controlled: Awaited<ReturnType<typeof webApi.control>>) => WorkbenchState,
+		) => {
 			const selection = selectionRef.current;
 			const deadline = Date.now() + SESSION_CONTROL_RECOVERY_MS;
 			let retryDelay = SESSION_CONTROL_RETRY_MS;
@@ -186,7 +189,7 @@ export function useWorkbenchSessionActions({
 					try {
 						const controlled = await webApi.control(sessionId);
 						if (stateRef.current.sessionId === sessionId && selectionRef.current === selection) {
-							updateState((current) => updatePendingSessionControl(current, sessionId, -1, controlled));
+							updateState((current) => applyControl(updatePendingSessionControl(current, sessionId, -1, controlled), controlled));
 							pending = false;
 						}
 						return controlled;
@@ -353,9 +356,11 @@ export function useWorkbenchSessionActions({
 				const cachedEntry = sessionDetailCacheRef.current.get(sessionId);
 				if (cachedEntry) invalidateCachedSessionSubscription(sessionId, cachedEntry, false);
 				const subscriptionPromise = subscribeSessionAndWait(sessionId);
-				const transcriptPromise = loadTranscript(sessionId, undefined, true);
+				const validateCachedTranscript = Boolean(cached?.session && cached.transcriptPageLoaded &&
+					cached.transcriptGeneration !== undefined && cached.transcriptRevision !== undefined);
+				let transcriptPromise = validateCachedTranscript ? undefined : loadTranscript(sessionId, undefined, true);
 				const subagentsPromise = loadSubagents(sessionId);
-				void transcriptPromise.catch(() => {});
+				void transcriptPromise?.catch(() => {});
 				void subagentsPromise.catch(() => {});
 				if (projectChanged && previous.inspectorOpen) {
 					const projectReviewRefresh =
@@ -367,18 +372,9 @@ export function useWorkbenchSessionActions({
 					void projectReviewRefresh.catch((error) => showToast(errorMessage(error), "error"));
 				}
 				try {
-					const controlled = await acquireSelectedSessionControl(sessionId);
-					if (!controlled || request !== selectionRef.current) {
-						return;
-					}
-					updateState((current) => {
+					const controlled = await acquireSelectedSessionControl(sessionId, (current, controlled) => {
 						if (isOlderSessionSnapshot(current.session, controlled.snapshot))
-							return {
-								...current,
-								lease: controlled.lease,
-								readOnly: controlled.owned === false,
-								sessionError: undefined,
-							};
+							return { ...current, sessionError: undefined };
 						const next: WorkbenchState = {
 							...current,
 							projects: updateSessionActivity(
@@ -386,17 +382,16 @@ export function useWorkbenchSessionActions({
 								sessionId,
 								controlled.snapshot.activity,
 							),
-							lease: controlled.lease,
 							session: controlled.snapshot,
 							transcriptGeneration: current.transcriptGeneration,
 							transcriptRevision: current.transcriptRevision,
 							transcriptLeafId: current.transcriptLeafId,
 							sessionError: undefined,
-							readOnly: controlled.owned === false,
 							currentOperation: operationForSessionSnapshot(current.operations, controlled.snapshot),
 						};
 						return restoreRuntimeActivities(next, controlled.snapshot);
 					});
+					if (!controlled || request !== selectionRef.current) return;
 				} catch (error) {
 					if (request !== selectionRef.current) return;
 					try {
@@ -447,15 +442,23 @@ export function useWorkbenchSessionActions({
 				if (request !== selectionRef.current) {
 					return;
 				}
+				const subscriptionResult = await subscriptionPromise;
+				if (request !== selectionRef.current) return;
+				if (validateCachedTranscript && subscriptionResult !== "gap") {
+					const snapshot = stateRef.current.session;
+					// 文件代际、修订和活动分支都没变时，保留整个窗口及其分页游标。
+					const historyUnchanged = snapshot && cached?.session &&
+						cached.transcriptGeneration === snapshot.transcriptGeneration &&
+						cached.transcriptRevision === snapshot.transcriptRevision &&
+						cached.session.leafId === snapshot.leafId;
+					if (!historyUnchanged) transcriptPromise = loadTranscript(sessionId, undefined, true);
+				}
 				try {
 					await transcriptPromise;
 				} catch (error) {
 					if (request === selectionRef.current) showToast(errorMessage(error), "error");
 				}
-				const subscriptionResult = await subscriptionPromise;
-				if (request !== selectionRef.current) {
-					return;
-				}
+				if (request !== selectionRef.current) return;
 				let subscriptionReady = false;
 				try {
 					subscriptionReady = await completeSessionSubscription(sessionId, subscriptionResult);
@@ -1202,19 +1205,16 @@ export function useWorkbenchSessionActions({
 			if (!current.readOnly && current.lease) return true;
 			try {
 				const selection = selectionRef.current;
-				const controlled = await acquireSelectedSessionControl(sessionId);
-				if (!controlled || stateRef.current.sessionId !== sessionId || selectionRef.current !== selection) return false;
-				updateState((next) => {
+				const controlled = await acquireSelectedSessionControl(sessionId, (next, controlled) => {
 					const updated: WorkbenchState = {
 						...next,
 						projects: updateSessionSummaryName(next.projects, sessionId, controlled.snapshot.name),
-						lease: controlled.lease,
 						session: controlled.snapshot,
-						readOnly: controlled.owned === false,
 						currentOperation: operationForSessionSnapshot(next.operations, controlled.snapshot),
 					};
 					return restoreRuntimeActivities(updated, controlled.snapshot);
 				});
+				if (!controlled || stateRef.current.sessionId !== sessionId || selectionRef.current !== selection) return false;
 				if (controlled.owned) return true;
 				showToast("当前会话暂时无法修改", "warning");
 				return false;

@@ -207,8 +207,9 @@ describe("Room 看板任务", () => {
 		await expect.poll(() => delivered).toHaveLength(1);
 		expect(delivered[0]).toMatchObject({
 			targetSessionId: "worker-a",
-			message: { taskId: task.id, capabilities: { allowedTools: ["room_claim"] } },
+			message: { taskId: task.id, taskAction: "offer" },
 		});
+		expect(delivered[0]?.message.capabilities).toBeUndefined();
 	});
 
 	it("多位 Agent 同时认领同一任务时只接受一个，并在重启后保留记录", async () => {
@@ -232,9 +233,11 @@ describe("Room 看板任务", () => {
 		await expect
 			.poll(() => delivered.filter(({ message }) => message.id && message.taskId === task.id))
 			.toHaveLength(2);
-		expect(delivered.map(({ message }) => message.capabilities?.allowedTools)).toEqual([
-			["room_claim"],
-			["room_claim"],
+		expect(
+			delivered.map(({ message }) => ({ taskAction: message.taskAction, capabilities: message.capabilities })),
+		).toEqual([
+			{ taskAction: "offer", capabilities: undefined },
+			{ taskAction: "offer", capabilities: undefined },
 		]);
 
 		const claims = await Promise.allSettled(
@@ -260,26 +263,10 @@ describe("Room 看板任务", () => {
 			targetSessionId: claimed.assigneeSessionId,
 			message: {
 				taskId: task.id,
-				capabilities: {
-					allowedTools: [
-						"read",
-						"grep",
-						"find",
-						"ls",
-						"session_create",
-						"session_send",
-						"session_wait",
-						"session_list",
-						"session_profiles",
-						"session_stop",
-						"room_read",
-						"room_send",
-						"room_task_list",
-						"room_task_update",
-					],
-				},
+				taskAction: "execute",
 			},
 		});
+		expect(delivered[2]?.message.capabilities).toBeUndefined();
 		const restored = new SessionRoomStore(path);
 		expect(restored.task(room.room.id, task.id)).toMatchObject({
 			status: "doing",
@@ -329,8 +316,9 @@ describe("Room 看板任务", () => {
 		await expect.poll(() => delivered.filter(({ message }) => message.taskId === task.id)).toHaveLength(5);
 		expect(delivered.at(-1)).toMatchObject({
 			targetSessionId: "worker-b",
-			message: { capabilities: { allowedTools: ["room_claim"] } },
+			message: { taskAction: "offer" },
 		});
+		expect(delivered.at(-1)?.message.capabilities).toBeUndefined();
 		expect((await api.taskList({ cwd, roomId: room.room.id, sessionId: "owner" }))[0]).toMatchObject({
 			status: "todo",
 			assigneeSessionId: undefined,

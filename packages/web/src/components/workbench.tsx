@@ -657,8 +657,6 @@ export function Workbench({
 													setWorkspaceMode("sessions");
 													void actions.selectSession(sessionId);
 												}}
-												onRefreshSessions={actions.refreshProjectSessions}
-												onToast={actions.showToast}
 												section={roomSection}
 												onSectionChange={setRoomSection}
 											/>

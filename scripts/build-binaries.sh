@@ -143,6 +143,8 @@ for platform in "${PLATFORMS[@]}"; do
     native_path="native/${native_platform_dir%-*}/prebuilds"
     mkdir -p "$OUTPUT_DIR/$platform/$native_path"
     cp -R "../tui/$native_path/$native_platform_dir" "$OUTPUT_DIR/$platform/$native_path/"
+    mkdir -p "$OUTPUT_DIR/$platform/native/session-index"
+    cp -R "dist/native/session-index/$native_platform_dir" "$OUTPUT_DIR/$platform/native/session-index/"
 
     [[ -x "$OUTPUT_DIR/$platform/lc" ]] || { printf 'Release bundle is missing lc for %s\n' "$platform" >&2; exit 1; }
     [[ "$("$OUTPUT_DIR/$platform/lc" --version)" == "$VERSION" ]] || { printf 'Release bundle lc version mismatch for %s\n' "$platform" >&2; exit 1; }
@@ -152,6 +154,7 @@ for platform in "${PLATFORMS[@]}"; do
     [[ -f "$OUTPUT_DIR/$platform/web/index.html" ]] || { printf 'Release bundle is missing Web assets for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/web/version.json" ]] || { printf 'Release bundle is missing Web version for %s\n' "$platform" >&2; exit 1; }
     [[ -f "$OUTPUT_DIR/$platform/skills/imagegen/SKILL.md" ]] || { printf 'Release bundle is missing built-in skills for %s\n' "$platform" >&2; exit 1; }
+    [[ -x "$OUTPUT_DIR/$platform/native/session-index/$native_platform_dir/lystar-session-index" ]] || { printf 'Release bundle is missing session index for %s\n' "$platform" >&2; exit 1; }
 done
 
 cd "$OUTPUT_DIR"

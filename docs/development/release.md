@@ -18,20 +18,20 @@ v<Pi版本>-lystar.<修订号>
 npm run release:lystar
 ```
 
-先提交本次要发布的代码，并在各包的 `CHANGELOG.md` 的 `[Unreleased]` 中写入变更说明。脚本要求工作区干净，允许本地 `main` 有尚未推送的提交；远端 `main` 必须是本地提交的祖先。运行环境需要 Node.js、npm、Bun、Bash、Git，以及已登录、支持 `gh attestation verify` 的 GitHub CLI。`origin` 必须指向 `lystar-team/lystar-code`。
+先提交本次要发布的代码，并在各包的 `CHANGELOG.md` 的 `[Unreleased]` 中写入变更说明。脚本要求工作区干净，允许本地 `main` 有尚未推送的提交；远端 `main` 必须是本地提交的祖先。运行环境需要 Node.js、npm、Bash、Git，以及已登录、支持 `gh attestation verify` 的 GitHub CLI。`origin` 必须指向 `lystar-team/lystar-code`。
 
 默认从 `piConfig.productVersion` 读取版本，将当前 Pi 基线的 `lystar.N` 递增为 `lystar.N+1`。合并其他 Pi Tag 后通过下方的 `--upstream-tag` 选择基线。脚本自动完成：
 
 1. 同步包版本、内部依赖、根锁文件、install-lock、shrinkwrap 和嵌套示例锁文件；将各包非空的 `[Unreleased]` 归入本版，保留空的 `[Unreleased]`。coding-agent 没有待发布条目时写入版本递增说明。
 2. 更新 README 中的当前版本、建设方案的产品版本与兼容矩阵。矩阵新行引用本版 Changelog，不自动推断兼容性。
-3. 安装依赖（`--ignore-scripts`）、离线构建、运行完整 `npm run check`、Unix 安装器检查和已有版本、更新器、发行元数据测试。
-4. 只提交发行生成的文件，通过现有提交钩子后推送 `main` 和 annotated Tag。
+3. 增量安装依赖（`npm install --ignore-scripts --no-audit --no-fund`），复用已有依赖目录；同步锁文件后运行 `npm run check:release`、Unix 安装器检查和已有版本、更新器、发行元数据测试。
+4. 只提交发行生成的文件，提交钩子复用已通过的发行检查，继续检查锁文件提交授权和暂存差异；随后推送 `main` 和 annotated Tag。
 5. 等待本版的 Release workflow，确认全部 job 成功和十个公开资产齐全。
-6. 下载五平台资产，校验 SHA、manifest 和三个安装器，并验证当前平台的来源证明。
+6. 下载当前平台归档、manifest、SHA 清单和三个安装器，核对十个公开资产的名称、五平台清单及公开归档大小，校验当前平台归档 SHA、安装器内容和来源证明。
 7. 在临时 HOME 中从最近的旧正式版执行 `lc update`，检查 `current/previous`、重复更新和正式包的版本、帮助、离线模型列表。
 8. 提交并推送 `AGENT_VERIFICATION.md` 中的实际验证结果。
 
-脚本不会自动发起真实模型请求或执行手工终端检查；功能改动仍按[验证范围](verification.md)完成对应检查。五平台原生构建与包检查继续由现有 Release workflow 执行。
+开发代码提交执行完整 `npm run check`，包括类型、Web 和浏览器打包检查。发行入口执行 `npm run check:release`，检查产品版本、workspace 内部依赖、依赖固定和发行锁文件；五平台原生构建与包检查由 Release workflow 执行。纯 Markdown 提交由提交钩子执行暂存差异检查。脚本不会自动发起真实模型请求或执行手工终端检查；功能改动按[验证范围](verification.md)完成对应检查。
 
 预览不修改文件，也不提交或发布：
 
@@ -88,7 +88,13 @@ npm run release:lystar -- --resume
 npm run release:lystar -- --verify 1.1.0-lystar.11
 ```
 
-`--verify` 可在有未提交改动的工作区运行；它获取 Tag 并验证公开资产，不修改版本文件、不提交或推送。历史版本不执行指向 latest 的升级；当前最新版本会验证隔离升级。验证目录在命令输出中保留，便于查看下载资产和启动日志。CI 的断言或行为失败需要修复后递增新修订号；`--resume` 不自动重跑失败工作流。
+`--verify` 可在有未提交改动的工作区运行；它获取 Tag 并验证当前平台公开归档与公共清单，不修改版本文件、不提交或推送。需要下载并校验五平台归档时使用：
+
+```bash
+npm run release:lystar -- --verify 1.3.0-lystar.2 --all-platforms
+```
+
+`--all-platforms` 仅与 `--verify` 配合使用。两种模式均核对十个公开资产、五平台 manifest 与 SHA 清单、公开归档大小和三个安装器；归档内容的 SHA 校验范围分别为当前平台或全部五平台。安装器内容以目标 Tag 为准，元数据校验器使用当前工作区的实现。历史版本不执行指向 latest 的升级；当前最新版本会验证隔离升级。验证目录在命令输出中保留，便于查看下载资产和启动日志。CI 的断言或行为失败需要修复后递增新修订号；`--resume` 不自动重跑失败工作流。
 
 本入口只发布 LYStar GitHub Release，不执行上游 npm 发布；`release:patch/minor/major` 继续用于上游 npm 流程。
 
@@ -97,7 +103,7 @@ npm run release:lystar -- --verify 1.1.0-lystar.11
 1. 工作区干净，目标提交已推送到 `origin/main`。
 2. CI 通过。
 3. `productVersion`、README、兼容矩阵和验证记录一致。
-4. 完成[全部 gate](verification.md)。
+4. 完成本次功能改动所需的[验证](verification.md)。
 5. Darwin ARM64/x64、Linux ARM64/x64 和 Windows x64 分别在对应原生 runner 构建。
 
 ```bash

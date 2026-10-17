@@ -14,7 +14,7 @@ import { findPackageDirectories } from "./package-workspaces.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repository = "lystar-team/lystar-code";
 const versionPattern = /^(\d+)\.(\d+)\.(\d+)-lystar\.(\d+)$/;
-const options = { mode: "release", version: null, gh: "gh", upstreamTag: null };
+const options = { mode: "release", version: null, gh: "gh", upstreamTag: null, allPlatforms: false };
 const argv = process.argv.slice(2);
 let phase = "读取参数";
 let prepared = false;
@@ -77,7 +77,7 @@ function resolveUpstream(tag, current) {
 	return { piVersion, commit, previousVersion, version: `${piVersion}-lystar.${revision}` };
 }
 
-function commit(paths, message) {
+function commit(paths, message, releaseChecked = false) {
 	const changed = run("git", ["diff", "HEAD", "--name-only", "-z"]).split("\0").filter(Boolean);
 	const unexpected = changed.filter((path) => !paths.has(path));
 	if (unexpected.length) throw new Error(`检查期间出现其他文件改动，未提交：\n${unexpected.join("\n")}`);
@@ -91,7 +91,7 @@ function commit(paths, message) {
 		run("git", ["commit", "-F", messageFile], {
 			stdio: "inherit",
 			timeout: 900_000,
-			env: { ...process.env, PI_ALLOW_LOCKFILE_CHANGE: "1" },
+			env: { ...process.env, PI_ALLOW_LOCKFILE_CHANGE: "1", PI_RELEASE_CHECKED: releaseChecked ? "1" : "" },
 		});
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
@@ -180,7 +180,7 @@ function prepareVersion(previous, version, packages, upstream) {
 	if (upstream) record = record.replace(/上游 Pi 基线为 `v[\d.]+`（`[a-f0-9]{40}`）/, `上游 Pi 基线为 \`v${piVersion}\`（\`${piCommit}\`）`);
 	writeFileSync(recordPath, record);
 	run(process.execPath, ["scripts/sync-versions.js"], { stdio: "inherit" });
-	npm(["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"]);
+	npm(["install", "--ignore-scripts", "--no-audit", "--no-fund"]);
 	for (const script of ["generate-coding-agent-install-lock.mjs", "generate-coding-agent-shrinkwrap.mjs"]) {
 		run(process.execPath, [`scripts/${script}`], { stdio: "inherit" });
 	}
@@ -216,21 +216,29 @@ function verifyRelease(version, tag, sha) {
 	if (release.assets.length !== expected.length || expected.some((name) => !release.assets.some((asset) => asset.name === name))) {
 		throw new Error("公开 Release 资产未与五平台发行清单一致");
 	}
+	const platform = `${process.platform}-${process.arch}`;
+	const archive = expected.find((name) => name.endsWith(`-${platform}.tar.gz`));
+	const downloaded = options.allPlatforms ? expected : expected.filter((name) => !name.startsWith("lystar-agent-") || name === archive);
 	const directory = mkdtempSync(join(tmpdir(), `lystar-release-${version}-`));
-	console.log(`下载并校验公开资产：${directory}`);
+	const checksumScope = options.allPlatforms ? "五平台" : platform;
+	console.log(`下载并校验 ${checksumScope} 归档及公共清单：${directory}`);
 	const assets = join(directory, "assets");
 	mkdirSync(assets);
-	gh(["release", "download", tag, "--dir", assets], { stdio: "inherit", timeout: 1_800_000 });
+	gh(["release", "download", tag, "--dir", assets, ...downloaded.flatMap((name) => ["--pattern", name])], { stdio: "inherit", timeout: 1_800_000 });
 	mkdirSync(join(directory, "scripts"));
-	for (const name of ["generate-release-metadata.mjs", "install.sh", "install.ps1", "install.cmd"]) {
+	writeFileSync(join(directory, "scripts/generate-release-metadata.mjs"), readFileSync(join(root, "scripts/generate-release-metadata.mjs")));
+	for (const name of ["install.sh", "install.ps1", "install.cmd"]) {
 		let contents = run("git", ["show", `${tag}:scripts/${name}`]);
 		// 原生 runner 按 .gitattributes 将 Windows 安装脚本检出为 CRLF。
 		if (name === "install.cmd" || name === "install.ps1") contents = contents.replace(/\r?\n/g, "\r\n");
 		writeFileSync(join(directory, "scripts", name), contents);
 	}
-	run(process.execPath, [join(directory, "scripts/generate-release-metadata.mjs"), "--verify", assets, version, repository], { cwd: directory, stdio: "inherit" });
-	const platform = `${process.platform}-${process.arch}`;
-	const archive = expected.find((name) => name.endsWith(`-${platform}.tar.gz`));
+	const verifyArgs = options.allPlatforms ? ["--verify"] : ["--verify-platform", platform];
+	run(process.execPath, [join(directory, "scripts/generate-release-metadata.mjs"), ...verifyArgs, assets, version, repository], { cwd: directory, stdio: "inherit" });
+	const manifest = JSON.parse(readFileSync(join(assets, "release-manifest.json"), "utf8"));
+	if (Object.values(manifest.assets).some((asset) => release.assets.find((entry) => entry.name === asset.file)?.size !== asset.size)) {
+		throw new Error("公开归档大小与 manifest 不一致");
+	}
 	gh(["attestation", "verify", join(assets, archive), "--signer-workflow", `${repository}/.github/workflows/release.yml`, "--source-ref", `refs/tags/${tag}`, "--source-digest", sha], { stdio: "inherit", timeout: 180_000 });
 	const home = join(directory, "home");
 	const versions = join(home, ".local/share/lystar-agent/versions");
@@ -276,14 +284,14 @@ function verifyRelease(version, tag, sha) {
 	}
 	console.log(`公开资产、来源证明、${upgrade ? "升级与重复更新、" : ""}离线启动检查通过。验证文件保留在 ${directory}`);
 	if (latest.tagName !== tag) console.log(`历史版核验跳过 lc update；GitHub latest 为 ${latest.tagName}。`);
-	return { release, previous: upgrade ? previous.tagName : null, directory };
+	return { release, previous: upgrade ? previous.tagName : null, directory, checksumScope };
 }
 
 async function main() {
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--help") {
-			console.log("用法：npm run release:lystar -- [--dry-run | --resume | --verify <version>] [--upstream-tag <vX.Y.Z>] [--gh <path>]\n默认递增 LYStar 修订号、检查、提交推送、打 Tag、等待 Release 并核验。\n--upstream-tag 指定已合入的 Pi Tag；新 Pi 基线从 lystar.1 开始，已发布的同基线继续递增。\n--dry-run 仅预览；--resume 不递增版本；--verify 仅核验指定已发布版本。");
+			console.log("用法：npm run release:lystar -- [--dry-run | --resume | --verify <version>] [--upstream-tag <vX.Y.Z>] [--gh <path>] [--all-platforms]\n默认递增 LYStar 修订号、检查、提交推送、打 Tag、等待 Release 并核验当前平台归档与公共清单。\n--upstream-tag 指定已合入的 Pi Tag；新 Pi 基线从 lystar.1 开始，已发布的同基线继续递增。\n--dry-run 仅预览；--resume 不递增版本；--verify 仅核验指定已发布版本。\n--all-platforms 与 --verify 配合，下载并校验全部五平台归档。");
 			return;
 		}
 		if (arg === "--gh") {
@@ -300,10 +308,13 @@ async function main() {
 				if (!value) throw new Error("--verify 需要版本号");
 				options.version = value.replace(/^v/, "");
 			}
+		} else if (arg === "--all-platforms" && !options.allPlatforms) {
+			options.allPlatforms = true;
 		} else {
 			throw new Error(`未知或重复参数：${arg}`);
 		}
 	}
+	if (options.allPlatforms && options.mode !== "verify") throw new Error("--all-platforms 需要 --verify <version>");
 	const product = readJson("packages/coding-agent/package.json");
 	const current = product.piConfig.productVersion;
 	const parts = versionPattern.exec(current);
@@ -321,7 +332,7 @@ async function main() {
 	const packages = findPackageDirectories(join(root, "packages")).map((path) => relative(root, path)).filter((path) => path !== "packages/coding-agent/install-lock");
 	const status = run("git", ["status", "--porcelain"]);
 	if (options.mode === "dry-run") {
-		console.log(`预览：${current} → ${version}\n仓库：${repository}\nTag：${tag}\n同步 ${packages.length} 个 package manifest、内部依赖、锁文件、Changelog 与版本文档。\n离线构建 → npm run check → 已有发行测试 → 提交并推送 main → annotated Tag → 五平台 CI → 公开资产与隔离升级核验。\nGitHub CLI：${options.gh}\n${status ? `正式发布前需要提交的改动：\n${status}` : "工作区干净。"}\n此次预览未修改文件、提交或发布。`);
+		console.log(`预览：${current} → ${version}\n仓库：${repository}\nTag：${tag}\n同步 ${packages.length} 个 package manifest、内部依赖、锁文件、Changelog 与版本文档。\n增量安装依赖 → npm run check:release → 已有发行测试 → 提交并推送 main → annotated Tag → 五平台 CI 构建 → 当前平台归档与公共清单、隔离升级核验。\nGitHub CLI：${options.gh}\n${status ? `正式发布前需要提交的改动：\n${status}` : "工作区干净。"}\n此次预览未修改文件、提交或发布。`);
 		if (upstream) console.log(`上游基线：${options.upstreamTag}（${upstream.commit}）；最新正式版：${upstream.previousVersion}`);
 		return;
 	}
@@ -353,15 +364,14 @@ async function main() {
 			throw new Error("当前版本尚未完成准备；--resume 不会再次递增版本");
 		}
 		phase = "发布检查";
-		npm(["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
-		npm(["run", "build:offline"]);
-		npm(["run", "check"]);
+		if (!paths) npm(["install", "--ignore-scripts", "--no-audit", "--no-fund"]);
+		npm(["run", "check:release"]);
 		run("bash", ["scripts/test-install-sh.sh"], { stdio: "inherit", timeout: 180_000 });
 		run(process.execPath, ["--test", "scripts/generate-release-metadata.test.mjs"], { stdio: "inherit" });
 		run(process.execPath, [join(root, "node_modules/vitest/dist/cli.js"), "--run", "test/config.test.ts", "test/lystar-updater.test.ts", "test/version-check.test.ts", "--maxWorkers=2"], { cwd: join(root, "packages/coding-agent"), stdio: "inherit", timeout: 180_000 });
 		if (paths) {
 			phase = "提交发行版本";
-			commit(paths, `feat(coding-agent): 发布 LYStar Code ${version}`);
+			commit(paths, `feat(coding-agent): 发布 LYStar Code ${version}`, true);
 		}
 		if (run("git", ["status", "--porcelain"])) throw new Error("检查后工作区仍有改动，请提交后 --resume");
 		phase = "推送 main 和 Tag";
@@ -385,7 +395,7 @@ async function main() {
 		const path = join(root, "AGENT_VERIFICATION.md");
 		let text = readFileSync(path, "utf8");
 		text = text.replace(`当前产品版本为 \`${version}\``, `当前正式版本为 \`${version}\``).replace(/^> 更新日期：.+$/m, `> 更新日期：${new Intl.DateTimeFormat("sv-SE").format(new Date())}`);
-		const record = `## ${version} 自动发布验证\n\n- 记录时间：${new Date().toISOString()}。Annotated Tag \`${tag}\` 指向 \`${sha}\`；Release workflow \`${workflow}\` 的全部 job 成功，公开 Release 不是 draft/prerelease。\n- ${releaseAssetNames(version).length} 个公开资产通过 metadata、SHA 和安装器一致性校验；${process.platform}-${process.arch} 来源证明及独立包版本、帮助、离线模型列表通过。\n- ${result.previous ? `隔离 HOME 中从 \`${result.previous}\` 升级至 \`${tag}\`；current/previous 和重复更新检查通过。` : "没有更早正式版，本次检查独立包启动。"}\n- 验证产物：\`${result.directory}\`。未自动执行真实模型请求或手工终端检查。\n\n`;
+		const record = `## ${version} 自动发布验证\n\n- 记录时间：${new Date().toISOString()}。Annotated Tag \`${tag}\` 指向 \`${sha}\`；Release workflow \`${workflow}\` 的全部 job 成功，公开 Release 不是 draft/prerelease。\n- ${releaseAssetNames(version).length} 个公开资产清单、五平台 manifest 与 SHA 清单、三个安装器一致性校验通过；${result.checksumScope} 归档 SHA 和大小校验通过；${process.platform}-${process.arch} 来源证明及独立包版本、帮助、离线模型列表通过。\n- ${result.previous ? `隔离 HOME 中从 \`${result.previous}\` 升级至 \`${tag}\`；current/previous 和重复更新检查通过。` : "没有更早正式版，本次检查独立包启动。"}\n- 验证产物：\`${result.directory}\`。未自动执行真实模型请求或手工终端检查。\n\n`;
 		text = text.replace(/\n(?=## (?!当前事实))/, `\n${record}`);
 		writeFileSync(path, text);
 		commit(new Set(["AGENT_VERIFICATION.md"]), `docs: 记录 ${version} 自动发布验证`);

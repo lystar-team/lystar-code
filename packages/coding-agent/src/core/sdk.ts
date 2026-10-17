@@ -431,6 +431,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		streamFn: async (model, context, options) => {
 			const roomTurn = extensionRunnerRef.current?.createContext().currentTurn?.rootOrigin === "room";
 			const requestOptions = buildRequestOptions(model, roomTurn, options);
+			const requestContext = roomTurn
+				? {
+						...context,
+						messages: context.messages.map((message, index) =>
+							index === 0 && message.role === "system"
+								? {
+										...message,
+										sections: {
+											...message.sections,
+											room_identity:
+												"<room_identity>当前是智能体协作回合。你的身份、消息发送者和回复对象以本轮协作消息头为准。senderType=user 表示真人用户，agent 表示同事智能体，system 表示系统事件；owner 是主智能体，不等于真人用户。项目或角色规则中对用户的称呼只用于真人用户；回复同事时使用成员名称。模型接口中的 user 消息也承载同事消息，不能据此把发送者当作真人用户。系统或结果通知无须互相致谢、确认或重复结论。</room_identity>",
+										},
+									}
+								: message,
+						),
+					}
+				: context;
 			// Compaction and summaries use their own routing ids; only session requests
 			// replace the cache entry, so warming restarts from them. Keep warming while
 			// the current transcript still extends the request's prefix. Agent state may
@@ -438,11 +455,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// the provider request, so top-level object identity is not a valid cache key.
 			if (options?.sessionId === sessionManager.getSessionId()) {
 				cacheWarmer.start(
-					{ model, context, options: requestOptions, skipExtensionDecision: roomTurn },
+					{ model, context: requestContext, options: requestOptions, skipExtensionDecision: roomTurn },
 					cacheContextIsCurrent(model),
 				);
 			}
-			return modelRuntime.streamSimple(model, context, requestOptions);
+			return modelRuntime.streamSimple(model, requestContext, requestOptions);
 		},
 		onPayload: transformProviderPayload,
 		onResponse: handleProviderResponse,
