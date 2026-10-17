@@ -1,6 +1,7 @@
 ﻿param(
     [string]$OutputDir = "packages\coding-agent\binaries",
-    [string]$Repository = ""
+    [string]$Repository = "",
+    [string]$NativeHostsDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,13 +16,6 @@ if ($ConfiguredRepository -and $Repository -ne $ConfiguredRepository) { throw "R
 
 $PlatformDir = Join-Path $OutputDir "windows-x64"
 $BundleDir = Join-Path $PlatformDir "lystar-agent"
-$ServiceSource = Join-Path $Root "packages\coding-agent\src\windows-service-host\service.cpp"
-$ServiceExecutable = Join-Path $BundleDir "lystar-web-service.exe"
-$VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-if (!(Test-Path $VsWhere)) { throw "找不到 Visual Studio Build Tools。" }
-$VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-if (!$VsPath) { throw "找不到 MSVC x64 工具链。" }
-$VcVars = Join-Path $VsPath "VC\Auxiliary\Build\vcvars64.bat"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $PlatformDir
 New-Item -ItemType Directory -Force $BundleDir | Out-Null
 
@@ -41,28 +35,15 @@ try {
 '@
     [IO.File]::WriteAllText((Join-Path $BundleDir "lystar.cmd"), $BundleAlias, [Text.UTF8Encoding]::new($false))
 
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-terminal.ps1") -OutputDir $BundleDir
-    if ($LASTEXITCODE -ne 0) { throw "lystar-terminal.exe 构建失败。" }
-    Write-Host ("CI_TIMING terminal-total {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
-    $StageTimer.Restart()
-
-    $ServiceCommand = @"
-@echo off
-@chcp 65001 >nul
-call "$VcVars" >nul
-cl.exe /nologo /std:c++20 /EHsc /utf-8 /O2 /GL /MT /DUNICODE /D_UNICODE "$ServiceSource" /link /LTCG /SUBSYSTEM:CONSOLE /OUT:"$ServiceExecutable" advapi32.lib
-"@
-
-    $ServiceCommandPath = Join-Path ([IO.Path]::GetTempPath()) ("lystar-web-service-build-" + [Guid]::NewGuid() + ".cmd")
-    [IO.File]::WriteAllText($ServiceCommandPath, $ServiceCommand, [Text.UTF8Encoding]::new($true))
-    try {
-        & cmd.exe /d /c $ServiceCommandPath
-        if ($LASTEXITCODE -ne 0 -or !(Test-Path $ServiceExecutable)) { throw "lystar-web-service.exe 构建失败。" }
+    if ($NativeHostsDir) {
+        Copy-Item (Join-Path $NativeHostsDir "lystar-terminal.exe"), (Join-Path $NativeHostsDir "lystar-web-service.exe") $BundleDir
+        $WebViewLicense = Join-Path $NativeHostsDir "WebView2-LICENSE.txt"
+        if (Test-Path $WebViewLicense) { Copy-Item $WebViewLicense $BundleDir }
     }
-    finally {
-        Remove-Item -Force -ErrorAction SilentlyContinue $ServiceCommandPath
+    else {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\build-windows-hosts.ps1") -OutputDir $BundleDir
+        if ($LASTEXITCODE -ne 0) { throw "Windows 原生宿主构建失败。" }
     }
-    Write-Host ("CI_TIMING service-compile {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)
     $StageTimer.Restart()
     Copy-Item (Join-Path $PackageDir "package.json") $BundleDir
     & node (Join-Path $Root "scripts\prepare-release-package.mjs") (Join-Path $BundleDir "package.json") $Version $Repository

@@ -114,6 +114,11 @@ jobs:
       - name: Install platform dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund --workspace packages/coding-agent --workspace packages/web-gateway --include-workspace-root
 
+      - name: Build Windows native hosts
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\scripts\build-windows-hosts.ps1 -OutputDir "${env:GITHUB_WORKSPACE}\.artifacts\windows-hosts"
+
       - name: Wait for shared build
         id: shared
         env:
@@ -158,7 +163,7 @@ jobs:
       - name: Build Windows standalone release
         if: runner.os == 'Windows'
         shell: powershell
-        run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
+        run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}" -NativeHostsDir "${env:GITHUB_WORKSPACE}\.artifacts\windows-hosts"
 
       - name: Verify Windows release artifact
         if: runner.os == 'Windows'
