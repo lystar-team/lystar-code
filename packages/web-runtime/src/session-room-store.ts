@@ -445,7 +445,7 @@ export class SessionRoomStore {
 		sessionId: string,
 		title: string,
 		description: string,
-		workspaceMode: SessionRoomTask["workspaceMode"] = "shared",
+		workspaceMode?: SessionRoomTask["workspaceMode"],
 	): SessionRoomTask {
 		return this.transaction(() => {
 			this.activeMember(roomId, sessionId);

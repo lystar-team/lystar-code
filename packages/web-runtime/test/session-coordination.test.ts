@@ -225,6 +225,8 @@ describe("WebRuntimeService session coordination", () => {
 			});
 			expect(createdOptions).not.toHaveProperty("readOnly");
 
+			const resultText =
+				"已完成：检查子会话结果持久化\n\n当前工作区用于只读调查或评审。可使用角色配置中的工具完成查询，不修改项目文件；需要写入时向主会话说明，由用户选择直接工作或隔离模式。";
 			const waited = await coordinator?.wait({ cwd, sessionIds: ["child-session"] });
 			expect(waited).toHaveLength(1);
 			expect(waited?.[0]).toMatchObject({
@@ -233,12 +235,12 @@ describe("WebRuntimeService session coordination", () => {
 				result: {
 					taskId: result?.taskId,
 					outcome: "completed",
-					resultText: "已完成：检查子会话结果持久化",
+					resultText,
 				},
 			});
 			expect(storedResult).toMatchObject({
 				outcome: "completed",
-				resultText: "已完成：检查子会话结果持久化",
+				resultText,
 			});
 		} finally {
 			await service.dispose();

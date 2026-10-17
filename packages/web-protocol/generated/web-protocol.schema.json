@@ -705,6 +705,10 @@
                       "anyOf": [
                         {
                           "type": "string",
+                          "const": "direct"
+                        },
+                        {
+                          "type": "string",
                           "const": "shared"
                         },
                         {
@@ -3120,6 +3124,26 @@
                         {
                           "type": "string",
                           "const": "ultra"
+                        }
+                      ]
+                    },
+                    "workspaceMode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "direct"
+                        },
+                        {
+                          "type": "string",
+                          "const": "shared"
+                        },
+                        {
+                          "type": "string",
+                          "const": "worktree"
+                        },
+                        {
+                          "type": "string",
+                          "const": "patch"
                         }
                       ]
                     },
@@ -9288,6 +9312,10 @@
                     "anyOf": [
                       {
                         "type": "string",
+                        "const": "direct"
+                      },
+                      {
+                        "type": "string",
                         "const": "shared"
                       },
                       {
@@ -9443,6 +9471,10 @@
                       },
                       "mode": {
                         "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "direct"
+                          },
                           {
                             "type": "string",
                             "const": "shared"
@@ -9624,6 +9656,10 @@
             },
             "mode": {
               "anyOf": [
+                {
+                  "type": "string",
+                  "const": "direct"
+                },
                 {
                   "type": "string",
                   "const": "shared"
@@ -10506,6 +10542,26 @@
                   }
                 ]
               },
+              "workspaceMode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "direct"
+                  },
+                  {
+                    "type": "string",
+                    "const": "shared"
+                  },
+                  {
+                    "type": "string",
+                    "const": "worktree"
+                  },
+                  {
+                    "type": "string",
+                    "const": "patch"
+                  }
+                ]
+              },
               "tools": {
                 "type": "array",
                 "items": {
@@ -10680,6 +10736,26 @@
               }
             ]
           },
+          "workspaceMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "direct"
+              },
+              {
+                "type": "string",
+                "const": "shared"
+              },
+              {
+                "type": "string",
+                "const": "worktree"
+              },
+              {
+                "type": "string",
+                "const": "patch"
+              }
+            ]
+          },
           "tools": {
             "type": "array",
             "items": {
@@ -10826,6 +10902,26 @@
               {
                 "type": "string",
                 "const": "ultra"
+              }
+            ]
+          },
+          "workspaceMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "direct"
+              },
+              {
+                "type": "string",
+                "const": "shared"
+              },
+              {
+                "type": "string",
+                "const": "worktree"
+              },
+              {
+                "type": "string",
+                "const": "patch"
               }
             ]
           },

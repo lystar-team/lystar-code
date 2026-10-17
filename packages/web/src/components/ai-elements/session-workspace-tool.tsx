@@ -23,8 +23,8 @@ function WorkspaceDetail({ workspace, reason, canRelease }: { workspace: Session
 			<Field label="工作目录" value={workspace.worktreePath ?? workspace.cwd} />
 			<Field label="占用大小" value={formatWorkspaceSize(workspace.sizeBytes)} />
 			{workspace.branch ? <Field label="分支" value={workspace.branch} /> : null}
-			{workspace.mode === "shared" || workspace.status === "released" ? (
-				<Field label="回收状态" value={workspace.status === "released" ? "已回收，会话记录仍保留" : "共享工作区，无需回收"} />
+			{workspace.mode === "direct" || workspace.mode === "shared" || workspace.status === "released" ? (
+				<Field label="回收状态" value={workspace.status === "released" ? "已回收，会话记录仍保留" : "使用原项目目录，无需回收"} />
 			) : typeof canRelease === "boolean" ? <Field label="回收状态" value={canRelease ? "可回收" : "暂不可回收"} /> : null}
 			{reasons.length ? <Field label="保留原因" value={reasons.join("；")} /> : null}
 		</div>

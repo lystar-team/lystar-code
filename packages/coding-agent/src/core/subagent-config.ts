@@ -1,5 +1,6 @@
 import { stringify as stringifyYaml } from "yaml";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
+import type { SessionWorkspaceMode } from "./session-manager.ts";
 
 export const SUBAGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type SubagentThinkingLevel = (typeof SUBAGENT_THINKING_LEVELS)[number];
@@ -11,6 +12,7 @@ export interface SubagentConfigInput {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: SubagentThinkingLevel;
+	workspaceMode?: SessionWorkspaceMode;
 	tools?: string[];
 	excludeTools?: string[];
 	skills?: string[];
@@ -65,6 +67,10 @@ export function normalizeSubagentTags(value: unknown): string[] | undefined {
 	return tags.length > 0 ? [...new Set(tags)] : undefined;
 }
 
+export function normalizeSubagentWorkspaceMode(value: unknown): SessionWorkspaceMode | undefined {
+	return value === "direct" || value === "shared" || value === "worktree" || value === "patch" ? value : undefined;
+}
+
 export function parseSubagentModelReference(reference: string | undefined): {
 	provider?: string;
 	model?: string;
@@ -115,6 +121,7 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 	const excludeTools = normalizeSubagentTools(frontmatter.excludeTools);
 	const skills = normalizeSubagentSkills(frontmatter.skills);
 	const tags = normalizeSubagentTags(frontmatter.tags);
+	const workspaceMode = normalizeSubagentWorkspaceMode(frontmatter.workspaceMode);
 	return {
 		name,
 		description,
@@ -125,6 +132,7 @@ export function parseSubagentMarkdown(content: string, fallbackName: string): Pa
 		...(excludeTools ? { excludeTools } : {}),
 		...(skills ? { skills } : {}),
 		...(tags ? { tags } : {}),
+		...(workspaceMode ? { workspaceMode } : {}),
 		content: body.trim(),
 	};
 }
@@ -137,6 +145,7 @@ export function renderSubagentMarkdown(input: SubagentConfigInput): string {
 	};
 	if (input.icon?.trim()) frontmatter.icon = input.icon.trim();
 	if (modelReference) frontmatter.model = modelReference;
+	if (input.workspaceMode) frontmatter.workspaceMode = input.workspaceMode;
 	if (input.tools && input.tools.length > 0) frontmatter.tools = [...new Set(input.tools)].join(", ");
 	if (input.excludeTools && input.excludeTools.length > 0)
 		frontmatter.excludeTools = [...new Set(input.excludeTools)].join(", ");

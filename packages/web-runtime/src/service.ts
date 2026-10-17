@@ -574,7 +574,9 @@ export class WebRuntimeService {
 			firstMessage: "未命名会话",
 			activity: snapshot.activity,
 			...(snapshot.name ? { name: snapshot.name } : {}),
-			...(header?.profile ? { profileId: header.profile.id, profileName: header.profile.name } : {}),
+			...(header?.profile
+				? { profileId: header.profile.id, profileName: header.profile.name, profileIcon: header.profile.icon }
+				: {}),
 			...(header?.collaborationWorkspace ? { workspace: header.collaborationWorkspace } : {}),
 			...(header?.collaborationTask
 				? {
@@ -626,7 +628,7 @@ export class WebRuntimeService {
 			}
 			const promptText =
 				workspace?.mode === "shared"
-					? `${text}\n\n当前工作区用于只读调查或评审。可使用角色配置中的工具完成查询，不修改项目文件；需要写入时向主会话说明，改用 worktree 或 patch 任务。`
+					? `${text}\n\n当前工作区用于只读调查或评审。可使用角色配置中的工具完成查询，不修改项目文件；需要写入时向主会话说明，由用户选择直接工作或隔离模式。`
 					: text;
 			if (roomMessage) {
 				if (!runtime.promptWithOrigin) throw new Error("任务执行会话不支持结构化输入");
@@ -803,8 +805,11 @@ export class WebRuntimeService {
 					createdAt: new Date().toISOString(),
 				}
 			: undefined;
+		const profile = profileId
+			? discoverSessionProfiles(input.cwd, this.agentDir).find((candidate) => candidate.id === profileId)
+			: undefined;
 		const workspaceMode: SessionWorkspaceMode | undefined = collaborationTask
-			? (input.workspaceMode ?? "shared")
+			? (input.workspaceMode ?? profile?.workspaceMode ?? "direct")
 			: undefined;
 		let workspace: SessionWorkspaceSnapshot | undefined;
 		if (options.workspace) {
@@ -813,18 +818,7 @@ export class WebRuntimeService {
 					? await this.collaborationWorkspaces.create(input.cwd, options.workspace.mode, randomUUID())
 					: options.workspace;
 		} else if (workspaceMode) {
-			try {
-				workspace = await this.collaborationWorkspaces.create(input.cwd, workspaceMode, randomUUID());
-			} catch (error) {
-				if (
-					!options.deferTask ||
-					!(error instanceof Error) ||
-					!("code" in error) ||
-					error.code !== "workspace_git_required"
-				)
-					throw error;
-				workspace = await this.collaborationWorkspaces.create(input.cwd, "patch", randomUUID());
-			}
+			workspace = await this.collaborationWorkspaces.create(input.cwd, workspaceMode, randomUUID());
 		}
 		let runtime: RuntimeSession;
 		try {
@@ -848,10 +842,10 @@ export class WebRuntimeService {
 				this.runCoordinatorPrompt(runtime, collaborationTask.id, collaborationTask.description, workspace),
 			);
 		}
-		const sessions = await this.adapter.listSessions(input.cwd);
-		const base =
-			sessions.find((item) => canonicalSessionPath(item.path) === sessionPath) ??
-			this.runtimeCoordinatorBase(runtime);
+		const base = {
+			...this.runtimeCoordinatorBase(runtime),
+			...(input.parentSessionId ? { parentId: input.parentSessionId } : {}),
+		};
 		await this.broadcast({ type: "sessions_changed", cwd: input.cwd });
 		return {
 			session: this.coordinatorSummary(base, runtime),
@@ -965,7 +959,7 @@ export class WebRuntimeService {
 		const workspace = base.workspace;
 		if (!workspace) return undefined;
 		const path = canonicalSessionPath(base.path);
-		if (workspace.status === "accepted" && workspace.mode !== "shared")
+		if (workspace.status === "accepted" && workspace.mode !== "direct" && workspace.mode !== "shared")
 			this.pendingWorkspaceReleases.set(path, { cwd: workspace.projectCwd, sessionId: base.id });
 		else this.pendingWorkspaceReleases.delete(path);
 		const reason =
@@ -1142,7 +1136,7 @@ export class WebRuntimeService {
 					parentSessionId: targetSessionId,
 					profileId: member.profileId,
 					task: description,
-					workspaceMode: execution.workspace?.mode ?? task.workspaceMode ?? "worktree",
+					workspaceMode: execution.workspace?.mode ?? task.workspaceMode,
 				},
 				{ deferTask: true, ...(execution.workspace ? { workspace: execution.workspace } : {}) },
 			);
@@ -1609,6 +1603,7 @@ export class WebRuntimeService {
 			description: profile.description,
 			scope: profile.scope,
 			...(profile.icon ? { icon: profile.icon } : {}),
+			workspaceMode: profile.workspaceMode ?? "direct",
 		}));
 	}
 
@@ -2826,6 +2821,7 @@ export class WebRuntimeService {
 						...(request.provider ? { provider: request.provider } : {}),
 						...(request.model ? { model: request.model } : {}),
 						...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
+						...(request.workspaceMode ? { workspaceMode: request.workspaceMode } : {}),
 						...(request.tools ? { tools: request.tools } : {}),
 						...(request.excludeTools ? { excludeTools: request.excludeTools } : {}),
 						...(request.skills ? { skills: request.skills } : {}),
@@ -2846,6 +2842,7 @@ export class WebRuntimeService {
 								...(request.provider ? { provider: request.provider } : {}),
 								...(request.model ? { model: request.model } : {}),
 								...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
+								...(request.workspaceMode ? { workspaceMode: request.workspaceMode } : {}),
 								...(request.tools ? { tools: request.tools } : {}),
 								...(request.excludeTools ? { excludeTools: request.excludeTools } : {}),
 								...(request.skills ? { skills: request.skills } : {}),
@@ -4735,7 +4732,7 @@ export class WebRuntimeService {
 			}
 			const header = existsSync(sessionPath) ? readSessionHeader(sessionPath) : undefined;
 			const workspace = header?.collaborationWorkspace;
-			if (workspace?.status === "released" && workspace.mode !== "shared") {
+			if (workspace?.status === "released" && workspace.mode !== "direct" && workspace.mode !== "shared") {
 				if (!this.adapter.relocateSession) throw new Error("Runtime 不支持工作区恢复");
 				const restored = await this.collaborationWorkspaces.create(
 					workspace.projectCwd,

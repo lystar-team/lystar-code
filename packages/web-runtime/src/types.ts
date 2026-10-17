@@ -345,6 +345,7 @@ export interface RuntimeAdapter {
 			provider?: string;
 			model?: string;
 			thinkingLevel?: ThinkingLevel;
+			workspaceMode?: SessionWorkspaceSnapshot["mode"];
 			tools?: string[];
 			excludeTools?: string[];
 			skills?: string[];

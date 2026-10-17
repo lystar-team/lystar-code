@@ -43,7 +43,7 @@ export interface RoomWorkspaceController {
 	roomTasks: WebRoomTask[];
 	roomTasksLoading: boolean;
 	roomTasksError?: string;
-	createRoomTask: (title: string, description: string, workspaceMode: WebSessionWorkspaceMode) => Promise<void>;
+	createRoomTask: (title: string, description: string, workspaceMode?: WebSessionWorkspaceMode) => Promise<void>;
 	updateRoomTask: (taskId: string, status: WebRoomTaskStatus, note?: string) => Promise<void>;
 	editRoomTask: (taskId: string, changes: { title?: string; description?: string; assigneeSessionId?: string | null }) => Promise<void>;
 	commentRoomTask: (taskId: string, body: string) => Promise<void>;
@@ -365,7 +365,7 @@ export function useRoomWorkspace({
 		return () => window.clearInterval(timer);
 	}, [active, refreshRoomTasks, roomMessagesLoading, selectedRoom?.room.id, selectedRoomKey]);
 
-	const createRoomTask = useCallback(async (title: string, description: string, workspaceMode: WebSessionWorkspaceMode) => {
+	const createRoomTask = useCallback(async (title: string, description: string, workspaceMode?: WebSessionWorkspaceMode) => {
 		if (!selectedRoomProjectId || !selectedRoom || !selectedRoomSessionId) throw new Error("请先选择智能体协作");
 		await webApi.createRoomTask(selectedRoomProjectId, selectedRoom.room.id, selectedRoomSessionId, title, description, workspaceMode);
 		await refreshRoomTasks();

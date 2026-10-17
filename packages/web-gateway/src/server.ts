@@ -3277,6 +3277,7 @@ export class WebGatewayServer {
 				const workspaceMode = body.workspaceMode;
 				if (
 					workspaceMode !== undefined &&
+					workspaceMode !== "direct" &&
 					workspaceMode !== "shared" &&
 					workspaceMode !== "worktree" &&
 					workspaceMode !== "patch"
@@ -5001,6 +5002,15 @@ export class WebGatewayServer {
 					"ultra",
 				];
 				const thinkingLevel = thinkingLevels.find((value) => value === body.thinkingLevel);
+				const workspaceMode = body.workspaceMode;
+				if (
+					workspaceMode !== undefined &&
+					workspaceMode !== "direct" &&
+					workspaceMode !== "shared" &&
+					workspaceMode !== "worktree" &&
+					workspaceMode !== "patch"
+				)
+					throw new HttpError(400, "subagent_workspace_mode_invalid", "工作区模式无效");
 				const subagents = await client.request<SubagentConfig[]>({
 					command: "save_subagent_config",
 					cwd: project.cwd,
@@ -5012,6 +5022,7 @@ export class WebGatewayServer {
 					...(typeof body.provider === "string" ? { provider: body.provider } : {}),
 					...(typeof body.model === "string" ? { model: body.model } : {}),
 					...(thinkingLevel ? { thinkingLevel } : {}),
+					...(workspaceMode ? { workspaceMode } : {}),
 					...(tools ? { tools } : {}),
 					...(excludeTools ? { excludeTools } : {}),
 					...(skills ? { skills } : {}),

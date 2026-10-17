@@ -593,9 +593,16 @@ export const SessionStateSnapshotSchema = StrictObject({
 });
 export type SessionStateSnapshot = Static<typeof SessionStateSnapshotSchema>;
 
+export const SessionWorkspaceModeSchema = Type.Union([
+	Type.Literal("direct"),
+	Type.Literal("shared"),
+	Type.Literal("worktree"),
+	Type.Literal("patch"),
+]);
+
 const SessionWorkspaceSchema = StrictObject({
 	id: Id,
-	mode: Type.Union([Type.Literal("shared"), Type.Literal("worktree"), Type.Literal("patch")]),
+	mode: SessionWorkspaceModeSchema,
 	projectCwd: Type.String({ minLength: 1 }),
 	cwd: Type.String({ minLength: 1 }),
 	status: Type.Union([
@@ -1158,6 +1165,7 @@ export const SubagentConfigSchema = StrictObject({
 	provider: Type.Optional(Id),
 	model: Type.Optional(Id),
 	thinkingLevel: Type.Optional(ThinkingLevelSchema),
+	workspaceMode: Type.Optional(SessionWorkspaceModeSchema),
 	tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 	excludeTools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 	skills: Type.Optional(Type.Array(Id, { maxItems: 128 })),
@@ -1854,9 +1862,7 @@ export const CommandSchema = Type.Union([
 		sessionId: Id,
 		title: Type.String({ minLength: 1, maxLength: 200 }),
 		description: Type.Optional(Type.String({ maxLength: 8000 })),
-		workspaceMode: Type.Optional(
-			Type.Union([Type.Literal("shared"), Type.Literal("worktree"), Type.Literal("patch")]),
-		),
+		workspaceMode: Type.Optional(SessionWorkspaceModeSchema),
 	}),
 	StrictObject({
 		command: Type.Literal("room_task_list"),
@@ -2244,6 +2250,7 @@ export const CommandSchema = Type.Union([
 		provider: Type.Optional(Id),
 		model: Type.Optional(Id),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
+		workspaceMode: Type.Optional(SessionWorkspaceModeSchema),
 		tools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 		excludeTools: Type.Optional(Type.Array(Id, { maxItems: 128 })),
 		skills: Type.Optional(Type.Array(Id, { maxItems: 128 })),

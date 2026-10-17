@@ -19,6 +19,7 @@ export interface SessionCoordinatorProfile {
 	description: string;
 	scope: "builtin" | "user" | "project";
 	icon?: string;
+	workspaceMode?: SessionWorkspaceMode;
 }
 
 export interface SessionCoordinatorSummary {

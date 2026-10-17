@@ -143,7 +143,7 @@ export class SessionRoomCoordinator {
 				`任务：${JSON.stringify(this.store.listTasks(roomId).map((task) => ({ id: task.id, title: task.title, status: task.status, assigneeSessionId: task.assigneeSessionId, resultText: task.resultText?.slice(0, 2_000), executionSessionId: task.execution?.sessionId, executionState: task.execution?.state, workspaceStatus: task.execution?.result?.workspace?.status, awaitingReview: task.status === "doing" && task.execution?.result?.outcome === "completed" && !task.execution.result.error })))}`,
 				"以下是已发布的共享消息，不包含其他成员的私有思考。需要更早的消息时使用 room_read。",
 				...lines,
-				"使用 room_send 向成员提问或发布结论，明确 targetSessionIds 和 replyToMessageId，并以本轮共享消息边界作为 basedOnSeq。需要对方采取行动时发送 question 或 message；发送问题后结束当前回合，回复会自动投递，不轮询或重复发送。结果和状态通知无须互相确认。使用 room_task_create 创建执行任务：shared 只读，worktree 或 patch 用于修改代码。成员认领后，Runtime 自动执行并提交结果；主智能体负责核对产物与验证结果，通过 room_task_update 将任务标为 done 时接收成果。需要返工时记录 blocked 和修改意见，再改为 doing 启动重做。正常接收与返工由主智能体在用户已授权的范围内决定，无需等待用户逐项验收；需求取舍不明或超出授权时向用户确认。不要重复其他成员已经交付的内容。",
+				"使用 room_send 向成员提问或发布结论，明确 targetSessionIds 和 replyToMessageId，并以本轮共享消息边界作为 basedOnSeq。需要对方采取行动时发送 question 或 message；发送问题后结束当前回合，回复会自动投递，不轮询或重复发送。结果和状态通知无须互相确认。使用 room_task_create 创建执行任务。工作区模式由用户决定；未指定时沿用执行智能体配置，未配置时直接在原项目工作。不得根据任务类型自行选择隔离模式。成员认领后，Runtime 自动执行并提交结果；主智能体负责核对产物与验证结果，通过 room_task_update 将任务标为 done 时接收成果。需要返工时记录 blocked 和修改意见，再改为 doing 启动重做。正常接收与返工由主智能体在用户已授权的范围内决定，无需等待用户逐项验收；需求取舍不明或超出授权时向用户确认。不要重复其他成员已经交付的内容。",
 			].join("\n"),
 		};
 	}
@@ -400,7 +400,7 @@ export class SessionRoomCoordinator {
 					.slice(-5)
 					.map((update) => update.note)
 					.join("\n") || "无"
-			}\n工作区模式：${task.workspaceMode ?? "shared"}。此任务由 Runtime 按指定模式执行；提交实际产物、验证结果和阻塞，不创建下级会话。`,
+			}\n工作区模式：${task.workspaceMode ?? "沿用执行智能体配置，未配置时直接工作"}。此任务由 Runtime 按指定模式执行；提交实际产物、验证结果和阻塞，不创建下级会话。`,
 			idempotencyKey: `room-task-work:${task.id}:${task.updatedAt}`,
 		});
 	}

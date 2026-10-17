@@ -8,7 +8,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
-import { workspaceModeLabel, workspaceStatusLabel } from "./session-workspaces";
+import { WORKSPACE_MODE_DESCRIPTIONS, WORKSPACE_MODE_LABELS, workspaceModeLabel, workspaceStatusLabel } from "./session-workspaces";
 import type { WorkbenchActions } from "./types";
 
 const COLUMNS: ReadonlyArray<{ status: WebRoomTaskStatus; title: string }> = [
@@ -18,11 +18,6 @@ const COLUMNS: ReadonlyArray<{ status: WebRoomTaskStatus; title: string }> = [
 	{ status: "done", title: "已完成" },
 ];
 
-const WORKSPACE_DESCRIPTIONS = {
-	shared: "只读调查与评审。成员读取当前项目，提交结论和验证结果。",
-	worktree: "在独立工作区修改代码，由主会话核对并接收改动。非 Git 项目使用补丁交付。",
-	patch: "在项目副本中修改，由主会话核对并接收补丁。",
-} satisfies Record<WebSessionWorkspaceMode, string>;
 
 function memberName(members: readonly WebRoomMember[], sessionId: string): string {
 	const member = members.find((item) => item.sessionId === sessionId);
@@ -161,7 +156,7 @@ export function RoomTaskBoard({
 	const [createOpen, setCreateOpen] = useState(false);
 	const [title, setTitle] = useState("");
 	const [description, setDescription] = useState("");
-	const [workspaceMode, setWorkspaceMode] = useState<WebSessionWorkspaceMode>("shared");
+	const [workspaceMode, setWorkspaceMode] = useState<WebSessionWorkspaceMode | "">("");
 	const [selectedId, setSelectedId] = useState<string>();
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string>();
@@ -172,7 +167,7 @@ export function RoomTaskBoard({
 		setSubmitting(true);
 		setError(undefined);
 		try {
-			await controller.createRoomTask(title.trim(), description.trim(), workspaceMode);
+			await controller.createRoomTask(title.trim(), description.trim(), workspaceMode || undefined);
 			setCreateOpen(false);
 			setTitle("");
 			setDescription("");
@@ -215,7 +210,7 @@ export function RoomTaskBoard({
 												>
 													<span className="block break-words font-medium sm:text-base">{task.title}</span>
 													<span className="mt-2 block truncate text-xs text-muted-foreground sm:text-sm">{task.assigneeSessionId ? memberName(members, task.assigneeSessionId) : "待认领"}</span>
-													<span className="mt-1 block truncate text-xs text-muted-foreground">{task.workspaceMode ? workspaceModeLabel(task.workspaceMode) : "模式未记录"}</span>
+													<span className="mt-1 block truncate text-xs text-muted-foreground">{task.workspaceMode ? workspaceModeLabel(task.workspaceMode) : "沿用智能体配置"}</span>
 													{workspace ? (
 														<span className="mt-1 block truncate text-xs text-muted-foreground">
 															执行状态：{workspaceStatusLabel(workspace.status)}
@@ -246,7 +241,7 @@ export function RoomTaskBoard({
 			) : null}
 			<Dialog open={createOpen} onOpenChange={(open) => {
 				setCreateOpen(open);
-				if (open) setWorkspaceMode("shared");
+				if (open) setWorkspaceMode("");
 			}}>
 				<DialogContent className="sm:max-w-lg">
 					<DialogHeader><DialogTitle>新建任务</DialogTitle></DialogHeader>
@@ -256,12 +251,11 @@ export function RoomTaskBoard({
 						<label htmlFor="room-task-description" className="text-sm font-medium">任务内容</label>
 						<Textarea id="room-task-description" maxLength={8000} rows={5} value={description} onChange={(event) => setDescription(event.target.value)} />
 						<label htmlFor="room-task-workspace-mode" className="text-sm font-medium">工作区模式</label>
-						<select id="room-task-workspace-mode" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as WebSessionWorkspaceMode)}>
-							<option value="shared">只读调查与评审</option>
-							<option value="worktree">独立 worktree</option>
-							<option value="patch">补丁交付</option>
+						<select id="room-task-workspace-mode" className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as WebSessionWorkspaceMode | "")}>
+							<option value="">沿用智能体配置</option>
+							{Object.entries(WORKSPACE_MODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
 						</select>
-						<p className="text-sm text-muted-foreground">{WORKSPACE_DESCRIPTIONS[workspaceMode]}</p>
+						<p className="text-sm text-muted-foreground">{workspaceMode ? WORKSPACE_MODE_DESCRIPTIONS[workspaceMode] : "使用执行智能体的工作区配置；未配置时直接在原项目工作。"}</p>
 						{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
 					</div>
 					<DialogFooter>

@@ -11,11 +11,10 @@ import type {
 } from "./session-coordinator.ts";
 
 const SessionSendModeSchema = Type.Union([Type.Literal("auto"), Type.Literal("steer"), Type.Literal("follow_up")]);
-const SessionWorkspaceModeSchema = Type.Union([
-	Type.Literal("shared"),
-	Type.Literal("worktree"),
-	Type.Literal("patch"),
-]);
+const SessionWorkspaceModeSchema = Type.Union(
+	[Type.Literal("direct"), Type.Literal("shared"), Type.Literal("worktree"), Type.Literal("patch")],
+	{ description: "工作区模式由用户决定。仅在用户明确选择时指定；否则省略，沿用智能体配置，未配置时直接工作。" },
+);
 const SessionRoomRouteSchema = Type.Union([
 	Type.Literal("direct"),
 	Type.Literal("broadcast"),
@@ -154,7 +153,7 @@ export function createSessionCreateTool(
 		name: "session_create",
 		label: "创建下级会话",
 		description:
-			"以当前会话为父会话创建下级会话，可同时派发任务。调查和评审默认 shared，只允许读取；代码写入请指定 worktree，非 Git 项目写入使用 patch。接收并验证产物后使用 session_accept_result 完成接收和回收。",
+			"以当前会话为父会话创建下级会话，可同时派发任务。工作区模式由用户决定：direct 在原项目直接工作，shared 只读调查，worktree 使用 Git 工作树，patch 使用项目副本。未指定时沿用智能体配置，未配置时直接工作；不得按任务类型自行选择隔离模式。接收并验证产物后使用 session_accept_result 完成接收和回收。",
 		promptSnippet: "创建下级会话并派发任务",
 		parameters: SessionCreateParams,
 		executionMode: "sequential",
@@ -502,7 +501,7 @@ export function createRoomTaskCreateTool(
 		name: "room_task_create",
 		label: "创建协作任务",
 		description:
-			"在智能体协作空间创建任务卡并通知成员。调查和评审默认 shared；代码写入指定 worktree，非 Git 项目写入指定 patch。",
+			"在智能体协作空间创建任务卡并通知成员。工作区模式由用户决定，不按任务类型强制选择；未指定时沿用执行智能体配置，未配置时直接在原项目工作。",
 		parameters: RoomTaskCreateParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {

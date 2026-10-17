@@ -354,6 +354,7 @@ function sessionProfileFromHeader(manager: SessionManager, cwd: string, agentDir
 		...(profile.icon ? { icon: profile.icon } : {}),
 		...(profile.model ? { model: profile.model } : {}),
 		...(profile.thinkingLevel ? { thinkingLevel: profile.thinkingLevel as SessionProfile["thinkingLevel"] } : {}),
+		...(profile.workspaceMode ? { workspaceMode: profile.workspaceMode } : {}),
 		...(profile.tools ? { tools: [...profile.tools] } : {}),
 		...(profile.excludeTools ? { excludeTools: [...profile.excludeTools] } : {}),
 		...(profile.skillNames ? { skillNames: [...profile.skillNames] } : {}),
@@ -373,6 +374,7 @@ function sessionProfileSnapshot(profile: SessionProfile): SessionProfileSnapshot
 		...(profile.icon ? { icon: profile.icon } : {}),
 		...(profile.model ? { model: profile.model } : {}),
 		...(profile.thinkingLevel ? { thinkingLevel: profile.thinkingLevel } : {}),
+		...(profile.workspaceMode ? { workspaceMode: profile.workspaceMode } : {}),
 		...(profile.tools ? { tools: [...profile.tools] } : {}),
 		...(profile.excludeTools ? { excludeTools: [...profile.excludeTools] } : {}),
 		...(profile.skillNames ? { skillNames: [...profile.skillNames] } : {}),
@@ -3185,7 +3187,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		if (options?.profileId && !profile) {
 			throw Object.assign(new Error(`未找到智能体：${options.profileId}`), { code: "session_profile_not_found" });
 		}
-		const sessionManager = SessionManager.create(
+		const sessionManager = await SessionManager.createAsync(
 			cwd,
 			options?.sessionDir ?? getDefaultSessionDir(cwd, this.agentDir),
 			{
@@ -4235,6 +4237,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			...(definition.provider ? { provider: definition.provider } : {}),
 			...(definition.model ? { model: definition.model } : {}),
 			...(definition.thinkingLevel ? { thinkingLevel: definition.thinkingLevel } : {}),
+			...(definition.workspaceMode ? { workspaceMode: definition.workspaceMode } : {}),
 			...(definition.tools ? { tools: definition.tools } : {}),
 			...(definition.excludeTools ? { excludeTools: definition.excludeTools } : {}),
 			...(definition.skillNames ? { skills: definition.skillNames } : {}),
@@ -4255,6 +4258,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			provider?: string;
 			model?: string;
 			thinkingLevel?: ThinkingLevel;
+			workspaceMode?: SessionWorkspaceSnapshot["mode"];
 			tools?: string[];
 			excludeTools?: string[];
 			skills?: string[];
@@ -4303,6 +4307,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			...(input.provider ? { provider: input.provider } : {}),
 			...(input.model ? { model: input.model } : {}),
 			...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
+			...(input.workspaceMode ? { workspaceMode: input.workspaceMode } : {}),
 			...(input.tools?.length ? { tools: [...new Set(input.tools)] } : {}),
 			...(input.excludeTools?.length ? { excludeTools: [...new Set(input.excludeTools)] } : {}),
 			...(input.skills?.length ? { skills: [...new Set(input.skills)] } : {}),
@@ -5089,7 +5094,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			if (canonicalDirectory(workspace.cwd) !== runtimeRoot) {
 				return invalid(sourceCwd, "协作工作区 cwd 与会话 cwd 不匹配，需重新确认。");
 			}
-			if (workspace.mode === "shared" && !inheritance.resourceFingerprint) {
+			if ((workspace.mode === "direct" || workspace.mode === "shared") && !inheritance.resourceFingerprint) {
 				if (runtimeRoot !== sourceCwd) return invalid(sourceCwd, "共享工作区路径与来源项目不一致，需重新确认。");
 				return { sourceCwd, inherited: true, forcePrompt: false, reason: "已继承来源项目的协作信任。" };
 			}
@@ -5109,7 +5114,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		) {
 			return invalid(sourceCwd, "协作工作区与来源项目不属于同一 Git 仓库，需重新确认。");
 		}
-		if (workspace.mode === "shared") {
+		if (workspace.mode === "direct" || workspace.mode === "shared") {
 			if (runtimeRoot !== sourceCwd) return invalid(sourceCwd, "共享工作区路径与来源项目不一致，需重新确认。");
 		} else {
 			if (!/^[0-9a-f-]{36}$/i.test(workspace.id) || !workspace.worktreePath || !workspace.repositoryRoot) {

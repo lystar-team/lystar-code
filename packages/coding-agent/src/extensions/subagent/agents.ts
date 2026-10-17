@@ -5,11 +5,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
+import type { SessionWorkspaceMode } from "../../core/session-manager.ts";
 import {
 	formatSubagentModelReference,
 	normalizeSubagentSkills,
 	normalizeSubagentTags,
 	normalizeSubagentTools,
+	normalizeSubagentWorkspaceMode,
 	parseSubagentMarkdown,
 	parseSubagentModelReference,
 	SUBAGENT_THINKING_LEVELS,
@@ -39,6 +41,7 @@ export interface AgentDefinition {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: SubagentThinkingLevel;
+	workspaceMode?: SessionWorkspaceMode;
 	tags?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -91,6 +94,7 @@ function loadAgentDefinitionsFromDir(dir: string, scope: AgentDefinitionScope): 
 			...(parsed.provider ? { provider: parsed.provider } : {}),
 			...(parsed.model ? { model: parsed.model } : {}),
 			...(parsed.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
+			...(parsed.workspaceMode ? { workspaceMode: parsed.workspaceMode } : {}),
 			...(parsed.tools ? { tools: parsed.tools } : {}),
 			...(parsed.excludeTools ? { excludeTools: parsed.excludeTools } : {}),
 			...(parsed.skills ? { skillNames: parsed.skills } : {}),
@@ -134,6 +138,7 @@ function loadAgentDefinitionsFromDir(dir: string, scope: AgentDefinitionScope): 
 		const excludeTools = normalizeSubagentTools(config.excludeTools);
 		const skills = normalizeSubagentSkills(config.skills);
 		const tags = normalizeSubagentTags(config.tags);
+		const workspaceMode = normalizeSubagentWorkspaceMode(config.workspaceMode);
 		const icon = stringValue(config.icon);
 		definitions.set(id, {
 			id,
@@ -143,6 +148,7 @@ function loadAgentDefinitionsFromDir(dir: string, scope: AgentDefinitionScope): 
 			...(provider ? { provider } : {}),
 			...(parsedModel.model ? { model: parsedModel.model } : {}),
 			...(thinkingLevel ? { thinkingLevel } : {}),
+			...(workspaceMode ? { workspaceMode } : {}),
 			...(tools ? { tools } : {}),
 			...(excludeTools ? { excludeTools } : {}),
 			...(skills ? { skillNames: skills } : {}),

@@ -12,12 +12,19 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "../ui/dropdown-menu";
 
-const WORKSPACE_MODE_LABELS = {
-	shared: "共享工作区",
-	worktree: "独立 worktree",
-	patch: "补丁交付",
+export const WORKSPACE_MODE_LABELS = {
+	direct: "直接工作",
+	shared: "只读调查",
+	worktree: "Git 工作树",
+	patch: "项目副本",
 } satisfies Record<WebSessionWorkspaceMode, string>;
 
+export const WORKSPACE_MODE_DESCRIPTIONS = {
+	direct: "在原项目目录执行，改动立即生效，不创建副本。",
+	shared: "只读调查与评审，不修改项目文件。",
+	worktree: "使用独立 Git 工作树，改动经接收后合入原项目；需要有提交记录的 Git 仓库。",
+	patch: "在项目副本中执行，改动经接收后写回原项目。",
+} satisfies Record<WebSessionWorkspaceMode, string>;
 const WORKSPACE_STATUS_LABELS = {
 	active: "使用中",
 	delivered: "已交付",
@@ -174,7 +181,7 @@ export function WorkspaceManagementDialog({
 						</label>
 						{workspaces.map((entry) => {
 							const reason = workspaceEntryReason(entry);
-							const noCleanupRequired = entry.workspace.mode === "shared" || entry.workspace.status === "released";
+							const noCleanupRequired = entry.workspace.mode === "direct" || entry.workspace.mode === "shared" || entry.workspace.status === "released";
 							return (
 								<label
 									className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 border-b border-border/60 px-3 py-3 last:border-b-0"

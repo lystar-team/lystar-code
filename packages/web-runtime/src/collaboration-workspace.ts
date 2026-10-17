@@ -18,7 +18,7 @@ type GitCommandError = Error & { code?: string | number; stdout?: string; stderr
 
 export interface CollaborationWorkspaceDelivery {
 	workspace: SessionWorkspaceSnapshot;
-	changedFiles: string[];
+	changedFiles?: string[];
 	deliveryCommit?: string;
 	patchPath?: string;
 }
@@ -37,10 +37,11 @@ function copyFilter(sourceRoot: string, candidate: string): boolean {
 }
 
 async function copyProject(source: string, target: string): Promise<void> {
-	await cp(source, target, {
+	const sourceRoot = canonicalPath(source);
+	await cp(sourceRoot, target, {
 		recursive: true,
 		force: true,
-		filter: (candidate) => copyFilter(canonicalPath(source), candidate),
+		filter: (candidate) => copyFilter(sourceRoot, candidate),
 	});
 }
 
@@ -214,7 +215,7 @@ export class CollaborationWorkspaceManager {
 		workspaceId: string,
 	): Promise<SessionWorkspaceSnapshot> {
 		const source = canonicalPath(projectCwd);
-		if (mode === "shared") {
+		if (mode === "direct" || mode === "shared") {
 			return { id: workspaceId, mode, projectCwd: source, cwd: source, status: "active", sizeBytes: 0 };
 		}
 		const workspaceRoot = join(this.root, workspaceId);
@@ -303,10 +304,10 @@ export class CollaborationWorkspaceManager {
 		workspace: SessionWorkspaceSnapshot,
 		outcome: SessionCollaborationResult["outcome"],
 	): Promise<CollaborationWorkspaceDelivery> {
-		if (workspace.mode === "shared") {
+		if (workspace.mode === "direct" || workspace.mode === "shared") {
 			return {
 				workspace: { ...workspace, status: outcome === "completed" ? "delivered" : "failed" },
-				changedFiles: [],
+				...(workspace.mode === "shared" ? { changedFiles: [] } : {}),
 			};
 		}
 		const changedFiles =
@@ -349,7 +350,7 @@ export class CollaborationWorkspaceManager {
 		changedFiles: readonly string[] = [],
 	): Promise<SessionWorkspaceSnapshot> {
 		if (workspace.status === "accepted" || workspace.status === "released") return workspace;
-		if (workspace.mode === "shared") return { ...workspace, status: "accepted" };
+		if (workspace.mode === "direct" || workspace.mode === "shared") return { ...workspace, status: "accepted" };
 		if (workspace.repositoryRoot && workspace.baseCommit && workspace.worktreePath) {
 			const patchPath = await patchGitWorkspace({
 				...workspace,
@@ -410,12 +411,12 @@ export class CollaborationWorkspaceManager {
 		const resumed: SessionWorkspaceSnapshot = {
 			...workspace,
 			status: "active",
-			...(workspace.mode !== "shared"
+			...(workspace.mode !== "direct" && workspace.mode !== "shared"
 				? { patchPath: join(this.root, workspace.id, `result-${randomUUID()}.patch`) }
 				: {}),
 			retainedReason: undefined,
 		};
-		if (workspace.status !== "accepted" || workspace.mode === "shared") return resumed;
+		if (workspace.status !== "accepted" || workspace.mode === "direct" || workspace.mode === "shared") return resumed;
 		if (workspace.repositoryRoot && workspace.baseCommit && workspace.worktreePath && workspace.patchPath) {
 			const indexPath = join(this.root, workspace.id, `resume-${randomUUID()}.index`);
 			const env = { GIT_INDEX_FILE: indexPath };
@@ -448,7 +449,8 @@ export class CollaborationWorkspaceManager {
 		throw workspaceError("工作区缺少已接收的基线", "workspace_resume_base_missing");
 	}
 	async describe(workspace: SessionWorkspaceSnapshot): Promise<{ sizeBytes: number }> {
-		if (workspace.mode === "shared" || workspace.status === "released") return { sizeBytes: 0 };
+		if (workspace.mode === "direct" || workspace.mode === "shared" || workspace.status === "released")
+			return { sizeBytes: 0 };
 		const root = join(this.root, workspace.id);
 		const directories = [root];
 		const seen = new Set<string>();
@@ -474,7 +476,8 @@ export class CollaborationWorkspaceManager {
 	}
 
 	async canRelease(workspace: SessionWorkspaceSnapshot): Promise<string | undefined> {
-		if (workspace.mode === "shared" || workspace.status === "released") return "工作区无需回收";
+		if (workspace.mode === "direct" || workspace.mode === "shared" || workspace.status === "released")
+			return "工作区无需回收";
 		if (workspace.status !== "accepted")
 			return workspace.status === "failed" ? "任务未成功，保留成果用于重试" : "成果尚未接收";
 		if (!workspace.worktreePath || !existsSync(workspace.worktreePath)) return undefined;
@@ -501,7 +504,8 @@ export class CollaborationWorkspaceManager {
 	}
 
 	async release(workspace: SessionWorkspaceSnapshot): Promise<SessionWorkspaceSnapshot> {
-		if (workspace.mode === "shared") return { ...workspace, status: "released", sizeBytes: 0 };
+		if (workspace.mode === "direct" || workspace.mode === "shared")
+			return { ...workspace, status: "released", sizeBytes: 0 };
 		const workspaceRoot = join(this.root, workspace.id);
 		if (resolve(workspace.worktreePath ?? "") !== resolve(workspaceRoot, "worktree"))
 			throw workspaceError("工作区目录与登记不一致", "workspace_path_mismatch");

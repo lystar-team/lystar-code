@@ -346,7 +346,7 @@ export class WebApi {
 		sessionId: string,
 		title: string,
 		description: string,
-		workspaceMode: WebSessionWorkspaceMode,
+		workspaceMode?: WebSessionWorkspaceMode,
 	): Promise<WebRoomTask> {
 		return this.request<WebRoomTask>(`/api/projects/${encodeURIComponent(projectId)}/rooms/${encodeURIComponent(roomId)}/tasks`, {
 			method: "POST",
@@ -975,6 +975,7 @@ export class WebApi {
 		provider?: string;
 		model?: string;
 			thinkingLevel?: WebThinkingLevel;
+			workspaceMode?: WebSessionWorkspaceMode;
 			tools?: string[];
 			excludeTools?: string[];
 			skills?: string[];

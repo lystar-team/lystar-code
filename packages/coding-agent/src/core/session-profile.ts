@@ -5,6 +5,7 @@ import {
 	type AgentDefinitionScope,
 	discoverAgentDefinitions,
 } from "../extensions/subagent/agents.ts";
+import type { SessionWorkspaceMode } from "./session-manager.ts";
 import { formatSubagentModelReference } from "./subagent-config.ts";
 
 export interface SessionProfile {
@@ -14,6 +15,7 @@ export interface SessionProfile {
 	icon?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	workspaceMode?: SessionWorkspaceMode;
 	tools?: string[];
 	excludeTools?: string[];
 	skillNames?: string[];
@@ -34,6 +36,7 @@ function profileFromDefinition(definition: AgentDefinition): SessionProfile {
 			? { model: formatSubagentModelReference({ provider: definition.provider, model: definition.model }) }
 			: {}),
 		...(definition.thinkingLevel ? { thinkingLevel: definition.thinkingLevel } : {}),
+		...(definition.workspaceMode ? { workspaceMode: definition.workspaceMode } : {}),
 		...(definition.tools ? { tools: [...definition.tools] } : {}),
 		...(definition.excludeTools ? { excludeTools: [...definition.excludeTools] } : {}),
 		...(definition.skillNames ? { skillNames: [...definition.skillNames] } : {}),

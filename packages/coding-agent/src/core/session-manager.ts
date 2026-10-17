@@ -29,7 +29,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "fs";
-import { readdir, stat } from "fs/promises";
+import { readdir, rename, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
@@ -46,7 +46,7 @@ import { deleteSessionWithRecoveryLedger } from "./tool-recovery/ledger.ts";
 export const CURRENT_SESSION_VERSION = 3;
 
 export type SessionRelation = "collaboration" | "fork";
-export type SessionWorkspaceMode = "shared" | "worktree" | "patch";
+export type SessionWorkspaceMode = "direct" | "shared" | "worktree" | "patch";
 export type SessionWorkspaceStatus = "active" | "delivered" | "accepted" | "failed" | "released";
 
 export interface SessionWorkspaceSnapshot {
@@ -97,6 +97,7 @@ export interface SessionProfileSnapshot {
 	icon?: string;
 	model?: string;
 	thinkingLevel?: string;
+	workspaceMode?: SessionWorkspaceMode;
 	tools?: string[];
 	excludeTools?: string[];
 	skillNames?: string[];
@@ -1097,7 +1098,10 @@ function parseSessionWorkspaceSnapshot(value: unknown): SessionWorkspaceSnapshot
 	if (
 		typeof candidate.id !== "string" ||
 		!candidate.id ||
-		(candidate.mode !== "shared" && candidate.mode !== "worktree" && candidate.mode !== "patch") ||
+		(candidate.mode !== "direct" &&
+			candidate.mode !== "shared" &&
+			candidate.mode !== "worktree" &&
+			candidate.mode !== "patch") ||
 		typeof candidate.projectCwd !== "string" ||
 		!candidate.projectCwd ||
 		typeof candidate.cwd !== "string" ||
@@ -2759,6 +2763,27 @@ export class SessionManager {
 	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		return new SessionManager(cwd, dir, undefined, true, options);
+	}
+
+	/** Create a session without synchronous persistence on the caller's event loop. */
+	static async createAsync(cwd: string, sessionDir?: string, options?: NewSessionOptions): Promise<SessionManager> {
+		const manager = SessionManager.create(cwd, sessionDir, { ...options, persistHeader: false });
+		if (!options?.persistHeader) return manager;
+		const sessionFile = manager.sessionFile!;
+		const temporaryPath = `${sessionFile}.${randomUUID()}.tmp`;
+		try {
+			await writeFile(temporaryPath, `${manager.fileEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, {
+				flag: "wx",
+			});
+			manager._assertWritable();
+			await rename(temporaryPath, sessionFile);
+			manager.flushed = true;
+			return manager;
+		} catch (error) {
+			manager.dispose();
+			await rm(temporaryPath, { force: true });
+			throw error;
+		}
 	}
 
 	/**

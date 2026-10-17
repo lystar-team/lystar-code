@@ -1,6 +1,11 @@
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, defineTool } from "@earendil-works/pi-coding-agent/core";
-import type { SubagentConfig, ThinkingLevel } from "@lystar/code-web-protocol";
+import {
+	type SessionWorkspace,
+	SessionWorkspaceModeSchema,
+	type SubagentConfig,
+	type ThinkingLevel,
+} from "@lystar/code-web-protocol";
 import { Type } from "typebox";
 import type { SkillSummary } from "./types.ts";
 
@@ -24,6 +29,7 @@ const AgentCreationParams = Type.Union([
 		tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { minItems: 1, maxItems: 12 })),
 		provider: Type.Optional(Name),
 		model: Type.Optional(Name),
+		workspaceMode: Type.Optional(SessionWorkspaceModeSchema),
 		thinkingLevel: Type.Optional(
 			Type.Union([
 				Type.Literal("off"),
@@ -52,6 +58,7 @@ type CreateInput = {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	workspaceMode?: SessionWorkspace["mode"];
 };
 
 export function createAgentCreationTool(options: {
@@ -110,7 +117,11 @@ export function createAgentCreationTool(options: {
 			if (params.provider && !params.model) throw new Error("选择供应商后必须选择模型");
 			const approved = await ctx.ui.confirm(
 				"创建智能体？",
-				`${params.name.trim()} · ${params.scope === "user" ? "个人" : "项目"}\nSkill：${params.skills?.join("、") ?? "沿用现有配置"}\n工具：${params.tools?.join("、") ?? "沿用现有配置"}\n确认后创建智能体。`,
+				`${params.name.trim()} · ${params.scope === "user" ? "个人" : "项目"}
+Skill：${params.skills?.join("、") ?? "沿用现有配置"}
+工具：${params.tools?.join("、") ?? "沿用现有配置"}
+工作区模式：${params.workspaceMode ?? "direct"}
+确认后创建智能体。`,
 				{ signal },
 			);
 			if (!approved) return { content: [{ type: "text", text: "已取消创建智能体" }], details: null };
@@ -127,6 +138,7 @@ export function createAgentCreationTool(options: {
 				...(params.provider ? { provider: params.provider } : {}),
 				...(params.model ? { model: params.model } : {}),
 				...(params.thinkingLevel ? { thinkingLevel: params.thinkingLevel } : {}),
+				...(params.workspaceMode ? { workspaceMode: params.workspaceMode } : {}),
 			});
 			const saved = configs.find((config) => config.name === params.name.trim() && config.scope === params.scope);
 			if (!saved) throw new Error("智能体已保存，但配置列表中未找到该智能体");
@@ -147,6 +159,7 @@ export function createAgentCreationTool(options: {
 							skills: saved.skills ?? [],
 							tools: saved.tools ?? [],
 							excludeTools: saved.excludeTools ?? [],
+							workspaceMode: saved.workspaceMode ?? "direct",
 							contentHash: saved.contentHash,
 						}),
 					},
