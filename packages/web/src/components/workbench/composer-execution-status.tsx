@@ -3,10 +3,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model";
-import { toolPresentationTitle } from "../ai-elements/tool-presentation";
 import { hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { WorkbenchState } from "../../state/workbench-types";
-import type { WebSessionSnapshot } from "../../types";
+import type { ToolBatchTool, WebSessionSnapshot } from "../../types";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatElapsedDuration } from "./conversation-format";
@@ -37,6 +36,44 @@ function StatusDetail({ label, value }: { label: string; value: string }) {
 			<span className="min-w-0 break-words text-right tabular-nums text-foreground">{value}</span>
 		</div>
 	);
+}
+
+const toolStatusTitles: Record<string, string> = {
+	read: "读取文件",
+	edit: "编辑文件",
+	write: "写入文件",
+	apply_patch: "应用补丁",
+	ls: "查看目录",
+	grep: "搜索内容",
+	find: "查找文件",
+	bash: "执行命令",
+	web_search: "搜索网页",
+	codemode: "执行脚本",
+	codemode_wait: "等待脚本返回结果",
+	mcp: "调用 MCP 工具",
+	session_create: "派发智能体任务",
+	session_send: "发送智能体消息",
+	session_wait: "等待智能体返回结果",
+	session_stop: "停止智能体任务",
+	session_accept_result: "接收智能体产物",
+	session_workspaces: "查看协作工作区",
+	session_list: "查看智能体会话",
+	session_profiles: "查看智能体配置",
+	room_create: "创建协作空间",
+	room_join: "加入协作空间",
+	room_leave: "退出协作空间",
+	room_list: "查看协作空间",
+	room_send: "发送协作消息",
+	room_read: "读取协作消息",
+	room_task_list: "查看协作任务",
+	room_task_create: "创建协作任务",
+	room_task_update: "更新协作任务",
+	room_claim: "领取协作任务",
+};
+
+function toolStatusTitle(tool: ToolBatchTool): string {
+	if (tool.name === "image_gen") return tool.images?.length ? `已生成 ${tool.images.length} 张图片` : "生成图片";
+	return toolStatusTitles[tool.name] ?? `调用 ${tool.name}`;
 }
 
 export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: WorkbenchState; onVisibilityChange: (visible: boolean) => void }) {
@@ -119,7 +156,7 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 		.find((call) => call.name === execution?.toolName && call.status === "running");
 	const currentTool = liveTool ? toLiveToolViewModel(liveTool) : nestedCall ? toCodemodeToolViewModel(nestedCall)
 		: execution?.toolName ? { id: execution.toolName, name: execution.toolName, summary: "", state: "input-available" as const } : undefined;
-	const toolLabel = currentTool ? toolPresentationTitle(currentTool) : undefined;
+	const toolLabel = currentTool ? toolStatusTitle(currentTool) : undefined;
 	const observedAt = check.session?.observedAt;
 	const clockOffset = observedAt !== undefined && check.receivedAt !== undefined ? check.receivedAt - observedAt : 0;
 	const serverNow = now - clockOffset;
@@ -194,7 +231,6 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 						<StatusDetail label={phaseStartedAt !== undefined ? "阶段耗时" : "任务已等待"} value={elapsed ?? "尚未确认"} />
 						<StatusDetail label="最后进展" value={silence ? `${silence}前` : "尚未确认"} />
 						<StatusDetail label="模型最近事件" value={execution?.lastModelEventAt === undefined ? "尚未收到" : `${formatElapsedDuration(Math.max(0, serverNow - execution.lastModelEventAt))}前`} />
-						{toolLabel ? <StatusDetail label="当前工具" value={toolLabel} /> : null}
 						{execution?.retryAttempt ? <StatusDetail label="重试次数" value={execution.retryMaxAttempts ? `${execution.retryAttempt}/${execution.retryMaxAttempts}` : String(execution.retryAttempt)} /> : null}
 						{scheduledRetry ? <StatusDetail label="下次重试" value={`${retryRemaining}秒后`} /> : null}
 						<StatusDetail label="连接确认" value={connectionLabel} />

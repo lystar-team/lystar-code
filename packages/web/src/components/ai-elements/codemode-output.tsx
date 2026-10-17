@@ -7,6 +7,7 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { CodeBlock, CodeBlockCopyButton } from "./code-block";
+import { ToolOutputBlock } from "./tool-output-block";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type OutputSegment = { kind: "text"; value: string; start: number } | { kind: "json"; value: JsonValue; start: number };
@@ -168,35 +169,11 @@ function statusLabel(status: string | undefined): string {
 	return "已返回";
 }
 
-function ResultValue({ value, depth = 0 }: { value: JsonValue; depth?: number }) {
+function ResultValue({ value }: { value: JsonValue }) {
 	if (typeof value === "string") {
-		return value.trim() ? <pre className="m-0 whitespace-pre-wrap break-words text-xs leading-5 text-foreground">{value}</pre> : <span className="text-xs text-muted-foreground">无内容</span>;
+		return value.trim() ? <ToolOutputBlock className="my-0 border-0 bg-transparent" code={value} fallback={<pre className="m-0 whitespace-pre-wrap break-words text-xs leading-5 text-foreground">{value}</pre>} /> : <span className="text-xs text-muted-foreground">无内容</span>;
 	}
-	if (value === null) return <span className="text-xs text-muted-foreground">无内容</span>;
-	if (typeof value === "number" || typeof value === "boolean") return <span className="text-xs text-foreground">{String(value)}</span>;
-	if (Array.isArray(value)) {
-		if (value.length === 0) return <span className="text-xs text-muted-foreground">无结果</span>;
-		return (
-			<div className="grid min-w-0 gap-2 text-xs leading-5">
-				{value.map((item, index) => (
-					<div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2" key={`${depth}-${index}`}>
-						<span className="shrink-0 text-muted-foreground">{index + 1}.</span>
-						<ResultValue value={item} depth={depth + 1} />
-					</div>
-				))}
-			</div>
-		);
-	}
-	return (
-		<div className="grid min-w-0 gap-1.5 text-xs leading-5">
-			{Object.entries(value).map(([key, item]) => (
-				<div className="flex min-w-0 items-start gap-2" key={key}>
-					<span className="shrink-0 break-words text-muted-foreground">{key}</span>
-					<div className="min-w-0 flex-1"><ResultValue value={item} depth={depth + 1} /></div>
-				</div>
-			))}
-		</div>
-	);
+	return <ToolOutputBlock className="my-0 border-0 bg-transparent" code={JSON.stringify(value)} />;
 }
 
 function ResultCard({ value, index }: { value: JsonValue; index: number }) {
@@ -207,6 +184,7 @@ function ResultCard({ value, index }: { value: JsonValue; index: number }) {
 		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className="min-w-0 rounded-md border border-border/60 bg-background/45">
 			<CollapsibleTrigger asChild>
 				<button
+					data-transcript-resize-anchor
 					aria-label={`${title}，${open ? "收起" : "展开"}`}
 					className="flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-xs hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					type="button"
@@ -239,7 +217,7 @@ export function CodemodeOutput({ output }: { output: string }) {
 		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className="my-0 min-w-0 overflow-hidden rounded-md border border-border/60 bg-muted/25">
 			<div className="flex min-h-9 items-center justify-between gap-2 px-3 py-1.5">
 				<CollapsibleTrigger asChild>
-					<Button aria-label={`返回结果，${open ? "收起" : "展开"}`} className="h-6 min-w-0 justify-start gap-1.5 px-0 text-xs font-medium" size="xs" type="button" variant="ghost">
+					<Button data-transcript-resize-anchor aria-label={`返回结果，${open ? "收起" : "展开"}`} className="h-6 min-w-0 justify-start gap-1.5 px-0 text-xs font-medium" size="xs" type="button" variant="ghost">
 						<ChevronDownIcon aria-hidden="true" className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
 						返回结果
 					</Button>

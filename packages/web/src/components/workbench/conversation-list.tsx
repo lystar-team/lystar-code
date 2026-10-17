@@ -1,5 +1,5 @@
 import { defaultRangeExtractor, elementScroll, observeElementOffset, useVirtualizer, type Range } from "@tanstack/react-virtual";
-import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefCallback } from "react";
 import type { ConversationGroupEntry, ConversationListContent, ConversationListModel, ConversationListNode } from "./conversation-list-model";
 import type { ConversationScrollSnapshot } from "./conversation-scroll-cache";
@@ -53,9 +53,15 @@ export function ConversationList({
 	onListRef, onSnapshot, onAtBottom, onAtTop, onPause, onResume, onUp, onDown,
 }: ConversationListProps) {
 	const scroller = useRef<HTMLDivElement>(null);
+	const [viewport, setViewport] = useState<{ width: number; height: number }>();
+	useLayoutEffect(() => {
+		const element = scroller.current;
+		if (element) setViewport({ width: element.clientWidth, height: element.clientHeight });
+	}, []);
 	const initial = useRef(initialSnapshot).current;
 	const offsetObserver = useRef<((offset: number, isScrolling: boolean) => void)>();
 	const offsetReadFrame = useRef<number>();
+	const expansionFrame = useRef<number>();
 	const getItemKey = useCallback((index: number) => model.rows[index]!.key, [model.rows]);
 	const rangeExtractor = useCallback((range: Range) => {
 		const indexes = new Set(defaultRangeExtractor(range));
@@ -80,6 +86,8 @@ export function ConversationList({
 		});
 	}, []);
 	const virtualizer = useVirtualizer<HTMLDivElement, HTMLElement>({
+		enabled: viewport !== undefined,
+		initialRect: viewport,
 		count: model.rows.length,
 		getScrollElement: () => scroller.current,
 		getItemKey,
@@ -112,8 +120,8 @@ export function ConversationList({
 				const item = restoredMeasurements.find((candidate) => candidate.key === initial.anchor?.key);
 				return item && initial.anchor ? Math.max(0, item.start - initial.anchor.offset) : initial.offset;
 			}
-			// 首次渲染还没有容器高度；挂载后由 scrollToEnd 完成底部定位。
-			return 0;
+			// 先取得真实视口，再从末尾开始测量，避免先显示开头再跳到底部。
+			return Math.max(0, (restoredMeasurements.at(-1)?.end ?? EDGE_PADDING) + EDGE_PADDING - (viewport?.height ?? 0));
 		},
 		paddingStart: EDGE_PADDING,
 		paddingEnd: EDGE_PADDING,
@@ -121,7 +129,7 @@ export function ConversationList({
 		followOnAppend: following,
 		scrollEndThreshold: following ? BOTTOM_THRESHOLD : -1,
 		overscan: 6,
-		useAnimationFrameWithResizeObserver: true,
+		useAnimationFrameWithResizeObserver: false,
 		rangeExtractor,
 	});
 	const active = useRef({ model, onSnapshot, onAtBottom, onAtTop });
@@ -149,21 +157,51 @@ export function ConversationList({
 			measurements: virtualizer.takeSnapshot(),
 		});
 	}, [sessionKey, virtualizer]);
-	const cancelScroll = useCallback(() => virtualizer.cancelScroll(), [virtualizer]);
+	const cancelScroll = useCallback(() => {
+		if (expansionFrame.current !== undefined) window.cancelAnimationFrame(expansionFrame.current);
+		expansionFrame.current = undefined;
+		virtualizer.cancelScroll();
+	}, [virtualizer]);
+	const revealExpansion = (trigger: HTMLElement) => {
+		onPause();
+		const element = scroller.current;
+		if (!element || trigger.getAttribute("aria-expanded") !== "false") return;
+		const viewport = element.getBoundingClientRect();
+		if (viewport.bottom - trigger.getBoundingClientRect().bottom > Math.min(200, viewport.height / 3)) return;
+		const container = trigger.closest<HTMLElement>('[data-slot="collapsible"], [data-json-output]');
+		if (!container) return;
+		const reveal = () => {
+			expansionFrame.current = undefined;
+			if (!trigger.isConnected || trigger.getAttribute("aria-expanded") !== "true") return;
+			const content = container.querySelector<HTMLElement>(':scope > [data-slot="collapsible-content"]');
+			const bounds = element.getBoundingClientRect();
+			const delta = Math.max(0, Math.min(
+				container.getBoundingClientRect().bottom - bounds.bottom + 16,
+				trigger.getBoundingClientRect().top - bounds.top - 16,
+			));
+			if (delta > 1) virtualizer.scrollBy(delta);
+			// 跟随本次展开动画；动画结束后交回用户滚动意图。
+			if (content?.style.height) expansionFrame.current = window.requestAnimationFrame(reveal);
+		};
+		expansionFrame.current = window.requestAnimationFrame(reveal);
+	};
+	useLayoutEffect(() => cancelScroll, [cancelScroll]);
 	useLayoutEffect(() => {
+		if (!viewport) return;
 		onListRef({
 			cancelScroll,
 			scrollToLatest: () => virtualizer.scrollToEnd(),
 		});
 		if (!initial || initial.atBottom) virtualizer.scrollToEnd();
 		return () => { savePosition(); onListRef(null); };
-	}, [cancelScroll, initial, onListRef, savePosition, virtualizer]);
+	}, [cancelScroll, initial, onListRef, savePosition, viewport, virtualizer]);
 	useLayoutEffect(() => {
+		if (!viewport) return;
 		publishPosition();
 		if (!virtualizer.isScrolling) savePosition();
 	});
 	const intent = useConversationScrollIntent({
-		onPause, onUp, onDown, onCancel: cancelScroll, onExpansion: onPause,
+		onPause, onUp, onDown, onCancel: cancelScroll, onExpansion: revealExpansion,
 		onUserPosition: (element, endOffset) => {
 			const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD;
 			const reachedPreviousEnd = endOffset !== undefined && Math.abs(element.scrollTop - endOffset) <= BOTTOM_THRESHOLD;

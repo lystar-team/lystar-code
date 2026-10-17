@@ -1,4 +1,5 @@
 import type { GitMutation, SessionResultState } from "@lystar/code-web-protocol";
+import type { SubagentBatchChanges, SubagentBatchResult } from "../../state/workbench-settings-actions";
 import type { ComposerMode, InspectorMode, SettingsTab, ThemeMode, WorkbenchState } from "../../state/use-workbench";
 import type { ShowToast } from "../../state/workbench-types";
 import type {
@@ -128,6 +129,7 @@ export interface WorkbenchActions {
 		provider?: string;
 		model?: string;
 		thinkingLevel?: WebThinkingLevel;
+		workspaceMode?: SubagentConfig["workspaceMode"];
 		tools?: string[];
 		excludeTools?: string[];
 		skills?: string[];
@@ -135,6 +137,7 @@ export interface WorkbenchActions {
 		content: string;
 		expectedHash?: string;
 	}) => Promise<boolean>;
+	saveSubagentConfigs: (configs: readonly SubagentConfig[], changes: SubagentBatchChanges) => Promise<SubagentBatchResult>;
 	deleteSubagentConfig: (config: SubagentConfig) => Promise<boolean>;
 	toggleSkill: (skill: WorkbenchState["skills"][number]) => Promise<void>;
 	refreshHostInstructions: () => Promise<void>;

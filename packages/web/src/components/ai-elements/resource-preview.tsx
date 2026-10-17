@@ -74,6 +74,7 @@ const RESOURCE_PATH_CACHE_TTL_MS = 60_000;
 type ResourceImageCacheEntry = {
 	promise: Promise<string | undefined>;
 	source?: string;
+	dimensions?: { width: number; height: number };
 	bytes: number;
 	expiresAt: number;
 };
@@ -656,6 +657,8 @@ export function ResourceImage({
 	const { source, loading, failed } = useResourceImageSource(item);
 	const [open, setOpen] = useState(false);
 	const displayPath = pathLabel ?? path;
+	const cacheKey = resourceImageCacheKey(item);
+	const dimensions = cacheKey ? cachedResourceImageEntry(cacheKey)?.dimensions : undefined;
 
 	return (
 		<>
@@ -668,7 +671,23 @@ export function ResourceImage({
 					aria-label={`放大${alt}`}
 				>
 					{source ? (
-						<img className={cn("max-h-72 max-w-full object-contain", imageClassName)} src={source} alt={alt} loading="lazy" decoding="async" />
+						<img
+							className={cn("max-h-72 max-w-full object-contain", imageClassName)}
+							src={source}
+							alt={alt}
+							width={dimensions?.width}
+							height={dimensions?.height}
+							loading="lazy"
+							decoding="async"
+							onLoad={(event) => {
+								const entry = cacheKey ? resourceImageCache.get(cacheKey) : undefined;
+								const image = event.currentTarget;
+								// 复用图片缓存的生命周期；重新挂载时先保留固有尺寸，避免整条消息先缩小再撑开。
+								if (entry?.source === source && image.naturalWidth && image.naturalHeight) {
+									entry.dimensions = { width: image.naturalWidth, height: image.naturalHeight };
+								}
+							}}
+						/>
 					) : loading ? (
 						<LoaderCircleIcon className="m-8 size-5 animate-spin text-muted-foreground" />
 					) : (

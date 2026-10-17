@@ -641,7 +641,7 @@ export function Workbench({
 								)}
 							>
 								<GsapReveal
-									animationKey={state.sessionId ?? "empty"}
+									animationKey={workspaceMode}
 									className="flex min-h-0 w-full flex-1 flex-col"
 									distance={12}
 									duration={0.34}
@@ -690,7 +690,7 @@ export function Workbench({
 							)}
 						>
 							<GsapReveal
-								animationKey={state.sessionId ?? "empty"}
+								animationKey={workspaceMode}
 								className="w-full shrink-0"
 								distance={8}
 								duration={0.26}

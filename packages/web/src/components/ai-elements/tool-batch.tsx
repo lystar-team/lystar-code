@@ -1128,12 +1128,12 @@ function ToolDetail({
 	const context = input ? undefined : toolPresentationContext(tool);
 	return (
 		<div className="grid min-w-0 gap-1">
-			{input ? <ToolOutputBlock className="my-0 border-border/60 bg-muted/25" code={input} streaming={tool.preparing}>
+			{input ? <CodeBlock className="my-0 border-border/60 bg-muted/25" code={input} language="json" plainText={tool.preparing} wrap>
 				<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
 					<CodeBlockTitle className="text-foreground">调用参数</CodeBlockTitle>
 					<CodeBlockActions><CodeBlockCopyButton aria-label="复制调用参数" /></CodeBlockActions>
 				</CodeBlockHeader>
-			</ToolOutputBlock> : null}
+			</CodeBlock> : null}
 			{context ? <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{context}</p> : null}
 			{imagePreview}
 			{tool.preparing && (tool.name === "edit" || tool.name === "write") && !filePathFromTool(tool) ? (

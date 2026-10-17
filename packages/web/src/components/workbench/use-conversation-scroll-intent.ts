@@ -6,7 +6,7 @@ type ScrollIntentOptions = {
 	onUp: () => void;
 	onDown: () => void;
 	onCancel: () => void;
-	onExpansion: () => void;
+	onExpansion: (trigger: HTMLElement) => void;
 	onUserPosition: (element: HTMLElement, endOffset?: number) => void;
 };
 
@@ -112,7 +112,9 @@ export function useConversationScrollIntent(options: ScrollIntentOptions, scroll
 			if (pending.current) options.onUserPosition(event.currentTarget, pending.current.endOffset);
 		},
 		onClickCapture: (event) => {
-			if (event.target instanceof Element && event.target.closest('[data-slot="collapsible-trigger"][data-transcript-resize-anchor]')) options.onExpansion();
+			if (!(event.target instanceof Element)) return;
+			const trigger = event.target.closest<HTMLElement>('[data-slot="collapsible-trigger"][data-transcript-resize-anchor], [data-json-toggle]');
+			if (trigger) options.onExpansion(trigger);
 		},
 	};
 }

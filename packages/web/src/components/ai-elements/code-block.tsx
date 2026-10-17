@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, Code2Icon, CopyIcon, DownloadIcon } from "lucide-react";
-import type { ComponentProps, CSSProperties, HTMLAttributes } from "react";
+import type { ComponentProps, CSSProperties, HTMLAttributes, ReactNode } from "react";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { BundledLanguage, ThemedToken } from "shiki";
 import { Button } from "@/components/ui/button";
@@ -104,6 +104,7 @@ type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
 	transparent?: boolean;
 	wrap?: boolean;
 	diffLanguage?: BundledLanguage;
+	body?: ReactNode;
 };
 
 interface CodeBlockContextType {
@@ -520,6 +521,7 @@ export const CodeBlock = ({
 	wrap = false,
 	className,
 	children,
+	body,
 	...props
 }: CodeBlockProps) => {
 	const contextValue = useMemo(() => ({ code }), [code]);
@@ -533,7 +535,7 @@ export const CodeBlock = ({
 				{...props}
 			>
 				{children}
-				<CodeBlockContent
+				{body ?? <CodeBlockContent
 					code={code}
 					language={language}
 					diffLanguage={diffLanguage}
@@ -542,7 +544,7 @@ export const CodeBlock = ({
 					plainText={renderPlainText}
 					transparent={transparent}
 					wrap={wrap}
-				/>
+				/>}
 			</CodeBlockContainer>
 		</CodeBlockContext.Provider>
 	);

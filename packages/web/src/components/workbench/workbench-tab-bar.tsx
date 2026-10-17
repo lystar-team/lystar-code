@@ -11,7 +11,7 @@ import { Badge } from "../ui/badge";
 import { TabsList, TabsTrigger } from "../ui/tabs";
 
 export type WorkbenchTabOption<Value extends string> = {
-	icon: ComponentType<LucideProps>;
+	icon?: ComponentType<LucideProps>;
 	label: string;
 	value: Value;
 	count?: number;
@@ -38,7 +38,9 @@ function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, c
 			)}
 		>
 			<ExpandableActionBarHighlight itemId={value} />
-			<Icon className={cn("shrink-0", variant === "navigation" ? "size-4" : compact ? "size-3" : "size-3.5")} aria-hidden="true" />
+			{Icon ? (
+				<Icon className={cn("shrink-0", variant === "navigation" ? "size-4" : compact ? "size-3" : "size-3.5")} aria-hidden="true" />
+			) : null}
 			<ExpandableActionBarLabel visible={item.labelVisible} gap={compact ? 4 : 8}>{label}</ExpandableActionBarLabel>
 			{count !== undefined ? (
 				<Badge

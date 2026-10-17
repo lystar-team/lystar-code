@@ -14,7 +14,7 @@ import {
 	SunMoon,
 	WandSparkles,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { webApi } from "../../../adapters/host-protocol/api";
 import { cn } from "../../../lib/utils";
 import { useAppInstall } from "../../../state/use-app-install";
@@ -33,6 +33,7 @@ import { SystemPermissionsSettings } from "./permissions";
 import { SecuritySettings } from "./security";
 import { SkillsSettings } from "./skills";
 import { SubagentSettings } from "./subagents";
+import type { AgentLeaveGuard } from "./agent-editor";
 import { SystemSettings } from "./system";
 import type { DiagnosticsSettings as DiagnosticsSettingsComponent } from "./diagnostics";
 import type { WorkbenchActions } from "../types";
@@ -49,6 +50,9 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 	const [query, setQuery] = useState("");
 	const [isMobile, setIsMobile] = useState(false);
 	const [permissionsSupported, setPermissionsSupported] = useState(false);
+	const leaveGuard = useRef<AgentLeaveGuard>();
+	const onLeaveGuardChange = useCallback((guard: AgentLeaveGuard | undefined) => { leaveGuard.current = guard; }, []);
+	const requestLeave = (next: () => void) => { if (leaveGuard.current) leaveGuard.current(next); else next(); };
 	const appInstall = useAppInstall();
 	useEffect(() => {
 		const media = window.matchMedia("(max-width: 767px)");
@@ -94,7 +98,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 		<Dialog
 			open={state.settingsOpen}
 			onOpenChange={(open) => {
-				if (!open) actions.closeSettings();
+				if (!open) requestLeave(actions.closeSettings);
 			}}
 		>
 			<DialogContent className="inset-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 pt-[env(safe-area-inset-top)] sm:max-w-none">
@@ -105,7 +109,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 				<Tabs
 					data-settings-root
 					value={state.settingsTab}
-					onValueChange={(value) => void actions.openSettings(value as SettingsTab)}
+					onValueChange={(value) => { if (value !== state.settingsTab) requestLeave(() => void actions.openSettings(value as SettingsTab)); }}
 					orientation={isMobile ? "horizontal" : "vertical"}
 					className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col gap-0 overflow-hidden md:flex-row"
 				>
@@ -114,7 +118,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							<Button
 								className="justify-start gap-2 px-0 !text-sm !leading-5 font-medium"
 								variant="ghost"
-								onClick={actions.closeSettings}
+								onClick={() => requestLeave(actions.closeSettings)}
 							>
 								<ArrowLeft className="size-4" />
 								返回工作台
@@ -143,17 +147,17 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 					</aside>
 					<section
 						data-settings-content
-						className="min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto"
+						className={cn("min-h-0 w-full min-w-0 max-w-full flex-1 overflow-x-hidden", state.settingsTab === "subagents" ? "overflow-y-hidden" : "overflow-y-auto")}
 					>
-						<GsapReveal animationKey={state.settingsTab} className="min-h-0 w-full" distance={16} duration={0.32}>
+						<GsapReveal animationKey={state.settingsTab} className={cn("min-h-0 w-full", state.settingsTab === "subagents" && "h-full")} distance={16} duration={0.32}>
 							<div
 								className={cn(
 									"mx-auto w-full min-w-0 p-5 sm:p-8 lg:p-12 xl:p-16",
-									state.settingsTab === "subagents" ? "max-w-[1680px]" : "max-w-[1120px]",
+									state.settingsTab === "subagents" ? "h-full max-w-[1680px] !px-4 !py-5 sm:!px-8 lg:!px-10 lg:!py-8" : "max-w-[1120px]",
 									state.settingsTab === "diagnostics" && "max-w-[1216px] px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-8 xl:px-12 xl:py-8",
 								)}
 							>
-								<div
+								<div hidden={state.settingsTab === "subagents"}
 									className={
 										state.settingsTab === "diagnostics"
 											? "mb-4"
@@ -235,8 +239,8 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="skills">
 								<SkillsSettings state={state} actions={actions} />
 							</TabsContent>
-							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="subagents">
-								<SubagentSettings state={state} actions={actions} />
+							<TabsContent className="m-0 h-full min-h-0 w-full min-w-0 max-w-full" value="subagents">
+								<SubagentSettings state={state} actions={actions} onLeaveGuardChange={onLeaveGuardChange} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="imports">
 								<HarnessImportsSettings state={state} actions={actions} />

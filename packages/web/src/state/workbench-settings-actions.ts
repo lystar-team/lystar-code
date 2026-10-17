@@ -14,6 +14,18 @@ import { applyTheme, errorMessage, MODEL_PROVIDER_VISIBILITY_KEY, savedModelProv
 import { createSubagentConversationState } from "./workbench-live-state.ts";
 import type { ComposerMode, SettingsTab, ShowToast, ThemeMode, WorkbenchState } from "./workbench-types.ts";
 
+export interface SubagentBatchChanges {
+	workspaceMode?: SubagentConfig["workspaceMode"];
+	model?: { provider: string; model: string } | null;
+	thinkingLevel?: WebThinkingLevel | null;
+	tools?: { mode: "allow" | "deny"; names: string[] } | null;
+}
+
+export interface SubagentBatchResult {
+	saved: string[];
+	failures: Array<{ key: string; name: string; message: string }>;
+}
+
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
 type UpdateState = (update: StateUpdate) => WorkbenchState;
@@ -278,6 +290,7 @@ export function useWorkbenchSettingsActions({
 			provider?: string;
 			model?: string;
 			thinkingLevel?: WebThinkingLevel;
+			workspaceMode?: SubagentConfig["workspaceMode"];
 			tools?: string[];
 			excludeTools?: string[];
 			skills?: string[];
@@ -304,6 +317,62 @@ export function useWorkbenchSettingsActions({
 				updateState((current) => ({ ...current, subagentConfigsSaving: false, subagentConfigsError: message }));
 				return false;
 			}
+		},
+		[refreshSubagentConfigs, showToast, updateState],
+	);
+
+	const saveSubagentConfigs = useCallback(
+		async (configs: readonly SubagentConfig[], changes: SubagentBatchChanges): Promise<SubagentBatchResult> => {
+			const projectId = stateRef.current.currentProjectId;
+			const result: SubagentBatchResult = { saved: [], failures: [] };
+			if (!projectId) {
+				return {
+					...result,
+					failures: configs.map((config) => ({
+						key: `${config.scope}:${config.id}`,
+						name: config.name,
+						message: "请先选择一个项目",
+					})),
+				};
+			}
+			updateState((current) => ({ ...current, subagentConfigsSaving: true, subagentConfigsError: undefined }));
+			let subagents: SubagentConfig[] | undefined;
+			let conflict = false;
+			for (const config of configs) {
+				const key = `${config.scope}:${config.id}`;
+				try {
+					const response = await webApi.saveSubagentConfig(projectId, {
+						scope: config.scope,
+						id: config.id,
+						name: config.name,
+						description: config.description,
+						icon: config.icon,
+						provider: changes.model === undefined ? config.provider : changes.model?.provider,
+						model: changes.model === undefined ? config.model : changes.model?.model,
+						thinkingLevel: changes.thinkingLevel === undefined ? config.thinkingLevel : changes.thinkingLevel ?? undefined,
+						workspaceMode: changes.workspaceMode ?? config.workspaceMode,
+						tools: changes.tools === undefined ? config.tools : changes.tools?.mode === "allow" ? changes.tools.names : undefined,
+						excludeTools: changes.tools === undefined ? config.excludeTools : changes.tools?.mode === "deny" ? changes.tools.names : undefined,
+						skills: config.skills,
+						tags: config.tags,
+						content: config.content,
+						expectedHash: config.contentHash,
+					});
+					subagents = response.subagents;
+					result.saved.push(key);
+				} catch (error) {
+					if ((error as { code?: string }).code === "subagent_conflict") conflict = true;
+					result.failures.push({ key, name: config.name, message: errorMessage(error) });
+				}
+			}
+			if (subagents) {
+				const savedConfigs = subagents;
+				updateState((current) => current.currentProjectId === projectId ? { ...current, subagentConfigs: savedConfigs } : current);
+			}
+			if (conflict && stateRef.current.currentProjectId === projectId) await refreshSubagentConfigs();
+			updateState((current) => ({ ...current, subagentConfigsSaving: false }));
+			if (result.saved.length && !result.failures.length) showToast(`已更新 ${result.saved.length} 个智能体`, "success");
+			return result;
 		},
 		[refreshSubagentConfigs, showToast, updateState],
 	);
@@ -662,6 +731,7 @@ export function useWorkbenchSettingsActions({
 		importHarnessResources,
 		refreshSubagentConfigs,
 		saveSubagentConfig,
+		saveSubagentConfigs,
 		deleteSubagentConfig,
 		refreshSecuritySettings,
 		saveSecuritySettings,
