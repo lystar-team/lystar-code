@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Release CI 只构建一次公共 JavaScript 和 Web 资源，五平台并行准备原生索引与打包依赖；复用外部依赖下载缓存和原生索引缓存，支持不发布的候选构建。
+
 ## [1.3.0-lystar.3] - 2026-10-17
 
 ### Changed

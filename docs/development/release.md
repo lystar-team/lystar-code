@@ -98,6 +98,20 @@ npm run release:lystar -- --verify 1.3.0-lystar.2 --all-platforms
 
 本入口只发布 LYStar GitHub Release，不执行上游 npm 发布；`release:patch/minor/major` 继续用于上游 npm 流程。
 
+## CI 构建与候选验证
+
+Release workflow 同时启动一次公共 JavaScript/Web 构建和五平台原生准备。各平台安装打包依赖、构建或恢复 Go 会话索引后，下载同一 workflow attempt 的公共归档，再生成本平台独立包。共享归档不包含原生索引；最终可执行文件继续在对应原生 runner 构建。
+
+npm 下载缓存按外部依赖生成指纹，workspace 版本递增不会使缓存失效。原生索引缓存同时区分系统、架构、Go 版本、源码和构建脚本；命中时不再准备 Go 工具链。Environments 的测试任务只安装 env、durable 及其依赖和根工具。
+
+只构建候选、不创建 Tag 或公开 Release：
+
+```bash
+gh workflow run release.yml --repo lystar-team/lystar-code --ref main -f ref=main -f publish=false
+```
+
+没有 workflow dispatch 权限时，可将待验证提交推送到 `release-ci/` 前缀分支。该前缀的 push 仅生成候选；只有产品 Tag push 或明确的 `publish=true` 才发布。候选归档与清单保存在本次 run 的 `release-candidate-verified-<attempt>` Artifact，可通过 `gh run rerun <run-id> --repo lystar-team/lystar-code` 比较同一提交的暖缓存耗时。
+
 ## 发布前
 
 1. 工作区干净，目标提交已推送到 `origin/main`。

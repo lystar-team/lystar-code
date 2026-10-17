@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*-lystar.*"
+    branches:
+      - "release-ci/**"
   workflow_dispatch:
     inputs:
       ref:
@@ -19,12 +21,52 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   NODE_VERSION: 24.18.0
+  GO_VERSION: 1.24.4
+  PUBLISH_RELEASE: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish == true }}
 
 jobs:
-  build-unix:
+  build-shared:
+    name: Build shared JavaScript and Web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Prepare npm cache key
+        run: node scripts/write-npm-cache-key.mjs
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: .artifacts/npm-cache-key.json
+
+      - name: Install shared build dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund --workspace packages/coding-agent --workspace packages/web-gateway --workspace packages/web --include-workspace-root
+
+      - name: Verify release source
+        run: npm run check:release
+
+      - name: Build shared packages
+        run: npm run build:release-shared
+
+      - name: Upload shared build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-shared-${{ github.run_attempt }}
+          path: .artifacts/release-shared.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
     strategy:
       fail-fast: true
       matrix:
@@ -37,41 +79,74 @@ jobs:
             runner: ubuntu-24.04-arm
           - platform: linux-x64
             runner: ubuntu-24.04
+          - platform: windows-x64
+            runner: windows-2025
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      - name: Prepare npm cache key
+        run: node scripts/write-npm-cache-key.mjs
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: .artifacts/npm-cache-key.json
+
+      - name: Restore native session index
+        id: native-index
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: packages/coding-agent/dist/native/session-index
+          key: session-index-${{ runner.os }}-${{ runner.arch }}-go${{ env.GO_VERSION }}-${{ hashFiles('packages/web-runtime/native/session-index/**', 'scripts/build-session-index.mjs') }}
 
       - name: Setup Go (build only)
+        if: steps.native-index.outputs.cache-hit != 'true'
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.24.4"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: packages/web-runtime/native/session-index/go.sum
+
+      - name: Build native session index
+        if: steps.native-index.outputs.cache-hit != 'true'
+        run: node scripts/build-session-index.mjs
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
+          bun-download-url: ${{ matrix.platform == 'windows-x64' && 'https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-windows-x64-baseline.zip' || '' }}
 
-      - name: Verify source version
-        shell: bash
-        run: test -n "$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
+      - name: Install platform dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund --workspace packages/coding-agent --workspace packages/web-gateway --include-workspace-root
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Wait for shared build
+        id: shared
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/wait-release-shared.mjs
 
-      - name: Build JavaScript packages
-        run: npm run build:offline
+      - name: Download shared build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.shared.outputs.artifact-id }}
+          path: .artifacts/shared
+          merge-multiple: true
+
+      - name: Restore shared packages
+        run: tar -xf .artifacts/shared/release-shared.tar
 
       - name: Build Unix standalone release
+        if: runner.os != 'Windows'
         run: |
           bash scripts/build-binaries.sh \
             --skip-install \
@@ -80,76 +155,28 @@ jobs:
             --repository "${GITHUB_REPOSITORY}"
 
       - name: Verify Unix release artifact
-        shell: bash
+        if: runner.os != 'Windows'
         run: |
           version="$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
           archive="packages/coding-agent/binaries/lystar-agent-v${version}-${{ matrix.platform }}.tar.gz"
-          test "v$(cat packages/coding-agent/binaries/VERSION)" = "v${version}"
+          test "$(cat packages/coding-agent/binaries/VERSION)" = "$version"
           test -f "$archive"
           test "$(find packages/coding-agent/binaries -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d '[:space:]')" = "1"
           tar -tzf "$archive" > archive-contents.txt
-          grep -Fxq 'lystar-agent/lc' archive-contents.txt
-          grep -Fxq 'lystar-agent/lystar' archive-contents.txt
-          grep -Fxq 'lystar-agent/package.json' archive-contents.txt
-          grep -Fxq 'lystar-agent/photon_rs_bg.wasm' archive-contents.txt
-          grep -Fxq 'lystar-agent/skills/imagegen/SKILL.md' archive-contents.txt
-          grep -Fxq 'lystar-agent/web/index.html' archive-contents.txt
-          grep -Fxq 'lystar-agent/web/version.json' archive-contents.txt
-           native_platform="${{ matrix.platform }}"
-           grep -Fxq "lystar-agent/native/session-index/${native_platform}/lystar-session-index" archive-contents.txt
+          for entry in lc lystar package.json photon_rs_bg.wasm skills/imagegen/SKILL.md web/index.html web/version.json; do
+            grep -Fxq "lystar-agent/$entry" archive-contents.txt
+          done
+          grep -Fxq "lystar-agent/native/session-index/${{ matrix.platform }}/lystar-session-index" archive-contents.txt
           ! grep -Fxq 'lystar-agent/la' archive-contents.txt
           rm archive-contents.txt
 
-      - name: Upload Unix release candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-candidate-unix-${{ matrix.platform }}
-          path: packages/coding-agent/binaries/lystar-agent-*-${{ matrix.platform }}.tar.gz
-          if-no-files-found: error
-
-  build-windows:
-    runs-on: windows-2025
-    timeout-minutes: 35
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Setup Go (build only)
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: "1.24.4"
-          cache-dependency-path: packages/web-runtime/native/session-index/go.sum
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.4.2
-          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-windows-x64-baseline.zip
-
-      - name: Verify source version
-        shell: powershell
-        run: |
-          $Version = (Get-Content packages/coding-agent/package.json | ConvertFrom-Json).piConfig.productVersion
-          if ([string]::IsNullOrWhiteSpace($Version)) { throw "Coding Agent product version is empty" }
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Build JavaScript packages
-        run: npm run build:offline
-
       - name: Build Windows standalone release
+        if: runner.os == 'Windows'
         shell: powershell
         run: .\scripts\build-windows-release.ps1 -Repository "${env:GITHUB_REPOSITORY}"
 
       - name: Verify Windows release artifact
+        if: runner.os == 'Windows'
         shell: powershell
         run: |
           $Version = (Get-Content packages/coding-agent/package.json | ConvertFrom-Json).piConfig.productVersion
@@ -157,22 +184,22 @@ jobs:
           $Archives = @(Get-ChildItem packages/coding-agent/binaries -Filter "lystar-agent-*-windows-x64.zip")
           if ($Archives.Count -ne 1) { throw "Expected exactly one Windows release archive" }
           if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
-           foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json", "native/session-index/win32-x64/lystar-session-index.exe")) {
+          foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json", "native/session-index/win32-x64/lystar-session-index.exe")) {
             if (!(Test-Path "$Bundle/$RequiredFile")) { throw "Windows release bundle is missing $RequiredFile" }
           }
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
 
-      - name: Upload Windows release candidate
+      - name: Upload platform release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-candidate-windows
-          path: packages/coding-agent/binaries/lystar-agent-*-windows-x64.zip
+          name: release-platform-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: packages/coding-agent/binaries/lystar-agent-*-${{ matrix.platform }}.*
+          compression-level: 0
           if-no-files-found: error
 
   publish:
     name: Verify release candidate and publish
-    needs: [build-unix, build-windows]
-    if: ${{ needs.build-unix.result == 'success' && needs.build-windows.result == 'success' }}
+    needs: [build-shared, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -192,18 +219,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Download Unix release candidates
+      - name: Download platform release candidates
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: release-candidate-unix-*
+          pattern: release-platform-*-${{ github.run_attempt }}
           path: packages/coding-agent/binaries
           merge-multiple: true
-
-      - name: Download Windows release candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-candidate-windows
-          path: packages/coding-agent/binaries
 
       - name: Generate and verify release metadata
         shell: bash
@@ -219,16 +240,17 @@ jobs:
           node scripts/generate-release-metadata.mjs --verify packages/coding-agent/binaries "$version" "${GITHUB_REPOSITORY}"
 
       - name: Upload verified release candidate
-        if: github.event_name == 'workflow_dispatch' && inputs.publish != true
+        if: env.PUBLISH_RELEASE != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-candidate-verified
+          name: release-candidate-verified-${{ github.run_attempt }}
           path: packages/coding-agent/binaries
+          compression-level: 0
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
       - name: Create version tag after candidate verification
-        if: github.event_name == 'push' || inputs.publish == true
+        if: env.PUBLISH_RELEASE == 'true'
         id: tag
         shell: bash
         run: |
@@ -263,7 +285,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Generate Chinese release notes
-        if: github.event_name == 'push' || inputs.publish == true
+        if: env.PUBLISH_RELEASE == 'true'
         id: release-notes
         shell: bash
         run: |
@@ -291,7 +313,7 @@ jobs:
           echo "path=$notes_path" >> "$GITHUB_OUTPUT"
 
       - name: Attest release artifacts
-        if: github.event_name == 'push' || inputs.publish == true
+        if: env.PUBLISH_RELEASE == 'true'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
@@ -304,7 +326,7 @@ jobs:
             packages/coding-agent/binaries/install.cmd
 
       - name: Publish GitHub release
-        if: github.event_name == 'push' || inputs.publish == true
+        if: env.PUBLISH_RELEASE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
