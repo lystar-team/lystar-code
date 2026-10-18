@@ -191,7 +191,7 @@ export class WorkspaceDatabase {
 			this.storage.load();
 			const worker = new Worker(
 				/\$bunfs|~BUN|%7EBUN/u.test(import.meta.url)
-					? "../web-gateway/src/workspace-database-worker.ts"
+					? "./src/bun/workspace-database-worker.ts"
 					: new URL(
 							import.meta.url.endsWith(".ts")
 								? "./workspace-database-worker.ts"
@@ -202,15 +202,19 @@ export class WorkspaceDatabase {
 			);
 			this.writer = worker;
 			const fail = (error: Error) => {
+				if (this.writerError) return;
 				this.writerError = error;
+				logGatewayConnection("workspace_writer_failed", { error: error.message });
 				for (const pending of this.requests.values()) pending.reject(error);
 				this.requests.clear();
 				worker.unref();
 			};
 			worker.on("error", fail);
 			worker.on("exit", (code) => {
-				if (this.writer === worker && (this.requests.size > 0 || !this.closing))
-					fail(new Error(`工作区写线程已退出：${code}`));
+				if (this.writer !== worker) return;
+				if (this.requests.size > 0 || !this.closing) fail(new Error(`工作区写线程已退出：${code}`));
+				this.writer = undefined;
+				this.writerError = undefined;
 			});
 			worker.on("message", (reply: WriterReply) => {
 				if ("type" in reply) {
