@@ -100,7 +100,7 @@ describe("strict built-in tools", () => {
 						expect(result.content).toEqual([
 							{
 								type: "text",
-								text: expect.stringMatching(/^\[snapshot r[0-9a-f]+; lines 1-1 of 1\]\n1\| still works$/),
+								text: "[lines 1-1 of 1]\n1| still works",
 							},
 						]);
 					}

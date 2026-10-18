@@ -602,7 +602,7 @@ describe("AgentSession prompt characterization", () => {
 			await harness.session.prompt("hello");
 			await harness.session.sendCustomMessage(
 				{ customType: "task-done", content: "background task finished", display: true },
-				{ triggerTurn: true },
+				{ triggerTurn: true, origin: { type: "user", channel: "interactive" } },
 			);
 
 			expect(prompts).toHaveLength(3);
@@ -640,13 +640,13 @@ describe("AgentSession prompt characterization", () => {
 
 			const first = harness.session.sendCustomMessage(
 				{ customType: "first", content: "task one finished", display: true },
-				{ triggerTurn: true },
+				{ triggerTurn: true, origin: { type: "user", channel: "interactive" } },
 			);
 			await handlerStarted.promise;
 			expect(harness.session.isIdle).toBe(false);
 			const second = harness.session.sendCustomMessage(
 				{ customType: "second", content: "task two finished", display: true },
-				{ triggerTurn: true },
+				{ triggerTurn: true, origin: { type: "user", channel: "interactive" } },
 			);
 			releaseHandler();
 			await Promise.all([first, second]);
@@ -708,16 +708,16 @@ describe("AgentSession prompt characterization", () => {
 
 			const run = harness.session.sendCustomMessage(
 				{ customType: "task-done", content: "background task finished", display: true },
-				{ triggerTurn: true },
+				{ triggerTurn: true, origin: { type: "user", channel: "interactive" } },
 			);
 			await handlerStarted.promise;
+			const cancelled = expect(run).rejects.toMatchObject({ name: "AbortError" });
 			const aborted = harness.session.abort();
 			releaseHandler();
-			await Promise.all([run, aborted]);
+			await Promise.all([cancelled, aborted]);
 
-			const last = harness.session.messages.at(-1);
-			expect(last?.role).toBe("assistant");
-			expect(last?.role === "assistant" && last.stopReason).toBe("aborted");
+			expect(harness.eventsOfType("agent_start")).toEqual([]);
+			expect(harness.getPendingResponseCount()).toBe(1);
 			expect(harness.session.isIdle).toBe(true);
 		});
 	});

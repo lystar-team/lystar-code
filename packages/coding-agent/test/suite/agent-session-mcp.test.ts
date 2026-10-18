@@ -234,7 +234,7 @@ describe("AgentSession MCP integration", () => {
 				allowedToolNames: ["read", "codemode"],
 				resources: true,
 			});
-			expect(harness.session.getActiveToolNames()).toEqual(["read", "codemode"]);
+			expect(harness.session.getActiveToolNames()).toEqual(["read", "codemode", "codemode_wait"]);
 			expect(nestedToolNames(harness)).toEqual(
 				expect.arrayContaining(["mcp__docs__search", "mcp__docs__fail", "list_mcp_resources", "read_mcp_resource"]),
 			);
@@ -249,7 +249,7 @@ describe("AgentSession MCP integration", () => {
 		await vi.waitFor(() =>
 			expect(harness.session.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__fail"),
 		);
-		expect(harness.session.getActiveToolNames()).toEqual(["codemode"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait"]);
 	});
 
 	it("removes MCP tools with --no-tools", async () => {
@@ -305,7 +305,7 @@ describe("AgentSession MCP integration", () => {
 			resources: true,
 			toolExposure: { shot: "direct" },
 		});
-		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toEqual(["codemode", "mcp__docs__shot"]));
+		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait", "mcp__docs__shot"]));
 		const registered = harness.session.getAllTools().map((tool) => tool.name);
 		expect(registered).toEqual(expect.arrayContaining(["mcp__docs__search", "mcp__docs__shot"]));
 		expect(registered).not.toContain("mcp__docs__fail");
@@ -355,8 +355,8 @@ describe("AgentSession MCP integration", () => {
 		await harness.session.prompt("search the docs");
 
 		// Exec was activated for the codemode-exposed server; MCP tools are never declared.
-		expect(harness.session.getActiveToolNames()).toEqual(["codemode"]);
-		expect(declaredToolNames(harness)).toEqual(["codemode"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait"]);
+		expect(declaredToolNames(harness)).toEqual(["codemode", "codemode_wait"]);
 		expect(nestedToolNames(harness)).toEqual([searchName, "mcp__docs__fail", "mcp__docs__shot"]);
 		// The description lists neither the server nor its tools; scripts search for them.
 		const codemode = harness.session.agent.state.tools.find((tool) => tool.name === "codemode");
@@ -392,7 +392,7 @@ describe("AgentSession MCP integration", () => {
 		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
 		await harness.session.prompt("first");
 		await harness.session.prompt("second");
-		expect(harness.session.getActiveToolNames()).toEqual(["codemode"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait"]);
 		expect(nestedToolNames(harness)).toContain(searchName);
 
 		const firstAssistant = harness.sessionManager
@@ -401,7 +401,7 @@ describe("AgentSession MCP integration", () => {
 		if (!firstAssistant) throw new Error("No assistant entry");
 		await harness.session.navigateTree(firstAssistant.id);
 
-		expect(harness.session.getActiveToolNames()).toEqual(["codemode"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait"]);
 		expect(nestedToolNames(harness)).toContain(searchName);
 	});
 
@@ -549,7 +549,7 @@ return { uris: listed.resources.map((r) => r.uri), text: read.contents[0].text }
 
 		await harness.session.prompt("read");
 
-		expect(harness.session.getActiveToolNames()).toEqual(["codemode"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait"]);
 		expect(JSON.parse(getMessageText(toolResult(harness, "codemode")).split("\n").at(-1) ?? "")).toEqual({
 			uris: ["docs://intro"],
 			text: "# docs://intro",
@@ -563,7 +563,7 @@ return { uris: listed.resources.map((r) => r.uri), text: read.contents[0].text }
 		await harness.session.prompt("start");
 
 		// `search` is declared, `shot` is only callable from codemode, `fail` keeps the server's `hidden`.
-		expect(declaredToolNames(harness)).toEqual(["codemode", "mcp__docs__search"]);
+		expect(declaredToolNames(harness)).toEqual(["codemode", "codemode_wait", "mcp__docs__search"]);
 		expect(nestedToolNames(harness)).toEqual(["mcp__docs__search", "mcp__docs__shot"]);
 		const codemode = harness.session.agent.state.tools.find((tool) => tool.name === "codemode");
 		expect(codemode?.description).not.toContain("mcp__docs__shot");
@@ -661,7 +661,7 @@ return { docs, sameForAliases: aliases.every((alias) => JSON.stringify(alias) ==
 		harness.setResponses([fauxAssistantMessage("ready")]);
 		await harness.session.prompt("start");
 
-		expect(harness.session.getActiveToolNames()).toEqual(["codemode"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait"]);
 		expect(nestedToolNames(harness)).toContain("mcp__docs__search");
 		expect(notifications).toEqual([]);
 	});
@@ -775,7 +775,7 @@ return { docs, sameForAliases: aliases.every((alias) => JSON.stringify(alias) ==
 
 		expect(getAssistantTexts(harness)).toEqual(["ready"]);
 		// Codemode is activated from the config, before the server connects.
-		expect(declaredToolNames(harness)).toEqual(["codemode"]);
+		expect(declaredToolNames(harness)).toEqual(["codemode", "codemode_wait"]);
 	});
 
 	it("keeps the codemode description unchanged when the server connects", async () => {

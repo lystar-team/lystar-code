@@ -42,21 +42,6 @@ async function runToolRecoveryHandler(
 	return await handler?.({ signal });
 }
 
-/** 快照编辑已在工具内限制恢复次数，不能再按文件版本叠加通用模型预算。 */
-function isSnapshotEditRecovery(observation: ToolRecoveryObservation, error: unknown): boolean {
-	return (
-		observation.toolName === "edit" &&
-		isTrustedBuiltinRecoveryError("edit", error) &&
-		typeof error === "object" &&
-		error !== null &&
-		"fingerprintConstraint" in error &&
-		typeof error.fingerprintConstraint === "object" &&
-		error.fingerprintConstraint !== null &&
-		"kind" in error.fingerprintConstraint &&
-		error.fingerprintConstraint.kind === "edit_snapshot"
-	);
-}
-
 const MAX_RECOVERY_RETRIES = 2;
 const MAX_MODEL_RECOVERY_ROUNDS = 2;
 const REFINER_TIMEOUT_MS = 15_000;
@@ -690,9 +675,7 @@ export class AssistToolRecoveryController extends BaseToolRecoveryController {
 			const resolution = await runToolRecoveryHandler(error, signal);
 			if (resolution?.type === "ask_model_to_rebuild") {
 				const rebuildAttempt = this.rebuiltFingerprints.get(failure.fingerprint) ?? 0;
-				if (isSnapshotEditRecovery(observation, error)) {
-					action = resolution;
-				} else if (rebuildAttempt >= MAX_MODEL_RECOVERY_ROUNDS) {
+				if (rebuildAttempt >= MAX_MODEL_RECOVERY_ROUNDS) {
 					this.closedFingerprints.add(failure.fingerprint);
 				} else {
 					this.rebuiltFingerprints.set(failure.fingerprint, rebuildAttempt + 1);
@@ -869,15 +852,13 @@ export class AutoToolRecoveryController extends BaseToolRecoveryController {
 			if (resolution) {
 				const rebuildAttempt = this.rebuiltFingerprints.get(failure.fingerprint) ?? 0;
 				const isRepeatRebuild =
-					resolution.type === "ask_model_to_rebuild" &&
-					!isSnapshotEditRecovery(observation, error) &&
-					rebuildAttempt >= MAX_MODEL_RECOVERY_ROUNDS;
+					resolution.type === "ask_model_to_rebuild" && rebuildAttempt >= MAX_MODEL_RECOVERY_ROUNDS;
 				const isRepeatRefresh =
 					resolution.type === "refresh_context" && this.refreshedFingerprints.has(failure.fingerprint);
 				if (isRepeatRebuild) {
 					this.closedFingerprints.add(failure.fingerprint);
 				} else if (!isRepeatRefresh) {
-					if (resolution.type === "ask_model_to_rebuild" && !isSnapshotEditRecovery(observation, error)) {
+					if (resolution.type === "ask_model_to_rebuild") {
 						this.rebuiltFingerprints.set(failure.fingerprint, rebuildAttempt + 1);
 					}
 					if (resolution.type === "refresh_context") this.refreshedFingerprints.add(failure.fingerprint);

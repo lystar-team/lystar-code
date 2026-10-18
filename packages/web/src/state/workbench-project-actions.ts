@@ -16,6 +16,7 @@ export interface WorkbenchProjectActionsContext {
 	showToast: ShowToast;
 	loadTranscript: () => Promise<void>;
 	selectProject: (projectId: string) => Promise<void>;
+	refreshBootstrap: () => Promise<void>;
 	sessionTreeRequestRef: NumberRef;
 	directoryRequestRef: NumberRef;
 }
@@ -27,6 +28,7 @@ export function useWorkbenchProjectActions({
 	loadTranscript,
 	selectProject,
 	sessionTreeRequestRef,
+	refreshBootstrap,
 	directoryRequestRef,
 }: WorkbenchProjectActionsContext) {
 	const loadSessionTree = useCallback(async () => {
@@ -101,143 +103,175 @@ export function useWorkbenchProjectActions({
 		[updateState],
 	);
 
+	const updateWorkspaceState = useCallback((revision: number | undefined, update: (current: WorkbenchState) => WorkbenchState) => {
+		updateState((current) => current.workspaceRevision === revision ? update(current) : current);
+	}, [updateState]);
+
 	const addProject = useCallback(
 		async (cwd: string, name?: string) => {
+			const revision = stateRef.current.workspaceRevision;
 			const result = await webApi.addProject(cwd, name);
-			updateState((current) => ({
+			updateWorkspaceState(revision, (current) => ({
 				...current,
 				projects: [result.project, ...current.projects.filter((project) => project.id !== result.project.id)],
 			}));
+			await refreshBootstrap();
 			await selectProject(result.project.id);
 		},
-		[selectProject, updateState],
+		[selectProject, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const addProjectGroup = useCallback(
 		async (name: string) => {
 			try {
+				const revision = stateRef.current.workspaceRevision;
 				const result = await webApi.addProjectGroup(name);
-				updateState((current) => ({ ...current, projectGroups: result.groups }));
+				updateWorkspaceState(revision, (current) => ({ ...current, projectGroups: result.groups }));
+				await refreshBootstrap();
 				return true;
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const updateProjectGroup = useCallback(
 		async (groupId: string, name: string) => {
 			try {
-				const result = await webApi.updateProjectGroup(groupId, name);
-				updateState((current) => ({ ...current, projectGroups: result.groups }));
+				const revision = stateRef.current.workspaceRevision;
+				const previous = stateRef.current.projectGroups.find((group) => group.id === groupId);
+				if (!previous) return false;
+				const result = await webApi.updateProjectGroup(groupId, name, previous.name);
+				updateWorkspaceState(revision, (current) => ({ ...current, projectGroups: result.groups }));
+				await refreshBootstrap();
 				return true;
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const removeProjectGroup = useCallback(
 		async (groupId: string) => {
 			try {
+				const revision = stateRef.current.workspaceRevision;
 				const result = await webApi.removeProjectGroup(groupId);
-				updateState((current) => ({ ...current, projectGroups: result.groups }));
+				updateWorkspaceState(revision, (current) => ({ ...current, projectGroups: result.groups }));
+				await refreshBootstrap();
 				return true;
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const setProjectGroup = useCallback(
 		async (projectId: string, groupId?: string) => {
 			try {
+				const revision = stateRef.current.workspaceRevision;
 				const result = await webApi.setProjectGroup(projectId, groupId);
-				updateState((current) => ({ ...current, projectGroups: result.groups }));
+				updateWorkspaceState(revision, (current) => ({ ...current, projectGroups: result.groups }));
+				await refreshBootstrap();
 				return true;
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 				return false;
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const reorderProjectGroups = useCallback(
 		async (groupIds: string[]) => {
 			try {
+				const revision = stateRef.current.workspaceRevision;
 				const result = await webApi.reorderProjectGroups(groupIds);
-				updateState((current) => ({ ...current, projectGroups: result.groups }));
+				updateWorkspaceState(revision, (current) => ({ ...current, projectGroups: result.groups }));
+				await refreshBootstrap();
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const updateProject = useCallback(
 		async (projectId: string, update: Partial<Pick<WebProject, "name" | "pinned" | "color" | "archived">>) => {
-			const result = await webApi.updateProject(projectId, update);
-			updateState((current) => ({
+			const revision = stateRef.current.workspaceRevision;
+			const previous = stateRef.current.projects.find((project) => project.id === projectId);
+			if (!previous) return;
+			const changed = { ...update };
+			for (const key of ["name", "pinned", "color", "archived"] as const) {
+				if ((changed[key] ?? false) === (previous[key] ?? false)) delete changed[key];
+			}
+			const result = await webApi.updateProject(projectId, changed, previous);
+			updateWorkspaceState(revision, (current) => ({
 				...current,
 				projects: current.projects.map((project) => (project.id === projectId ? result.project : project)),
 			}));
+			await refreshBootstrap();
 		},
-		[updateState],
+		[updateWorkspaceState, refreshBootstrap],
 	);
 
 	const reorderProjects = useCallback(
 		async (projectIds: string[]) => {
 			try {
+				const revision = stateRef.current.workspaceRevision;
 				await webApi.reorderProjects(projectIds);
 				const orderedSet = new Set(projectIds);
-				updateState((current) => ({
+				updateWorkspaceState(revision, (current) => ({
 					...current,
 					projects: [
 						...projectIds.flatMap((projectId) => current.projects.filter((project) => project.id === projectId)),
 						...current.projects.filter((project) => !orderedSet.has(project.id)),
 					],
 				}));
+				await refreshBootstrap();
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const reorderSessions = useCallback(
 		async (projectId: string, sessionIds: string[]) => {
 			try {
+				const revision = stateRef.current.workspaceRevision;
 				const result = await webApi.reorderSessions(projectId, sessionIds);
-				updateState((current) => ({
+				updateWorkspaceState(revision, (current) => ({
 					...current,
 					projects: current.projects.map((project) =>
 						project.id === projectId ? { ...project, sessions: result.sessions } : project,
 					),
 				}));
+				await refreshBootstrap();
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 			}
 		},
-		[showToast, updateState],
+		[showToast, updateWorkspaceState, refreshBootstrap],
 	);
 
 	const removeProject = useCallback(
 		async (projectId: string) => {
 			if (projectId === stateRef.current.currentProjectId) return;
+			const revision = stateRef.current.workspaceRevision;
 			await webApi.removeProject(projectId);
-			updateState((current) => ({
+			updateWorkspaceState(revision, (current) => ({
 				...current,
 				projects: current.projects.filter((project) => project.id !== projectId),
 			}));
+			await refreshBootstrap();
 		},
-		[updateState],
+		[updateWorkspaceState, refreshBootstrap],
 	);
 
 	return {

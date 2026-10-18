@@ -33,6 +33,7 @@ import type {
 } from "../types.ts";
 import type { PendingUserPrompt } from "./chat-lifecycle.ts";
 import type { LiveCompactionState } from "./compaction-state.ts";
+import type { RuntimeClock } from "./runtime-clock.ts";
 import type { WorkbenchTranscriptItem } from "./transcript-state.ts";
 
 export type InspectorMode = "runs" | "files" | "tree" | "git" | "subagent";
@@ -106,6 +107,7 @@ export interface WorkbenchState {
 	reconnecting: boolean;
 	connectionError: string;
 	authRequired: boolean;
+	workspaceRevision?: number;
 	projects: WebProject[];
 	projectGroups: ProjectGroup[];
 	currentProjectId?: string;
@@ -123,6 +125,7 @@ export interface WorkbenchState {
 	transcriptLeafId?: string | null;
 	displayedResultRevision?: number;
 	previousCursor?: string;
+	previousCursorLeafId?: string | null;
 	toolActivityEpoch?: string;
 	toolActivityRevision?: number;
 	hasMorePrevious: boolean;
@@ -130,9 +133,11 @@ export interface WorkbenchState {
 	lease?: { leaseId: string; leaseGeneration: number; createdAt: number; updatedAt: number };
 	readOnly: boolean;
 	sessionReady: boolean;
+	sessionSyncStartedAt?: number;
+	runtimeClock?: RuntimeClock;
 	pendingSessionControls?: Record<string, number>;
 	pendingUserPrompts: PendingUserPrompt[];
-	/** 已落盘用户消息 entryId → 客户端按下发送的时刻，使「已处理」和「本次耗时」同一起点。 */
+	/** 已落盘用户消息 entryId → 客户端按下发送的时刻，用于消息确认前的实时计时。 */
 	promptSendTimes: Record<string, number>;
 	queuedUserPrompts: QueuedUserPrompt[];
 	currentOperation?: WebOperation;
@@ -244,6 +249,9 @@ export interface WorkbenchState {
 		api: string;
 		reasoning: boolean;
 		fastModeSupported?: boolean;
+		nativeSteering?: "auto" | "off" | "on";
+		nativeSteeringOverride?: "auto" | "off" | "on" | "inherit";
+		nativeSteeringUnavailable?: boolean;
 		input: ("text" | "image")[];
 		contextWindow: number;
 		maxTokens: number;
@@ -262,6 +270,8 @@ export interface WorkbenchState {
 		name: string;
 		api?: string;
 		baseUrl?: string;
+		nativeSteering?: "auto" | "off" | "on";
+		nativeSteeringUnavailable?: boolean;
 		authenticated: boolean;
 		authMethods: string[];
 		authSource?: string;

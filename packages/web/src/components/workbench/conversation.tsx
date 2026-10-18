@@ -2,7 +2,7 @@ import { ArrowDownIcon, LoaderCircle, Sparkles } from "lucide-react";
 import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { CompactionCard } from "./compaction-card";
-import { Composer } from "./composer";
+import { Composer, composerStateEqual } from "./composer";
 import { Conversation, ConversationContent, ConversationEmptyState } from "../ai-elements/conversation";
 import { ToolBatch, ToolActivityGroup, ToolActivityRow, toolBatchActivityPresentation, toolBatchSummaryLabel, type ToolBatchTool } from "../ai-elements/tool-batch";
 import {
@@ -62,6 +62,7 @@ export type ConversationState = {
 	pendingUserPrompts: WorkbenchState["pendingUserPrompts"];
 	queuedUserPrompts: WorkbenchState["queuedUserPrompts"];
 	promptSendTimes: WorkbenchState["promptSendTimes"];
+	runtimeClock?: WorkbenchState["runtimeClock"];
 	promptScrollRequest?: number;
 	currentOperation?: WorkbenchState["currentOperation"];
 	liveTools: WorkbenchState["liveTools"];
@@ -286,18 +287,7 @@ function isConversationResponseActive(state: ConversationState): boolean {
 	);
 }
 
-export function ConversationView({
-	state,
-	actions,
-	sessionTitleText,
-	onEditPrompt,
-	editRequest,
-	editorState,
-	editorActions,
-	onCancelEdit,
-	onEditComplete,
-	allowPromptEditing = true,
-}: {
+type ConversationViewProps = {
 	state: ConversationState;
 	actions: ConversationActions;
 	sessionTitleText: string;
@@ -308,7 +298,51 @@ export function ConversationView({
 	onCancelEdit?: () => void;
 	onEditComplete?: () => void;
 	allowPromptEditing?: boolean;
-}) {
+};
+
+const CONVERSATION_STATE_FIELDS = {
+	sessionId: true, currentProjectId: true, loading: true, connected: true, sessionReady: true, readOnly: true,
+	session: true, sessionError: true, transcript: true, transcriptGeneration: true, agentSteps: true,
+	transcriptPageLoaded: true, transcriptLoading: true, transcriptError: true, displayedResultRevision: true,
+	previousCursor: true, hasMorePrevious: true, loadingEarlier: true, pendingUserPrompts: true,
+	queuedUserPrompts: true, promptSendTimes: true, runtimeClock: true, promptScrollRequest: true,
+	currentOperation: true, liveTools: true, liveSteps: true, liveTurnItems: true, liveCompaction: true,
+	liveTurnId: true, settledTurns: true,
+} satisfies Record<Exclude<keyof ConversationState, "projects">, true>;
+
+function selectedSessionResultVersion(state: ConversationState): number | undefined {
+	for (const project of state.projects ?? []) {
+		const session = project.sessions.find((candidate) => candidate.id === state.sessionId);
+		if (session) return session.result?.version;
+	}
+	return undefined;
+}
+
+function conversationPropsEqual(previous: ConversationViewProps, next: ConversationViewProps): boolean {
+	if (previous.editorState !== next.editorState &&
+		(!previous.editorState || !next.editorState || !composerStateEqual(previous.editorState, next.editorState))) return false;
+	if (previous.actions !== next.actions || previous.sessionTitleText !== next.sessionTitleText ||
+		previous.onEditPrompt !== next.onEditPrompt || previous.editRequest !== next.editRequest ||
+		previous.editorActions !== next.editorActions || previous.onCancelEdit !== next.onCancelEdit ||
+		previous.onEditComplete !== next.onEditComplete || previous.allowPromptEditing !== next.allowPromptEditing) return false;
+	if (!(Object.keys(CONVERSATION_STATE_FIELDS) as Array<keyof typeof CONVERSATION_STATE_FIELDS>)
+		.every((key) => previous.state[key] === next.state[key])) return false;
+	return previous.state.projects === next.state.projects ||
+		selectedSessionResultVersion(previous.state) === selectedSessionResultVersion(next.state);
+}
+
+export const ConversationView = memo(function ConversationView({
+	state,
+	actions,
+	sessionTitleText,
+	onEditPrompt,
+	editRequest,
+	editorState,
+	editorActions,
+	onCancelEdit,
+	onEditComplete,
+	allowPromptEditing = true,
+}: ConversationViewProps) {
 	const responseActive = isConversationResponseActive(state);
 	const thinkingActive = responseActive && state.session?.execution?.phase === "thinking";
 	const canEditPrompts =
@@ -325,22 +359,6 @@ export function ConversationView({
 	const pipeline = pipelineRef.current;
 	const retainedSessionDetailIds = actions.retainedSessionDetailIds;
 	if (retainedSessionDetailIds) pipeline.prune(retainedSessionDetailIds());
-	// 实时「已处理」每次跳动回报的秒数，按发送时刻归档，回合结束时供下方「本次耗时」复用。
-	const observedElapsedRef = useRef(new Map<number, number>());
-	const recordLiveElapsed = useCallback((sentAt: number, seconds: number) => {
-		const observed = observedElapsedRef.current;
-		observed.delete(sentAt);
-		observed.set(sentAt, seconds * 1_000);
-		while (observed.size > 64) {
-			const oldest = observed.keys().next().value;
-			if (oldest === undefined) break;
-			observed.delete(oldest);
-		}
-	}, []);
-	const resolveObservedElapsed = useCallback((sentAt: number) => observedElapsedRef.current.get(sentAt), []);
-	useEffect(() => {
-		observedElapsedRef.current.clear();
-	}, [state.sessionId]);
 	const { toolIndex, renderItems } = useMemo(
 		() =>
 			pipeline.render({
@@ -359,14 +377,14 @@ export function ConversationView({
 				canEditPrompts,
 				editingEntryId,
 				settledTurns: state.settledTurns,
-				observedElapsed: resolveObservedElapsed,
+				runtimeClock: state.runtimeClock,
 			}),
 		[
 			canEditPrompts,
 			editingEntryId,
 			liveSteps,
 			pipeline,
-			resolveObservedElapsed,
+			state.runtimeClock,
 			responseActive,
 			thinkingActive,
 			state.agentSteps,
@@ -391,7 +409,6 @@ export function ConversationView({
 					sessionTitleText={sessionTitleText}
 					renderItems={renderItems}
 					toolStatuses={toolIndex.statuses}
-					liveElapsedChange={recordLiveElapsed}
 					onEditPrompt={onEditPrompt}
 					editRequest={editRequest}
 					editorState={editorState}
@@ -402,7 +419,7 @@ export function ConversationView({
 			</Conversation>
 		</>
 	);
-}
+}, conversationPropsEqual);
 
 function ConversationBody({
 	state,
@@ -410,7 +427,6 @@ function ConversationBody({
 	sessionTitleText,
 	renderItems,
 	toolStatuses,
-	liveElapsedChange,
 	onEditPrompt,
 	editRequest,
 	editorState,
@@ -423,7 +439,6 @@ function ConversationBody({
 	sessionTitleText: string;
 	renderItems: ConversationRenderItem[];
 	toolStatuses: ReadonlyMap<string, "success" | "error">;
-	liveElapsedChange: (sentAt: number, seconds: number) => void;
 	onEditPrompt: (request: PromptEditRequest) => void;
 	editRequest?: PromptEditRequest;
 	editorState?: WorkbenchState;
@@ -450,7 +465,7 @@ function ConversationBody({
 		previousCursor: state.previousCursor, transcriptError: state.transcriptError,
 		loadEarlier: actions.loadEarlier, showToast: actions.showToast,
 	});
-	const resultVersion = state.projects?.flatMap((project) => project.sessions).find((session) => session.id === state.sessionId)?.result?.version;
+	const resultVersion = selectedSessionResultVersion(state);
 	useEffect(() => {
 		if (!actions.markSessionResultRead || !state.sessionId || state.displayedResultRevision === undefined ||
 			!state.connected || !state.sessionReady || !state.transcriptPageLoaded || state.transcriptLoading ||
@@ -641,13 +656,13 @@ function ConversationBody({
 			text={entry.text}
 			isStreaming={entry.streaming}
 			open={expandedThinking.get(entry.key) ?? false}
-			onOpenChange={(open) => { pauseFollowOutput(); updateExpandedThinking(entry.key, open); }}
+			onOpenChange={(open) => updateExpandedThinking(entry.key, open)}
 			contentRef={entry.contentRef}
 			sessionId={renderStateRef.current.sessionId}
 			projectId={renderStateRef.current.projectId}
 			onOpenPath={openResource}
 		/>,
-		[expandedThinking, openResource, pauseFollowOutput, updateExpandedThinking],
+		[expandedThinking, openResource, updateExpandedThinking],
 	);
 	const renderConversationContentItem = useCallback(
 		(entry: ConversationContentRenderItem) => {
@@ -691,7 +706,6 @@ function ConversationBody({
 					<LiveElapsedHeader
 						key={entry.key}
 						startedAt={entry.startedAt}
-						onElapsedChange={liveElapsedChange}
 					/>
 				);
 			}
@@ -707,25 +721,24 @@ function ConversationBody({
 			if (entry.kind === "work-process") return null;
 			return renderConversationContentItem(entry);
 		},
-		[expandedToolRows, liveElapsedChange, openResource, renderConversationContentItem, updateExpandedToolRow],
+		[expandedToolRows, openResource, renderConversationContentItem, updateExpandedToolRow],
 	);
 	const renderGroup = useCallback((layout: ConversationGroupLayout) => {
 		const entry = layout.entry;
 		if (entry.kind === "tool-stack") return <ToolActivityGroup
 			tools={entry.batches.flatMap((batch) => batch.tools)} kind={entry.activityKind}
-			open={layout.open} onOpenChange={(open) => { pauseFollowOutput(); changeGroup(entry.key, open); updateExpandedToolBatch(entry.key, open); }}
+			open={layout.open} onOpenChange={(open) => { changeGroup(entry.key, open); updateExpandedToolBatch(entry.key, open); }}
 			onCollapseComplete={() => finishCollapse(entry.key)}
 			className="tool-batch-render-item" sessionId={renderStateRef.current.sessionId}
 			headerProps={{ ref: layout.headerRef, "data-index": layout.headerIndex, "data-conversation-row": entry.key }}
 			padding={layout.padding}
 		>{layout.children}</ToolActivityGroup>;
 		return <ConversationGroup {...layout} entry={entry} onOpenChange={(open) => {
-			pauseFollowOutput();
 			changeGroup(entry.key, open);
 			if (entry.kind === "agent-step") updateExpandedAgentStep(entry.key, open);
 			else updateExpandedWorkProcess(entry.key, open);
 		}} onCollapseComplete={() => finishCollapse(entry.key)} />;
-	}, [changeGroup, finishCollapse, pauseFollowOutput, updateExpandedAgentStep, updateExpandedToolBatch, updateExpandedWorkProcess]);
+	}, [changeGroup, finishCollapse, updateExpandedAgentStep, updateExpandedToolBatch, updateExpandedWorkProcess]);
 
 	const transcriptGap = useCallback(
 		(previous: ConversationRenderItem, current: ConversationRenderItem) => {

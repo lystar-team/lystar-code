@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ConversationView, type ConversationActions, type ConversationState } from "../../src/components/workbench/conversation.tsx";
 import { decorateTranscriptItems } from "../../src/state/transcript-state.ts";
@@ -36,6 +36,20 @@ function initial(): ConversationState {
 function ReviewConversation() {
 	const [state, setState] = useState(initial);
 	const [prepended, setPrepended] = useState(false);
+	const [streaming, setStreaming] = useState(false);
+	const appendOutput = useCallback(() => setState((current) => {
+		const previous = current.liveTurnItems.at(-1);
+		const parts = previous?.kind === "text" ? previous.parts : [];
+		return { ...current, liveTurnItems: [{
+			id: "review-live", blockId: "review-live:0", kind: "text", turnId: current.liveTurnId,
+			parts: [...parts, "正在核对第 " + (parts.length + 1) + " 处调用的参数和返回结果，接着检查它在页面中的使用位置。\n\n"],
+		}] };
+	}), []);
+	useEffect(() => {
+		if (!streaming) return;
+		const timer = window.setInterval(appendOutput, 150);
+		return () => window.clearInterval(timer);
+	}, [appendOutput, streaming]);
 	const prepend = async () => {
 		if (prepended) return;
 		setPrepended(true);
@@ -48,7 +62,9 @@ function ReviewConversation() {
 		<div className="flex shrink-0 gap-4 border-b p-3">
 			<button id="prepend" onClick={() => void prepend()} type="button">补入上一页</button>
 			<button id="grow" onClick={() => setState((current) => ({ ...current, transcript: current.transcript.map((item, index) => index === 0 && item.view?.type === "assistant" ? { ...item, view: { ...item.view, text: `${item.view.text}\n\n${"异步增加正文。\n\n".repeat(30)}` } } : item) }))} type="button">上方内容增高</button>
-			<button id="reset" onClick={() => { setState(initial()); setPrepended(false); }} type="button">重置</button>
+			<button id="append-output" onClick={appendOutput} type="button">追加输出</button>
+			<button id="stream-output" onClick={() => setStreaming((current) => !current)} type="button">{streaming ? "停止连续输出" : "开始连续输出"}</button>
+			<button id="reset" onClick={() => { setStreaming(false); setState(initial()); setPrepended(false); }} type="button">重置</button>
 			<span>{toolMode ? "工具组跨页" : flatMode ? "消息跨页" : "步骤内跨页"}</span>
 		</div>
 		<ConversationView state={state} actions={actions} sessionTitleText="对话复盘验证" onEditPrompt={() => {}} allowPromptEditing={false} />

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { JsonFileRegistry } from "./json-file-registry.ts";
+import { WorkspaceDatabase } from "./workspace-database.ts";
 
 export interface ProjectGroup {
 	id: string;
@@ -8,64 +7,28 @@ export interface ProjectGroup {
 	projectIds: string[];
 }
 
-interface ProjectGroupIndexFile {
-	version: 1;
-	groups: ProjectGroup[];
-}
-
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
-
-function stringIds(value: unknown): string[] {
-	if (!Array.isArray(value)) return [];
-	return [
-		...new Set(
-			value.filter((candidate): candidate is string => typeof candidate === "string" && Boolean(candidate.trim())),
-		),
-	];
-}
-
-function normalizeGroup(value: unknown): ProjectGroup | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const source = value as Record<string, unknown>;
-	const id = stringValue(source.id);
-	const name = stringValue(source.name);
-	if (!id || !name) return undefined;
-	return { id, name, projectIds: stringIds(source.projectIds) };
-}
-
-function defaultIndex(): ProjectGroupIndexFile {
-	return { version: 1, groups: [] };
-}
-
 export class ProjectGroupRegistry {
 	readonly path: string;
-	private readonly storage: JsonFileRegistry<ProjectGroupIndexFile>;
+	private readonly storage: WorkspaceDatabase;
 
-	constructor(agentDir: string) {
-		this.path = join(agentDir, "project-groups.json");
-		this.storage = new JsonFileRegistry(
-			this.path,
-			defaultIndex,
-			(raw) => ({
-				version: 1,
-				groups: Array.isArray(raw.groups) ? raw.groups.flatMap((value) => normalizeGroup(value) ?? []) : [],
-			}),
-			"Web 项目组索引损坏",
-		);
+	constructor(agentDir: string, storage = new WorkspaceDatabase(agentDir)) {
+		this.storage = storage;
+		this.path = storage.path;
 	}
 
 	async load(): Promise<void> {
-		await this.storage.load();
+		this.storage.load();
 	}
 
 	list(): ProjectGroup[] {
-		return this.storage.read().groups.map((group) => ({ ...group, projectIds: group.projectIds.slice() }));
+		return this.storage.readGroups().groups.map((group) => ({ ...group, projectIds: group.projectIds.slice() }));
 	}
 
 	async create(name: string): Promise<ProjectGroup> {
-		return this.storage.update((state) => {
+		return this.storage.updateGroups((state) => {
 			const normalizedName = stringValue(name);
 			if (!normalizedName)
 				throw Object.assign(new Error("项目组名称不能为空"), { code: "project_group_name_required", status: 400 });
@@ -75,13 +38,18 @@ export class ProjectGroupRegistry {
 		});
 	}
 
-	async update(id: string, name: string): Promise<ProjectGroup> {
-		return this.storage.update((state) => {
+	async update(id: string, name: string, expectedName?: string): Promise<ProjectGroup> {
+		return this.storage.updateGroups((state) => {
 			const group = state.groups.find((candidate) => candidate.id === id);
 			if (!group) throw Object.assign(new Error("未找到项目组"), { code: "project_group_not_found", status: 404 });
 			const normalizedName = stringValue(name);
 			if (!normalizedName)
 				throw Object.assign(new Error("项目组名称不能为空"), { code: "project_group_name_required", status: 400 });
+			if (expectedName !== undefined && group.name !== expectedName && group.name !== normalizedName)
+				throw Object.assign(new Error("项目组已被其他设备修改，请核对最新内容后重试"), {
+					status: 409,
+					code: "workspace_conflict",
+				});
 			const next = { ...group, name: normalizedName };
 			state.groups = state.groups.map((candidate) => (candidate.id === id ? next : candidate));
 
@@ -90,7 +58,7 @@ export class ProjectGroupRegistry {
 	}
 
 	async reorder(groupIds: readonly string[]): Promise<void> {
-		return this.storage.update((state) => {
+		return this.storage.updateGroups((state) => {
 			const existingIds = new Set(state.groups.map((group) => group.id));
 			const orderedIds = [...new Set(groupIds)].filter((id) => existingIds.has(id));
 			const orderedSet = new Set(orderedIds);
@@ -104,7 +72,7 @@ export class ProjectGroupRegistry {
 	}
 
 	async remove(id: string): Promise<void> {
-		return this.storage.update((state) => {
+		return this.storage.updateGroups((state) => {
 			if (!state.groups.some((group) => group.id === id))
 				throw Object.assign(new Error("未找到项目组"), { code: "project_group_not_found", status: 404 });
 			state.groups = state.groups.filter((group) => group.id !== id);
@@ -112,7 +80,7 @@ export class ProjectGroupRegistry {
 	}
 
 	async assignProject(projectId: string, groupId?: string): Promise<void> {
-		return this.storage.update((state) => {
+		return this.storage.updateGroups((state) => {
 			const normalizedProjectId = stringValue(projectId);
 			if (!normalizedProjectId)
 				throw Object.assign(new Error("项目 ID 不能为空"), { code: "project_id_required", status: 400 });

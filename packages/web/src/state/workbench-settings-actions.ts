@@ -10,7 +10,7 @@ import type {
 	WebProviderModelInput,
 	WebThinkingLevel,
 } from "../types.ts";
-import { applyTheme, errorMessage } from "./workbench-state.ts";
+import { applyTheme, errorMessage, resolveHiddenModelProviders } from "./workbench-state.ts";
 import { createSubagentConversationState } from "./workbench-live-state.ts";
 import type { ComposerMode, SettingsTab, ShowToast, ThemeMode, WorkbenchState } from "./workbench-types.ts";
 
@@ -52,13 +52,18 @@ export function useWorkbenchSettingsActions({
 	const setModelProviderVisibility = useCallback(
 		async (providerId: string, visible: boolean) => {
 			try {
-				await webApi.setModelProviderVisibility(providerId, visible);
-				await Promise.all([refreshModelSettings(), refreshModelOptions()]);
+				const result = await webApi.setModelProviderVisibility(providerId, visible);
+				// 接口已返回完整显示设置：本地直接应用，不再为一次开关重新拉取整份模型目录。
+				updateState((current) => ({
+					...current,
+					hiddenModelProviders: resolveHiddenModelProviders(current.providers, result.providerVisibility),
+				}));
+				await refreshModelOptions();
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 			}
 		},
-		[refreshModelOptions, refreshModelSettings, showToast],
+		[refreshModelOptions, showToast, updateState],
 	);
 
 	const saveModelProvider = useCallback(

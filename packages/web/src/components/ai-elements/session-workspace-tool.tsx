@@ -1,4 +1,9 @@
-import { assertWorkspaceCommandResult, type SessionCollaborationResult, type SessionWorkspace, type SessionWorkspacesResult } from "@lystar/code-web-protocol";
+import type {
+	SessionCollaborationResult,
+	SessionWorkspace,
+	SessionWorkspacesResult,
+} from "@lystar/code-web-protocol";
+import { assertWorkspaceCommandResult } from "@lystar/code-web-protocol/schemas";
 import { parseSessionToolInput, parseSessionToolPayload, sessionToolStatusLabel } from "../../state/tool-batching.ts";
 import type { ToolBatchTool } from "../../types.ts";
 import { Button } from "../ui/button";

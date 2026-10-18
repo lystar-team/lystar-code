@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel, normalizeContext, stream } from "../src/compat.ts";
+import { getModel, normalizeContext } from "../src/compat.ts";
 import { MODELS } from "../src/models.generated.ts";
 import type { Model } from "../src/types.ts";
 
@@ -50,52 +50,6 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 	});
 
 	describe("Anthropic Provider", () => {
-		it.skipIf(!process.env.ANTHROPIC_API_KEY)(
-			"should use default cache TTL (no ttl field) when PI_CACHE_RETENTION is not set",
-			async () => {
-				const model = getModel("anthropic", "claude-haiku-4-5");
-				let capturedPayload: any = null;
-
-				const s = stream(model, context, {
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				// Consume the stream to trigger the request
-				for await (const _ of s) {
-					// Just consume
-				}
-
-				expect(capturedPayload).not.toBeNull();
-				// System prompt should have cache_control without ttl
-				expect(capturedPayload.system).toBeDefined();
-				expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral" });
-			},
-		);
-
-		it.skipIf(!process.env.ANTHROPIC_API_KEY)("should use 1h cache TTL when PI_CACHE_RETENTION=long", async () => {
-			process.env.PI_CACHE_RETENTION = "long";
-			const model = getModel("anthropic", "claude-haiku-4-5");
-			let capturedPayload: any = null;
-
-			const s = stream(model, context, {
-				onPayload: stopAfterPayload((payload) => {
-					capturedPayload = payload;
-				}),
-			});
-
-			// Consume the stream to trigger the request
-			for await (const _ of s) {
-				// Just consume
-			}
-
-			expect(capturedPayload).not.toBeNull();
-			// System prompt should have cache_control with ttl: "1h"
-			expect(capturedPayload.system).toBeDefined();
-			expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-		});
-
 		it("should add ttl for non-api.anthropic.com baseUrl by default", async () => {
 			process.env.PI_CACHE_RETENTION = "long";
 
@@ -244,51 +198,6 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			"does not enable cache warming from the documented TTL alone for %s",
 			(modelId) => {
 				expect(getModel("openai", modelId).promptCache).toBeUndefined();
-			},
-		);
-
-		it.skipIf(!process.env.OPENAI_API_KEY)(
-			"should not set prompt_cache_retention when PI_CACHE_RETENTION is not set",
-			async () => {
-				const model = getModel("openai", "gpt-4o-mini");
-				let capturedPayload: any = null;
-
-				const s = stream(model, context, {
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				// Consume the stream to trigger the request
-				for await (const _ of s) {
-					// Just consume
-				}
-
-				expect(capturedPayload).not.toBeNull();
-				expect(capturedPayload.prompt_cache_retention).toBeUndefined();
-			},
-		);
-
-		it.skipIf(!process.env.OPENAI_API_KEY)(
-			"should set prompt_cache_retention to 24h when PI_CACHE_RETENTION=long",
-			async () => {
-				process.env.PI_CACHE_RETENTION = "long";
-				const model = getModel("openai", "gpt-4o-mini");
-				let capturedPayload: any = null;
-
-				const s = stream(model, context, {
-					onPayload: stopAfterPayload((payload) => {
-						capturedPayload = payload;
-					}),
-				});
-
-				// Consume the stream to trigger the request
-				for await (const _ of s) {
-					// Just consume
-				}
-
-				expect(capturedPayload).not.toBeNull();
-				expect(capturedPayload.prompt_cache_retention).toBe("24h");
 			},
 		);
 

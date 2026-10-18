@@ -1,4 +1,5 @@
-import { createUuid, type SessionInfoResult, type SessionResultState } from "@lystar/code-web-protocol";
+import type { SessionInfoResult, SessionResultState } from "@lystar/code-web-protocol";
+import { createUuid } from "@lystar/code-web-protocol/uuid";
 import type {
 	WebRoomTask,
 	WebRoomTaskStatus,
@@ -160,10 +161,10 @@ export class WebApi {
 		});
 	}
 
-	async updateProjectGroup(id: string, name: string): Promise<{ group: ProjectGroup; groups: ProjectGroup[] }> {
+	async updateProjectGroup(id: string, name: string, expectedName: string): Promise<{ group: ProjectGroup; groups: ProjectGroup[] }> {
 		return this.request<{ group: ProjectGroup; groups: ProjectGroup[] }>(
 			`/api/project-groups/${encodeURIComponent(id)}`,
-			{ method: "PATCH", body: JSON.stringify({ name }) },
+			{ method: "PATCH", body: JSON.stringify({ name, expectedName }) },
 		);
 	}
 
@@ -190,10 +191,11 @@ export class WebApi {
 	async updateProject(
 		id: string,
 		update: Partial<Pick<WebProject, "name" | "pinned" | "color" | "archived">>,
+		expected: Pick<WebProject, "name" | "pinned" | "color" | "archived">,
 	): Promise<{ project: WebProject }> {
 		return this.request<{ project: WebProject }>(`/api/projects/${encodeURIComponent(id)}`, {
 			method: "PATCH",
-			body: JSON.stringify(update),
+			body: JSON.stringify({ ...update, color: Object.hasOwn(update, "color") ? update.color ?? null : undefined, expected: { name: expected.name, pinned: expected.pinned === true, color: expected.color ?? null, archived: expected.archived === true } }),
 		});
 	}
 
@@ -401,10 +403,18 @@ export class WebApi {
 		return this.request<ProjectTreeResponse>(`/api/projects/${encodeURIComponent(projectId)}/tree${query}`);
 	}
 
-	async projectFile(projectId: string, path: string): Promise<FileResponse> {
-		return this.request<FileResponse>(
+	async projectFile(projectId: string, path: string): Promise<FileResponse>;
+	async projectFile(projectId: string, path: string, contentVersion: string): Promise<FileResponse | undefined>;
+	async projectFile(projectId: string, path: string, contentVersion?: string): Promise<FileResponse | undefined> {
+		const response = await fetch(
 			`/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}`,
+			{
+				cache: "no-store",
+				headers: { ...jsonHeaders(), ...(contentVersion ? { "If-None-Match": `W/"${contentVersion}"` } : {}) },
+			},
 		);
+		if (response.status === 304 && contentVersion) return undefined;
+		return parseResponse<FileResponse>(response);
 	}
 
 	async downloadProjectFile(projectId: string, path: string): Promise<Blob> {
@@ -881,6 +891,7 @@ export class WebApi {
 		api: string;
 		apiKey?: string;
 		catalogProvider?: string;
+		nativeSteering?: "auto" | "off" | "on";
 	}): Promise<{ providers: ModelsResponse["providers"] }> {
 		return this.request<{ providers: ModelsResponse["providers"] }>("/api/model-providers", {
 			method: "POST",
@@ -906,6 +917,7 @@ export class WebApi {
 			baseUrl?: string;
 			reasoning: boolean;
 			fastModeSupported?: boolean;
+			nativeSteering?: "auto" | "off" | "on" | "inherit";
 			thinkingLevelMap?: Partial<
 				Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra", string | null>
 			>;

@@ -50,7 +50,8 @@ describe("协作子会话胶囊", () => {
 		const state = {
 			composerMode: "prompt", connected: true, currentProjectId: "project-1", hiddenModelProviders: [],
 			liveTools: {}, liveTurnActive: false, modelOptions: [], modelOptionProviders: [], models: [], providers: [],
-			queuedUserPrompts: [], subagents: [], readOnly: false, session: { id: "root" },
+			pendingUiRequests: [], queuedUserPrompts: [], stoppingSessionIds: {},
+			subagents: [], readOnly: false, session: { id: "root" },
 			sessionId: "root", sessionReady: true,
 		} as WorkbenchState;
 		const child = session({ id: "child", parentId: "root", relation: "collaboration", activity: "completed" });

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { webApi } from "../adapters/host-protocol/api.ts";
 import { isAbsoluteResourcePath } from "../lib/resource-path.ts";
 import { errorMessage, normalizedProjectFilePath, parentProjectPath, sameProjectTree } from "./workbench-state.ts";
@@ -10,6 +10,20 @@ type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState
 type UpdateState = (update: StateUpdate) => WorkbenchState;
 type RequestRef = { current: number };
 type PromiseMapRef = { current: Map<string, Promise<void>> };
+
+interface ProjectFileRefresh {
+	directories: Set<string>;
+	previewPath?: string;
+	gitStatus: boolean;
+	branchesPath?: string;
+	historyPath?: string;
+	promise: Promise<void>;
+}
+
+interface ProjectFileRefreshQueue {
+	pending?: ProjectFileRefresh;
+	tail: Promise<void>;
+}
 
 export interface WorkbenchFileActionsContext {
 	stateRef: StateRef;
@@ -42,6 +56,7 @@ export function useWorkbenchFileActions({
 	loadGitBranchesRef,
 	loadGitHistoryRef,
 }: WorkbenchFileActionsContext) {
+	const projectRefreshesRef = useRef(new Map<string, ProjectFileRefreshQueue>());
 	const openInspector = useCallback(
 		async (mode: InspectorMode = "files") => {
 			updateState((current) => ({ ...current, inspectorOpen: true, inspectorMode: mode }));
@@ -91,13 +106,17 @@ export function useWorkbenchFileActions({
 		(path: string): Promise<void> => {
 			const projectId = stateRef.current.currentProjectId;
 			if (!projectId) return Promise.resolve();
+			const generation = projectTreeGenerationRef.current;
 			const key = `${projectId}\0${path}`;
 			const pending = projectTreeRefreshPromisesRef.current.get(key);
 			if (pending) return pending;
 			const run = webApi
 				.projectTree(projectId, path)
 				.then((result) => {
-					if (stateRef.current.currentProjectId !== projectId) return;
+					if (
+						generation !== projectTreeGenerationRef.current ||
+						stateRef.current.currentProjectId !== projectId
+					) return;
 					updateState((current) => {
 						if (sameProjectTree(current.fileTreeCache[result.path], result)) return current;
 						return {
@@ -169,20 +188,34 @@ export function useWorkbenchFileActions({
 	const refreshOpenFile = useCallback(
 		(path = stateRef.current.filePath, force = false): Promise<void> => {
 			const projectId = stateRef.current.currentProjectId;
-			if (!projectId || !path || isAbsoluteResourcePath(path)) return Promise.resolve();
+			if (!projectId || !path || stateRef.current.filePath !== path || isAbsoluteResourcePath(path))
+				return Promise.resolve();
+			const requestId = fileRequestRef.current;
+			const generation = projectTreeGenerationRef.current;
+			const isCurrentPreview = () =>
+				requestId === fileRequestRef.current &&
+				generation === projectTreeGenerationRef.current &&
+				stateRef.current.currentProjectId === projectId &&
+				stateRef.current.filePath === path;
 			const key = `${projectId}\0${path}`;
 			const pending = fileMetadataPromisesRef.current.get(key);
-			if (pending) return pending;
+			if (pending)
+				return pending.then(() => {
+					if (!isCurrentPreview()) return;
+					return refreshOpenFile(path, force);
+				});
 			const run = (async () => {
-				const metadata = await webApi.projectFileMetadata(projectId, path);
-				if (stateRef.current.currentProjectId !== projectId || stateRef.current.filePath !== path) return;
-				if (!force && metadata.contentVersion && metadata.contentVersion === stateRef.current.fileContent?.contentVersion) {
-					return;
-				}
-				const result = await webApi.projectFile(projectId, path);
-				if (stateRef.current.currentProjectId !== projectId || stateRef.current.filePath !== path) return;
-				updateState((current) => ({ ...current, fileContent: result, fileError: undefined }));
-			})().catch(() => {});
+				const contentVersion = stateRef.current.fileContent?.contentVersion;
+				const result = !force && contentVersion
+					? await webApi.projectFile(projectId, path, contentVersion)
+					: await webApi.projectFile(projectId, path);
+				if (!isCurrentPreview()) return;
+				updateState((current) => result
+					? { ...current, fileContent: result, fileError: undefined }
+					: current.fileError ? { ...current, fileError: undefined } : current);
+			})().catch((error: unknown) => {
+				if (isCurrentPreview()) updateState((current) => ({ ...current, fileError: errorMessage(error) }));
+			});
 			const tracked = run.finally(() => {
 				if (fileMetadataPromisesRef.current.get(key) === tracked) fileMetadataPromisesRef.current.delete(key);
 			});
@@ -193,40 +226,104 @@ export function useWorkbenchFileActions({
 	);
 
 	const refreshProjectFiles = useCallback(
-		async (paths: readonly string[], refreshOpenedFile = true) => {
+		(paths: readonly string[], refreshOpenedFile = true): Promise<void> => {
 			const current = stateRef.current;
 			const project = current.projects.find((candidate) => candidate.id === current.currentProjectId);
-			if (!project) return;
+			if (!project) return Promise.resolve();
 			const refreshAll = paths.includes("");
 			const normalized = paths.flatMap((path) => {
 				const value = normalizedProjectFilePath(project.path, path);
 				return value ? [value] : [];
 			});
-			const loadedDirectories = new Set(Object.keys(current.fileTreeCache));
 			const directories = new Set(
-				refreshAll
+				(refreshAll
 					? Object.keys(current.fileTreeCache)
-					: normalized.flatMap((path) => [parentProjectPath(path), ...(loadedDirectories.has(path) ? [path] : [])]),
+					: normalized.flatMap((path) => [
+						parentProjectPath(path),
+						...(Object.hasOwn(current.fileTreeCache, path) ? [path] : []),
+					]))
+					.filter((path) => path === current.fileTreeRootPath || Object.hasOwn(current.fileTreeCache, path)),
 			);
-			await Promise.all(
-				[...directories]
-					.filter((path) => path === current.fileTreeRootPath || loadedDirectories.has(path))
-					.map(refreshProjectTreePath),
-			);
-			if (refreshOpenedFile && current.filePath && (refreshAll || normalized.includes(current.filePath))) {
-				await refreshOpenFile(current.filePath, true);
-			}
-			if (current.inspectorOpen && current.inspectorMode === "git") {
-				await loadGitStatusRef.current(true);
-				const repositoryPath =
-					stateRef.current.gitBranches?.repositoryPath ?? stateRef.current.gitHistory?.repositoryPath;
-				if (repositoryPath !== undefined) {
-					await Promise.allSettled([
-						loadGitBranchesRef.current(repositoryPath),
-						loadGitHistoryRef.current(repositoryPath),
-					]);
+			const previewPath = refreshOpenedFile && current.filePath &&
+				(refreshAll || normalized.includes(current.filePath)) ? current.filePath : undefined;
+			const gitStatus = current.inspectorOpen && current.inspectorMode === "git" &&
+				(refreshAll || normalized.length > 0);
+			if (directories.size === 0 && previewPath === undefined && !gitStatus) return Promise.resolve();
+			const metadataRepositories = new Set<string>();
+			if (gitStatus && !refreshAll) {
+				for (const path of normalized) {
+					const parts = path.split("/");
+					const marker = parts.indexOf(".git");
+					if (marker !== -1) metadataRepositories.add(parts.slice(0, marker).join("/"));
 				}
 			}
+			const generation = projectTreeGenerationRef.current;
+			const requests: Promise<void>[] = [];
+			for (const kind of ["files", "git"] as const) {
+				if (kind === "files" && directories.size === 0 && previewPath === undefined) continue;
+				if (kind === "git" && !gitStatus) continue;
+				const key = `${project.id}\0${generation}\0${kind}`;
+				const queue: ProjectFileRefreshQueue = projectRefreshesRef.current.get(key) ?? { tail: Promise.resolve() };
+				projectRefreshesRef.current.set(key, queue);
+				let pending = queue.pending;
+				if (!pending) {
+					const run = async () => {
+						queue.pending = undefined;
+						try {
+							if (
+								generation !== projectTreeGenerationRef.current ||
+								stateRef.current.currentProjectId !== project.id
+							) return;
+							const reads = [...refresh.directories].map(refreshProjectTreePath);
+							if (refresh.previewPath !== undefined) reads.push(refreshOpenFile(refresh.previewPath));
+							const metadataReads: Promise<void>[] = [];
+							const active = stateRef.current;
+							if (active.inspectorOpen && active.inspectorMode === "git") {
+								if (refresh.gitStatus) reads.push(loadGitStatusRef.current(true));
+								if (
+									refresh.branchesPath !== undefined &&
+									active.gitBranches?.repositoryPath === refresh.branchesPath
+								) metadataReads.push(loadGitBranchesRef.current(refresh.branchesPath));
+								if (
+									refresh.historyPath !== undefined &&
+									active.gitHistory?.repositoryPath === refresh.historyPath
+								) metadataReads.push(loadGitHistoryRef.current(refresh.historyPath));
+							}
+							const [results] = await Promise.all([
+								Promise.allSettled(reads), Promise.allSettled(metadataReads),
+							]);
+							const failure = results.find((result) => result.status === "rejected");
+							if (failure) throw failure.reason;
+						} finally {
+							if (queue.tail === refresh.promise && projectRefreshesRef.current.get(key) === queue)
+								projectRefreshesRef.current.delete(key);
+						}
+					};
+					const refresh: ProjectFileRefresh = {
+						directories: new Set(),
+						gitStatus: false,
+						// 前一批失败不阻止后来收到的失效事件；各批次仍返回自己的错误。
+						promise: queue.tail.then(run, run),
+					};
+					queue.pending = refresh;
+					queue.tail = refresh.promise;
+					pending = refresh;
+				}
+				if (kind === "files") {
+					for (const path of directories) pending.directories.add(path);
+					if (previewPath !== undefined) pending.previewPath = previewPath;
+				} else {
+					pending.gitStatus = true;
+					const branchesPath = current.gitBranches?.repositoryPath;
+					if (branchesPath !== undefined && (refreshAll || metadataRepositories.has(branchesPath)))
+						pending.branchesPath = branchesPath;
+					const historyPath = current.gitHistory?.repositoryPath;
+					if (historyPath !== undefined && (refreshAll || metadataRepositories.has(historyPath)))
+						pending.historyPath = historyPath;
+				}
+				requests.push(pending.promise);
+			}
+			return Promise.all(requests).then(() => {});
 		},
 		[refreshOpenFile, refreshProjectTreePath],
 	);

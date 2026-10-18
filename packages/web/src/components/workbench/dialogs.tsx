@@ -2,6 +2,7 @@ import { gsap } from "gsap";
 import { ArrowLeft, Check, ChevronRight, CircleAlert, Folder, HardDrive, Info, LoaderCircle, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { sessionTitle, type WorkbenchState } from "../../state/use-workbench";
+import { errorMessage } from "../../state/workbench-state";
 import type { WorkbenchToast } from "../../state/workbench-types";
 import type { WebProject, UiRequestEvent, WebSessionSummary } from "../../types";
 import { runGsapMotion } from "../../lib/gsap-motion";
@@ -25,6 +26,8 @@ export function DirectoryDialog({
 	onClose: () => void;
 }) {
 	const [selectedDirectory, setSelectedDirectory] = useState<string>();
+	const [adding, setAdding] = useState(false);
+	const [addError, setAddError] = useState<string>();
 	const directoryPathRef = useRef<string>();
 	const listing = state.directoryListing;
 	const requestDirectory = useCallback(
@@ -35,11 +38,14 @@ export function DirectoryDialog({
 		[actions.loadDirectory],
 	);
 	useEffect(() => {
-		if (!open) setSelectedDirectory(undefined);
+		if (!open) {
+			setSelectedDirectory(undefined);
+			setAddError(undefined);
+		}
 		directoryPathRef.current = listing?.path;
 	}, [listing?.path, open]);
 	useEffect(() => {
-		if (!open) return;
+		if (!open || adding) return;
 		const refresh = () => {
 			if (document.visibilityState === "visible") requestDirectory(directoryPathRef.current);
 		};
@@ -53,19 +59,32 @@ export function DirectoryDialog({
 			window.clearInterval(timer);
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 		};
-	}, [open, requestDirectory]);
+	}, [open, adding, requestDirectory]);
 	useEffect(() => {
 		if (!open || !listing || !selectedDirectory || selectedDirectory === listing.path) return;
 		if (!listing.entries.some((entry) => entry.path === selectedDirectory)) setSelectedDirectory(undefined);
 	}, [listing, open, selectedDirectory]);
+	const addProject = async () => {
+		if (!listing || adding || state.directoryLoading) return;
+		setAdding(true);
+		setAddError(undefined);
+		try {
+			await actions.addProject(selectedDirectory ?? listing.path);
+			onClose();
+		} catch (error) {
+			setAddError(errorMessage(error));
+		} finally {
+			setAdding(false);
+		}
+	};
 	return (
 		<Dialog
 			open={open}
 			onOpenChange={(value) => {
-				if (!value) onClose();
+				if (!value && !adding) onClose();
 			}}
 		>
-			<DialogContent className="max-w-2xl">
+			<DialogContent aria-busy={adding} className="max-w-2xl" showCloseButton={!adding}>
 				<DialogHeader>
 					<DialogTitle>选择项目目录</DialogTitle>
 					<DialogDescription>添加一个本机项目到工作台</DialogDescription>
@@ -77,6 +96,7 @@ export function DirectoryDialog({
 							<Input
 								className="min-w-0 flex-1"
 								value={listing.path}
+								disabled={adding}
 								onChange={(event) => {
 									const path = event.target.value;
 									setSelectedDirectory(path);
@@ -88,7 +108,7 @@ export function DirectoryDialog({
 								size="icon"
 								variant="ghost"
 								onClick={() => requestDirectory(listing.path)}
-								disabled={state.directoryLoading}
+								disabled={adding || state.directoryLoading}
 								aria-label="刷新当前目录"
 							>
 								<RefreshCw className={state.directoryLoading ? "size-4 animate-spin" : "size-4"} />
@@ -98,6 +118,7 @@ export function DirectoryDialog({
 							<Button
 								size="sm"
 								variant="outline"
+								disabled={adding}
 								onClick={() => {
 									setSelectedDirectory(listing.home);
 									requestDirectory(listing.home);
@@ -110,6 +131,7 @@ export function DirectoryDialog({
 								<Button
 									size="sm"
 									variant="outline"
+									disabled={adding}
 									onClick={() => {
 										setSelectedDirectory(listing.parent);
 										requestDirectory(listing.parent);
@@ -127,6 +149,7 @@ export function DirectoryDialog({
 										key={entry.path}
 										className="h-7 justify-start gap-2 py-1 text-xs"
 										variant={selectedDirectory === entry.path ? "secondary" : "ghost"}
+										disabled={adding}
 										onClick={() => setSelectedDirectory(entry.path)}
 										onDoubleClick={() => {
 											setSelectedDirectory(entry.path);
@@ -140,19 +163,23 @@ export function DirectoryDialog({
 								))}
 							</div>
 						</ScrollArea>
+						{addError ? (
+							<Alert variant="destructive">
+								<CircleAlert className="size-4" />
+								<AlertDescription className="break-words">{addError}</AlertDescription>
+							</Alert>
+						) : null}
 						<DialogFooter>
 							<div className="mr-auto min-w-0 text-left">
 								<p className="text-xs text-muted-foreground">当前选择</p>
 								<p className="max-w-80 truncate font-mono text-xs">{selectedDirectory ?? listing.path}</p>
 							</div>
 							<Button
-								onClick={() => {
-									void actions.addProject(selectedDirectory ?? listing.path);
-									onClose();
-								}}
+								disabled={adding || state.directoryLoading}
+								onClick={() => void addProject()}
 							>
-								<Plus className="size-4" />
-								添加项目
+								{adding ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
+								{adding ? "正在添加" : "添加项目"}
 							</Button>
 						</DialogFooter>
 					</>

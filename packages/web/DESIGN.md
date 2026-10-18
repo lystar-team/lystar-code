@@ -76,7 +76,7 @@ React 19 + TypeScript、Vite 8、Tailwind CSS 4、CSS 语义变量、shadcn/ui�
 - 界面字体：`Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei"`，不下载 Web Font。
 - 界面字号常用层级：`text-xs` 12px（辅助、状态、计数）、`text-sm` 14px（控件、次级说明）、`text-base` 16px（顶栏标题、对话框标题）、`text-lg` 18px（顶栏标题 sm 以上）。设置页头使用 `text-2xl sm:text-4xl`；诊断页使用 28px / 36px，资源数值使用 28px / 34px。
 - 代码、路径、命令、模型 ID 使用等宽字体。
-- 正文：`.sd-prose` 为 `0.9375rem / 1.78`，行内代码、表格和引用块沿用 `src/styles/prose.css`。
+- 正文：会话正文与协作气泡消息继承 `text-sm`（14px / 20px），与 Markdown 组件的默认段落间距一致，智能体与真人消息字号相同。`.sd-prose` 只用于文件预览和任务详情等文档型内容，为 `0.9375rem / 1.78`，行内代码、表格和引用块沿用 `src/styles/prose.css`。
 - 项目栏列表项固定 `13px`；工作区导航栏按钮文字 `10px`（`src/styles.css` 的 `.workspace-navigation-rail` 覆盖）。
 - 会话标题与工具标题保持单行；长内容截断，完整内容通过展开或可访问名称提供。
 
@@ -146,7 +146,7 @@ GSAP，动效曲线集中在 `src/lib/ease.ts` 与 `src/lib/gsap-motion.ts`。
 
 项目栏是覆盖层时可点遮罩或按 Escape 关闭。审阅工作区不是覆盖层。其它覆盖层包括设置、文件预览、Git Diff、目录选择、项目重命名、会话重命名、项目组新建与选择、会话管理、Agent 会话、Git 凭据授权、UI Request、产品更新和窄屏项目栏。连接恢复状态在标题下方显示，不覆盖导航与工作区内容。
 
-设置是全屏对话框（`inset-0 h-dvh w-screen`），左侧分类导航在 `md` 以上竖排、宽 224px，以下为横向滚动标签。普通内容区最大宽度 1120px，智能体页放宽到 1680px；诊断页外层最大宽度 1216px，桌面水平内边距 48px、上下内边距 32px，实际内容最大宽度 1120px。
+设置是全屏对话框（`inset-0 h-dvh w-screen`），左侧分类导航在 `md` 以上竖排、宽 224px，以下为横向滚动标签。各页内容区最大宽度统一 1120px，页头由设置容器统一渲染：标题 `text-2xl sm:text-4xl`，描述 `text-base leading-7`，页头动作按钮用 `size="sm"` 配 `!text-sm !leading-5`，智能体页不再自带标题；诊断页外层最大宽度 1216px，桌面水平内边距 48px、上下内边距 32px，实际内容最大宽度 1120px。
 
 Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5rem)]`、`right-4`、宽 `min(420px, 100vw-2rem)`，`rounded-xl` 并带阴影。它低于模态和菜单层级，区分成功、信息、警告和错误；只有明确成功才显示勾。未指定类型按信息处理。重要错误留在对应工具、会话、编辑器或连接区域，已有局部反馈时不重复弹 Toast。
 
@@ -278,6 +278,9 @@ Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5r
 - 看板四列：待认领、进行中、阻塞、已完成，直接使用任务状态；成员提交成果后仍为进行中，由主会话核对并接收后完成。
 - 任务详情用于查看结果、变更文件和进展；结果、任务内容与进展评论复用 `MessageResponse` 渲染 Markdown，补丁通过现有文件预览入口查看。编辑任务、发表评论和调整进展按需展开；正常接收与返工由主会话处理，详情不提供人工验收操作。
 - 成员发言使用昵称，缺失时用 `collaborationAlias` 生成稳定别名；owner 的智能体消息显示「主智能体」，真人消息显示「你」。任务记录中的 owner 显示「协作负责人」。
+- 对话气泡统一为 `rounded-xl` 圆角矩形，不加阴影；智能体气泡用 `bg-background` 加边框，真人气泡用 `bg-muted`，双方都靠表面差异和头像区分。气泡最大宽度为 `min(100% - 2.75rem, 680px)`，始终为头像与间距留出空间，窄屏不向右溢出。
+- 任务、状态、结果和系统活动行留在所属气泡内，占满气泡宽度；正文换行，不截断、不溢出气泡。
+- `MessageResponse` 的 Streamdown 根节点只设 `w-full`，不设 `height: 100%`：在自动高度气泡里，百分比高度要等父级高度算完才解析，根节点撑满后父级不会重新增高，后面的活动行就被绘制到气泡外。
 
 ### 5.11 设置
 

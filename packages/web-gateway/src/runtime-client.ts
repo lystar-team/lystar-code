@@ -176,6 +176,7 @@ const ISOLATED_READ_COMMANDS = new Set<Command["command"]>([
 	"resolve_project_resource",
 	"resolve_external_resource",
 	"read_project_resource",
+	"read_project_resource_preview",
 	"read_external_resource",
 	"read_content",
 	"list_settings",

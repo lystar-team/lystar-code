@@ -1,4 +1,4 @@
-import { webSearchProgressSummary } from "@lystar/code-web-protocol";
+import { webSearchProgressSummary } from "@lystar/code-web-protocol/web-search";
 import type { WebSearchProgress } from "@lystar/code-web-protocol";
 
 export interface ToolBatchDescriptor {

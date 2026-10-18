@@ -62,6 +62,7 @@ export function WorkbenchTabBar<Value extends string>({
 	label,
 	orientation = "horizontal",
 	tabs,
+	trackClassName,
 	variant = "default",
 }: {
 	activeId: Value;
@@ -70,6 +71,7 @@ export function WorkbenchTabBar<Value extends string>({
 	label: string;
 	orientation?: "horizontal" | "vertical";
 	tabs: readonly WorkbenchTabOption<Value>[];
+	trackClassName?: string;
 	variant?: "default" | "navigation";
 }) {
 	return (
@@ -85,7 +87,7 @@ export function WorkbenchTabBar<Value extends string>({
 				expandOnHover={false}
 				orientation={orientation}
 				size="sm"
-				trackClassName={variant === "navigation" ? "gap-0 rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-none" : undefined}
+				trackClassName={cn(variant === "navigation" ? "gap-0 rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-none" : undefined, trackClassName)}
 			>
 				{tabs.map((tab, index) => (
 					<Fragment key={tab.value}>

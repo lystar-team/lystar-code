@@ -555,7 +555,7 @@ export const Composer = memo(function Composer({
 										onStatus={handleEditAttachmentStatus}
 									/>
 								) : null}
-								<PromptInputHeader className={`min-w-0 flex-col flex-nowrap items-stretch empty:hidden ${!inline && !roomMode ? executionStatusVisible ? "pb-0" : "p-0" : ""}`}>
+								<PromptInputHeader className={`min-w-0 flex-col flex-nowrap items-stretch gap-0 empty:hidden ${!inline && !roomMode ? executionStatusVisible ? "pb-0" : "p-0" : ""}`}>
 									{!inline && !roomMode && state.sessionId ? (
 										<div className={`flex w-full min-w-0 items-center justify-between gap-3 ${statsInFooter && !executionStatusVisible ? "hidden" : ""}`}>
 											<div className={`min-w-0 ${statsInFooter ? "flex-1" : "max-w-[60%] shrink"}`}>
@@ -568,7 +568,7 @@ export const Composer = memo(function Composer({
 											) : null}
 										</div>
 									) : null}
-									<ComposerAttachments />
+									<ComposerAttachments headerHasPadding={inline || roomMode || executionStatusVisible} statusVisible={!inline && !roomMode && executionStatusVisible} />
 								</PromptInputHeader>
 								<PromptInputBody>
 									<PromptCompletionTextarea
@@ -1165,7 +1165,7 @@ function FileUploadButton({ disabled }: { disabled: boolean }) {
 	);
 }
 
-function ComposerAttachments() {
+function ComposerAttachments({ headerHasPadding, statusVisible }: { headerHasPadding: boolean; statusVisible: boolean }) {
 	const attachments = usePromptInputAttachments();
 	const [previewIndex, setPreviewIndex] = useState<number>();
 	if (!attachments.files.length) return null;
@@ -1178,7 +1178,7 @@ function ComposerAttachments() {
 
 	return (
 		<>
-			<Attachments variant="inline" className="w-full min-w-0">
+			<Attachments variant="inline" className={`w-full min-w-0 ${statusVisible ? "pt-[2px]" : "pt-[12px]"} ${headerHasPadding ? "px-2" : "px-5"}`}>
 				{attachments.files.map((file) => {
 					const imageIndex = previewItems.findIndex((item) => item.id === file.id);
 					const previewable = imageIndex >= 0;

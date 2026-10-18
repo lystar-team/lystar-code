@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AuthContext, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import * as modelsDev from "@earendil-works/pi-ai/utils/models-dev";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -44,6 +45,10 @@ let tempDir: string;
 
 beforeEach(() => {
 	allowNetwork();
+	// 隔离通用模型元数据下载，fetch 断言只覆盖 Radius 目录。
+	vi.spyOn(modelsDev, "loadModelsDevCatalog").mockResolvedValue(
+		new modelsDev.ModelsDevCatalog({ openai: { models: { "gpt-4o": { id: "gpt-4o" } } } }, Date.now()),
+	);
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
 		throw new Error(`Unexpected fetch: ${String(url)}`);
 	});

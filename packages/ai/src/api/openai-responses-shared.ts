@@ -989,6 +989,7 @@ function mapStopReason(
 		case "completed":
 			return { stopReason: "stop" };
 		case "incomplete":
+			if (incompleteReason === "steered") return { stopReason: "stop" };
 			if (incompleteReason === "max_output_tokens") {
 				return { stopReason: "length" };
 			}

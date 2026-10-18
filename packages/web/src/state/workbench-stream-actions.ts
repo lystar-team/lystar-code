@@ -1,9 +1,8 @@
-import { useCallback, useRef } from "react";
-import {
-	type SessionProgress,
-} from "@lystar/code-web-protocol";
+import { startTransition, useCallback, useRef } from "react";
+import type { SessionProgress } from "@lystar/code-web-protocol";
 import { webApi } from "../adapters/host-protocol/api.ts";
 import { recordBrowserDiagnostic } from "../lib/browser-diagnostics.ts";
+import { notifySettledTurn } from "../lib/turn-notification.ts";
 import type {
 	GatewayEvent,
 	ProjectGroup,
@@ -72,6 +71,7 @@ import type {
 } from "./workbench-types.ts";
 import { applySessionResult } from "./session-result-state.ts";
 
+import { applyWorkspaceSnapshot } from "./workspace-state.ts";
 type StateRef = { current: WorkbenchState };
 type StateUpdate = WorkbenchState | ((current: WorkbenchState) => WorkbenchState);
 type UpdateState = (update: StateUpdate) => WorkbenchState;
@@ -93,6 +93,7 @@ export interface WorkbenchStreamActionsContext {
 	updateState: UpdateState;
 	showToast: ShowToast;
 	applyBootstrap: (data: {
+		workspaceRevision: number;
 		projects: WebProject[];
 		projectGroups: ProjectGroup[];
 		capabilities: readonly string[];
@@ -158,6 +159,7 @@ export function useWorkbenchStreamActions({
 	handledNotifyIdsRef,
 }: WorkbenchStreamActionsContext) {
 	const gapRecoveryRef = useRef(new Map<string, Promise<unknown>>());
+	const lastSubscriptionAckRef = useRef<{ sessionId: string; socket?: WebSocket; selection: number; seq: number; gap: boolean }>();
 	const scheduleTranscriptRefresh = useCallback(
 		(sessionId = stateRef.current.sessionId) => {
 			if (!sessionId) return;
@@ -369,14 +371,21 @@ export function useWorkbenchStreamActions({
 	const handleEvent = useCallback(
 		(event: GatewayEvent) => {
 			if (event.type === "session_subscription") {
-				recordBrowserDiagnostic("session.subscription.ack", { sessionId: event.sessionId, selection: selectionRef.current, seq: event.seq, gap: event.gap });
 				const selected = stateRef.current.sessionId === event.sessionId;
+				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
+				const previousAck = lastSubscriptionAckRef.current;
+				if (selected && !waiters && previousAck?.sessionId === event.sessionId &&
+					previousAck.socket === socketRef.current && previousAck.selection === selectionRef.current &&
+					previousAck.seq === event.seq && previousAck.gap === event.gap) return;
+				recordBrowserDiagnostic("session.subscription.ack", { sessionId: event.sessionId, selection: selectionRef.current, seq: event.seq, gap: event.gap });
+				if (selected) lastSubscriptionAckRef.current = {
+					sessionId: event.sessionId, socket: socketRef.current, selection: selectionRef.current, seq: event.seq, gap: event.gap,
+				};
 				const cached = sessionDetailCacheRef.current.get(event.sessionId);
 				if (event.gap && cached) invalidateCachedSessionSubscription(event.sessionId, cached, !selected);
 				const previousSeq = sessionDetailSeqRef.current.get(event.sessionId);
 				if (selected && !event.gap && previousSeq !== undefined && event.seq < previousSeq) return;
 				if (selected) sessionDetailSeqRef.current.set(event.sessionId, event.seq);
-				const waiters = sessionSubscriptionWaitersRef.current.get(event.sessionId);
 				if (waiters) {
 					for (const waiter of [...waiters])
 						waiter.resolve(selected && waiter.selection === selectionRef.current ? event.gap ? "gap" : "ready" : "closed");
@@ -437,8 +446,14 @@ export function useWorkbenchStreamActions({
 				applyBootstrap(event.data);
 				return;
 			}
+			if (event.type === "workspace_updated") {
+				// 后台列表同步允许 React 分段渲染，让输入和滚动先响应。
+				startTransition(() => { updateState((current) => applyWorkspaceSnapshot(current, event)); });
+				return;
+			}
 			if (event.type === "project_updated") {
 				updateState((current) => {
+					if ((event.workspaceRevision ?? 0) < (current.workspaceRevision ?? 0)) return current;
 					const previous = current.projects.find((project) => project.id === event.project.id);
 					if (!previous) return current;
 					const project = mergeProjectSessions([previous], [event.project])[0];
@@ -851,6 +866,21 @@ export function useWorkbenchStreamActions({
 							}
 						: current,
 				);
+				if (event.outcome !== "aborted") {
+					const project = stateRef.current.projects.find((candidate) =>
+						candidate.sessions.some((session) => session.id === event.sessionId),
+					);
+					if (project)
+						void notifySettledTurn({
+							projectName: project.name,
+							sessionName:
+								project.sessions.find((session) => session.id === event.sessionId)?.name ?? "未命名会话",
+							sessionId: event.sessionId,
+							turnId: event.turnId,
+							outcome: event.outcome,
+							text: event.text,
+						}).catch((error: unknown) => recordBrowserDiagnostic("turn-notification", error));
+				}
 				return;
 			}
 			if (event.type === "ui_request") {

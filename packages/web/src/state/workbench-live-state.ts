@@ -1,4 +1,4 @@
-import { mergeWebSearchProgress } from "@lystar/code-web-protocol";
+import { mergeWebSearchProgress } from "@lystar/code-web-protocol/web-search";
 import type {
 	AgentStep,
 	SessionProgress,
@@ -332,6 +332,10 @@ export function nextLiveToolBatchId(
 		: fallback;
 }
 
+function isDiscardedToolPreview(activity: ToolActivity): boolean {
+	return activity.state === "interrupted" && activity.startedAt === undefined;
+}
+
 export function applyToolActivityState(current: WorkbenchState, activity: ToolActivity): WorkbenchState {
 	if (
 		current.toolActivityEpoch === activity.activityEpoch &&
@@ -341,6 +345,20 @@ export function applyToolActivityState(current: WorkbenchState, activity: ToolAc
 	}
 	const newEpoch = current.toolActivityEpoch !== activity.activityEpoch;
 	const liveTools = newEpoch ? {} : current.liveTools;
+	if (isDiscardedToolPreview(activity)) {
+		const { [activity.toolCallId]: _discarded, ...remainingTools } = liveTools;
+		return {
+			...current,
+			toolActivityEpoch: activity.activityEpoch,
+			toolActivityRevision: activity.revision,
+			liveTools: remainingTools,
+			liveTurnItems: current.liveTurnItems.flatMap((item): LiveTurnItem[] => {
+				if (item.kind !== "tools") return [item];
+				const toolIds = newEpoch ? [] : item.toolIds.filter((id) => id !== activity.toolCallId);
+				return toolIds.length ? [{ ...item, toolIds }] : [];
+			}),
+		};
+	}
 	const previous = liveTools[activity.toolCallId];
 	const batchId =
 		previous?.batchId ??
@@ -391,7 +409,8 @@ export function restoreToolActivities(current: WorkbenchState, snapshot: WebSess
 		return current;
 	}
 	// 快照恢复只更新工具状态，不重排已有块：保留文本与工具的相对顺序，只补快照新增的工具。
-	const incoming = new Map((snapshot.toolActivities ?? []).map((activity) => [activity.toolCallId, activity]));
+	const activities = (snapshot.toolActivities ?? []).filter((activity) => !isDiscardedToolPreview(activity));
+	const incoming = new Map(activities.map((activity) => [activity.toolCallId, activity]));
 	const liveTools: WorkbenchState["liveTools"] = {};
 	for (const [toolCallId, tool] of Object.entries(current.liveTools)) {
 		if (incoming.has(toolCallId)) liveTools[toolCallId] = tool;
@@ -407,7 +426,7 @@ export function restoreToolActivities(current: WorkbenchState, snapshot: WebSess
 			return toolIds.length ? [{ ...item, toolIds }] : [];
 		}),
 	};
-	for (const activity of snapshot.toolActivities ?? []) {
+	for (const activity of activities) {
 		// 已有工具块保留位置，只更新状态；快照新增的工具才追加到末尾。
 		if (next.liveTools[activity.toolCallId]) {
 			next = {

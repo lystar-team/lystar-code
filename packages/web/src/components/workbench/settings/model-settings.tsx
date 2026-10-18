@@ -26,6 +26,14 @@ import { ModelBrandIcon } from "./model-brand-icon";
 import { WorkbenchTabBar, type WorkbenchTabOption } from "../workbench-tab-bar";
 import { SettingSection } from "./shared";
 
+type NativeSteeringMode = NonNullable<WorkbenchState["providers"][number]["nativeSteering"]>;
+type NativeSteeringSetting = NativeSteeringMode | "inherit";
+const NATIVE_STEERING_OPTIONS = [
+	{ value: "auto", label: "自动", description: "首次插话时判断；明确不支持后直接排队处理。" },
+	{ value: "off", label: "关闭", description: "在当前响应结束后处理插话，不尝试原生 WS 插话。" },
+	{ value: "on", label: "开启", description: "允许尝试原生 WS 插话，忽略已记录的不支持结果。" },
+] as const;
+
 type ProviderDraft = {
 	isNew: boolean;
 	provider: string;
@@ -34,6 +42,8 @@ type ProviderDraft = {
 	api: string;
 	apiKey: string;
 	catalogProvider: string;
+	nativeSteering: NativeSteeringMode;
+	nativeSteeringUnavailable: boolean;
 };
 
 type ModelDraft = {
@@ -45,6 +55,9 @@ type ModelDraft = {
 	baseUrl: string;
 	reasoning: boolean;
 	fastModeSupported: boolean;
+	nativeSteering: NativeSteeringSetting;
+	inheritedNativeSteering: NativeSteeringMode;
+	nativeSteeringUnavailable: boolean;
 	manualThinking: boolean;
 	thinkingLevelMap: Record<string, string | null>;
 	input: ("text" | "image")[];
@@ -131,11 +144,50 @@ function MonochromeProviderIcon({ providerId, small = false }: { providerId: str
 	);
 }
 
+function NativeSteeringField({
+	id, value, inheritedMode, unavailable, disabled, onChange,
+}: {
+	id: string;
+	value: NativeSteeringSetting;
+	inheritedMode?: NativeSteeringMode;
+	unavailable: boolean;
+	disabled: boolean;
+	onChange: (value: string) => void;
+}) {
+	const mode = value === "inherit" ? inheritedMode : value;
+	return (
+		<div className="grid gap-2">
+			<label className="text-sm font-medium" htmlFor={id}>原生 WS 插话</label>
+			<Select value={value} onValueChange={onChange} disabled={disabled}>
+				<SelectTrigger id={id} className="w-full" aria-describedby={`${id}-help`}>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{inheritedMode ? (
+						<SelectItem value="inherit">
+							跟随供应商（{NATIVE_STEERING_OPTIONS.find((option) => option.value === inheritedMode)?.label}）
+						</SelectItem>
+					) : null}
+					{NATIVE_STEERING_OPTIONS.map((option) => (
+						<SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+			<p id={`${id}-help`} className="text-xs leading-5 text-muted-foreground">
+				{mode === "auto" && unavailable
+					? "已记录上游不支持；保存后会在下次插话时重新判断。"
+					: NATIVE_STEERING_OPTIONS.find((option) => option.value === mode)?.description}
+			</p>
+		</div>
+	);
+}
+
 export function ModelSettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const [selectedProvider, setSelectedProvider] = useState("");
 	const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
 	const [modelDraft, setModelDraft] = useState<ModelDraft | null>(null);
 	const modelSupportsFastApi = modelDraft?.api === "openai-responses" || modelDraft?.api === "openai-codex-responses";
+	const providerSupportsNativeSteering = providerDraft?.api === "openai-responses" || providerDraft?.api === "openai-codex-responses";
 	const [submitting, setSubmitting] = useState(false);
 	const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
 	const [removingProvider, setRemovingProvider] = useState<string | null>(null);
@@ -253,6 +305,8 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			api: provider?.api ?? "openai-completions",
 			apiKey: "",
 			catalogProvider: provider?.catalogProvider ?? "__none__",
+			nativeSteering: provider?.nativeSteering ?? "auto",
+			nativeSteeringUnavailable: provider?.nativeSteeringUnavailable ?? false,
 		});
 	};
 
@@ -268,6 +322,9 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			baseUrl: provider?.baseUrl ?? "",
 			reasoning: model?.reasoning ?? false,
 			fastModeSupported: model?.fastModeSupported ?? false,
+			nativeSteering: model?.nativeSteeringOverride ?? "inherit",
+			inheritedNativeSteering: provider?.nativeSteering ?? "auto",
+			nativeSteeringUnavailable: model?.nativeSteeringUnavailable ?? false,
 			manualThinking: false,
 			thinkingLevelMap: editableThinkingLevelMap(model),
 			input: (model?.input ?? ["text"]) as ("text" | "image")[],
@@ -290,6 +347,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 				api: providerDraft.api.trim(),
 				apiKey: providerDraft.apiKey.trim() || undefined,
 				catalogProvider: providerDraft.catalogProvider === "__none__" ? undefined : providerDraft.catalogProvider,
+				...(providerSupportsNativeSteering ? { nativeSteering: providerDraft.nativeSteering } : {}),
 				clearCatalogProvider:
 					!providerDraft.isNew && providerDraft.catalogProvider === "__none__" ? true : undefined,
 			});
@@ -324,6 +382,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 				name: modelDraft.name.trim() || undefined,
 				reasoning: modelDraft.reasoning,
 				fastModeSupported: modelSupportsFastApi && modelDraft.fastModeSupported,
+				...(modelSupportsFastApi ? { nativeSteering: modelDraft.nativeSteering } : {}),
 				...(modelDraft.isNew
 					? { api: modelDraft.api.trim() || undefined, baseUrl: modelDraft.baseUrl.trim() || undefined }
 					: {}),
@@ -1022,6 +1081,15 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									</SelectContent>
 								</Select>
 							</div>
+							{providerSupportsNativeSteering ? (
+								<NativeSteeringField
+									id="provider-native-steering"
+									value={providerDraft.nativeSteering}
+									unavailable={providerDraft.nativeSteeringUnavailable}
+									disabled={submitting}
+									onChange={(value) => setProviderDraft({ ...providerDraft, nativeSteering: value as NativeSteeringMode })}
+								/>
+							) : null}
 							<div className="grid gap-2">
 								<label className="text-sm font-medium" htmlFor="provider-key">
 									API Key
@@ -1068,7 +1136,9 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 										!providerDraft.api.trim()
 									}
 								>
-									{submitting ? <LoaderCircle className="size-4 animate-spin" /> : null}保存 Provider
+									{submitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+									{providerSupportsNativeSteering && providerDraft.nativeSteering === "auto" && providerDraft.nativeSteeringUnavailable
+										? "保存并重新判断" : "保存 Provider"}
 								</Button>
 							</DialogFooter>
 						</form>
@@ -1135,6 +1205,16 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 										/>
 									</div>
 								</>
+							) : null}
+							{modelSupportsFastApi ? (
+								<NativeSteeringField
+									id="model-native-steering"
+									value={modelDraft.nativeSteering}
+									inheritedMode={modelDraft.inheritedNativeSteering}
+									unavailable={modelDraft.nativeSteeringUnavailable}
+									disabled={submitting}
+									onChange={(value) => setModelDraft({ ...modelDraft, nativeSteering: value as NativeSteeringSetting })}
+								/>
 							) : null}
 							<div className="grid gap-3 sm:grid-cols-3">
 								<label className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
@@ -1277,7 +1357,10 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									type="submit"
 									disabled={submitting || !modelDraft.id.trim() || modelDraft.input.length === 0}
 								>
-									{submitting ? <LoaderCircle className="size-4 animate-spin" /> : null}保存模型
+									{submitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+									{modelSupportsFastApi && modelDraft.nativeSteeringUnavailable &&
+										(modelDraft.nativeSteering === "auto" || (modelDraft.nativeSteering === "inherit" && modelDraft.inheritedNativeSteering === "auto"))
+										? "保存并重新判断" : "保存模型"}
 								</Button>
 							</DialogFooter>
 						</form>

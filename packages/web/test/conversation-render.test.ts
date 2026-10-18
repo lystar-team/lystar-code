@@ -731,7 +731,7 @@ describe("conversation render items", () => {
 		]);
 	});
 
-	it("已落盘回合的耗时从客户端按下发送时刻起算", () => {
+	it("已落盘回合的耗时在切换会话前后使用相同的服务端时间", () => {
 		const transcript = [
 			{
 				entryId: "user-1",
@@ -756,11 +756,11 @@ describe("conversation render items", () => {
 
 		expect(labels(buildPersistedRenderItems(transcript, emptyToolIndex))).toEqual(["2分钟08秒"]);
 		expect(labels(buildPersistedRenderItems(transcript, emptyToolIndex, [], { "user-1": sentAt }))).toEqual([
-			"1分钟48秒",
+			"2分钟08秒",
 		]);
 	});
 
-	it("客户端看到的实时数值优先作为本次耗时", () => {
+	it("已结束回合的耗时不受当前运行端校时影响", () => {
 		const transcript = [
 			{
 				entryId: "user-1",
@@ -789,11 +789,11 @@ describe("conversation render items", () => {
 			false,
 			false,
 			{},
-			(value) => (value === sentAt ? 17_000 : undefined),
+			{ serverAt: Date.parse("2026-09-16T00:00:17.000Z"), receivedAt: performance.now() },
 		);
 
 		expect(rendered.filter((item) => item.kind === "message" && item.durationLabel)).toMatchObject([
-			{ role: "assistant", durationLabel: "17秒" },
+			{ role: "assistant", durationLabel: "2分钟08秒" },
 		]);
 	});
 

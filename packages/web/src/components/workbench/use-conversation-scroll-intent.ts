@@ -71,7 +71,7 @@ export function useConversationScrollIntent(options: ScrollIntentOptions, scroll
 			if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) direction(true);
 			else if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) direction(false);
 		},
-		onTouchStartCapture: (event) => { touchY.current = event.touches[0]?.clientY; touchUp.current = false; options.onCancel(); },
+		onTouchStartCapture: (event) => { touchY.current = event.touches[0]?.clientY; touchUp.current = false; },
 		onTouchMoveCapture: (event) => {
 			const y = event.touches[0]?.clientY;
 			if (y !== undefined && touchY.current !== undefined && y !== touchY.current) direction(y > touchY.current);
@@ -86,6 +86,12 @@ export function useConversationScrollIntent(options: ScrollIntentOptions, scroll
 		},
 		onTouchCancelCapture: () => { touchY.current = undefined; touchUp.current = false; options.onDown(); },
 		onPointerDown: (event) => {
+			const element = event.currentTarget;
+			if (event.target !== element || event.pointerType !== "mouse" || event.button !== 0 || element.scrollHeight <= element.clientHeight) return;
+			const bounds = element.getBoundingClientRect();
+			// 覆盖常规滚动条和项目 CSS 指定宽度的覆盖式滚动条，普通内容点击不接管滚动。
+			const scrollbarWidth = element.offsetWidth - element.clientWidth || Number.parseFloat(getComputedStyle(element, "::-webkit-scrollbar").width);
+			if (!Number.isFinite(scrollbarWidth) || scrollbarWidth <= 0 || event.clientX < bounds.right - scrollbarWidth) return;
 			if (pointerReleaseFrame.current !== undefined) window.cancelAnimationFrame(pointerReleaseFrame.current);
 			pointerReleaseFrame.current = undefined;
 			pointer.current = { endOffset: Math.max(0, event.currentTarget.scrollHeight - event.currentTarget.clientHeight) };
@@ -93,6 +99,7 @@ export function useConversationScrollIntent(options: ScrollIntentOptions, scroll
 			options.onCancel();
 		},
 		onPointerUp: () => {
+			if (!pointer.current) return;
 			// 原生滚动条可能在 pointerup 后才派发最终 scroll，保留意图到该帧结束。
 			if (pointerReleaseFrame.current !== undefined) window.cancelAnimationFrame(pointerReleaseFrame.current);
 			pointerReleaseFrame.current = window.requestAnimationFrame(() => {

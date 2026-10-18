@@ -4,7 +4,10 @@ import { useWorkbenchFileActions, type WorkbenchFileActionsContext } from "../sr
 import { initialState } from "../src/state/workbench-state.ts";
 import type { WorkbenchState } from "../src/state/workbench-types.ts";
 
-vi.mock("react", () => ({ useCallback: <T>(callback: T): T => callback }));
+vi.mock("react", () => ({
+	useCallback: <T>(callback: T): T => callback,
+	useRef: <T>(current: T) => ({ current }),
+}));
 
 function createActions() {
 	vi.stubGlobal("localStorage", { getItem: () => null });

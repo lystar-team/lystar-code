@@ -8,6 +8,7 @@ import type { Command, SessionStateSnapshot } from "@lystar/code-web-protocol";
 import { WebGatewayServer } from "../src/server.ts";
 
 interface RouteInternals {
+	createContext(id: string): { id: string };
 	getClient(context: { id: string }): Promise<{ request(command: Command): Promise<unknown> }>;
 	resolveSession(context: { id: string }, id: string): Promise<{ path: string }>;
 	requireLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
@@ -69,17 +70,7 @@ test("Web 批量删除路由只发送一个 Runtime 请求", async (t) => {
 			body = value;
 		},
 	} as unknown as ServerResponse;
-	const context = {
-		id: "browser-one",
-		leases: new Map(),
-		leasesToRestore: new Set(),
-		sockets: new Set(),
-		sessionListPromises: new Map(),
-		sessionListCache: new Map(),
-		bootstrapGeneration: 0,
-		sessionListGeneration: 0,
-		activeRequests: 1,
-	};
+	const context = routes.createContext("browser-one");
 
 	await routes.handleSessions(request, response, new URL("http://localhost/api/sessions"), context, [
 		"api",

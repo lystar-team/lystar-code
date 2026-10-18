@@ -2,10 +2,20 @@ import Type, { type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
-export const RUNTIME_PROTOCOL_VERSION = 12 as const;
-export const MAX_TRANSCRIPT_PAGE_SIZE = 400;
-export const MAX_TRANSCRIPT_SEARCH_LIMIT = 100;
-export const MAX_GIT_HISTORY_PAGE_SIZE = 100;
+import {
+	MAX_GIT_HISTORY_PAGE_SIZE,
+	MAX_PROJECT_FILE_CHUNK_BYTES,
+	MAX_TRANSCRIPT_PAGE_SIZE,
+	MAX_TRANSCRIPT_SEARCH_LIMIT,
+} from "./limits.ts";
+
+export const RUNTIME_PROTOCOL_VERSION = 14 as const;
+export {
+	MAX_GIT_HISTORY_PAGE_SIZE,
+	MAX_PROJECT_FILE_CHUNK_BYTES,
+	MAX_TRANSCRIPT_PAGE_SIZE,
+	MAX_TRANSCRIPT_SEARCH_LIMIT,
+};
 
 const Id = Type.String({ minLength: 1, maxLength: 4096 });
 const WorkspaceText = Type.String({ maxLength: 1024 * 1024 });
@@ -198,6 +208,8 @@ const ModelCostSchema = StrictObject({
 	cacheRead: Type.Number({ minimum: 0 }),
 	cacheWrite: Type.Number({ minimum: 0 }),
 });
+export const NativeSteeringModeSchema = Type.Union([Type.Literal("auto"), Type.Literal("off"), Type.Literal("on")]);
+const NativeSteeringSettingSchema = Type.Union([NativeSteeringModeSchema, Type.Literal("inherit")]);
 export const ModelSummarySchema = StrictObject({
 	provider: Id,
 	id: Id,
@@ -205,6 +217,9 @@ export const ModelSummarySchema = StrictObject({
 	api: Type.String({ minLength: 1, maxLength: 4096 }),
 	reasoning: Type.Boolean(),
 	fastModeSupported: Type.Optional(Type.Boolean()),
+	nativeSteering: Type.Optional(NativeSteeringModeSchema),
+	nativeSteeringOverride: Type.Optional(NativeSteeringSettingSchema),
+	nativeSteeringUnavailable: Type.Optional(Type.Boolean()),
 	input: Type.Array(ModelInputSchema, { minItems: 1, maxItems: 8 }),
 	contextWindow: Type.Integer({ minimum: 1 }),
 	maxTokens: Type.Integer({ minimum: 1 }),
@@ -229,6 +244,8 @@ export const ModelProviderSummarySchema = StrictObject({
 	name: Type.String({ minLength: 1, maxLength: 4096 }),
 	api: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
 	baseUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
+	nativeSteering: Type.Optional(NativeSteeringModeSchema),
+	nativeSteeringUnavailable: Type.Optional(Type.Boolean()),
 	authenticated: Type.Boolean(),
 	authMethods: Type.Array(AuthTypeSchema, { maxItems: 2 }),
 	authSource: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
@@ -1257,6 +1274,35 @@ export const HostDirectoryListingSchema = StrictObject({
 });
 export type HostDirectoryListing = Static<typeof HostDirectoryListingSchema>;
 
+export const ProjectDirectoryListingSchema = StrictObject({
+	path: Type.String(),
+	parent: Type.Optional(Type.String()),
+	home: Type.Literal(""),
+	entries: Type.Array(
+		StrictObject({
+			name: Type.String({ minLength: 1 }),
+			path: Type.String(),
+			hidden: Type.Boolean(),
+			kind: Type.Union([Type.Literal("file"), Type.Literal("directory")]),
+		}),
+	),
+});
+export type ProjectDirectoryListing = Static<typeof ProjectDirectoryListingSchema>;
+
+export const ProjectFileChunkSchema = StrictObject({
+	...ContentChunkSchema.properties,
+	name: Type.String({ minLength: 1 }),
+	contentVersion: Id,
+});
+export type ProjectFileChunk = Static<typeof ProjectFileChunkSchema>;
+
+export const ProjectUploadSchema = StrictObject({
+	uploadId: Id,
+	path: Type.String({ minLength: 1 }),
+	byteLength: Type.Integer({ minimum: 0 }),
+});
+export type ProjectUpload = Static<typeof ProjectUploadSchema>;
+
 export const CompletionItemSchema = StrictObject({
 	value: Type.String({ minLength: 1 }),
 	label: Type.String({ minLength: 1 }),
@@ -1292,6 +1338,12 @@ export const ProjectResourceSchema = StrictObject({
 	accessToken: Type.Optional(Id),
 });
 export type ProjectResource = Static<typeof ProjectResourceSchema>;
+
+export const ProjectResourcePreviewSchema = Type.Union([
+	StrictObject({ notModified: Type.Literal(true), resource: ProjectResourceSchema }),
+	StrictObject({ notModified: Type.Literal(false), resource: ProjectResourceSchema, data: Type.String() }),
+]);
+export type ProjectResourcePreview = Static<typeof ProjectResourcePreviewSchema>;
 
 export const ProjectFileSaveResultSchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
@@ -1668,6 +1720,20 @@ export const WorkspaceCommandResultSchemas = {
 	get_git_commit: GetGitCommitResultSchema,
 	mutate_git: MutateGitResultSchema,
 	save_project_file: SaveProjectFileResultSchema,
+	list_project_files: ProjectDirectoryListingSchema,
+	read_project_resource_preview: ProjectResourcePreviewSchema,
+	rename_project_file: StrictObject({ path: Type.String({ minLength: 1 }) }),
+	delete_project_files: StrictObject({ paths: Type.Array(Type.String({ minLength: 1 })) }),
+	archive_project_files: StrictObject({
+		path: Type.String({ minLength: 1 }),
+		entryCount: Type.Integer({ minimum: 1 }),
+	}),
+	read_project_file_chunk: ProjectFileChunkSchema,
+	start_project_upload: ProjectUploadSchema,
+	write_project_upload: ProjectUploadSchema,
+	cancel_project_upload: StrictObject({ cancelled: Type.Boolean() }),
+	watch_project_files: StrictObject({ watching: Type.Boolean() }),
+	unwatch_project_files: StrictObject({ watching: Type.Boolean() }),
 	get_completions: GetCompletionsResultSchema,
 	check_for_updates: CheckForUpdatesResultSchema,
 	list_settings: ListSettingsResultSchema,
@@ -1718,11 +1784,18 @@ export const WorkspaceCommandResultSchemas = {
 	get_diagnostics: DiagnosticsSchema,
 } as const;
 
+const workspaceResultValidators = new Map<keyof typeof WorkspaceCommandResultSchemas, ReturnType<typeof Compile>>();
+
 export function assertWorkspaceCommandResult(
 	command: keyof typeof WorkspaceCommandResultSchemas,
 	value: unknown,
 ): void {
-	if (!Check(WorkspaceCommandResultSchemas[command], value)) {
+	let validator = workspaceResultValidators.get(command);
+	if (!validator) {
+		validator = Compile(WorkspaceCommandResultSchemas[command]);
+		workspaceResultValidators.set(command, validator);
+	}
+	if (!validator.Check(value)) {
 		throw Object.assign(new Error(`命令 ${command} 返回了不符合协议的结果`), { code: "invalid_command_result" });
 	}
 }
@@ -2053,6 +2126,7 @@ export const CommandSchema = Type.Union([
 		apiKey: Type.Optional(Type.String({ minLength: 1 })),
 		catalogProvider: Type.Optional(Id),
 		clearCatalogProvider: Type.Optional(Type.Boolean()),
+		nativeSteering: Type.Optional(NativeSteeringModeSchema),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),
@@ -2085,6 +2159,7 @@ export const CommandSchema = Type.Union([
 		baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 		reasoning: Type.Boolean(),
 		fastModeSupported: Type.Optional(Type.Boolean()),
+		nativeSteering: Type.Optional(NativeSteeringSettingSchema),
 		thinkingLevelMap: Type.Optional(ModelThinkingLevelMapSchema),
 		resetOverride: Type.Optional(Type.Boolean()),
 		input: Type.Array(ModelInputSchema, { minItems: 1 }),
@@ -2353,6 +2428,46 @@ export const CommandSchema = Type.Union([
 		limit: Type.Integer({ minimum: 1, maximum: 1024 * 1024 }),
 	}),
 	StrictObject({
+		command: Type.Literal("read_project_resource_preview"),
+		cwd: Type.String({ minLength: 1 }),
+		target: Type.String({ minLength: 1 }),
+		textLimit: Type.Integer({ minimum: 1, maximum: 2 * 1024 * 1024 }),
+		binaryLimit: Type.Integer({ minimum: 1, maximum: 8 * 1024 * 1024 }),
+		ifNoneMatch: Type.Optional(Type.String({ minLength: 1 })),
+	}),
+	StrictObject({ command: Type.Literal("list_project_files"), cwd: Id, path: Type.String() }),
+	StrictObject({ command: Type.Literal("rename_project_file"), cwd: Id, path: Id, name: Id }),
+	StrictObject({
+		command: Type.Literal("delete_project_files"),
+		cwd: Id,
+		paths: Type.Array(Id, { minItems: 1, maxItems: 1000 }),
+	}),
+	StrictObject({
+		command: Type.Literal("archive_project_files"),
+		cwd: Id,
+		paths: Type.Array(Id, { minItems: 1, maxItems: 1000 }),
+		name: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("read_project_file_chunk"),
+		cwd: Id,
+		path: Id,
+		offset: Type.Integer({ minimum: 0 }),
+		limit: Type.Integer({ minimum: 1, maximum: MAX_PROJECT_FILE_CHUNK_BYTES }),
+		contentVersion: Type.Optional(Id),
+	}),
+	StrictObject({ command: Type.Literal("start_project_upload"), cwd: Id, path: Type.String(), name: Id }),
+	StrictObject({
+		command: Type.Literal("write_project_upload"),
+		uploadId: Id,
+		offset: Type.Integer({ minimum: 0 }),
+		data: Type.String({ maxLength: Math.ceil(MAX_PROJECT_FILE_CHUNK_BYTES / 3) * 4 }),
+		done: Type.Boolean(),
+	}),
+	StrictObject({ command: Type.Literal("cancel_project_upload"), uploadId: Id }),
+	StrictObject({ command: Type.Literal("watch_project_files"), cwd: Id }),
+	StrictObject({ command: Type.Literal("unwatch_project_files"), cwd: Id }),
+	StrictObject({
 		command: Type.Literal("save_project_file"),
 		sessionPath: Type.Optional(Type.String({ minLength: 1 })),
 		leaseId: Type.Optional(Id),
@@ -2555,6 +2670,11 @@ export const ServerEventSchema = Type.Union([
 	StrictObject({ type: Type.Literal("session_snapshot"), snapshot: SessionStateSnapshotSchema }),
 	StrictObject({ type: Type.Literal("session_removed"), sessionPath: Type.String({ minLength: 1 }) }),
 	StrictObject({ type: Type.Literal("sessions_changed"), cwd: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		type: Type.Literal("project_files_changed"),
+		cwd: Id,
+		paths: Type.Array(Type.String(), { maxItems: 256 }),
+	}),
 	StrictObject({
 		type: Type.Literal("room_updated"),
 		cwd: Type.String({ minLength: 1 }),

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { getAgentDir, VERSION } from "../config.ts";
+import { pathToFileURL } from "node:url";
+import { getAgentDir, getPackageDir, VERSION } from "../config.ts";
 
 const DEFAULT_WEB_PORT = 1420;
 const DEFAULT_DEV_WEB_PORT = 2422;
@@ -94,7 +94,7 @@ function webCommandSettings(): WebCommandSettings {
 }
 
 function packageRoot(): string {
-	return resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+	return getPackageDir();
 }
 
 function developmentFrontendInvocation(settings: WebCommandSettings): RuntimeInvocation | undefined {
@@ -142,7 +142,15 @@ function stableLauncherInvocation(args: string[]): RuntimeInvocation | undefined
 }
 
 export function sourceRuntimeInvocation(): RuntimeInvocation {
-	return stableLauncherInvocation(["web-runtime", "serve"]) ?? selfInvocation(["web-runtime", "serve"]);
+	const launcher = stableLauncherInvocation(["web-runtime", "serve"]);
+	if (launcher) return launcher;
+	if (process.versions.bun) return selfInvocation(["web-runtime", "serve"]);
+	const entrypoint =
+		process.env.LYSTAR_CLI_MODE === DEVELOPMENT_CLI_MODE
+			? join(packageRoot(), "dist", "bundle", "chunks", "web-runtime.js")
+			: modulePath("web-runtime", "cli.js");
+	if (!existsSync(entrypoint)) throw new Error(`Web Runtime 未构建：${entrypoint}`);
+	return { command: process.execPath, args: [entrypoint, "serve"], cwd: process.cwd() };
 }
 
 export function foregroundWebInvocation(): RuntimeInvocation {

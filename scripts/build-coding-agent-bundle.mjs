@@ -12,6 +12,9 @@ const codingAgentDir = join(repoRoot, "packages", "coding-agent");
 const aiDistDir = join(repoRoot, "packages", "ai", "dist");
 const codingAgentDistDir = join(codingAgentDir, "dist");
 const bundleDir = join(codingAgentDistDir, "bundle");
+const webRuntimeEntry = process.argv.includes("--with-web-runtime")
+	? join(repoRoot, "packages", "web-runtime", "dist", "cli.js")
+	: undefined;
 const banner = {
 	js: 'import { createRequire as __piCreateRequire } from "node:module"; const require = __piCreateRequire(import.meta.url);',
 };
@@ -80,6 +83,8 @@ function commonBuildOptions() {
 		absWorkingDir: repoRoot,
 		banner,
 		bundle: true,
+		// UMD 入口通过参数 require 加载相对模块，打包时使用包声明的 ESM 入口。
+		alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
 		define: { PI_BUNDLED_NODE: "true" },
 		external: ["@silvia-odwyer/photon-node"],
 		format: "esm",
@@ -145,6 +150,7 @@ for (const entry of [
 	join(codingAgentDistDir, "extensions", "codemode", "worker.js"),
 	join(aiDistDir, "api", "bedrock-converse-stream.js"),
 	join(aiDistDir, "auth", "oauth", "anthropic.js"),
+	...(webRuntimeEntry ? [webRuntimeEntry] : []),
 ]) {
 	if (!existsSync(entry)) {
 		throw new Error(`Bundle input is missing: ${relative(repoRoot, entry)}. Build the workspace packages first.`);
@@ -242,7 +248,21 @@ if (dirname(configOutput) !== dirname(bedrockLoaderOutput)) {
 	throw new Error("config.ts and the codemode worker were emitted into different directories");
 }
 
-const metafiles = [mainResult.metafile, lazyResult.metafile, codemodeWorkerResult.metafile];
+// Runtime 单独打包，避免其顶层 await 进入 CLI 的同步加载图；复用相邻的懒加载模块和 Worker。
+const webRuntimeResult = webRuntimeEntry
+	? await build({
+			...commonBuildOptions(),
+			entryPoints: { "web-runtime": webRuntimeEntry },
+			outdir: dirname(configOutput),
+			splitting: false,
+		})
+	: undefined;
+const metafiles = [
+	mainResult.metafile,
+	lazyResult.metafile,
+	codemodeWorkerResult.metafile,
+	...(webRuntimeResult ? [webRuntimeResult.metafile] : []),
+];
 validateExternalImports(metafiles);
 const cliLauncher = `#!/usr/bin/env node
 import { createRequire, enableCompileCache } from "node:module";

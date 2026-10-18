@@ -45,19 +45,21 @@ const SELECT_CLASS =
 
 export function AgentEditor({
 	config,
+	defaultScope = "user",
 	state,
 	actions,
 	onClose,
 	onLeaveGuardChange,
 }: {
 	config?: SubagentConfig;
+	defaultScope?: SubagentConfig["scope"];
 	state: WorkbenchState;
 	actions: WorkbenchActions;
 	onClose: () => void;
 	onLeaveGuardChange: (guard: AgentLeaveGuard | undefined) => void;
 }) {
 	const [initial] = useState<AgentDraft>(() => ({
-		scope: config?.scope === "project" ? "project" : "user",
+		scope: config?.scope ?? defaultScope,
 		name: config?.name ?? "",
 		description: config?.description ?? "",
 		provider: config?.provider ?? "",
@@ -156,7 +158,7 @@ export function AgentEditor({
 		}
 	};
 	return (
-		<div className="flex h-full min-h-0 min-w-0 flex-col gap-5">
+		<div className="@container/agent-editor flex h-full min-h-0 min-w-0 flex-col gap-5">
 			<div className="shrink-0 space-y-4">
 				<Button
 					className="min-h-10 justify-start gap-2 px-0"
@@ -196,67 +198,61 @@ export function AgentEditor({
 				) : null}
 			</div>
 			<Tabs value={section} onValueChange={setSection} className="flex min-h-0 flex-1 flex-col gap-5">
-				<WorkbenchTabBar
-					activeId={section}
-					tabs={SECTIONS}
-					label="智能体配置分区"
-					className="shrink-0 overflow-x-auto border-b border-border pb-3"
-				/>
+				<div className="shrink-0 overflow-x-auto border-b border-border pb-3">
+					<WorkbenchTabBar
+						activeId={section}
+						tabs={SECTIONS}
+						label="智能体配置分区"
+						className="self-start"
+						trackClassName="shadow-none"
+					/>
+				</div>
 				<div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-					<fieldset disabled={busy || readOnly} className="min-w-0 max-w-[1040px] pb-4">
-						<TabsContent value="identity" className="m-0 grid min-w-0 gap-5">
-							<div className="grid min-w-0 items-end gap-4 sm:grid-cols-[44px_minmax(0,1fr)_160px]">
-								<AgentIconPicker value={draft.icon} onChange={(icon) => setDraft({ ...draft, icon })} />
+					<fieldset disabled={busy || readOnly} className="min-w-0 pb-4">
+						<TabsContent
+							value="identity"
+							className="m-0 grid min-w-0 gap-5 @min-[900px]/agent-editor:grid-cols-[minmax(0,400px)_minmax(0,1fr)] @min-[900px]/agent-editor:items-start @min-[900px]/agent-editor:gap-8"
+						>
+							<div className="grid min-w-0 gap-5">
+								<div className="grid min-w-0 items-end gap-4 sm:grid-cols-[44px_minmax(0,1fr)]">
+									<AgentIconPicker value={draft.icon} onChange={(icon) => setDraft({ ...draft, icon })} />
+									<label className="grid min-w-0 gap-2 text-sm font-medium">
+										名称
+										<Input
+											className="h-10"
+											value={draft.name}
+											onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+											placeholder="例如：前端开发"
+											aria-invalid={saveAttempted && Boolean(errors.name)}
+										/>
+										{saveAttempted && errors.name ? (
+											<span className="text-xs text-destructive" role="alert">
+												{errors.name}
+											</span>
+										) : null}
+									</label>
+								</div>
 								<label className="grid min-w-0 gap-2 text-sm font-medium">
-									名称
-									<Input
-										className="h-10"
-										value={draft.name}
-										onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-										placeholder="例如：前端开发"
-										aria-invalid={saveAttempted && Boolean(errors.name)}
+									描述
+									<textarea
+										className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm font-normal leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										value={draft.description}
+										onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+										placeholder="说明该智能体负责的任务"
+										aria-invalid={saveAttempted && Boolean(errors.description)}
 									/>
-									{saveAttempted && errors.name ? (
+									{saveAttempted && errors.description ? (
 										<span className="text-xs text-destructive" role="alert">
-											{errors.name}
+											{errors.description}
 										</span>
 									) : null}
 								</label>
-								<label className="grid gap-2 text-sm font-medium">
-									范围
-									<select
-										className={SELECT_CLASS}
-										value={draft.scope}
-										disabled={Boolean(config)}
-										onChange={(event) =>
-											setDraft({ ...draft, scope: event.target.value as AgentDraft["scope"] })
-										}
-									>
-										<option value="user">个人</option>
-										<option value="project">项目</option>
-									</select>
-								</label>
+								<AgentTagEditor tags={draft.tags} onChange={(tags) => setDraft({ ...draft, tags })} />
 							</div>
-							<label className="grid min-w-0 gap-2 text-sm font-medium">
-								描述
-								<textarea
-									className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm font-normal leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-									value={draft.description}
-									onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-									placeholder="说明该智能体负责的任务"
-									aria-invalid={saveAttempted && Boolean(errors.description)}
-								/>
-								{saveAttempted && errors.description ? (
-									<span className="text-xs text-destructive" role="alert">
-										{errors.description}
-									</span>
-								) : null}
-							</label>
-							<AgentTagEditor tags={draft.tags} onChange={(tags) => setDraft({ ...draft, tags })} />
 							<div className="grid min-w-0 gap-2">
 								<h2 className="text-sm font-medium">提示词</h2>
 								<MonacoMarkdownEditor
-									className="h-[max(320px,calc(100dvh-600px))] md:h-[max(320px,calc(100dvh-560px))]"
+									className="h-[max(320px,calc(100dvh-600px))] md:h-[max(320px,calc(100dvh-560px))] @min-[900px]/agent-editor:h-[max(320px,calc(100dvh-280px))]"
 									disabled={busy || readOnly}
 									onChange={(content) => setDraft((current) => ({ ...current, content }))}
 									onSave={() => void save()}
@@ -269,7 +265,7 @@ export function AgentEditor({
 						</TabsContent>
 						<TabsContent value="runtime" className="m-0">
 							<SettingSection id="agent-config-runtime" title="运行配置">
-								<div className="grid max-w-2xl gap-5">
+								<div className="grid min-w-0 max-w-2xl items-start gap-5 @min-[900px]/agent-editor:max-w-none @min-[900px]/agent-editor:grid-cols-2 @min-[900px]/agent-editor:gap-x-8">
 									<label className="grid min-w-0 gap-2 text-sm font-medium">
 										供应商
 										<select

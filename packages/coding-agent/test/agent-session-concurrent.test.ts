@@ -227,20 +227,32 @@ describe("AgentSession concurrent prompt guard", () => {
 
 	it("should queue extension-origin steering messages while streaming", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		let abortSignal: AbortSignal | undefined;
+		const toolExecutionGate = Promise.withResolvers<void>();
+		let toolExecutionStarted = false;
 		let sawSteeringMessage = false;
 		let lastInputSource: string | undefined;
 		const queueEvents: Array<{ steering: readonly string[]; followUp: readonly string[] }> = [];
+
+		const heldTool = {
+			name: "hold",
+			description: "Keep the active turn open until queue assertions finish.",
+			label: "hold",
+			parameters: Type.Object({}),
+			execute: async () => {
+				toolExecutionStarted = true;
+				await toolExecutionGate.promise;
+				return { content: [{ type: "text" as const, text: "released" }], details: {} };
+			},
+		};
 
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
 				model,
 				systemPrompt: "Test",
-				tools: [],
+				tools: [heldTool],
 			},
-			streamFn: (_model, context, options) => {
-				abortSignal = options?.signal;
+			streamFn: (_model, context) => {
 				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					const userTexts = context.messages
@@ -263,15 +275,19 @@ describe("AgentSession concurrent prompt guard", () => {
 						return;
 					}
 
-					stream.push({ type: "start", partial: createAssistantMessage("") });
-					const checkAbort = () => {
-						if (abortSignal?.aborted) {
-							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
-						} else {
-							setTimeout(checkAbort, 5);
-						}
-					};
-					checkAbort();
+					if (context.messages.some((message) => message.role === "toolResult")) {
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Done") });
+						return;
+					}
+
+					const toolCall = {
+						...createAssistantMessage(""),
+						content: [{ type: "toolCall" as const, id: "hold-call", name: "hold", arguments: {} }],
+						stopReason: "toolUse" as const,
+					} satisfies AssistantMessage;
+					stream.push({ type: "start", partial: { ...toolCall, content: [] } });
+					stream.push({ type: "done", reason: "toolUse", message: toolCall });
 				});
 				return stream;
 			},
@@ -301,6 +317,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			cwd: tempDir,
 			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader({ extensionsResult }),
+			baseToolsOverride: { hold: heldTool },
 		});
 		session.subscribe((event) => {
 			if (event.type === "queue_update") {
@@ -309,28 +326,31 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const firstPrompt = session.prompt("First message");
-		await waitForStreaming();
-		expect(session.isStreaming).toBe(true);
+		try {
+			await waitForStreaming();
+			await vi.waitFor(() => expect(toolExecutionStarted).toBe(true));
+			expect(session.isStreaming).toBe(true);
 
-		const pi = (
-			globalThis as typeof globalThis & {
-				testExtensionApi?: {
-					sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => void;
-				};
-			}
-		).testExtensionApi;
-		expect(pi).toBeDefined();
+			const pi = (
+				globalThis as typeof globalThis & {
+					testExtensionApi?: {
+						sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => void;
+					};
+				}
+			).testExtensionApi;
+			expect(pi).toBeDefined();
 
-		pi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
-		await new Promise((resolve) => setTimeout(resolve, 25));
-
-		expect(session.pendingMessageCount).toBe(1);
-		expect(session.getSteeringMessages()).toContain("Steer from extension");
-		expect(lastInputSource).toBe("extension");
-		expect(queueEvents.some((event) => event.steering.includes("Steer from extension"))).toBe(true);
-
-		await session.abort();
-		await firstPrompt.catch(() => {});
+			pi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
+			await vi.waitFor(() => expect(session.pendingMessageCount).toBe(1));
+			expect(session.getSteeringMessages()).toContain("Steer from extension");
+			expect(lastInputSource).toBe("extension");
+			expect(queueEvents.some((event) => event.steering.includes("Steer from extension"))).toBe(true);
+		} finally {
+			const aborted = session.abort();
+			toolExecutionGate.resolve();
+			await aborted;
+			await firstPrompt.catch(() => {});
+		}
 
 		expect(sawSteeringMessage).toBe(false);
 	});

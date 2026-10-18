@@ -18,6 +18,7 @@ export type SessionDetailCache = Pick<
 	| "transcriptRevision"
 	| "transcriptLeafId"
 	| "previousCursor"
+	| "previousCursorLeafId"
 	| "toolActivityEpoch"
 	| "toolActivityRevision"
 	| "hasMorePrevious"
@@ -51,6 +52,7 @@ export function sessionDetailCacheFromState(state: WorkbenchState): SessionDetai
 		transcriptRevision: state.transcriptRevision,
 		transcriptLeafId: state.transcriptLeafId,
 		previousCursor: state.previousCursor,
+		previousCursorLeafId: state.previousCursorLeafId,
 		toolActivityEpoch: state.toolActivityEpoch,
 		toolActivityRevision: state.toolActivityRevision,
 		hasMorePrevious: state.hasMorePrevious,

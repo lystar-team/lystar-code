@@ -41,13 +41,16 @@ function runtimeOperationJournalPath(agentDir: string, profile: string | undefin
 }
 
 export async function runWebRuntimeCli(args: readonly string[] = process.argv.slice(2)): Promise<void> {
+	const processInitMs = Math.round(process.uptime() * 1_000);
 	const agentDir = getRuntimeAgentDir();
 	const serviceProfile =
 		process.env.PI_WEB_SERVICE_PROFILE?.trim() ||
 		(process.env.LYSTAR_CLI_MODE === "development" ? "development" : undefined);
 	const command = args[0] ?? "stdio";
 	configureServiceEventLog(agentDir, serviceProfile);
+	const commandEnvironmentStartedAt = performance.now();
 	if (command === "stdio" || command === "serve") restoreUserCommandEnvironment();
+	const commandEnvironmentMs = Math.round(performance.now() - commandEnvironmentStartedAt);
 	const endpoint = endpointFromArgs(args) ?? process.env.PI_WEB_RUNTIME_ENDPOINT ?? defaultRuntimeEndpoint(agentDir);
 	const startupSessionPath = process.env.PI_WEB_STARTUP_SESSION_PATH?.trim();
 	let service: WebRuntimeService | undefined;
@@ -55,7 +58,12 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 	let shuttingDown = false;
 	const stopEventLoopWatch = command === "serve" ? watchRuntimeEventLoop() : undefined;
 	if (command === "serve")
-		logRuntimeConnection("service_starting", { profile: serviceProfile ?? "default", endpoint });
+		logRuntimeConnection("service_starting", {
+			profile: serviceProfile ?? "default",
+			endpoint,
+			processInitMs,
+			commandEnvironmentMs,
+		});
 
 	async function closeServer(): Promise<void> {
 		const activeServer = server;
@@ -133,6 +141,7 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			return;
 		}
 		if (command === "stdio" || command === "serve") {
+			const serviceInitStartedAt = performance.now();
 			service = new WebRuntimeService(new CodingAgentRuntimeAdapter({ agentDir }), {
 				agentDir,
 				journalPath: runtimeOperationJournalPath(agentDir, serviceProfile),
@@ -144,7 +153,11 @@ export async function runWebRuntimeCli(args: readonly string[] = process.argv.sl
 			} else {
 				server = await serveIpcRuntime(service, endpoint);
 				writeRuntimePid(endpoint);
-				logRuntimeConnection("listening", { profile: serviceProfile ?? "default" });
+				logRuntimeConnection("listening", {
+					profile: serviceProfile ?? "default",
+					serviceInitMs: Math.round(performance.now() - serviceInitStartedAt),
+					startupMs: Math.round(process.uptime() * 1_000),
+				});
 				await new Promise<void>((resolve, reject) => {
 					server?.once("close", resolve);
 					server?.once("error", reject);

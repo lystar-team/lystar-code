@@ -10,7 +10,7 @@ import type { WebProject, WebSessionSummary } from "../types";
 import { useRoomWorkspace, type RoomMemberSelection } from "../state/use-room-workspace";
 import { Button } from "./ui/button";
 import { GsapReveal } from "./ui/gsap-reveal";
-import { Composer } from "./workbench/composer";
+import type { Composer as ComposerComponent } from "./workbench/composer";
 import {
 	AgentIdentityIcon,
 	collaborationAlias,
@@ -27,7 +27,7 @@ import {
 	WORKSPACE_NAVIGATION_RAIL_WIDTH,
 	sidebarWidthFromPointer,
 } from "./workbench/constants";
-import { ConversationView } from "./workbench/conversation";
+import type { ConversationView as ConversationViewComponent } from "./workbench/conversation";
 import {
 	DirectoryDialog,
 	GitCredentialAuthorizationDialog,
@@ -88,6 +88,17 @@ const RoomWorkspace = lazy(() =>
 const SettingsDialog = lazy(() =>
 	settingsModules["./workbench/settings/index.tsx"]!().then((module) => ({ default: module.SettingsDialog })),
 );
+// 对话区与输入框只在会话工作区使用，首屏不加载；首屏渲染完成后预取，避免打开会话时等待。
+const composerModules = import.meta.glob<{ Composer: typeof ComposerComponent }>("./workbench/composer.tsx");
+const conversationModules = import.meta.glob<{ ConversationView: typeof ConversationViewComponent }>(
+	"./workbench/conversation.tsx",
+);
+const Composer = lazy(() =>
+	composerModules["./workbench/composer.tsx"]!().then((module) => ({ default: module.Composer })),
+);
+const ConversationView = lazy(() =>
+	conversationModules["./workbench/conversation.tsx"]!().then((module) => ({ default: module.ConversationView })),
+);
 function useMediaQuery(query: string): boolean {
 	const [matches, setMatches] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
 
@@ -109,6 +120,17 @@ function PanelLoadingStatus({ label }: { label: string }) {
 		>
 			<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
 			正在加载{label}
+		</div>
+	);
+}
+function ComposerLoadingPlaceholder() {
+	return (
+		<div
+			className="shrink-0 bg-background px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] sm:px-8"
+			role="status"
+			aria-label="正在加载输入区"
+		>
+			<div className="mx-auto h-24 w-full max-w-[var(--conversation-width)] animate-pulse rounded-2xl bg-muted/40" />
 		</div>
 	);
 }
@@ -305,6 +327,20 @@ export function Workbench({
 	useEffect(() => {
 		setPromptEditRequest(undefined);
 	}, [state.sessionId]);
+
+	// 首屏稳定后预取对话区与输入框，用户打开会话时不再等模块下载。
+	useEffect(() => {
+		const preload = () => {
+			void composerModules["./workbench/composer.tsx"]?.();
+			void conversationModules["./workbench/conversation.tsx"]?.();
+		};
+		if (typeof window.requestIdleCallback !== "function") {
+			const timer = window.setTimeout(preload, 500);
+			return () => window.clearTimeout(timer);
+		}
+		const idleHandle = window.requestIdleCallback(preload, { timeout: 2000 });
+		return () => window.cancelIdleCallback(idleHandle);
+	}, []);
 
 	useEffect(() => {
 		if (dockedSidebar) return;
@@ -662,17 +698,19 @@ export function Workbench({
 											/>
 										</Suspense>
 									) : (
-										<ConversationView
-											state={state}
-											actions={actions}
-											sessionTitleText={sessionTitleText}
-											onEditPrompt={beginPromptEdit}
-											editRequest={promptEditRequest}
-											editorState={promptEditRequest ? state : undefined}
-											editorActions={actions}
-											onCancelEdit={closePromptEdit}
-											onEditComplete={closePromptEdit}
-										/>
+										<Suspense fallback={<PanelLoadingStatus label="对话内容" />}>
+											<ConversationView
+												state={state}
+												actions={actions}
+												sessionTitleText={sessionTitleText}
+												onEditPrompt={beginPromptEdit}
+												editRequest={promptEditRequest}
+												editorState={promptEditRequest ? state : undefined}
+												editorActions={actions}
+												onCancelEdit={closePromptEdit}
+												onEditComplete={closePromptEdit}
+											/>
+										</Suspense>
 									)}
 								</GsapReveal>
 							</StabilityBoundary>
@@ -697,28 +735,32 @@ export function Workbench({
 							>
 								{workspaceMode === "rooms" ? (
 									roomWorkspace.selectedRoom && roomSection === "chat" ? (
+										<Suspense fallback={<ComposerLoadingPlaceholder />}>
+											<Composer
+												state={state}
+												actions={actions}
+												sendMessageOverride={sendRoomPrompt}
+												roomMode
+												roomId={roomWorkspace.selectedRoom.room.id}
+												roomSending={roomWorkspace.roomSending}
+												roomMentionItems={roomMentionCompletionItems}
+												onCancelEdit={closePromptEdit}
+												onEditComplete={closePromptEdit}
+											/>
+										</Suspense>
+									) : null
+								) : (
+									<Suspense fallback={<ComposerLoadingPlaceholder />}>
 										<Composer
 											state={state}
 											actions={actions}
-											sendMessageOverride={sendRoomPrompt}
-											roomMode
-											roomId={roomWorkspace.selectedRoom.room.id}
-											roomSending={roomWorkspace.roomSending}
-											roomMentionItems={roomMentionCompletionItems}
+											collaborationSessions={collaborationSessions}
+											globalDrop={!promptEditRequest}
+											disabled={Boolean(promptEditRequest)}
 											onCancelEdit={closePromptEdit}
 											onEditComplete={closePromptEdit}
 										/>
-									) : null
-								) : (
-									<Composer
-										state={state}
-										actions={actions}
-										collaborationSessions={collaborationSessions}
-										globalDrop={!promptEditRequest}
-										disabled={Boolean(promptEditRequest)}
-										onCancelEdit={closePromptEdit}
-										onEditComplete={closePromptEdit}
-									/>
+									</Suspense>
 								)}
 							</GsapReveal>
 						</StabilityBoundary>

@@ -1,4 +1,4 @@
-import { isSessionResultActivity } from "@lystar/code-web-protocol";
+import { isSessionResultActivity } from "@lystar/code-web-protocol/session-results";
 import { sessionTitle } from "../../state/workbench-state.ts";
 import type { WebProject, WebSessionSummary } from "../../types";
 

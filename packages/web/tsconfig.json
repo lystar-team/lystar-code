@@ -6,8 +6,9 @@
 		"lib": ["ES2022", "DOM", "DOM.Iterable"],
 		"jsx": "react-jsx",
 		"types": ["vite/client"],
-				"paths": {
+		"paths": {
 			"@lystar/code-web-protocol": ["../web-protocol/src/index.ts"],
+			"@lystar/code-web-protocol/*": ["../web-protocol/src/*"],
 			"@/*": ["./src/*"]
 		},
 		"noEmit": true,

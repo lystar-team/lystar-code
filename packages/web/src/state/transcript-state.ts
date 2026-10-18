@@ -5,6 +5,7 @@ export type WorkbenchTranscriptItem = WebTranscriptItem & { renderId: string };
 export interface TranscriptWindow {
 	transcript: WorkbenchTranscriptItem[];
 	previousCursor?: string;
+	previousCursorLeafId?: string | null;
 	hasMorePrevious: boolean;
 	transcriptPageLoaded: boolean;
 }
@@ -20,7 +21,7 @@ export type TranscriptRenderIdOverrides = ReadonlyMap<string, string>;
 
 export function mergeTranscriptPage(
 	current: TranscriptWindow,
-	page: { items: readonly WebTranscriptItem[]; previousCursor?: string; hasMorePrevious: boolean },
+	page: { items: readonly WebTranscriptItem[]; previousCursor?: string; leafId?: string | null; hasMorePrevious: boolean },
 	prepend: boolean,
 	sameHistory: boolean,
 	renderIdOverrides?: TranscriptRenderIdOverrides,
@@ -35,6 +36,7 @@ export function mergeTranscriptPage(
 	return {
 		transcript,
 		previousCursor: preserveBoundary ? current.previousCursor : page.previousCursor,
+		previousCursorLeafId: preserveBoundary ? current.previousCursorLeafId : page.previousCursor ? page.leafId : undefined,
 		hasMorePrevious: preserveBoundary ? current.hasMorePrevious : page.hasMorePrevious,
 		transcriptPageLoaded: true,
 	};

@@ -171,13 +171,13 @@ export function RoomRail({
 			) : null}
 			<div className="px-3 pb-3">
 				<div className="relative">
-					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
 					<Input
 						aria-label="搜索智能体协作"
 						placeholder="搜索智能体协作"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
-						className={cn("h-10 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0", onNavigate && "min-h-11")}
+						className={cn("h-10 border-0 bg-muted/60 pl-8 !text-[13px] !leading-5 shadow-none focus-visible:ring-0", onNavigate && "min-h-11")}
 					/>
 				</div>
 			</div>

@@ -1521,30 +1521,30 @@ export const ProjectRail = memo(function ProjectRail({
 					<span className="project-list-item-label min-w-0 truncate">新对话</span>
 				</Button>
 				<Button
-					aria-label="使用智能体新建会话"
+					aria-label="新建智能体会话"
 					className="h-10 min-w-0 justify-start gap-2 px-3"
 					disabled={!selectedProject}
 					onClick={() => {
 						if (selectedProject) setAgentSessionProject(selectedProject);
 					}}
-					title="使用智能体新建会话"
+					title="新建智能体会话"
 					variant="ghost"
 				>
 					<Bot className="size-4 shrink-0" aria-hidden="true" />
 					<span className="project-list-item-label min-w-0 truncate xl:hidden">智能体会话</span>
-					<span className="project-list-item-label hidden min-w-0 truncate xl:inline">使用智能体新建会话</span>
+					<span className="project-list-item-label hidden min-w-0 truncate xl:inline">新建智能体会话</span>
 				</Button>
 			</div>
 			<div className="px-3 pb-3">
 				<div className="relative">
-					<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
 					<Input
 						aria-label="搜索项目或会话"
 						placeholder="搜索项目/会话"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
 						className={cn(
-							"h-9 border-0 bg-muted/60 pl-9 shadow-none focus-visible:ring-0",
+							"h-9 border-0 bg-muted/60 pl-8 !text-[13px] !leading-5 shadow-none focus-visible:ring-0",
 							onNavigate && "min-h-10",
 						)}
 					/>

@@ -117,14 +117,14 @@ describe("AgentSession tool orchestration", () => {
 		const plain = await createHarness({ extensionFactories });
 		harnesses.push(plain);
 		expect(plain.session.getAllTools().map((tool) => tool.name)).toEqual(
-			expect.arrayContaining(["codemode", "tool_search"]),
+			expect.arrayContaining(["codemode", "codemode_wait", "tool_search"]),
 		);
 		expect(plain.session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write"]);
 
 		// --tools and the defaultTools setting name them explicitly.
 		const allowed = await createHarness({ allowedToolNames: ["read", "codemode"], extensionFactories });
 		harnesses.push(allowed);
-		expect(allowed.session.getActiveToolNames()).toEqual(["read", "codemode"]);
+		expect(allowed.session.getActiveToolNames()).toEqual(["read", "codemode", "codemode_wait"]);
 		const initial = await createHarness({ initialActiveToolNames: ["tool_search"], extensionFactories });
 		harnesses.push(initial);
 		expect(initial.session.getActiveToolNames()).toEqual(["tool_search"]);

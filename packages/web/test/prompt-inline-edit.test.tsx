@@ -61,7 +61,8 @@ describe("原位编辑 Prompt", () => {
 		const state = {
 			composerMode: "prompt", connected: true, currentProjectId: "project-1", hiddenModelProviders: [],
 			liveTools: {}, liveTurnActive: false, modelOptions: [], modelOptionProviders: [], models: [], providers: [],
-			queuedUserPrompts: [], subagents: [], readOnly: false, session: { id: "session-1" },
+			pendingUiRequests: [], queuedUserPrompts: [], stoppingSessionIds: {},
+			subagents: [], readOnly: false, session: { id: "session-1" },
 			sessionId: "session-1", sessionReady: true,
 		} as WorkbenchState;
 		const html = renderToStaticMarkup(createElement(Composer, {

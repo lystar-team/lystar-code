@@ -1,11 +1,58 @@
 import { Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { cn } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { VirtualList } from "../../ui/virtual-list";
 
 type CapabilityOption = { name: string; description: string };
 
+function CapabilityDescription({
+	description,
+	expanded,
+	onToggle,
+}: {
+	description: string;
+	expanded: boolean;
+	onToggle: () => void;
+}) {
+	const ref = useRef<HTMLParagraphElement>(null);
+	const [truncated, setTruncated] = useState(false);
+	useEffect(() => {
+		const element = ref.current;
+		// 折叠态按两行截断，只有真实被截断的说明才提供展开入口。
+		if (!element || expanded) return;
+		const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1);
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [description, expanded]);
+	return (
+		<>
+			<p
+				className={cn(
+					"whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground",
+					!expanded && "line-clamp-2",
+				)}
+				ref={ref}
+			>
+				{description}
+			</p>
+			{truncated || expanded ? (
+				<Button
+					className="h-7 px-1.5 font-normal"
+					size="xs"
+					variant="ghost"
+					aria-expanded={expanded}
+					onClick={onToggle}
+				>
+					{expanded ? "收起说明" : "展开说明"}
+				</Button>
+			) : null}
+		</>
+	);
+}
 export function AgentCapabilityPicker({
 	options,
 	selected,
@@ -85,7 +132,6 @@ export function AgentCapabilityPicker({
 							estimateSize={() => 76}
 							renderItem={(option) => {
 								const checked = selection.has(option.name);
-								const long = option.description.length > 120;
 								const full = expanded.has(option.name);
 								return (
 									<div
@@ -100,31 +146,21 @@ export function AgentCapabilityPicker({
 												disabled={disabled}
 												onChange={(event) => onToggle(option.name, event.target.checked)}
 											/>
-											<span className="min-w-0 break-all font-mono leading-6">{option.name}</span>
+											<span className="min-w-0 break-all font-mono text-xs leading-5">{option.name}</span>
 										</label>
 										<div className="min-w-0 pl-7 lg:pl-0">
-											<p
-												className={`whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground ${long && !full ? "line-clamp-2" : ""}`}
-											>
-												{option.description}
-											</p>
-											{long ? (
-												<button
-													className="min-h-8 text-xs underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring"
-													type="button"
-													aria-expanded={full}
-													onClick={() =>
-														setExpanded((current) => {
-															const next = new Set(current);
-															if (full) next.delete(option.name);
-															else next.add(option.name);
-															return next;
-														})
-													}
-												>
-													{full ? "收起说明" : "展开说明"}
-												</button>
-											) : null}
+											<CapabilityDescription
+												description={option.description}
+												expanded={full}
+												onToggle={() =>
+													setExpanded((current) => {
+														const next = new Set(current);
+														if (full) next.delete(option.name);
+														else next.add(option.name);
+														return next;
+													})
+												}
+											/>
 										</div>
 										<span className="pl-7 text-xs leading-6 text-muted-foreground lg:pl-0">
 											{checked ? selectedLabel : defaultLabel}

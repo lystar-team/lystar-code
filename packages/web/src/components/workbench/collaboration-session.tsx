@@ -90,10 +90,10 @@ import {
 	Zap,
 	type LucideIcon,
 } from "lucide-react";
-import { collaborationAlias } from "@lystar/code-web-protocol";
+import { collaborationAlias } from "@lystar/code-web-protocol/room-agent-alias";
 import type { WebCompletionResult, WebRoomMember, WebSessionSummary } from "../../types";
 
-export { collaborationAlias } from "@lystar/code-web-protocol";
+export { collaborationAlias } from "@lystar/code-web-protocol/room-agent-alias";
 
 export type CollaborationAgentKind = "main" | "code" | "test" | "document" | "research" | "general";
 

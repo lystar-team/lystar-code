@@ -10,11 +10,21 @@ import type { WebRuntimeService } from "./service.ts";
 
 export const MAX_RUNTIME_WRITE_BYTES = 32 * 1024 * 1024;
 const WRITE_TIMEOUT_MS = 10_000;
-// Keep one slot available for control reads while project session lists are scanning.
-const PROJECT_READ_SLOT_RESERVE = 1;
+// Keep one slot available for control/file reads while project lists or Git reads run.
+const CONTROL_READ_SLOT_RESERVE = 1;
+const CONCURRENT_GIT_READ_COMMANDS = new Set<Command["command"]>([
+	"get_git_status",
+	"get_git_diff",
+	"get_git_stats",
+	"get_git_branches",
+	"get_git_history",
+	"get_git_commit",
+]);
+
 // Only list_sessions updates watched facts. Project session lists share the observation Promise
 // in WebRuntimeService and keep Room stale-task recovery behind the Room operation queue.
 const CONCURRENT_READ_COMMANDS = new Set<Command["command"]>([
+	...CONCURRENT_GIT_READ_COMMANDS,
 	"get_about",
 	"get_connection_status",
 	"get_operation",
@@ -25,7 +35,10 @@ const CONCURRENT_READ_COMMANDS = new Set<Command["command"]>([
 	"list_project_instructions",
 	"resolve_project_resource",
 	"read_project_resource",
+	"read_project_resource_preview",
 	"read_project_image",
+	"list_project_files",
+	"read_project_file_chunk",
 ]);
 
 // Session reconciliation must not share the list-scanning / ordered-write barrier.
@@ -37,17 +50,17 @@ const SESSION_SYNC_READ_COMMANDS = new Set<Command["command"]>([
 ]);
 
 type ReadBatch = {
-	add(handler: () => Promise<void>, kind: "control" | "projectList" | "sessionList"): void;
+	add(handler: () => Promise<void>, kind: "control" | "background" | "sessionList"): void;
 	start(): void;
 	seal(): void;
 	done: Promise<void>;
 };
 
 function createReadBatch(onError: (error: unknown) => void, maxConcurrentReads: number): ReadBatch {
-	const handlers: Array<{ run: () => Promise<void>; kind: "control" | "projectList" | "sessionList" }> = [];
-	const maxProjectSessionReads = Math.max(1, maxConcurrentReads - PROJECT_READ_SLOT_RESERVE);
+	const handlers: Array<{ run: () => Promise<void>; kind: "control" | "background" | "sessionList" }> = [];
+	const maxBackgroundReads = Math.max(1, maxConcurrentReads - CONTROL_READ_SLOT_RESERVE);
 	let activeHandlers = 0;
-	let activeProjectLists = 0;
+	let activeBackgroundReads = 0;
 	let activeSessionList = false;
 	let started = false;
 	let sealed = false;
@@ -62,13 +75,13 @@ function createReadBatch(onError: (error: unknown) => void, maxConcurrentReads: 
 		if (!started || failed) return;
 		while (activeHandlers < maxConcurrentReads && handlers.length > 0) {
 			const next = handlers.findIndex((handler) => {
-				if (handler.kind === "projectList") return activeProjectLists < maxProjectSessionReads;
+				if (handler.kind === "background") return activeBackgroundReads < maxBackgroundReads;
 				return handler.kind === "control" || !activeSessionList;
 			});
 			if (next < 0) break;
 			const [handler] = handlers.splice(next, 1);
 			activeHandlers++;
-			if (handler.kind === "projectList") activeProjectLists++;
+			if (handler.kind === "background") activeBackgroundReads++;
 			if (handler.kind === "sessionList") activeSessionList = true;
 			void Promise.resolve()
 				.then(handler.run)
@@ -80,7 +93,7 @@ function createReadBatch(onError: (error: unknown) => void, maxConcurrentReads: 
 				})
 				.finally(() => {
 					activeHandlers--;
-					if (handler.kind === "projectList") activeProjectLists--;
+					if (handler.kind === "background") activeBackgroundReads--;
 					if (handler.kind === "sessionList") activeSessionList = false;
 					pump();
 				});
@@ -213,6 +226,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	let handshake = Promise.resolve();
 	let transcriptProcessing = Promise.resolve();
 	let updateCheckProcessing = Promise.resolve();
+	let archiveProcessing = Promise.resolve();
 	const acquisitions = new Set<Promise<void>>();
 	const sessionLifecycle = new Map<string, Promise<void>>();
 	const pendingSyncReads = new Set<Promise<void>>();
@@ -272,7 +286,9 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 								? "session_control"
 								: message.request.command === "read_transcript"
 									? "transcript"
-									: "ordered";
+									: message.request.command === "archive_project_files"
+										? "project_archive"
+										: "ordered";
 				const byteLength = Buffer.byteLength(JSON.stringify(message));
 				queuedBytes += byteLength;
 				if (++queuedRequests > 128 || queuedBytes > MAX_RUNTIME_WRITE_BYTES)
@@ -366,6 +382,8 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 							resolveRead();
 							fail(error);
 						});
+				} else if (message.type === "request" && message.request.command === "archive_project_files") {
+					archiveProcessing = Promise.all([handshake, archiveProcessing]).then(handle).catch(fail);
 				} else if (message.type === "request" && message.request.command === "check_for_updates") {
 					updateCheckProcessing = Promise.all([handshake, updateCheckProcessing]).then(handle).catch(fail);
 				} else if (message.type === "request" && message.request.command === "read_transcript") {
@@ -409,8 +427,9 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						handle,
 						message.request.command === "list_sessions"
 							? "sessionList"
-							: message.request.command === "list_project_sessions"
-								? "projectList"
+							: message.request.command === "list_project_sessions" ||
+									CONCURRENT_GIT_READ_COMMANDS.has(message.request.command)
+								? "background"
 								: "control",
 					);
 				} else {
@@ -441,6 +460,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						processing,
 						transcriptProcessing,
 						updateCheckProcessing,
+						archiveProcessing,
 						...acquisitions,
 						...pendingSyncReads,
 						syncReads.done,

@@ -69,7 +69,7 @@ export function restoreUserCommandEnvironment(
 ): boolean {
 	const env = options.env ?? process.env;
 	if (process.platform === "win32" || env.LYSTAR_WEB_SERVICE_CHILD !== "1") return false;
-	if (env[USER_ENVIRONMENT_SOURCE] && probeUserNodeToolchain(env).node) return false;
+	if (env[USER_ENVIRONMENT_SOURCE] && probeUserNode(env)) return false;
 	const discovered = discoverUserShellCommandEnvironment({
 		env,
 		...(options.shellPath ? { shellPath: options.shellPath } : {}),
@@ -87,21 +87,27 @@ export function restoreUserCommandEnvironment(
 	return true;
 }
 
-export function probeUserNodeToolchain(env: NodeJS.ProcessEnv = process.env): UserNodeToolchain {
+function probeUserNode(env: NodeJS.ProcessEnv): UserNodeToolchain["node"] {
 	const node = spawnSync("node", ["-p", "JSON.stringify({version:process.version,executable:process.execPath})"], {
 		env,
 		encoding: "utf8",
 		timeout: 3_000,
 		windowsHide: true,
 	});
-	if (node.error || node.status !== 0) return {};
+	if (node.error || node.status !== 0) return undefined;
 	let parsed: { version?: unknown; executable?: unknown };
 	try {
 		parsed = JSON.parse(node.stdout.trim()) as { version?: unknown; executable?: unknown };
 	} catch {
-		return {};
+		return undefined;
 	}
-	if (typeof parsed.version !== "string" || typeof parsed.executable !== "string") return {};
+	if (typeof parsed.version !== "string" || typeof parsed.executable !== "string") return undefined;
+	return { version: parsed.version, executable: parsed.executable };
+}
+
+export function probeUserNodeToolchain(env: NodeJS.ProcessEnv = process.env): UserNodeToolchain {
+	const node = probeUserNode(env);
+	if (!node) return {};
 	const npm = spawnSync("npm", ["--version"], {
 		env,
 		encoding: "utf8",
@@ -110,7 +116,7 @@ export function probeUserNodeToolchain(env: NodeJS.ProcessEnv = process.env): Us
 		shell: process.platform === "win32",
 	});
 	return {
-		node: { version: parsed.version, executable: parsed.executable },
+		node,
 		...(!npm.error && npm.status === 0 && npm.stdout.trim() ? { npmVersion: npm.stdout.trim() } : {}),
 	};
 }

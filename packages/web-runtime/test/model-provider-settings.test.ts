@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import * as modelsDev from "@earendil-works/pi-ai/utils/models-dev";
 import { assertWorkspaceCommandResult } from "@lystar/code-web-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
@@ -15,6 +16,12 @@ function temporaryAgentDir(prefix: string): string {
 	mkdirSync(agentDir, { recursive: true });
 	cleanups.push(() => rmSync(tempDir, { recursive: true, force: true }));
 	return agentDir;
+}
+
+function stubModelsDevCatalog(models: Record<string, unknown> = { "catalog-only": { id: "catalog-only" } }): void {
+	vi.spyOn(modelsDev, "loadModelsDevCatalog").mockResolvedValue(
+		new modelsDev.ModelsDevCatalog({ openai: { models } }, Date.now()),
+	);
 }
 
 function readModelsJson(agentDir: string): {
@@ -39,6 +46,16 @@ afterEach(async () => {
 
 describe("Web Runtime model provider settings", () => {
 	it("uses builtin model metadata when a custom provider only returns model ids", async () => {
+		stubModelsDevCatalog({
+			"gpt-6-astra": {
+				id: "gpt-6-astra",
+				name: "GPT 6 Astra",
+				reasoning: true,
+				modalities: { input: ["text", "image"] },
+				limit: { context: 272_000, output: 128_000 },
+				reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }],
+			},
+		});
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-provider-catalog-"));
 		const agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
@@ -330,6 +347,7 @@ describe("Web Runtime model provider settings", () => {
 	});
 
 	it("解析启动时凭据引用并在 /v1/models 回退发现模型", async () => {
+		stubModelsDevCatalog();
 		const agentDir = temporaryAgentDir("web-runtime-provider-keyref-");
 		writeFileSync(
 			join(agentDir, "models.json"),
@@ -403,6 +421,7 @@ describe("Web Runtime model provider settings", () => {
 	});
 
 	it("同步时删除远端已消失的同步模型，保留手工模型", async () => {
+		stubModelsDevCatalog();
 		const agentDir = temporaryAgentDir("web-runtime-provider-stale-");
 		writeFileSync(
 			join(agentDir, "models.json"),
@@ -456,6 +475,7 @@ describe("Web Runtime model provider settings", () => {
 	});
 
 	it("远端模型与手工模型同名时不接管手工模型", async () => {
+		stubModelsDevCatalog();
 		const agentDir = temporaryAgentDir("web-runtime-provider-manual-overlap-");
 		writeFileSync(
 			join(agentDir, "models.json"),

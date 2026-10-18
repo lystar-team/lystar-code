@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +34,7 @@ test("Room 变更只推送轻量通知，不把消息和任务改动变成工作
 	};
 	const context = internal.createContext("room-client");
 	const sent: unknown[] = [];
-	context.sockets.add({
+	context.sockets.add(Object.assign(new EventEmitter(), {
 		readyState: WebSocket.OPEN,
 		bufferedAmount: 0,
 		send(value: string, callback: (error?: Error) => void) {
@@ -41,7 +42,7 @@ test("Room 变更只推送轻量通知，不把消息和任务改动变成工作
 			callback();
 		},
 		close() {},
-	} as unknown as WebSocket);
+	}) as unknown as WebSocket);
 	const event: ServerEvent = {
 		type: "room_updated",
 		cwd: agentDir,

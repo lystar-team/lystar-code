@@ -22,7 +22,6 @@ import {
 	type FormEvent,
 	type KeyboardEvent as ReactKeyboardEvent,
 	type MouseEvent as ReactMouseEvent,
-	type ReactNode,
 } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
 import { cn } from "../../lib/utils";
@@ -47,7 +46,7 @@ import {
 	DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { ScrollArea } from "../ui/scroll-area";
+import { VirtualList } from "../ui/virtual-list";
 import { FileTypeIcon } from "./file-type-icon";
 import { preloadMonacoRuntime } from "./monaco-runtime";
 import type { WorkbenchActions } from "./types";
@@ -64,6 +63,17 @@ interface SearchFileResult extends ProjectEntryReference {
 }
 
 type SelectEvent = ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>;
+interface ProjectTreePosition {
+	"aria-level": number;
+	"aria-posinset": number;
+	"aria-setsize": number;
+}
+
+interface VisibleProjectEntry {
+	entry: ProjectEntryReference;
+	depth: number;
+	position: ProjectTreePosition;
+}
 
 function fileName(path: string): string {
 	return path.split(/[\\/]/u).at(-1) || "文件";
@@ -108,6 +118,7 @@ function isFileDrag(event: ReactDragEvent<HTMLElement>): boolean {
 function ProjectFileRow({
 	entry,
 	detail,
+	treePosition,
 	selectionCount,
 	onArchive,
 	onContextOpen,
@@ -119,6 +130,7 @@ function ProjectFileRow({
 }: {
 	entry: Pick<ProjectTreeEntry, "name" | "path">;
 	detail?: string;
+	treePosition?: ProjectTreePosition;
 	selectionCount: number;
 	onArchive: () => void;
 	onContextOpen: () => void;
@@ -132,7 +144,7 @@ function ProjectFileRow({
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
 				<div onContextMenu={onContextOpen}>
-					<FileTreeFile path={entry.path} name={entry.name} title={entry.name} className="min-w-0 w-full">
+					<FileTreeFile path={entry.path} name={entry.name} title={entry.name} className="min-w-0 w-full" {...treePosition}>
 						<span className="size-4 shrink-0" aria-hidden="true" />
 						<FileTypeIcon path={entry.path} />
 						<span className="min-w-0 flex-1">
@@ -190,7 +202,7 @@ function ProjectFolderRow({
 	onDropState,
 	onRename,
 	onToggle,
-	children,
+	treePosition,
 }: {
 	entry: Pick<ProjectTreeEntry, "name" | "path">;
 	selectionCount: number;
@@ -203,7 +215,7 @@ function ProjectFolderRow({
 	onDropState: (active: boolean) => void;
 	onRename: () => void;
 	onToggle: (path: string, expanded: boolean) => void;
-	children: ReactNode;
+	treePosition: ProjectTreePosition;
 }) {
 	const activateDrop = (event: ReactDragEvent<HTMLDivElement>) => {
 		if (!isFileDrag(event)) return;
@@ -236,9 +248,7 @@ function ProjectFolderRow({
 						if (files.length) onDropFiles(files);
 					}}
 				>
-					<FileTreeFolder path={entry.path} name={entry.name} onToggle={onToggle}>
-						{children}
-					</FileTreeFolder>
+					<FileTreeFolder path={entry.path} name={entry.name} onToggle={onToggle} {...treePosition} />
 				</div>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-48">
@@ -383,21 +393,25 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 		return undefined;
 	};
 
-	const visiblePaths = useMemo(() => {
-		if (normalizedSearch) return searchResults.map((entry) => entry.path);
-		const result: string[] = [];
-		const append = (items: readonly ProjectTreeEntry[]) => {
-			for (const entry of items) {
-				result.push(entry.path);
+	const visibleEntries = useMemo(() => {
+		const result: VisibleProjectEntry[] = [];
+		const append = (items: readonly ProjectEntryReference[], depth: number) => {
+			for (let index = 0; index < items.length; index++) {
+				const entry = items[index]!;
+				result.push({
+					entry, depth,
+					position: { "aria-level": depth + 1, "aria-posinset": index + 1, "aria-setsize": items.length },
+				});
 				if (entry.kind === "directory" && expandedPaths.has(entry.path)) {
 					const childTree = cachedTrees[entry.path];
-					if (childTree) append(childTree.entries);
+					if (childTree) append(childTree.entries, depth + 1);
 				}
 			}
 		};
-		append(entries);
+		append(normalizedSearch ? searchResults : entries, 0);
 		return result;
 	}, [cachedTrees, entries, expandedPaths, normalizedSearch, searchResults]);
+	const visiblePaths = useMemo(() => visibleEntries.map(({ entry }) => entry.path), [visibleEntries]);
 
 	const entryForPath = (path: string): ProjectTreeEntry | SearchFileResult | undefined =>
 		searchResults.find((entry) => entry.path === path) ?? findEntry(path, entries);
@@ -674,11 +688,12 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 		}
 	};
 
-	const fileRow = (entry: SearchFileResult, detail?: string) => (
+	const fileRow = (entry: ProjectEntryReference, detail?: string, treePosition?: ProjectTreePosition) => (
 		<ProjectFileRow
 			key={entry.path}
 			entry={entry}
 			detail={detail}
+			treePosition={treePosition}
 			selectionCount={selectionCountFor(entry.path)}
 			onContextOpen={() => prepareContextSelection(entry.path)}
 			onOpen={() => openFile(entry.path)}
@@ -690,12 +705,12 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 		/>
 	);
 
-	const renderEntries = (items: readonly ProjectTreeEntry[]): ReactNode =>
-		items.map((entry) =>
-			entry.kind === "directory" ? (
+	const renderEntry = ({ entry, depth, position }: VisibleProjectEntry) => (
+		<div style={{ paddingLeft: depth * 24 }}>
+			{entry.kind === "directory" ? (
 				<ProjectFolderRow
-					key={entry.path}
 					entry={entry}
+					treePosition={position}
 					selectionCount={selectionCountFor(entry.path)}
 					dropActive={dropTargetPath === entry.path}
 					onContextOpen={() => prepareContextSelection(entry.path)}
@@ -708,13 +723,12 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 					onToggle={(path, expanded) => {
 						if (expanded && !cachedTrees[path]) void actions.loadProjectTree(path, true);
 					}}
-				>
-					{cachedTrees[entry.path] ? renderEntries(cachedTrees[entry.path].entries) : null}
-				</ProjectFolderRow>
+				/>
 			) : (
-				fileRow({ kind: "file", name: entry.name, path: entry.path })
-			),
-		);
+				fileRow(entry, normalizedSearch ? entry.path : undefined, position)
+			)}
+		</div>
+	);
 
 	const treeProps = {
 		expanded: expandedPaths,
@@ -723,6 +737,17 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 		selectedPaths,
 	};
 
+	const fileTree = (
+		<FileTree className="h-full w-full rounded-none border-0 bg-transparent [&>div]:h-full [&>div]:min-h-0" {...treeProps}>
+			<VirtualList
+				key={`${state.currentProjectId}:${tree?.path ?? ""}:${Boolean(normalizedSearch)}`}
+				items={visibleEntries}
+				getKey={({ entry }) => entry.path}
+				estimateSize={() => normalizedSearch ? 44 : 28}
+				renderItem={renderEntry}
+			/>
+		</FileTree>
+	);
 	const fileContent = normalizedSearch ? (
 		searchLoading ? (
 			<div className="flex h-full items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
@@ -734,22 +759,14 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 				搜索失败：{searchError}
 			</div>
 		) : searchResults.length ? (
-			<ScrollArea className="h-full w-full">
-				<FileTree className="w-0 min-w-full rounded-none border-0 bg-transparent" {...treeProps}>
-					{searchResults.map((entry) => fileRow(entry, entry.path))}
-				</FileTree>
-			</ScrollArea>
+			fileTree
 		) : (
 			<div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
 				没有找到匹配文件
 			</div>
 		)
 	) : tree ? (
-		<ScrollArea className="h-full w-full">
-			<FileTree className="w-0 min-w-full rounded-none border-0 bg-transparent" {...treeProps}>
-				{renderEntries(entries)}
-			</FileTree>
-		</ScrollArea>
+		fileTree
 	) : null;
 
 	return (
@@ -999,7 +1016,8 @@ export const FilesPanel = memo(function FilesPanel({ state, actions }: { state: 
 }, (previous, next) =>
 	previous.actions === next.actions &&
 	previous.state.currentProjectId === next.state.currentProjectId &&
-	previous.state.projects === next.state.projects &&
+	previous.state.projects.find((project) => project.id === previous.state.currentProjectId)?.path ===
+		next.state.projects.find((project) => project.id === next.state.currentProjectId)?.path &&
 	previous.state.filePath === next.state.filePath &&
 	previous.state.fileTree === next.state.fileTree &&
 	previous.state.fileTreeCache === next.state.fileTreeCache &&

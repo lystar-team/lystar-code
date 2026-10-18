@@ -1861,6 +1861,22 @@
                     "clearCatalogProvider": {
                       "type": "boolean"
                     },
+                    "nativeSteering": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "auto"
+                        },
+                        {
+                          "type": "string",
+                          "const": "off"
+                        },
+                        {
+                          "type": "string",
+                          "const": "on"
+                        }
+                      ]
+                    },
                     "clientInstanceId": {
                       "type": "string",
                       "minLength": 1,
@@ -2020,6 +2036,30 @@
                     },
                     "fastModeSupported": {
                       "type": "boolean"
+                    },
+                    "nativeSteering": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "auto"
+                            },
+                            {
+                              "type": "string",
+                              "const": "off"
+                            },
+                            {
+                              "type": "string",
+                              "const": "on"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "const": "inherit"
+                        }
+                      ]
                     },
                     "thinkingLevelMap": {
                       "type": "object",
@@ -3896,6 +3936,325 @@
                       "type": "integer",
                       "minimum": 1,
                       "maximum": 1048576
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "target",
+                    "textLimit",
+                    "binaryLimit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_project_resource_preview"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "target": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "textLimit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2097152
+                    },
+                    "binaryLimit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 8388608
+                    },
+                    "ifNoneMatch": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "list_project_files"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path",
+                    "name"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "rename_project_file"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "paths"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "delete_project_files"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "minItems": 1,
+                      "maxItems": 1000
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "paths",
+                    "name"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "archive_project_files"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "minItems": 1,
+                      "maxItems": 1000
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path",
+                    "offset",
+                    "limit"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "read_project_file_chunk"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 262144
+                    },
+                    "contentVersion": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd",
+                    "path",
+                    "name"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "start_project_upload"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "uploadId",
+                    "offset",
+                    "data",
+                    "done"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "write_project_upload"
+                    },
+                    "uploadId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "data": {
+                      "type": "string",
+                      "maxLength": 349528
+                    },
+                    "done": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "uploadId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "cancel_project_upload"
+                    },
+                    "uploadId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "watch_project_files"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "cwd"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "unwatch_project_files"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "additionalProperties": false
@@ -6309,7 +6668,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 12
+              "const": 14
             },
             "productVersion": {
               "type": "string",
@@ -6317,7 +6676,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 12
+              "const": 14
             },
             "serverInstanceId": {
               "type": "string",
@@ -7386,6 +7745,33 @@
                     "cwd": {
                       "type": "string",
                       "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "cwd",
+                    "paths"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "project_files_changed"
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 256
                     }
                   },
                   "additionalProperties": false
@@ -11894,6 +12280,410 @@
       },
       "additionalProperties": false
     },
+    "WorkspaceListProjectFilesResult": {
+      "type": "object",
+      "required": [
+        "path",
+        "home",
+        "entries"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string"
+        },
+        "home": {
+          "type": "string",
+          "const": ""
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "path",
+              "hidden",
+              "kind"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string"
+              },
+              "hidden": {
+                "type": "boolean"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "file"
+                  },
+                  {
+                    "type": "string",
+                    "const": "directory"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceReadProjectResourcePreviewResult": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "notModified",
+            "resource"
+          ],
+          "properties": {
+            "notModified": {
+              "type": "boolean",
+              "const": true
+            },
+            "resource": {
+              "type": "object",
+              "required": [
+                "path",
+                "displayPath",
+                "kind",
+                "mimeType",
+                "byteLength"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "displayPath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "text"
+                    },
+                    {
+                      "type": "string",
+                      "const": "image"
+                    },
+                    {
+                      "type": "string",
+                      "const": "binary"
+                    }
+                  ]
+                },
+                "mimeType": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "byteLength": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "contentVersion": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "column": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "accessToken": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "notModified",
+            "resource",
+            "data"
+          ],
+          "properties": {
+            "notModified": {
+              "type": "boolean",
+              "const": false
+            },
+            "resource": {
+              "type": "object",
+              "required": [
+                "path",
+                "displayPath",
+                "kind",
+                "mimeType",
+                "byteLength"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "displayPath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "text"
+                    },
+                    {
+                      "type": "string",
+                      "const": "image"
+                    },
+                    {
+                      "type": "string",
+                      "const": "binary"
+                    }
+                  ]
+                },
+                "mimeType": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "byteLength": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "contentVersion": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "column": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "accessToken": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
+            },
+            "data": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "WorkspaceRenameProjectFileResult": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceDeleteProjectFilesResult": {
+      "type": "object",
+      "required": [
+        "paths"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceArchiveProjectFilesResult": {
+      "type": "object",
+      "required": [
+        "path",
+        "entryCount"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entryCount": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceReadProjectFileChunkResult": {
+      "type": "object",
+      "required": [
+        "contentRef",
+        "offset",
+        "nextOffset",
+        "byteLength",
+        "data",
+        "encoding",
+        "done",
+        "name",
+        "contentVersion"
+      ],
+      "properties": {
+        "contentRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nextOffset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data": {
+          "type": "string"
+        },
+        "encoding": {
+          "type": "string",
+          "const": "base64"
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceStartProjectUploadResult": {
+      "type": "object",
+      "required": [
+        "uploadId",
+        "path",
+        "byteLength"
+      ],
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceWriteProjectUploadResult": {
+      "type": "object",
+      "required": [
+        "uploadId",
+        "path",
+        "byteLength"
+      ],
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceCancelProjectUploadResult": {
+      "type": "object",
+      "required": [
+        "cancelled"
+      ],
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceWatchProjectFilesResult": {
+      "type": "object",
+      "required": [
+        "watching"
+      ],
+      "properties": {
+        "watching": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceUnwatchProjectFilesResult": {
+      "type": "object",
+      "required": [
+        "watching"
+      ],
+      "properties": {
+        "watching": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkspaceGetCompletionsResult": {
       "type": "object",
       "required": [
@@ -12363,6 +13153,49 @@
           "fastModeSupported": {
             "type": "boolean"
           },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "auto"
+                  },
+                  {
+                    "type": "string",
+                    "const": "off"
+                  },
+                  {
+                    "type": "string",
+                    "const": "on"
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "const": "inherit"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
+            "type": "boolean"
+          },
           "input": {
             "type": "array",
             "items": {
@@ -12628,6 +13461,25 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 16384
+          },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
+            "type": "boolean"
           },
           "authenticated": {
             "type": "boolean"
@@ -12952,6 +13804,49 @@
           "fastModeSupported": {
             "type": "boolean"
           },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "auto"
+                  },
+                  {
+                    "type": "string",
+                    "const": "off"
+                  },
+                  {
+                    "type": "string",
+                    "const": "on"
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "const": "inherit"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
+            "type": "boolean"
+          },
           "input": {
             "type": "array",
             "items": {
@@ -13218,6 +14113,25 @@
             "minLength": 1,
             "maxLength": 16384
           },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
+            "type": "boolean"
+          },
           "authenticated": {
             "type": "boolean"
           },
@@ -13317,6 +14231,49 @@
             "type": "boolean"
           },
           "fastModeSupported": {
+            "type": "boolean"
+          },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "auto"
+                  },
+                  {
+                    "type": "string",
+                    "const": "off"
+                  },
+                  {
+                    "type": "string",
+                    "const": "on"
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "const": "inherit"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
             "type": "boolean"
           },
           "input": {
@@ -19295,6 +20252,49 @@
           "fastModeSupported": {
             "type": "boolean"
           },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "auto"
+                  },
+                  {
+                    "type": "string",
+                    "const": "off"
+                  },
+                  {
+                    "type": "string",
+                    "const": "on"
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "const": "inherit"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
+            "type": "boolean"
+          },
           "input": {
             "type": "array",
             "items": {
@@ -19568,6 +20568,49 @@
             "type": "boolean"
           },
           "fastModeSupported": {
+            "type": "boolean"
+          },
+          "nativeSteering": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "off"
+              },
+              {
+                "type": "string",
+                "const": "on"
+              }
+            ]
+          },
+          "nativeSteeringOverride": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "auto"
+                  },
+                  {
+                    "type": "string",
+                    "const": "off"
+                  },
+                  {
+                    "type": "string",
+                    "const": "on"
+                  }
+                ]
+              },
+              {
+                "type": "string",
+                "const": "inherit"
+              }
+            ]
+          },
+          "nativeSteeringUnavailable": {
             "type": "boolean"
           },
           "input": {

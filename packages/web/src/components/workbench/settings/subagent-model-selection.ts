@@ -1,4 +1,4 @@
-import { ThinkingLevelSchema } from "@lystar/code-web-protocol";
+import { ThinkingLevelSchema } from "@lystar/code-web-protocol/schemas";
 import type { WebThinkingLevel } from "../../../types";
 
 export const AGENT_THINKING_LEVELS = ThinkingLevelSchema.anyOf.map((schema) => schema.const);

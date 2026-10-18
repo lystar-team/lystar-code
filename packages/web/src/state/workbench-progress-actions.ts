@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { mergeWebSearchProgress } from "@lystar/code-web-protocol";
+import { mergeWebSearchProgress } from "@lystar/code-web-protocol/web-search";
 import type { SessionProgress } from "@lystar/code-web-protocol";
 import {
 	removeQueuedUserPrompt,

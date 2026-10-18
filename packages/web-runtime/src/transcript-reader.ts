@@ -18,7 +18,7 @@ let standaloneIndex: SessionReadIndex | undefined;
 
 const READ_BUFFER_SIZE = 64 * 1024;
 const DEFAULT_MAX_JSONL_LINE_BYTES = 128 * 1024 * 1024;
-const SEARCH_CURSOR_VERSION = 3;
+const SEARCH_CURSOR_VERSION = 4;
 const TRANSCRIPT_FINGERPRINT_BYTES = 64 * 1024;
 const SEARCH_CACHE_LIMIT = 8;
 const SEARCH_CACHE_BYTES = 32 * 1024 * 1024;
@@ -39,6 +39,7 @@ type SearchCursor = {
 	version: number;
 	generation: string;
 	transcriptRevision: number;
+	leafId: string | null;
 	query: string;
 	offset: number;
 	mode: "cached" | "stream";
@@ -47,6 +48,8 @@ type SearchIndexEntry = { entryId: string; kind: string; timestamp: string; text
 type SearchIndex = {
 	generation: string;
 	transcriptRevision: number;
+	leafId: string | null;
+	entryCount: number;
 	rewriteGeneration: RewriteGeneration;
 	mode: "cached" | "stream";
 	entries: SearchIndexEntry[];
@@ -99,6 +102,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 			typeof cursor.generation !== "string" ||
 			!Number.isInteger(cursor.transcriptRevision) ||
 			cursor.transcriptRevision < 0 ||
+			(cursor.leafId !== null && typeof cursor.leafId !== "string") ||
 			typeof cursor.query !== "string" ||
 			!Number.isInteger(cursor.offset) ||
 			cursor.offset < 0 ||
@@ -207,21 +211,6 @@ async function scanReverse(
 	return 0;
 }
 
-async function readTailId(
-	handle: Awaited<ReturnType<typeof open>>,
-	completeSize: number,
-	maxLineBytes: number,
-): Promise<string | null> {
-	let tailId: string | null = null;
-	await scanReverse(handle, completeSize, maxLineBytes, (line) => {
-		const entry = parseLine(line);
-		if (!entry || entry.type === "session" || typeof entry.id !== "string") return false;
-		tailId = entry.id;
-		return true;
-	});
-	return tailId;
-}
-
 function searchText(entry: RawEntry): string {
 	return JSON.stringify(
 		projectTranscriptItems({
@@ -307,14 +296,18 @@ export class TranscriptReader {
 
 	async search(
 		sessionPath: string,
-		options: { query: string; cursor?: string; limit: number; emptyGeneration?: string },
+		options: { query: string; cursor?: string; limit: number; emptyGeneration?: string; leafId?: string | null },
 	): Promise<TranscriptSearchResult> {
 		const query = options.query.trim();
 		if (!query) throw Object.assign(new Error("搜索内容不能为空"), { code: "transcript_search_query_empty" });
 		const resolvedPath = resolve(sessionPath);
 		let index = this.remembered(this.searchIndexes, resolvedPath);
-		if (!index || !(await this.isSearchIndexCurrent(resolvedPath, index))) {
-			index = await this.buildSearchIndex(resolvedPath, options.emptyGeneration);
+		if (
+			!index ||
+			(options.leafId !== undefined && options.leafId !== index.leafId) ||
+			!(await this.isSearchIndexCurrent(resolvedPath, index))
+		) {
+			index = await this.buildSearchIndex(resolvedPath, options);
 			this.rememberSearchIndex(resolvedPath, index);
 		}
 		const normalizedQuery = query.toLocaleLowerCase();
@@ -322,6 +315,7 @@ export class TranscriptReader {
 		if (
 			cursor &&
 			(cursor.generation !== index.generation ||
+				cursor.leafId !== index.leafId ||
 				cursor.transcriptRevision !== index.transcriptRevision ||
 				cursor.query !== normalizedQuery ||
 				cursor.mode !== index.mode)
@@ -354,6 +348,7 @@ export class TranscriptReader {
 						nextCursor: encodeSearchCursor({
 							version: SEARCH_CURSOR_VERSION,
 							generation: index.generation,
+							leafId: index.leafId,
 							transcriptRevision: index.transcriptRevision,
 							query: normalizedQuery,
 							offset,
@@ -368,47 +363,69 @@ export class TranscriptReader {
 		path: string,
 		index: SearchIndex,
 		query: string,
-		skipMatches: number,
+		offset: number,
 		limit: number,
 	): Promise<TranscriptSearchResult> {
-		if (index.transcriptRevision === 0) {
-			return { generation: index.generation, transcriptRevision: 0, complete: true, hits: [] };
+		if (index.transcriptRevision === 0 || index.leafId === null) {
+			return {
+				generation: index.generation,
+				transcriptRevision: index.transcriptRevision,
+				complete: true,
+				hits: [],
+			};
 		}
 		const handle = await open(path, "r");
 		try {
-			const tailId = await readTailId(handle, index.transcriptRevision, this.maxJsonlLineBytes);
-			let wantedId = tailId;
-			let seenMatches = 0;
-			const hits: TranscriptSearchHit[] = [];
-			let hasMore = false;
+			const before = await handle.stat();
+			if (
+				before.dev !== index.rewriteGeneration.device ||
+				before.ino !== index.rewriteGeneration.inode ||
+				before.size < index.transcriptRevision ||
+				((before.mtimeMs !== index.rewriteGeneration.mtimeMs ||
+					before.ctimeMs !== index.rewriteGeneration.ctimeMs) &&
+					(await hashPrefix(handle, index.transcriptRevision)) !== index.rewriteGeneration.contentHash)
+			)
+				throw new TranscriptCursorInvalidError();
+			let wantedId: string | null = index.leafId;
+			let entryOffset = index.entryCount;
+			const matches: Array<{ hit: TranscriptSearchHit; offset: number }> = [];
+			let nextHit = 0;
 			await scanReverse(handle, index.transcriptRevision, this.maxJsonlLineBytes, (line) => {
 				const entry = parseLine(line);
 				if (!entry || entry.type === "session" || !entry.id || entry.id !== wantedId) return false;
 				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
 				if (!isVisible(entry)) return false;
+				entryOffset--;
+				if (entryOffset < offset) return true;
 				const hit = searchEntry(entry, query);
 				if (!hit) return false;
-				if (seenMatches++ < skipMatches) return false;
-				if (hits.length < limit) {
-					hits.push(hit);
-					return false;
-				}
-				hasMore = true;
-				return true;
+				// 反向扫描只保留最早的 limit+1 个命中，与缓存搜索保持相同顺序和分页边界。
+				matches[nextHit] = { hit, offset: entryOffset };
+				nextHit = (nextHit + 1) % (limit + 1);
+				return false;
 			});
+			const after = await handle.stat();
+			if (
+				(after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) &&
+				(await hashPrefix(handle, index.transcriptRevision)) !== index.rewriteGeneration.contentHash
+			)
+				throw new TranscriptCursorInvalidError();
+			matches.sort((left, right) => left.offset - right.offset);
+			const hits = matches.slice(0, limit).map(({ hit }) => hit);
 			return {
 				generation: index.generation,
 				transcriptRevision: index.transcriptRevision,
 				complete: true,
 				hits,
-				...(hasMore
+				...(matches.length > limit
 					? {
 							nextCursor: encodeSearchCursor({
 								version: SEARCH_CURSOR_VERSION,
 								generation: index.generation,
+								leafId: index.leafId,
 								transcriptRevision: index.transcriptRevision,
 								query,
-								offset: skipMatches + hits.length,
+								offset: matches[limit - 1]!.offset + 1,
 								mode: "stream",
 							}),
 						}
@@ -446,12 +463,18 @@ export class TranscriptReader {
 		}
 	}
 
-	private async buildSearchIndex(path: string, emptyGeneration?: string): Promise<SearchIndex> {
-		const page = await this.read(path, { limit: 1, ...(emptyGeneration ? { emptyGeneration } : {}) });
+	private async buildSearchIndex(
+		path: string,
+		options: Pick<SessionTranscriptOptions, "emptyGeneration" | "leafId">,
+	): Promise<SearchIndex> {
+		const readOptions = { limit: 1, compact: true, emptyGeneration: options.emptyGeneration, leafId: options.leafId };
+		const page = await this.read(path, readOptions);
 		if (page.transcriptRevision === 0) {
 			return {
 				generation: page.transcriptGeneration,
 				transcriptRevision: 0,
+				leafId: page.leafId,
+				entryCount: 0,
 				rewriteGeneration: { size: 0, device: 0, inode: 0, mtimeMs: 0, ctimeMs: 0, contentHash: "", tailHash: "" },
 				mode: "cached",
 				entries: [],
@@ -461,9 +484,11 @@ export class TranscriptReader {
 		const handle = await open(path, "r");
 		try {
 			const stat = await handle.stat();
-			const completeSize = await findCompleteSize(handle, stat.size);
-			const tailId = await readTailId(handle, completeSize, this.maxJsonlLineBytes);
-			let wantedId = tailId;
+			// 搜索内容、分支和版本均取自同一历史页，不能混入随后追加的 JSONL。
+			const completeSize = page.transcriptRevision;
+			if (stat.size < completeSize) throw new TranscriptCursorInvalidError();
+			let wantedId = page.leafId;
+			let entryCount = 0;
 			let bytes = 0;
 			let cacheable = true;
 			const entries: SearchIndexEntry[] = [];
@@ -471,7 +496,9 @@ export class TranscriptReader {
 				const entry = parseLine(line);
 				if (!entry || entry.type === "session" || !entry.id || entry.id !== wantedId) return false;
 				wantedId = typeof entry.parentId === "string" ? entry.parentId : null;
-				if (!isVisible(entry) || !cacheable) return false;
+				if (!isVisible(entry)) return false;
+				entryCount++;
+				if (!cacheable) return false;
 				const text = searchText(entry);
 				const entryBytes = Buffer.byteLength(text);
 				if (entryBytes > SEARCH_CACHE_ENTRY_BYTES || bytes + entryBytes * 2 > SEARCH_CACHE_BYTES) {
@@ -488,16 +515,22 @@ export class TranscriptReader {
 				});
 				return false;
 			});
+			const contentHash = await hashPrefix(handle, completeSize);
+			const current = await this.read(path, readOptions);
+			if (current.transcriptGeneration !== page.transcriptGeneration || current.transcriptRevision < completeSize)
+				throw new TranscriptCursorInvalidError();
 			return {
 				generation: page.transcriptGeneration,
-				transcriptRevision: page.transcriptRevision,
+				transcriptRevision: completeSize,
+				leafId: page.leafId,
+				entryCount,
 				rewriteGeneration: {
 					size: completeSize,
 					device: stat.dev,
 					inode: stat.ino,
 					mtimeMs: stat.mtimeMs,
 					ctimeMs: stat.ctimeMs,
-					contentHash: await hashPrefix(handle, completeSize),
+					contentHash,
 					tailHash: await hashWindow(
 						handle,
 						completeSize - Math.min(completeSize, TRANSCRIPT_FINGERPRINT_BYTES),

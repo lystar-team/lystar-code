@@ -309,6 +309,7 @@ async function runLoop(
 				signal,
 				emit,
 				streamFunction,
+				newMessages,
 			);
 			newMessages.push(message);
 			if (preempted) {
@@ -468,6 +469,7 @@ async function streamAssistantResponse(
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
+	newMessages: AgentMessage[],
 ): Promise<StreamedAssistantResponse> {
 	const startedAt = performance.now();
 	const requestController = new AbortController();
@@ -477,8 +479,19 @@ async function streamAssistantResponse(
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 	let interruptedMessage: AssistantMessage | undefined;
+	const nativeInputs = new Map<string, AgentMessage[]>();
+	let nativeInputId = 0;
 	const preempt = () => {
 		if (response?.isFinished) return;
+		// Responses 由 Provider 投递原生插话；SSE 路径在响应结束后读取队列。
+		if (
+			response &&
+			(config.model.api === "openai-responses" ||
+				config.model.api === "openai-codex-responses" ||
+				config.model.api === "azure-openai-responses")
+		) {
+			return;
+		}
 		const snapshot = partialMessage;
 		interruptedMessage = {
 			role: "assistant",
@@ -498,7 +511,8 @@ async function streamAssistantResponse(
 						totalTokens: 0,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-			stopReason: "aborted",
+			// 插话结束的是当前回复，整个运行仍继续；只有主动取消才记录 aborted。
+			stopReason: "stop",
 			thinkingLevel: config.reasoning ?? "off",
 			durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
 		};
@@ -541,6 +555,25 @@ async function streamAssistantResponse(
 					...config,
 					apiKey: resolvedApiKey,
 					signal: requestSignal,
+					steering:
+						config.getSteeringSignal && config.getSteeringMessages && config.restoreSteeringMessages
+							? {
+									getSignal: config.getSteeringSignal,
+									getInput: async () => {
+										const messages = await config.getSteeringMessages!();
+										if (messages.length === 0) return undefined;
+										const id = `native-steer-${++nativeInputId}`;
+										nativeInputs.set(id, messages);
+										const converted = await abortable(requestSignal, () => config.convertToLlm(messages));
+										if (converted.length === 0 || !converted.every((message) => message.role === "user")) {
+											nativeInputs.delete(id);
+											config.restoreSteeringMessages!(messages);
+											return undefined;
+										}
+										return { id, messages: converted };
+									},
+								}
+							: undefined,
 				}),
 			).then((created) => {
 				response = created;
@@ -555,6 +588,26 @@ async function streamAssistantResponse(
 			const event = next.value;
 			switch (event.type) {
 				case "start":
+					if (event.steering) {
+						const previous = event.steering.previous;
+						previous.thinkingLevel = config.reasoning ?? "off";
+						await finish(previous, false);
+						newMessages.push(previous);
+						await emit({ type: "turn_end", message: previous, toolResults: [] });
+						await emit({ type: "turn_start" });
+						for (const id of event.steering.inputIds) {
+							const inputs = nativeInputs.get(id);
+							if (!inputs) throw new Error(`Unknown native steering input: ${id}`);
+							nativeInputs.delete(id);
+							for (const message of inputs) {
+								await emit({ type: "message_start", message });
+								await emit({ type: "message_end", message });
+								context.messages.push(message);
+								newMessages.push(message);
+							}
+						}
+						await emit({ type: "request_phase", phase: "waiting_model", at: Date.now() });
+					}
 					partialMessage = event.partial;
 					context.messages.push(partialMessage);
 					addedPartial = true;
@@ -596,6 +649,8 @@ async function streamAssistantResponse(
 		return await finish(interruptedMessage, true);
 	} finally {
 		steeringSignal?.removeEventListener("abort", preempt);
+		// accepted 只表示服务端入队；失败、断线或等待工具结果时，未确认的输入仍须交给队列。
+		if (nativeInputs.size > 0) config.restoreSteeringMessages?.([...nativeInputs.values()].flat());
 	}
 }
 

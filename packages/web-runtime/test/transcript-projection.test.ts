@@ -701,7 +701,7 @@ describe("assistant transcript projection", () => {
 		]);
 	});
 
-	it("projects only displayed custom message content", () => {
+	it("separates extension inputs from displayed custom messages", () => {
 		const hidden: TranscriptItem = {
 			entryId: "hidden-custom-message",
 			parentId: null,
@@ -725,7 +725,16 @@ describe("assistant transcript projection", () => {
 			},
 		};
 
-		expect(projectTranscriptItems(hidden)).toEqual([]);
+		expect(projectTranscriptItems(hidden)).toEqual([
+			{
+				...hidden,
+				view: {
+					type: "extension_entry",
+					customType: "context-injection",
+					input: { text: "Hidden extension context" },
+				},
+			},
+		]);
 		expect(projectTranscriptItems(visible).map((item) => item.view)).toEqual([
 			{ type: "custom_message", text: "Visible extension message" },
 		]);

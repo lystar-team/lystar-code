@@ -31,6 +31,7 @@ export type ConversationRenderCacheEntry = {
 	canEditPrompts: boolean;
 	editingEntryId?: string;
 	settledTurns?: WorkbenchState["settledTurns"];
+	runtimeClock?: WorkbenchState["runtimeClock"];
 	toolIndex: ToolIndex;
 	persistedItems: ConversationContentRenderItem[];
 	committedToolCallIds: ReadonlySet<string>;
@@ -55,7 +56,7 @@ export type ConversationRenderPipelineInput = {
 	canEditPrompts: boolean;
 	editingEntryId?: string;
 	settledTurns?: WorkbenchState["settledTurns"];
-	observedElapsed?: (sentAt: number) => number | undefined;
+	runtimeClock?: WorkbenchState["runtimeClock"];
 };
 
 export type ConversationRenderPipelineOptions = {
@@ -232,7 +233,7 @@ export class ConversationRenderPipeline {
 			input.responseActive,
 			input.canEditPrompts,
 			input.liveSteps,
-			input.observedElapsed,
+			input.runtimeClock,
 			input.editingEntryId,
 			input.settledTurns?.[input.liveTurnId],
 			input.thinkingActive,
@@ -257,6 +258,7 @@ export class ConversationRenderPipeline {
 			canEditPrompts: input.canEditPrompts,
 			editingEntryId: input.editingEntryId,
 			settledTurns: input.settledTurns,
+			runtimeClock: input.runtimeClock,
 			toolIndex: history.toolIndex,
 			persistedItems: history.persistedItems,
 			committedToolCallIds: history.committedToolCallIds,
@@ -348,6 +350,7 @@ function matchesConversationRenderInput(
 		cached.thinkingActive === input.thinkingActive &&
 		cached.canEditPrompts === input.canEditPrompts &&
 		cached.editingEntryId === input.editingEntryId &&
-		cached.settledTurns === input.settledTurns
+		cached.settledTurns === input.settledTurns &&
+		cached.runtimeClock === input.runtimeClock
 	);
 }

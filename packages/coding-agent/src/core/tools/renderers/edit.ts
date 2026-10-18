@@ -7,13 +7,15 @@ import { uiGlyphs } from "../../../modes/interactive/ui-glyphs.ts";
 import type { ToolDefinition } from "../../extensions/types.ts";
 import type { EditToolDetails } from "../edit.ts";
 import type { Edit, EditDiffError, EditDiffResult } from "../edit-diff.ts";
-import type { SnapshotRangeEdit } from "../file-edit-state.ts";
 import { renderToolPath, str } from "../render-utils.ts";
+
+// 仅用于展示已保存的历史调用，不参与当前编辑协议。
+type HistoricalRangeEdit = { startLine: number; endLine: number; newText: string };
 
 type EditPreview = EditDiffResult | EditDiffError;
 export type EditRenderState = { callComponent?: EditCallRenderComponent };
 
-function isRangeEdit(value: unknown): value is SnapshotRangeEdit {
+function isRangeEdit(value: unknown): value is HistoricalRangeEdit {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const entry = value as Record<string, unknown>;
 	return typeof entry.startLine === "number" && typeof entry.endLine === "number" && typeof entry.newText === "string";
@@ -22,8 +24,6 @@ function isRangeEdit(value: unknown): value is SnapshotRangeEdit {
 type RenderableEditArgs = {
 	path?: string;
 	file_path?: string;
-	snapshot?: string;
-	plan?: string;
 	edits?: unknown;
 	oldText?: string;
 	newText?: string;
@@ -83,7 +83,7 @@ type PreviewBuffer = {
 	truncated: boolean;
 };
 
-type PreviewEdit = Edit | SnapshotRangeEdit;
+type PreviewEdit = Edit | HistoricalRangeEdit;
 
 function parseRenderableEdits(value: unknown): PreviewEdit[] {
 	if (Array.isArray(value)) {
@@ -181,8 +181,13 @@ function createArgumentPreview(edits: PreviewEdit[]): EditDiffResult {
 	let firstChangedLine: number | undefined;
 	let additions = 0;
 	let deletions = 0;
-	for (const edit of edits) {
+	for (const [index, edit] of edits.entries()) {
 		if ("oldText" in edit) {
+			const heading = `@@ edit ${index + 1} @@`;
+			if (!buffer.truncated && buffer.length + heading.length + 1 <= MAX_EDIT_PREVIEW_CHARS) {
+				buffer.lines.push(heading);
+				buffer.length += heading.length + 1;
+			} else buffer.truncated = true;
 			firstChangedLine ??= 1;
 			deletions += appendPreviewLines(buffer, edit.oldText, "-", 1) - 1;
 			additions += appendPreviewLines(buffer, edit.newText, "+", 1) - 1;

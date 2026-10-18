@@ -53,6 +53,9 @@ export function ConversationList({
 	onListRef, onSnapshot, onAtBottom, onAtTop, onPause, onResume, onUp, onDown,
 }: ConversationListProps) {
 	const scroller = useRef<HTMLDivElement>(null);
+	const contentRef = useRef<HTMLDivElement>(null);
+	const followingRef = useRef(following);
+	followingRef.current = following;
 	const [viewport, setViewport] = useState<{ width: number; height: number }>();
 	useLayoutEffect(() => {
 		const element = scroller.current;
@@ -163,7 +166,8 @@ export function ConversationList({
 		virtualizer.cancelScroll();
 	}, [virtualizer]);
 	const revealExpansion = (trigger: HTMLElement) => {
-		onPause();
+		if (following) return;
+		cancelScroll();
 		const element = scroller.current;
 		if (!element || trigger.getAttribute("aria-expanded") !== "false") return;
 		const viewport = element.getBoundingClientRect();
@@ -196,12 +200,24 @@ export function ConversationList({
 		return () => { savePosition(); onListRef(null); };
 	}, [cancelScroll, initial, onListRef, savePosition, viewport, virtualizer]);
 	useLayoutEffect(() => {
+		const element = contentRef.current;
+		if (!viewport || !element) return;
+		// 分组动画改变实际高度时，行测量未必变化；仍由列表引擎保持底部对齐。
+		const observer = new ResizeObserver(() => {
+			if (followingRef.current) virtualizer.scrollToEnd();
+			publishPosition();
+		});
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [publishPosition, viewport, virtualizer]);
+	useLayoutEffect(() => {
 		if (!viewport) return;
 		publishPosition();
 		if (!virtualizer.isScrolling) savePosition();
 	});
 	const intent = useConversationScrollIntent({
-		onPause, onUp, onDown, onCancel: cancelScroll, onExpansion: revealExpansion,
+		onPause: () => { followingRef.current = false; onPause(); },
+		onUp, onDown, onCancel: cancelScroll, onExpansion: revealExpansion,
 		onUserPosition: (element, endOffset) => {
 			const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD;
 			const reachedPreviousEnd = endOffset !== undefined && Math.abs(element.scrollTop - endOffset) <= BOTTOM_THRESHOLD;
@@ -259,7 +275,7 @@ export function ConversationList({
 		style={{ height: "100%", width: "100%", overflowAnchor: "none" }}>
 		{header ? <div className="pointer-events-none absolute top-0 right-0 left-0 z-10 mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 pt-2 sm:px-10"><div className="pointer-events-auto">{header}</div></div> : null}
 		<div aria-hidden="true" style={{ height: EDGE_PADDING }} />
-		<div className="conversation-content mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 sm:px-10" style={{ marginTop: contentShift }}>
+		<div ref={contentRef} className="conversation-content mx-auto min-w-0 w-full max-w-[var(--conversation-width)] px-5 sm:px-10" style={{ marginTop: contentShift }}>
 			{renderNodes(model.nodes)}
 		</div>
 		<div style={{ height: EDGE_PADDING }}>

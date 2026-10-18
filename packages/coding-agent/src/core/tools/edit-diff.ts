@@ -38,10 +38,6 @@ export function normalizeForFuzzyMatch(text: string): string {
 		.join("\n");
 }
 
-type MatchTier = "trailing" | "unicode-indented" | "trimmed" | "unicode";
-
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
 function normalizeMatchSegment(text: string): string {
 	return text
 		.normalize("NFKC")
@@ -49,54 +45,6 @@ function normalizeMatchSegment(text: string): string {
 		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
 		.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
 		.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
-}
-
-function createMatchView(content: string, tier: MatchTier): MatchView {
-	let text = "";
-	const starts: Array<number | undefined> = [];
-	const ends: Array<number | undefined> = [];
-	const lines: MatchLine[] = [];
-	let lineStart = 0;
-
-	while (lineStart < content.length) {
-		const newline = content.indexOf("\n", lineStart);
-		const lineEnd = newline === -1 ? content.length : newline;
-		const line = content.slice(lineStart, lineEnd);
-		const leading = tier === "trailing" || tier === "unicode-indented" ? 0 : line.length - line.trimStart().length;
-		const trailing = line.trimEnd().length;
-		const keptStart = lineStart + Math.min(leading, trailing);
-		const keptEnd = lineStart + trailing;
-		const textStart = text.length;
-
-		// 删除空白后，同一规范化位置的起点和终点对应不同的原始偏移。
-		starts[textStart] = keptStart;
-		if (ends[textStart] === undefined) ends[textStart] = keptStart;
-		for (const segment of graphemeSegmenter.segment(content.slice(keptStart, keptEnd))) {
-			const originalStart = keptStart + segment.index;
-			const originalEnd = originalStart + segment.segment.length;
-			const normalized =
-				tier === "unicode" || tier === "unicode-indented"
-					? normalizeMatchSegment(segment.segment)
-					: segment.segment;
-			starts[text.length] = originalStart;
-			text += normalized;
-			// 展开后的字素内部没有合法边界。
-			starts.length = text.length + 1;
-			ends.length = text.length + 1;
-			starts[text.length] = originalEnd;
-			ends[text.length] = originalEnd;
-		}
-		lines.push({ textStart, originalStart: lineStart });
-		if (newline === -1) break;
-		starts[text.length] = newline;
-		text += "\n";
-		starts[text.length] = newline + 1;
-		ends[text.length] = newline + 1;
-		lineStart = newline + 1;
-	}
-
-	if (content.length === 0) starts[0] = ends[0] = 0;
-	return { text, starts, ends, lines };
 }
 
 function splitLinesWithEndings(content: string): string[] {
@@ -113,18 +61,6 @@ interface MatchedEdit {
 	matchIndex: number;
 	matchLength: number;
 	newText: string;
-}
-
-interface MatchLine {
-	textStart: number;
-	originalStart: number;
-}
-
-interface MatchView {
-	text: string;
-	starts: Array<number | undefined>;
-	ends: Array<number | undefined>;
-	lines: MatchLine[];
 }
 
 export interface EditIssue {
@@ -287,6 +223,12 @@ export interface AppliedEditsResult {
 	newContent: string;
 }
 
+export interface TextEditResult extends AppliedEditsResult {
+	finalContent: string;
+	applied: number;
+	edits: Array<{ index: number; startLine: number; endLine: number; status: "applied" | "unchanged" }>;
+}
+
 /**
  * Find oldText in content, trying exact match first, then fuzzy match.
  * When fuzzy matching is used, the returned contentForReplacement is the
@@ -341,7 +283,6 @@ export function stripBom(content: string): { bom: string; text: string } {
 function findAllOccurrences(
 	content: string,
 	text: string,
-	view?: MatchView,
 	preferIndentBoundary = false,
 ): { count: number; offsets: number[] } {
 	const offsets: number[] = [];
@@ -355,18 +296,14 @@ function findAllOccurrences(
 		const offset = content.indexOf(text, searchStart);
 		if (offset === -1)
 			return hasIndentBoundaryMatch ? { count: preferredCount, offsets: preferredOffsets } : { count, offsets };
-		if (!view || (view.starts[offset] !== undefined && view.ends[offset + text.length] !== undefined)) {
-			count++;
-			if (offsets.length < 5) offsets.push(offset);
-			if (preferIndentBoundary) {
-				const lineStart = offset === 0 ? 0 : content.lastIndexOf("\n", offset - 1) + 1;
-				// 显式缩进优先匹配完整行首，不能把较深缩进的尾部视为同等候选。
-				// 代码中的空白子串仍是候选；没有更强证据时保留原有子串匹配。
-				if (offset === lineStart) hasIndentBoundaryMatch = true;
-				if (offset === lineStart || /\S/.test(content.slice(lineStart, offset))) {
-					preferredCount++;
-					if (preferredOffsets.length < 5) preferredOffsets.push(offset);
-				}
+		count++;
+		if (offsets.length < 5) offsets.push(offset);
+		if (preferIndentBoundary) {
+			const lineStart = offset === 0 ? 0 : content.lastIndexOf("\n", offset - 1) + 1;
+			if (offset === lineStart) hasIndentBoundaryMatch = true;
+			if (offset === lineStart || /\S/.test(content.slice(lineStart, offset))) {
+				preferredCount++;
+				if (preferredOffsets.length < 5) preferredOffsets.push(offset);
 			}
 		}
 		searchStart = offset + 1;
@@ -398,11 +335,11 @@ function getLineNumber(offset: number, lineStarts: number[]): number {
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
 	if (totalEdits === 1) {
 		return new Error(
-			`Could not find the exact text in ${path}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written. Re-read the target region and retry with unique oldText.`,
+			`Could not find the exact text in ${path}.\nNo changes were written. Re-read the target region and retry with unique oldText, preserving indentation and punctuation.`,
 		);
 	}
 	return new Error(
-		`Could not find edits[${editIndex}] in ${path}. Tried exact matching, whitespace-tolerant matching, and Unicode punctuation normalization.\nNo changes were written. Re-read the target region and retry with unique oldText.`,
+		`Could not find edits[${editIndex}] in ${path}.\nNo changes were written. Re-read the target region and retry with unique oldText, preserving indentation and punctuation.`,
 	);
 }
 
@@ -421,12 +358,6 @@ function getEmptyOldTextError(path: string, editIndex: number, totalEdits: numbe
 	return new Error(`edits[${editIndex}].oldText must not be empty in ${path}.`);
 }
 
-function firstLineHasIndent(text: string): boolean {
-	const newline = text.indexOf("\n");
-	const firstLine = newline === -1 ? text : text.slice(0, newline);
-	return firstLine.length !== firstLine.trimStart().length;
-}
-
 function findEditMatch(
 	content: string,
 	oldText: string,
@@ -434,10 +365,9 @@ function findEditMatch(
 	editIndex: number,
 	totalEdits: number,
 	lineStarts: number[],
-	views: Map<MatchTier, MatchView>,
 ): MatchedEdit | EditIssue {
 	const preferIndentBoundary = /^[^\S\n]+\S/.test(oldText);
-	const exactMatches = findAllOccurrences(content, oldText, undefined, preferIndentBoundary);
+	const exactMatches = findAllOccurrences(content, oldText, preferIndentBoundary);
 	if (exactMatches.count > 1) {
 		const candidateLines = exactMatches.offsets.map((offset) => getLineNumber(offset, lineStarts));
 		return {
@@ -452,62 +382,17 @@ function findEditMatch(
 		return { editIndex, matchIndex: exactMatches.offsets[0], matchLength: oldText.length, newText: "" };
 	}
 
-	// 先归一化标点并保留缩进，再尝试丢弃缩进的弱匹配。
-	for (const tier of ["trailing", "unicode-indented", "trimmed", "unicode"] as const) {
-		let contentView = views.get(tier);
-		if (!contentView) {
-			contentView = createMatchView(content, tier);
-			views.set(tier, contentView);
-		}
-		const matchText = createMatchView(oldText, tier).text;
-		if (!matchText) continue;
-		const matches = findAllOccurrences(contentView.text, matchText, contentView, preferIndentBoundary);
-		if (matches.count > 1) {
-			const candidateLines = matches.offsets.map((offset) => getLineNumber(contentView.starts[offset]!, lineStarts));
-			return {
-				code: "MATCH_AMBIGUOUS",
-				editIndex,
-				candidateLines,
-				matchCount: matches.count,
-				message: getDuplicateError(path, editIndex, candidateLines, matches.count).message,
-			};
-		}
-		if (matches.count === 1) {
-			const offset = matches.offsets[0];
-			let start = contentView.starts[offset]!;
-			const end = contentView.ends[offset + matchText.length]!;
-			if (firstLineHasIndent(oldText)) {
-				const startLine = contentView.lines.find((line) => line.textStart === offset);
-				if (startLine) start = startLine.originalStart;
-			}
-			return { editIndex, matchIndex: start, matchLength: end - start, newText: "" };
-		}
-	}
-
 	return { code: "MATCH_NOT_FOUND", editIndex, message: getNotFoundError(path, editIndex, totalEdits).message };
 }
 
-/**
- * Apply one or more exact-text replacements to LF-normalized content.
- *
- * All edits are matched against the same original content. Replacements are
- * then applied in reverse order so offsets remain stable. Each edit chooses its
- * own matching tier, and fuzzy matches are mapped back to original offsets so
- * unrelated edits and untouched text keep their original bytes. Explicit leading
- * indentation prefers matches at its full boundary over suffixes of deeper indentation.
- */
-export function applyEditsToNormalizedContent(
-	normalizedContent: string,
-	edits: readonly Edit[],
-	path: string,
-): AppliedEditsResult {
+/** 所有替换先针对同一份原文定位，再整批检查重叠；模糊候选只用于错误诊断。 */
+function matchEdits(normalizedContent: string, edits: readonly Edit[], path: string): MatchedEdit[] {
 	const normalizedEdits = edits.map((edit) => ({
 		oldText: normalizeToLF(edit.oldText),
 		newText: normalizeToLF(edit.newText),
 	}));
 
 	const lineStarts = getLineStarts(normalizedContent);
-	const views = new Map<MatchTier, MatchView>();
 	const matchedEdits: MatchedEdit[] = [];
 	const issues: EditIssue[] = [];
 	let issueCount = 0;
@@ -525,15 +410,7 @@ export function applyEditsToNormalizedContent(
 			});
 			continue;
 		}
-		const match = findEditMatch(
-			normalizedContent,
-			edit.oldText,
-			path,
-			index,
-			normalizedEdits.length,
-			lineStarts,
-			views,
-		);
+		const match = findEditMatch(normalizedContent, edit.oldText, path, index, normalizedEdits.length, lineStarts);
 		if ("code" in match) addIssue(match);
 		else matchedEdits.push({ ...match, newText: edit.newText });
 	}
@@ -561,10 +438,70 @@ export function applyEditsToNormalizedContent(
 	}
 	if (issueCount > 0) throw new EditMatchError(issues, issueCount, normalizedEdits.length);
 
-	const baseContent = normalizedContent;
-	const newContent = applyReplacements(normalizedContent, matchedEdits);
+	return matchedEdits;
+}
 
-	return { baseContent, newContent };
+export function applyEditsToNormalizedContent(
+	normalizedContent: string,
+	edits: readonly Edit[],
+	path: string,
+): AppliedEditsResult {
+	const replacements = matchEdits(normalizedContent, edits, path);
+	return { baseContent: normalizedContent, newContent: applyReplacements(normalizedContent, replacements) };
+}
+
+/** 用 LF 视图定位，把偏移映射回原文；目标范围之外的字节和混合换行保持不变。 */
+export function applyEditsToContent(rawContent: string, edits: readonly Edit[], path: string): TextEditResult {
+	const { bom, text: content } = splitBom(rawContent);
+	const baseContent = normalizeToLF(content);
+	const replacements = matchEdits(baseContent, edits, path);
+	const lineStarts = getLineStarts(baseContent);
+	const output: string[] = [bom];
+	const results: TextEditResult["edits"] = [];
+	let rawOffset = 0;
+	let normalizedOffset = 0;
+	let copiedUntil = 0;
+	const toRawOffset = (target: number): number => {
+		while (normalizedOffset < target) {
+			rawOffset += content[rawOffset] === "\r" && content[rawOffset + 1] === "\n" ? 2 : 1;
+			normalizedOffset++;
+		}
+		return rawOffset;
+	};
+	for (const replacement of replacements) {
+		const start = toRawOffset(replacement.matchIndex);
+		const end = toRawOffset(replacement.matchIndex + replacement.matchLength);
+		const original = content.slice(start, end);
+		const ending =
+			/\r\n|\r|\n/.exec(content.slice(start))?.[0] ??
+			content
+				.slice(0, start)
+				.match(/\r\n|\r|\n/g)
+				?.at(-1) ??
+			"\n";
+		const newText =
+			replacement.newText ===
+			baseContent.slice(replacement.matchIndex, replacement.matchIndex + replacement.matchLength)
+				? original
+				: replacement.newText.replace(/\n/g, ending);
+		output.push(content.slice(copiedUntil, start), newText);
+		copiedUntil = end;
+		results.push({
+			index: replacement.editIndex,
+			startLine: getLineNumber(replacement.matchIndex, lineStarts),
+			endLine: getLineNumber(replacement.matchIndex + replacement.matchLength - 1, lineStarts),
+			status: newText === original ? "unchanged" : "applied",
+		});
+	}
+	output.push(content.slice(copiedUntil));
+	const finalContent = output.join("");
+	return {
+		baseContent,
+		newContent: normalizeToLF(splitBom(finalContent).text),
+		finalContent,
+		applied: results.filter((edit) => edit.status === "applied").length,
+		edits: results.sort((left, right) => left.index - right.index),
+	};
 }
 
 /** Generate a standard unified patch. */
@@ -742,10 +679,7 @@ export async function computeEditsDiff(
 		// Read the file
 		const rawContent = await readFile(absolutePath, "utf-8");
 
-		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
-		const { text: content } = splitBom(rawContent);
-		const normalizedContent = normalizeToLF(content);
-		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+		const { baseContent, newContent } = applyEditsToContent(rawContent, edits, path);
 
 		// Generate the diff
 		return generateDiffString(baseContent, newContent);

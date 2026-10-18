@@ -1,4 +1,4 @@
-import { collaborationAlias, DEFAULT_ROOM_AGENT_ALIASES } from "@lystar/code-web-protocol";
+import { collaborationAlias, DEFAULT_ROOM_AGENT_ALIASES } from "@lystar/code-web-protocol/room-agent-alias";
 import type { WebRoomMember } from "../../types";
 
 const ROOM_NICKNAME_POOL_KEY = "lystar-room-nickname-pool";

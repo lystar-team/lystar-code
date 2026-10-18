@@ -8,6 +8,7 @@ import {
 	getModel,
 	type Model,
 } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
@@ -85,6 +86,10 @@ function sleep(ms: number): Promise<void> {
 async function createRuntimeHost(options: {
 	withAuth: boolean;
 	responseDelayMs: number;
+	responseGate?: Promise<void>;
+	toolExecutionGate?: Promise<void>;
+	onToolExecutionStart?: () => void;
+	onUserMessages?: (messages: string[]) => void;
 	model?: Model<any>;
 	extensionsResult?: LoadExtensionsResult;
 }): Promise<{
@@ -99,20 +104,56 @@ async function createRuntimeHost(options: {
 		throw new Error("Test model not found");
 	}
 
+	const toolExecutionGate = options.toolExecutionGate;
+	const heldTool = toolExecutionGate
+		? {
+				name: "hold",
+				description: "Keep the active turn open until the queue is cleared.",
+				label: "hold",
+				parameters: Type.Object({}),
+				execute: async () => {
+					options.onToolExecutionStart?.();
+					await toolExecutionGate;
+					return { content: [{ type: "text" as const, text: "released" }], details: {} };
+				},
+			}
+		: undefined;
+
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: {
 			model,
 			systemPrompt: "Test",
-			tools: [],
+			tools: heldTool ? [heldTool] : [],
 		},
-		streamFn: (_model, _context, _options) => {
+		streamFn: (_model, context) => {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(() => {
+				const userMessages = context.messages
+					.filter((message) => message.role === "user")
+					.flatMap((message) => {
+						if (typeof message.content === "string") return [message.content];
+						return message.content.filter((part) => part.type === "text").map((part) => part.text);
+					});
+				options.onUserMessages?.(userMessages);
+
+				if (heldTool && !context.messages.some((message) => message.role === "toolResult")) {
+					const toolCall = {
+						...createAssistantMessage(""),
+						content: [{ type: "toolCall" as const, id: "hold-call", name: "hold", arguments: {} }],
+						stopReason: "toolUse" as const,
+					} satisfies AssistantMessage;
+					stream.push({ type: "start", partial: { ...toolCall, content: [] } });
+					stream.push({ type: "done", reason: "toolUse", message: toolCall });
+					return;
+				}
+
 				stream.push({ type: "start", partial: createAssistantMessage("") });
-				setTimeout(() => {
-					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
-				}, options.responseDelayMs);
+				void (options.responseGate ?? Promise.resolve()).then(() => {
+					setTimeout(() => {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+					}, options.responseDelayMs);
+				});
 			});
 			return stream;
 		},
@@ -133,6 +174,7 @@ async function createRuntimeHost(options: {
 		cwd: tempDir,
 		modelRuntime: getModelRuntime(modelRegistry),
 		resourceLoader: createTestResourceLoader({ extensionsResult: options.extensionsResult }),
+		...(heldTool ? { baseToolsOverride: { hold: heldTool } } : {}),
 	});
 
 	const runtimeHost = {
@@ -395,12 +437,26 @@ describe("RPC prompt response semantics", () => {
 	});
 
 	it("returns and clears queued steering and follow-up messages", async () => {
-		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 500 });
+		const responseGate = Promise.withResolvers<void>();
+		const toolExecutionGate = Promise.withResolvers<void>();
+		let toolExecutionStarted = false;
+		let queuedMessageReachedModel = false;
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			responseGate: responseGate.promise,
+			toolExecutionGate: toolExecutionGate.promise,
+			onToolExecutionStart: () => { toolExecutionStarted = true; },
+			onUserMessages: (messages) => {
+				queuedMessageReachedModel ||= messages.includes("Change direction") || messages.includes("Summarize when finished");
+			},
+		});
 
 		try {
 			lineHandler(JSON.stringify({ id: "clear-start", type: "prompt", message: "Start" }));
 			await vi.waitFor(() => {
 				expect(getPromptResponses(rpcIo.outputLines, "clear-start")).toHaveLength(1);
+				expect(toolExecutionStarted).toBe(true);
 			});
 
 			lineHandler(
@@ -412,9 +468,9 @@ describe("RPC prompt response semantics", () => {
 				}),
 			);
 			await vi.waitFor(() => {
-				expect(getPromptResponses(rpcIo.outputLines, "clear-steering")).toMatchObject([
-					{ data: { disposition: "queued" } },
-				]);
+				const responses = getPromptResponses(rpcIo.outputLines, "clear-steering");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({ data: { disposition: "queued" } });
 			});
 
 			lineHandler(
@@ -426,7 +482,9 @@ describe("RPC prompt response semantics", () => {
 				}),
 			);
 			await vi.waitFor(() => {
-				expect(getPromptResponses(rpcIo.outputLines, "clear-follow-up")).toHaveLength(1);
+				const responses = getPromptResponses(rpcIo.outputLines, "clear-follow-up");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({ data: { disposition: "queued" } });
 			});
 
 			lineHandler(JSON.stringify({ id: "clear", type: "clear_queue" }));
@@ -443,9 +501,16 @@ describe("RPC prompt response semantics", () => {
 				});
 			});
 
-			await sleep(600);
+			toolExecutionGate.resolve();
+			responseGate.resolve();
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "agent_settled")).toHaveLength(1);
+			});
 			expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "agent_start")).toHaveLength(1);
+			expect(queuedMessageReachedModel).toBe(false);
 		} finally {
+			toolExecutionGate.resolve();
+			responseGate.resolve();
 			await cleanup();
 		}
 	});

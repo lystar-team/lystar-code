@@ -44,6 +44,7 @@ import { logRuntimeConnection, measureRuntimePhase, measureRuntimePhaseAsync } f
 import { ContentStore } from "./content-store.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { hashOperationPayload, OperationJournal, OperationJournalCorruptError } from "./operation-journal.ts";
+import { ProjectFiles } from "./project-files.ts";
 import { BUILTIN_SLASH_COMMANDS } from "./runtime-adapter.ts";
 import { type RuntimeReadConcurrency, resolveRuntimeReadConcurrency } from "./runtime-read-concurrency.ts";
 import { WebSessionHandoffServer } from "./session-handoff-server.ts";
@@ -168,6 +169,16 @@ const WORKSPACE_COMMANDS = {
 	get_git_commit: true,
 	mutate_git: true,
 	save_project_file: true,
+	list_project_files: true,
+	rename_project_file: true,
+	delete_project_files: true,
+	archive_project_files: true,
+	read_project_file_chunk: true,
+	start_project_upload: true,
+	write_project_upload: true,
+	cancel_project_upload: true,
+	watch_project_files: true,
+	unwatch_project_files: true,
 	check_for_updates: true,
 	list_settings: true,
 	set_setting: true,
@@ -280,6 +291,7 @@ interface PendingSessionProgress {
 interface ClientConnection {
 	id: string;
 	clientInstanceId?: string;
+	fileAbort: AbortController;
 	send(message: ServerMessage): Promise<void>;
 }
 
@@ -403,6 +415,7 @@ export class WebRuntimeService {
 	private readonly transcriptReader: TranscriptReader;
 	private readonly sessionReadIndex: SessionReadIndex;
 	private readonly contentStore = new ContentStore();
+	private readonly projectFiles = new ProjectFiles();
 	private readonly collaborationWorkspaces: CollaborationWorkspaceManager;
 	private readonly roomCoordinator: SessionRoomCoordinator;
 	private readonly journal: OperationJournal;
@@ -1661,7 +1674,7 @@ export class WebRuntimeService {
 		handle(message: ClientMessage): Promise<void>;
 		close(): Promise<void>;
 	} {
-		const connection: ClientConnection = { id: randomUUID(), send };
+		const connection: ClientConnection = { id: randomUUID(), send, fileAbort: new AbortController() };
 		this.clients.set(connection.id, connection);
 		return {
 			id: connection.id,
@@ -1687,6 +1700,8 @@ export class WebRuntimeService {
 
 	private async detachConnection(connection: ClientConnection): Promise<void> {
 		this.clients.delete(connection.id);
+		connection.fileAbort.abort();
+		await this.projectFiles.release(connection.id);
 		if (!connection.clientInstanceId) return;
 		if ([...this.clients.values()].some((client) => client.clientInstanceId === connection.clientInstanceId)) return;
 		this.abortClientAuthenticationOperations(connection.clientInstanceId);
@@ -1700,6 +1715,8 @@ export class WebRuntimeService {
 
 	async dispose(): Promise<void> {
 		this.disposed = true;
+		for (const connection of this.clients.values()) connection.fileAbort.abort();
+		await this.projectFiles.dispose();
 		this.coordinatorWaitAbort.abort(new DOMException("Web Runtime 已关闭，等待已取消", "AbortError"));
 		const roomDisposal = this.roomCoordinator.dispose();
 		const coordinatorTasks = [...this.coordinatorTasks.values()];
@@ -2108,10 +2125,12 @@ export class WebRuntimeService {
 			case "search_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);
 				const runtime = this.runtimes.get(sessionPath);
+				const runtimeState = runtime ? runtimeReadState(runtime) : undefined;
 				return jsonValue(
 					await this.transcriptReader.search(sessionPath, {
 						...request,
-						emptyGeneration: runtime ? runtimeReadState(runtime).transcriptGeneration : undefined,
+						emptyGeneration: runtimeState?.transcriptGeneration,
+						...(runtimeState ? { leafId: runtimeState.leafId } : {}),
 					}),
 				);
 			}
@@ -2831,7 +2850,7 @@ export class WebRuntimeService {
 						...(request.expectedHash ? { expectedHash: request.expectedHash } : {}),
 					},
 					run: async (operation) => {
-						const runtime = this.assertMutationSession(connection, request, cwd);
+						this.assertMutationSession(connection, request, cwd);
 						const result = await this.adapter.saveSubagentConfig(
 							cwd,
 							{
@@ -2853,7 +2872,7 @@ export class WebRuntimeService {
 							},
 							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
 						);
-						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);
+						// 智能体定义在每次调用时现查，不需要重载会话；重载会阻塞事件循环并中断正在运行的子智能体。
 						return jsonValue(result);
 					},
 				});
@@ -2875,13 +2894,13 @@ export class WebRuntimeService {
 						expectedHash: request.expectedHash,
 					},
 					run: async (operation) => {
-						const runtime = this.assertMutationSession(connection, request, cwd);
+						this.assertMutationSession(connection, request, cwd);
 						const result = await this.adapter.deleteSubagentConfig(
 							cwd,
 							{ scope: request.scope, id: request.id, expectedHash: request.expectedHash },
 							this.createUiRequestHandler(operation.operationId, undefined, request.clientInstanceId),
 						);
-						await this.reloadMutationResources(runtime, request.scope === "project" ? cwd : undefined);
+						// 同上：删除只会影响之后的发现结果，不必重载所有会话。
 						return jsonValue(result);
 					},
 				});
@@ -3007,6 +3026,49 @@ export class WebRuntimeService {
 			}
 			case "list_directories":
 				return jsonValue(this.adapter.listDirectories(request.path));
+			case "list_project_files":
+				return this.projectFiles.list(request.cwd, request.path);
+			case "rename_project_file":
+				return this.projectFiles.rename(request.cwd, request.path, request.name);
+			case "delete_project_files":
+				return this.projectFiles.delete(request.cwd, request.paths);
+			case "archive_project_files":
+				return this.projectFiles.archive(request.cwd, request.paths, request.name, connection.fileAbort.signal);
+			case "read_project_file_chunk":
+				return this.projectFiles.readChunk(
+					request.cwd,
+					request.path,
+					request.offset,
+					request.limit,
+					request.contentVersion,
+				);
+			case "start_project_upload":
+				return this.projectFiles.startUpload(
+					connection.id,
+					request.cwd,
+					request.path,
+					request.name,
+					connection.fileAbort.signal,
+				);
+			case "write_project_upload":
+				return this.projectFiles.writeUpload(
+					connection.id,
+					request.uploadId,
+					request.offset,
+					request.data,
+					request.done,
+				);
+			case "cancel_project_upload":
+				return this.projectFiles.cancelUpload(connection.id, request.uploadId);
+			case "watch_project_files":
+				return this.projectFiles.watch(
+					connection.id,
+					request.cwd,
+					(event) => connection.send({ type: "event", event }),
+					connection.fileAbort.signal,
+				);
+			case "unwatch_project_files":
+				return this.projectFiles.unwatch(connection.id, request.cwd);
 			case "get_completions": {
 				const sessionPath = request.sessionPath ? canonicalSessionPath(request.sessionPath) : undefined;
 				const runtime = sessionPath ? this.runtimes.get(sessionPath) : undefined;
@@ -3124,6 +3186,40 @@ export class WebRuntimeService {
 				return this.adapter.resolveExternalResource(request.target, request.line, request.column);
 			case "read_project_resource":
 				return this.adapter.readProjectResource(request.cwd, request.path, request.offset, request.limit);
+			case "read_project_resource_preview": {
+				const resource = this.adapter.resolveProjectResource(request.cwd, request.target);
+				if (resource.contentVersion && request.ifNoneMatch === `W/"${resource.contentVersion}"`)
+					return { notModified: true, resource };
+				const limit = resource.kind === "text" ? request.textLimit : request.binaryLimit;
+				const chunks: Buffer[] = [];
+				let offset = 0;
+				let total = 0;
+				while (total < limit) {
+					const chunk = this.adapter.readProjectResource(
+						request.cwd,
+						resource.path,
+						offset,
+						Math.min(1024 * 1024, limit - total),
+					);
+					if (chunk.offset !== offset || (!chunk.done && chunk.nextOffset <= offset))
+						throw Object.assign(new Error("后台返回了无效的文件分块"), { code: "invalid_content_chunk" });
+					const bytes = Buffer.from(chunk.data, "base64");
+					const accepted = bytes.subarray(0, limit - total);
+					chunks.push(accepted);
+					total += accepted.byteLength;
+					offset = chunk.nextOffset;
+					if (chunk.done || accepted.byteLength < bytes.byteLength) break;
+				}
+				if (
+					this.adapter.resolveProjectResource(request.cwd, request.target).contentVersion !==
+					resource.contentVersion
+				)
+					throw Object.assign(new Error("文件在读取期间发生变化，请重新加载"), {
+						code: "project_file_conflict",
+						retryable: true,
+					});
+				return { notModified: false, resource, data: Buffer.concat(chunks, total).toString("base64") };
+			}
 			case "save_project_file": {
 				const cwd = canonicalProjectCwd(request.cwd);
 				const sessionPath = this.mutationSessionPath(request);

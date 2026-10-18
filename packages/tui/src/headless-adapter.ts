@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { Component, Focusable, OverlayHandle, OverlayOptions, TUI } from "./tui.ts";
 import { CURSOR_MARKER } from "./tui.ts";
-import { visibleWidth } from "./utils.ts";
+import { extractAnsiCode, visibleWidth } from "./utils.ts";
 
 const MAX_FRAME_LINES = 500;
 const MAX_FRAME_BYTES = 512 * 1024;
@@ -80,6 +80,13 @@ export function sanitizeHeadlessFrameLine(value: string, limit = 4096): string {
 					output += `\x1b]${content}\x1b\\`;
 				}
 				index = end + (end === st ? 2 : 1);
+				continue;
+			}
+		}
+		if (next === "_") {
+			const sequence = extractAnsiCode(value, index);
+			if (sequence) {
+				index += sequence.length;
 				continue;
 			}
 		}

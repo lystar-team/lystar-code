@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
@@ -21,7 +20,6 @@ import {
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import { type Api, type AuthResult, contentText, type Model } from "@earendil-works/pi-ai";
 import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import { loadModelsDevCatalog } from "@earendil-works/pi-ai/utils/models-dev";
@@ -70,6 +68,7 @@ import {
 	getWebConversationStream,
 	hasTrustRequiringProjectResources,
 	importHarnessResources,
+	isNativeSteeringUnavailable,
 	isNewerPackageVersion,
 	loadProjectContextFiles,
 	loadSkills,
@@ -171,8 +170,9 @@ import {
 	type ExtensionActivityRecord,
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
-import { macosGitCredentialError, webGitArguments } from "./git-environment.ts";
+import { assertGitOperationActive, git, gitWrite, withGitOperation } from "./git-execution.ts";
 import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
+import { plainTextSummary } from "./plain-text-summary.ts";
 import {
 	migrateLegacyWebAttachments,
 	rebindSessionAttachments,
@@ -230,8 +230,6 @@ function readHostVersion(): string | undefined {
 }
 
 const HOST_VERSION = process.env.PI_WEB_RUNTIME_VERSION ?? readHostVersion() ?? "0.0.0";
-const execFileAsync = promisify(execFile);
-const GIT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const GIT_EDITOR_CONTENT_MAX_BYTES = 2 * 1024 * 1024;
 const PROJECT_TEXT_EDITOR_MAX_BYTES = 2 * 1024 * 1024;
 const PROJECT_RESOURCE_MAX_BYTES = 32 * 1024 * 1024;
@@ -303,8 +301,14 @@ function splitResourceTarget(target: string): { path: string; line?: number; col
 function canonicalProjectFile(cwd: string, input: string): { root: string; path: string } {
 	const root = canonicalDirectory(cwd);
 	const resolved = resolve(root, input);
-	if (!existsSync(resolved)) throw Object.assign(new Error(`文件不存在：${input}`), { code: "resource_not_found" });
-	const path = realpathSync(resolved);
+	let path: string;
+	try {
+		path = realpathSync(resolved);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+		throw Object.assign(new Error(`文件不存在：${input}`), { code: "resource_not_found" });
+	}
 	if (!isInside(root, path)) {
 		throw Object.assign(new Error("文件不在当前项目范围内"), { code: "resource_outside_project", retryable: false });
 	}
@@ -487,67 +491,12 @@ function readResourceFile(path: string, offset: number, limit: number): ContentC
 	}
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-	try {
-		const result = await execFileAsync("git", webGitArguments(cwd, args), {
-			encoding: "utf8",
-			maxBuffer: GIT_MAX_OUTPUT_BYTES,
-			env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1", LC_ALL: "C" },
-		});
-		return result.stdout;
-	} catch (error) {
-		const candidate = error as Error & { code?: string | number; stderr?: string };
-		const message = candidate.stderr?.trim() || candidate.message;
-		throw Object.assign(new Error(message), {
-			code: message.includes("not a git repository") ? "git_not_repository" : "git_command_failed",
-			retryable: false,
-		});
-	}
-}
-
-async function gitWrite(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
-	try {
-		const result = await execFileAsync("git", webGitArguments(cwd, args), {
-			encoding: "utf8",
-			maxBuffer: GIT_MAX_OUTPUT_BYTES,
-			signal,
-			env: { ...process.env, GIT_LITERAL_PATHSPECS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
-		});
-		return result.stdout;
-	} catch (error) {
-		const candidate = error as Error & { code?: string | number; stdout?: string; stderr?: string };
-		const output = [candidate.stdout?.trim(), candidate.stderr?.trim()].filter(Boolean).join("\n");
-		if (args[0] === "merge" && (output.includes("CONFLICT") || output.includes("Automatic merge failed"))) {
-			throw Object.assign(new Error("合并产生冲突，请解决冲突后提交，或中止合并"), {
-				code: "git_merge_conflict",
-				retryable: false,
-			});
-		}
-		if (args[0] === "pull" && output.includes("Not possible to fast-forward")) {
-			throw Object.assign(new Error("当前分支与远端已分叉，不能快进拉取；请明确执行分支合并"), {
-				code: "git_fast_forward_required",
-				retryable: false,
-			});
-		}
-		const credentialError = macosGitCredentialError(output);
-		if (credentialError) {
-			throw Object.assign(new Error(credentialError.message), {
-				code: credentialError.code,
-				retryable: false,
-			});
-		}
-		throw Object.assign(new Error(output || candidate.message), {
-			code: "git_command_failed",
-			retryable: false,
-		});
-	}
-}
-
 async function gitHasHead(cwd: string): Promise<boolean> {
 	try {
 		await git(cwd, ["rev-parse", "--verify", "HEAD"]);
 		return true;
 	} catch {
+		assertGitOperationActive();
 		return false;
 	}
 }
@@ -556,6 +505,7 @@ async function currentGitBranch(cwd: string): Promise<string | undefined> {
 	try {
 		return (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim() || undefined;
 	} catch {
+		assertGitOperationActive();
 		return undefined;
 	}
 }
@@ -565,6 +515,7 @@ async function gitMergeInProgress(cwd: string): Promise<boolean> {
 		const mergeHead = (await git(cwd, ["rev-parse", "--git-path", "MERGE_HEAD"])).trim();
 		return Boolean(mergeHead && existsSync(isAbsolute(mergeHead) ? mergeHead : resolve(cwd, mergeHead)));
 	} catch {
+		assertGitOperationActive();
 		return false;
 	}
 }
@@ -577,6 +528,7 @@ async function validateGitBranchName(cwd: string, value: string): Promise<string
 		await git(cwd, ["check-ref-format", "--branch", value]);
 		return value;
 	} catch {
+		assertGitOperationActive();
 		throw Object.assign(new Error("Git 分支名称无效"), { code: "git_branch_name_invalid", retryable: false });
 	}
 }
@@ -591,11 +543,13 @@ async function readGitRevisionContent(cwd: string, revision: string, path: strin
 	try {
 		await git(cwd, ["cat-file", "-e", objectPath]);
 	} catch {
+		assertGitOperationActive();
 		return "";
 	}
 	try {
 		return boundedGitEditorContent(await git(cwd, ["show", objectPath]));
 	} catch {
+		assertGitOperationActive();
 		return undefined;
 	}
 }
@@ -668,6 +622,7 @@ async function resolveGitRepositoryRoot(projectRoot: string, repositoryPath?: st
 		if (!isInside(projectRoot, repositoryRoot)) throw new Error("Git 根目录不在当前项目范围内");
 		return repositoryRoot;
 	} catch {
+		assertGitOperationActive();
 		const repositoryRoot = (await discoverGitRepositoryRoots(projectRoot)).sort()[0];
 		if (repositoryRoot) return repositoryRoot;
 		throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
@@ -765,12 +720,14 @@ async function discoverGitRepositoryRoots(projectRoot: string, rootRepository?: 
 	const visited = new Set<string>();
 	const pending = [projectRoot];
 	while (pending.length > 0) {
+		assertGitOperationActive();
 		const directory = pending.pop();
 		if (!directory) continue;
 		let canonicalPath: string;
 		try {
 			canonicalPath = realpathSync(directory);
 		} catch {
+			assertGitOperationActive();
 			continue;
 		}
 		if (visited.has(canonicalPath)) continue;
@@ -779,6 +736,7 @@ async function discoverGitRepositoryRoots(projectRoot: string, rootRepository?: 
 		try {
 			entries = await readdir(canonicalPath, { withFileTypes: true });
 		} catch {
+			assertGitOperationActive();
 			continue;
 		}
 		for (const entry of entries) {
@@ -789,6 +747,7 @@ async function discoverGitRepositoryRoots(projectRoot: string, rootRepository?: 
 					const detectedRoot = canonicalDirectory((await git(child, ["rev-parse", "--show-toplevel"])).trim());
 					if (isInside(projectRoot, detectedRoot)) repositories.add(detectedRoot);
 				} catch {
+					assertGitOperationActive();
 					// 子目录可能只是普通目录中的无效 .git 文件，继续扫描其他目录。
 				}
 			}
@@ -1209,6 +1168,74 @@ function authMethods(runtime: ModelRuntime, providerId: string): AuthType[] {
 	return [auth?.apiKey?.login ? "api_key" : undefined, auth?.oauth ? "oauth" : undefined].filter(
 		(method): method is AuthType => method !== undefined,
 	);
+}
+
+type ModelProviderAuthSummary = {
+	authenticated: boolean;
+	authMethods: AuthType[];
+	authSource?: string;
+};
+
+function modelProviderAuthSummary(runtime: ModelRuntime, providerId: string): ModelProviderAuthSummary {
+	const status = runtime.getProviderAuthStatus(providerId);
+	return {
+		authenticated: status.configured,
+		authMethods: authMethods(runtime, providerId),
+		authSource: status.configured ? (status.label ?? status.source) : undefined,
+	};
+}
+
+function modelSummary(
+	runtime: ModelRuntime,
+	config: ModelConfig,
+	provider: ModelProviderAuthSummary,
+	model: Model<Api>,
+): ModelSummary {
+	const modelConfig = config.getProvider(model.provider);
+	const configuredModel = modelConfig?.models?.find((candidate) => candidate.id === model.id);
+	const override = modelConfig?.modelOverrides?.[model.id];
+	const metadata = runtime.getModelMetadata(model.provider, model.id);
+	const capabilitiesPending = Boolean(
+		configuredModel &&
+			((configuredModel.contextWindow === undefined &&
+				override?.contextWindow === undefined &&
+				metadata?.contextWindow === undefined) ||
+				(configuredModel.maxTokens === undefined &&
+					override?.maxTokens === undefined &&
+					metadata?.maxTokens === undefined) ||
+				(configuredModel.reasoning === undefined &&
+					override?.reasoning === undefined &&
+					metadata?.reasoning === undefined)),
+	);
+	return {
+		provider: model.provider,
+		id: model.id,
+		name: model.name,
+		api: model.api,
+		reasoning: model.reasoning,
+		fastModeSupported: supportsFastMode(model),
+		...(model.api === "openai-responses" || model.api === "openai-codex-responses"
+			? {
+					nativeSteering: model.nativeSteering ?? "auto",
+					nativeSteeringOverride: override?.nativeSteering ?? configuredModel?.nativeSteering ?? "inherit",
+					nativeSteeringUnavailable: isNativeSteeringUnavailable(modelConfig, model),
+				}
+			: {}),
+		input: model.input,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+		thinkingLevelMap: model.thinkingLevelMap,
+		cost: {
+			input: Math.max(0, model.cost.input),
+			output: Math.max(0, model.cost.output),
+			cacheRead: Math.max(0, model.cost.cacheRead),
+			cacheWrite: Math.max(0, model.cost.cacheWrite),
+		},
+		supportedThinkingLevels: getSupportedThinkingLevels(model),
+		...(capabilitiesPending ? { capabilitiesPending: true } : {}),
+		...(override ? { hasOverrides: true } : {}),
+		...provider,
+	};
 }
 
 type DiscoveredProviderModel = {
@@ -2868,9 +2895,7 @@ class CoreRuntimeSession implements RuntimeSession {
 						payload: {
 							turnId: event.turn.turnId,
 							outcome: result.outcome,
-							text: Array.from((this.turnAssistantText ?? "").replace(/\s+/gu, " ").trim())
-								.slice(0, 120)
-								.join(""),
+							text: plainTextSummary(this.turnAssistantText, 120),
 							sessionId: snapshot.id,
 							cwd: snapshot.cwd,
 							...(snapshot.name ? { sessionName: snapshot.name } : {}),
@@ -3771,50 +3796,16 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				] as const;
 			}),
 		);
-		return runtime.getModels().map((model) => {
-			const provider = providers.get(model.provider) ?? {
-				authenticated: false,
-				authMethods: [] as AuthType[],
-			};
-			const modelConfig = config.getProvider(model.provider);
-			const configuredModel = modelConfig?.models?.find((candidate) => candidate.id === model.id);
-			const override = modelConfig?.modelOverrides?.[model.id];
-			const metadata = runtime.getModelMetadata(model.provider, model.id);
-			const capabilitiesPending = Boolean(
-				configuredModel &&
-					((configuredModel.contextWindow === undefined &&
-						override?.contextWindow === undefined &&
-						metadata?.contextWindow === undefined) ||
-						(configuredModel.maxTokens === undefined &&
-							override?.maxTokens === undefined &&
-							metadata?.maxTokens === undefined) ||
-						(configuredModel.reasoning === undefined &&
-							override?.reasoning === undefined &&
-							metadata?.reasoning === undefined)),
+		return runtime
+			.getModels()
+			.map((model) =>
+				modelSummary(
+					runtime,
+					config,
+					providers.get(model.provider) ?? { authenticated: false, authMethods: [] },
+					model,
+				),
 			);
-			return {
-				provider: model.provider,
-				id: model.id,
-				name: model.name,
-				api: model.api,
-				reasoning: model.reasoning,
-				fastModeSupported: supportsFastMode(model),
-				input: model.input,
-				contextWindow: model.contextWindow,
-				maxTokens: model.maxTokens,
-				thinkingLevelMap: model.thinkingLevelMap,
-				cost: {
-					input: Math.max(0, model.cost.input),
-					output: Math.max(0, model.cost.output),
-					cacheRead: Math.max(0, model.cost.cacheRead),
-					cacheWrite: Math.max(0, model.cost.cacheWrite),
-				},
-				supportedThinkingLevels: getSupportedThinkingLevels(model),
-				...(capabilitiesPending ? { capabilitiesPending: true } : {}),
-				...(override ? { hasOverrides: true } : {}),
-				...provider,
-			};
-		});
 	}
 
 	async listModelProviders(): Promise<ModelProviderSummary[]> {
@@ -3840,6 +3831,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				custom: !builtIn && config.getProvider(provider.id) !== undefined,
 				hasCustomConfig: providerConfig !== undefined,
 				disabledModels: [...(providerConfig?.disabledModels ?? [])],
+				nativeSteering: providerConfig?.nativeSteering ?? "auto",
+				nativeSteeringUnavailable: runtime
+					.getModels(provider.id)
+					.some((model) => isNativeSteeringUnavailable(providerConfig, model)),
 				...(providerConfig?.catalogProvider ? { catalogProvider: providerConfig.catalogProvider } : {}),
 			};
 		});
@@ -3902,6 +3897,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			api: input.api,
 			...(input.apiKey ? { apiKey: input.apiKey } : {}),
 			...(input.catalogProvider ? { catalogProvider: input.catalogProvider } : {}),
+			...(input.nativeSteering !== undefined ? { nativeSteering: input.nativeSteering } : {}),
 		});
 		await (await this.getModelRuntime()).refresh({ allowNetwork: false, providers: [input.provider] });
 		return this.listModelProviders();
@@ -3915,6 +3911,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			...(input.name ? { name: input.name } : {}),
 			reasoning: input.reasoning,
 			...(input.fastModeSupported !== undefined ? { fastModeSupported: input.fastModeSupported } : {}),
+			...(input.nativeSteering !== undefined ? { nativeSteering: input.nativeSteering } : {}),
 			...(input.thinkingLevelMap ? { thinkingLevelMap: input.thinkingLevelMap } : {}),
 			input: input.input,
 			...(input.contextWindow ? { contextWindow: input.contextWindow } : {}),
@@ -3928,6 +3925,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			input.name === undefined &&
 			input.thinkingLevelMap === undefined &&
 			input.fastModeSupported === undefined &&
+			input.nativeSteering === undefined &&
 			input.contextWindow === undefined &&
 			input.maxTokens === undefined;
 		if (input.resetOverride) await clearModelsJsonModelOverride(modelsPath, input.provider, input.id);
@@ -3952,6 +3950,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 					? { fastModeSupported: input.fastModeSupported ?? existing?.fastModeSupported }
 					: {}),
 				...(input.thinkingLevelMap ? { thinkingLevelMap: input.thinkingLevelMap } : {}),
+				...(input.nativeSteering !== undefined ? { nativeSteering: input.nativeSteering } : {}),
 				input: input.input,
 				...(existing?.cost ? { cost: existing.cost } : {}),
 				...(input.contextWindow
@@ -4141,7 +4140,10 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			(providerConfig?.disabledModels ?? []).includes(modelId);
 		if (!known) throw new Error(`未找到模型：${providerId}/${modelId}`);
 		await runtime.setModelEnabled(providerId, modelId, enabled);
-		return this.listModels();
+		// 开关只影响一个模型：只返回这个模型，避免每次开关都把上千个模型写进操作日志并广播给每个连接。
+		const model = enabled ? runtime.getModel(providerId, modelId) : undefined;
+		if (!model) return [];
+		return [modelSummary(runtime, config, modelProviderAuthSummary(runtime, providerId), model)];
 	}
 
 	async loginModelProvider(
@@ -4485,273 +4487,289 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	}
 
 	async getGitStatus(cwd: string, options: { refreshRepositories?: boolean } = {}): Promise<GitStatus> {
-		const projectRoot = canonicalDirectory(cwd);
-		let topology = options.refreshRepositories ? undefined : this.gitRepositoryRootsCache.get(projectRoot);
-		if (!topology) {
-			let rootRepository: string | undefined;
+		return withGitOperation(async () => {
+			const projectRoot = canonicalDirectory(cwd);
+			let topology = options.refreshRepositories ? undefined : this.gitRepositoryRootsCache.get(projectRoot);
+			if (!topology) {
+				let rootRepository: string | undefined;
+				try {
+					const detectedRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
+					if (isInside(projectRoot, detectedRoot)) rootRepository = detectedRoot;
+				} catch {
+					assertGitOperationActive();
+					// 当前目录可以是包含多个独立仓库的工作目录。
+				}
+				topology = {
+					rootRepository,
+					repositoryRoots: await discoverGitRepositoryRoots(projectRoot, rootRepository),
+				};
+				this.gitRepositoryRootsCache.set(projectRoot, topology);
+			}
+			let statuses: GitStatus[];
 			try {
-				const detectedRoot = canonicalDirectory((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
-				if (isInside(projectRoot, detectedRoot)) rootRepository = detectedRoot;
-			} catch {
-				// 当前目录可以是包含多个独立仓库的工作目录。
+				statuses = await Promise.all(
+					topology.repositoryRoots.map(async (repositoryRootPath) => {
+						const status = parseGitStatus(
+							repositoryRootPath,
+							await git(repositoryRootPath, [
+								"status",
+								"--porcelain=v2",
+								"--branch",
+								"-z",
+								"--untracked-files=all",
+							]),
+						);
+						return (await gitMergeInProgress(repositoryRootPath)) ? { ...status, merging: true } : status;
+					}),
+				);
+			} catch (error) {
+				assertGitOperationActive();
+				if (!options.refreshRepositories) {
+					this.gitRepositoryRootsCache.delete(projectRoot);
+					return this.getGitStatus(projectRoot, { refreshRepositories: true });
+				}
+				throw error;
 			}
-			topology = {
-				rootRepository,
-				repositoryRoots: await discoverGitRepositoryRoots(projectRoot, rootRepository),
-			};
-			this.gitRepositoryRootsCache.set(projectRoot, topology);
-		}
-		let statuses: GitStatus[];
-		try {
-			statuses = await Promise.all(
-				topology.repositoryRoots.map(async (repositoryRootPath) => {
-					const status = parseGitStatus(
-						repositoryRootPath,
-						await git(repositoryRootPath, [
-							"status",
-							"--porcelain=v2",
-							"--branch",
-							"-z",
-							"--untracked-files=all",
-						]),
-					);
-					return (await gitMergeInProgress(repositoryRootPath)) ? { ...status, merging: true } : status;
-				}),
-			);
-		} catch (error) {
-			if (!options.refreshRepositories) {
-				this.gitRepositoryRootsCache.delete(projectRoot);
-				return this.getGitStatus(projectRoot, { refreshRepositories: true });
-			}
-			throw error;
-		}
-		const primary =
-			statuses.find((status) => status.root === topology.rootRepository) ??
-			statuses.slice().sort((left, right) => left.root.localeCompare(right.root))[0];
-		if (!primary) throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
-		const repositories = statuses
-			.map((status) => gitRepositoryStatus(status, projectRoot, topology.rootRepository))
-			.sort(
-				(left, right) =>
-					Number(right.kind === "root") - Number(left.kind === "root") || left.path.localeCompare(right.path),
-			);
-		return { ...primary, repositories };
+			const primary =
+				statuses.find((status) => status.root === topology.rootRepository) ??
+				statuses.slice().sort((left, right) => left.root.localeCompare(right.root))[0];
+			if (!primary) throw Object.assign(new Error("未找到 Git 仓库"), { code: "git_not_repository" });
+			const repositories = statuses
+				.map((status) => gitRepositoryStatus(status, projectRoot, topology.rootRepository))
+				.sort(
+					(left, right) =>
+						Number(right.kind === "root") - Number(left.kind === "root") || left.path.localeCompare(right.path),
+				);
+			return { ...primary, repositories };
+		});
 	}
 
 	async getGitDiff(cwd: string, path: string | undefined, staged: boolean, repositoryPath?: string): Promise<GitDiff> {
-		const projectRoot = canonicalDirectory(cwd);
-		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
-		if (path) assertGitFilePath(repositoryRoot, path);
-		const args = ["diff", "--no-ext-diff", "--unified=3"];
-		if (staged) args.push("--cached");
-		if (path) args.push("--", path);
-		const diff = await git(repositoryRoot, args);
-		let additions = 0;
-		let deletions = 0;
-		for (const line of diff.split("\n")) {
-			if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-			else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
-		}
-		const result: GitDiff = {
-			...(path ? { path } : {}),
-			...(repositoryPath ? { repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot) } : {}),
-			staged,
-			diff,
-			additions,
-			deletions,
-		};
-		if (!path) return result;
-		const original = await readGitRevisionContent(repositoryRoot, staged ? "HEAD" : "", path);
-		const modified = staged
-			? await readGitRevisionContent(repositoryRoot, "", path)
-			: readWorkingTreeGitContent(repositoryRoot, path);
-		if (original === undefined || modified === undefined) return { ...result, contentTruncated: true };
-		return { ...result, original, modified };
+		return withGitOperation(async () => {
+			const projectRoot = canonicalDirectory(cwd);
+			const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+			if (path) assertGitFilePath(repositoryRoot, path);
+			const args = ["diff", "--no-ext-diff", "--unified=3"];
+			if (staged) args.push("--cached");
+			if (path) args.push("--", path);
+			const diff = await git(repositoryRoot, args);
+			let additions = 0;
+			let deletions = 0;
+			for (const line of diff.split("\n")) {
+				if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+				else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+			}
+			const result: GitDiff = {
+				...(path ? { path } : {}),
+				...(repositoryPath ? { repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot) } : {}),
+				staged,
+				diff,
+				additions,
+				deletions,
+			};
+			if (!path) return result;
+			const original = await readGitRevisionContent(repositoryRoot, staged ? "HEAD" : "", path);
+			const modified = staged
+				? await readGitRevisionContent(repositoryRoot, "", path)
+				: readWorkingTreeGitContent(repositoryRoot, path);
+			if (original === undefined || modified === undefined) return { ...result, contentTruncated: true };
+			return { ...result, original, modified };
+		});
 	}
 
 	async getGitStats(cwd: string, repositoryPath?: string): Promise<GitStats> {
-		const projectRoot = canonicalDirectory(cwd);
-		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
-		const [worktree, staged] = await Promise.all([
-			git(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames"]),
-			git(repositoryRoot, ["diff", "--cached", "--numstat", "-z", "--find-renames"]),
-		]);
-		return {
-			repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
-			files: [...parseGitNumStats(worktree, false), ...parseGitNumStats(staged, true)],
-		};
+		return withGitOperation(async () => {
+			const projectRoot = canonicalDirectory(cwd);
+			const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+			const [worktree, staged] = await Promise.all([
+				git(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames"]),
+				git(repositoryRoot, ["diff", "--cached", "--numstat", "-z", "--find-renames"]),
+			]);
+			return {
+				repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+				files: [...parseGitNumStats(worktree, false), ...parseGitNumStats(staged, true)],
+			};
+		});
 	}
 
 	async getGitBranches(cwd: string, repositoryPath?: string): Promise<GitBranches> {
-		const projectRoot = canonicalDirectory(cwd);
-		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
-		const [current, hasHead, merging, remotesOutput, branchesOutput] = await Promise.all([
-			currentGitBranch(repositoryRoot),
-			gitHasHead(repositoryRoot),
-			gitMergeInProgress(repositoryRoot),
-			git(repositoryRoot, ["remote"]),
-			git(repositoryRoot, [
-				"for-each-ref",
-				"--format=%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(objectname)%00",
-				"refs/heads",
-				"refs/remotes",
-			]),
-		]);
-		const branches = branchesOutput
-			.split("\n")
-			.flatMap((row) => {
-				if (!row) return [];
-				const [refname, name, head, upstream, tracking, commit] = row.split("\0");
-				if (!refname || !name || !commit || refname.endsWith("/HEAD")) return [];
-				const remote = refname.startsWith("refs/remotes/");
-				return [
-					{
-						name,
-						current: head.trim() === "*",
-						remote,
-						...(upstream ? { upstream } : {}),
-						...parseGitTracking(tracking ?? ""),
-						commit,
-					},
-				];
-			})
-			.sort(
-				(left, right) =>
-					Number(right.current) - Number(left.current) ||
-					Number(left.remote) - Number(right.remote) ||
-					left.name.localeCompare(right.name),
-			);
-		return {
-			repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
-			...(current ? { current } : {}),
-			detached: !current && hasHead,
-			merging,
-			remotes: remotesOutput
+		return withGitOperation(async () => {
+			const projectRoot = canonicalDirectory(cwd);
+			const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+			const [current, hasHead, merging, remotesOutput, branchesOutput] = await Promise.all([
+				currentGitBranch(repositoryRoot),
+				gitHasHead(repositoryRoot),
+				gitMergeInProgress(repositoryRoot),
+				git(repositoryRoot, ["remote"]),
+				git(repositoryRoot, [
+					"for-each-ref",
+					"--format=%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(objectname)%00",
+					"refs/heads",
+					"refs/remotes",
+				]),
+			]);
+			const branches = branchesOutput
 				.split("\n")
-				.map((remote) => remote.trim())
-				.filter(Boolean),
-			branches,
-		};
+				.flatMap((row) => {
+					if (!row) return [];
+					const [refname, name, head, upstream, tracking, commit] = row.split("\0");
+					if (!refname || !name || !commit || refname.endsWith("/HEAD")) return [];
+					const remote = refname.startsWith("refs/remotes/");
+					return [
+						{
+							name,
+							current: head.trim() === "*",
+							remote,
+							...(upstream ? { upstream } : {}),
+							...parseGitTracking(tracking ?? ""),
+							commit,
+						},
+					];
+				})
+				.sort(
+					(left, right) =>
+						Number(right.current) - Number(left.current) ||
+						Number(left.remote) - Number(right.remote) ||
+						left.name.localeCompare(right.name),
+				);
+			return {
+				repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+				...(current ? { current } : {}),
+				detached: !current && hasHead,
+				merging,
+				remotes: remotesOutput
+					.split("\n")
+					.map((remote) => remote.trim())
+					.filter(Boolean),
+				branches,
+			};
+		});
 	}
 
 	async getGitHistory(cwd: string, offset: number, limit: number, repositoryPath?: string): Promise<GitHistory> {
-		const projectRoot = canonicalDirectory(cwd);
-		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
-		const resolvedRepositoryPath = repositoryPathFromRoot(projectRoot, repositoryRoot);
-		if (!(await gitHasHead(repositoryRoot))) {
-			return { repositoryPath: resolvedRepositoryPath, offset, commits: [], hasMore: false };
-		}
-		const commits = parseGitHistory(
-			await git(repositoryRoot, [
-				"log",
-				"-z",
-				`--skip=${offset}`,
-				`--max-count=${limit + 1}`,
-				"--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x00%P",
-			]),
-		);
-		const hasMore = commits.length > limit;
-		const page = commits.slice(0, limit);
-		return {
-			repositoryPath: resolvedRepositoryPath,
-			offset,
-			commits: page,
-			...(hasMore ? { nextOffset: offset + page.length } : {}),
-			hasMore,
-		};
+		return withGitOperation(async () => {
+			const projectRoot = canonicalDirectory(cwd);
+			const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+			const resolvedRepositoryPath = repositoryPathFromRoot(projectRoot, repositoryRoot);
+			if (!(await gitHasHead(repositoryRoot))) {
+				return { repositoryPath: resolvedRepositoryPath, offset, commits: [], hasMore: false };
+			}
+			const commits = parseGitHistory(
+				await git(repositoryRoot, [
+					"log",
+					"-z",
+					`--skip=${offset}`,
+					`--max-count=${limit + 1}`,
+					"--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x00%P",
+				]),
+			);
+			const hasMore = commits.length > limit;
+			const page = commits.slice(0, limit);
+			return {
+				repositoryPath: resolvedRepositoryPath,
+				offset,
+				commits: page,
+				...(hasMore ? { nextOffset: offset + page.length } : {}),
+				hasMore,
+			};
+		});
 	}
 
 	async getGitCommit(cwd: string, revision: string, repositoryPath?: string, path?: string): Promise<GitCommit> {
-		assertGitRevision(revision);
-		const projectRoot = canonicalDirectory(cwd);
-		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
-		if (path) assertGitFilePath(repositoryRoot, path);
-		const fields = (
-			await git(repositoryRoot, [
-				"show",
-				"-s",
-				"-z",
-				"--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%B%x00%P",
-				revision,
-			])
-		).split("\0");
-		const hash = fields[0];
-		if (!hash || fields.length < 11) {
-			throw Object.assign(new Error("未找到 Git 提交"), { code: "git_commit_not_found", retryable: false });
-		}
-		const parents = (fields[10] ?? "").split(" ").filter(Boolean);
-		const firstParent = parents[0];
-		const fileStats = parseGitNumStats(
-			firstParent
-				? await git(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames", firstParent, hash])
-				: await git(repositoryRoot, [
-						"diff-tree",
-						"--root",
-						"--no-commit-id",
-						"-r",
-						"--numstat",
-						"-z",
-						"--find-renames",
-						hash,
-					]),
-			false,
-		);
-		const files = fileStats.map(({ staged: _staged, ...file }) => file);
-		let diff: GitDiff | undefined;
-		if (path) {
-			const file = files.find((candidate) => candidate.path === path);
-			const patch = firstParent
-				? await git(repositoryRoot, [
-						"diff",
-						"--no-ext-diff",
-						"--unified=3",
-						"--find-renames",
-						firstParent,
-						hash,
-						"--",
-						path,
-					])
-				: await git(repositoryRoot, [
-						"show",
-						"--format=",
-						"--no-ext-diff",
-						"--unified=3",
-						"--find-renames",
-						hash,
-						"--",
-						path,
-					]);
-			const original = firstParent
-				? await readGitRevisionContent(repositoryRoot, firstParent, file?.originalPath ?? path)
-				: "";
-			const modified = await readGitRevisionContent(repositoryRoot, hash, path);
-			diff = {
-				path,
+		return withGitOperation(async () => {
+			assertGitRevision(revision);
+			const projectRoot = canonicalDirectory(cwd);
+			const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+			if (path) assertGitFilePath(repositoryRoot, path);
+			const fields = (
+				await git(repositoryRoot, [
+					"show",
+					"-s",
+					"-z",
+					"--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%B%x00%P",
+					revision,
+				])
+			).split("\0");
+			const hash = fields[0];
+			if (!hash || fields.length < 11) {
+				throw Object.assign(new Error("未找到 Git 提交"), { code: "git_commit_not_found", retryable: false });
+			}
+			const parents = (fields[10] ?? "").split(" ").filter(Boolean);
+			const firstParent = parents[0];
+			const fileStats = parseGitNumStats(
+				firstParent
+					? await git(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames", firstParent, hash])
+					: await git(repositoryRoot, [
+							"diff-tree",
+							"--root",
+							"--no-commit-id",
+							"-r",
+							"--numstat",
+							"-z",
+							"--find-renames",
+							hash,
+						]),
+				false,
+			);
+			const files = fileStats.map(({ staged: _staged, ...file }) => file);
+			let diff: GitDiff | undefined;
+			if (path) {
+				const file = files.find((candidate) => candidate.path === path);
+				const patch = firstParent
+					? await git(repositoryRoot, [
+							"diff",
+							"--no-ext-diff",
+							"--unified=3",
+							"--find-renames",
+							firstParent,
+							hash,
+							"--",
+							path,
+						])
+					: await git(repositoryRoot, [
+							"show",
+							"--format=",
+							"--no-ext-diff",
+							"--unified=3",
+							"--find-renames",
+							hash,
+							"--",
+							path,
+						]);
+				const original = firstParent
+					? await readGitRevisionContent(repositoryRoot, firstParent, file?.originalPath ?? path)
+					: "";
+				const modified = await readGitRevisionContent(repositoryRoot, hash, path);
+				diff = {
+					path,
+					repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
+					staged: false,
+					revision: hash,
+					diff: patch,
+					additions: file?.additions ?? 0,
+					deletions: file?.deletions ?? 0,
+					...(original === undefined || modified === undefined
+						? { contentTruncated: true }
+						: { original, modified }),
+				};
+			}
+			return {
 				repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
-				staged: false,
-				revision: hash,
-				diff: patch,
-				additions: file?.additions ?? 0,
-				deletions: file?.deletions ?? 0,
-				...(original === undefined || modified === undefined ? { contentTruncated: true } : { original, modified }),
+				hash,
+				shortHash: fields[1] ?? hash.slice(0, 7),
+				authorName: fields[2] ?? "",
+				authorEmail: fields[3] ?? "",
+				authoredAt: fields[4] ?? "",
+				committerName: fields[5] ?? "",
+				committerEmail: fields[6] ?? "",
+				committedAt: fields[7] ?? "",
+				subject: fields[8] ?? "",
+				body: fields[9] ?? "",
+				parents,
+				files,
+				...(diff ? { diff } : {}),
 			};
-		}
-		return {
-			repositoryPath: repositoryPathFromRoot(projectRoot, repositoryRoot),
-			hash,
-			shortHash: fields[1] ?? hash.slice(0, 7),
-			authorName: fields[2] ?? "",
-			authorEmail: fields[3] ?? "",
-			authoredAt: fields[4] ?? "",
-			committerName: fields[5] ?? "",
-			committerEmail: fields[6] ?? "",
-			committedAt: fields[7] ?? "",
-			subject: fields[8] ?? "",
-			body: fields[9] ?? "",
-			parents,
-			files,
-			...(diff ? { diff } : {}),
-		};
+		});
 	}
 
 	async mutateGit(
@@ -4760,121 +4778,125 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		mutation: GitMutation,
 		signal?: AbortSignal,
 	): Promise<GitMutationResult> {
-		const projectRoot = canonicalDirectory(cwd);
-		const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
-		const resolvedRepositoryPath = repositoryPathFromRoot(projectRoot, repositoryRoot);
-		let message: string;
-		switch (mutation.type) {
-			case "stage":
-				for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
-				await gitWrite(repositoryRoot, ["add", "--", ...mutation.paths], signal);
-				message = `已暂存 ${mutation.paths.length} 个文件`;
-				break;
-			case "unstage":
-				for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
-				await gitWrite(repositoryRoot, ["reset", "--quiet", "--", ...mutation.paths], signal);
-				message = `已取消暂存 ${mutation.paths.length} 个文件`;
-				break;
-			case "discard": {
-				for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
-				const status = parseGitStatus(
-					repositoryRoot,
-					await git(repositoryRoot, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
-				);
-				const untrackedPaths = new Set(status.files.filter((file) => file.untracked).map((file) => file.path));
-				const tracked = mutation.paths.filter((path) => !untrackedPaths.has(path));
-				const untracked = mutation.paths.filter((path) => untrackedPaths.has(path));
-				if (tracked.length > 0) await gitWrite(repositoryRoot, ["restore", "--worktree", "--", ...tracked], signal);
-				if (untracked.length > 0) await gitWrite(repositoryRoot, ["clean", "-f", "--", ...untracked], signal);
-				message = `已恢复 ${mutation.paths.length} 个文件`;
-				break;
-			}
-			case "commit": {
-				const commitMessage = mutation.message.trim();
-				if (!commitMessage)
-					throw Object.assign(new Error("提交说明不能为空"), { code: "git_commit_message_required" });
-				await gitWrite(repositoryRoot, ["commit", "-m", commitMessage], signal);
-				const shortHash = (await git(repositoryRoot, ["rev-parse", "--short", "HEAD"])).trim();
-				message = `已提交 ${shortHash}`;
-				break;
-			}
-			case "fetch":
-				await gitWrite(repositoryRoot, ["fetch"], signal);
-				message = "已获取远端更新";
-				break;
-			case "pull":
-				await gitWrite(repositoryRoot, ["pull", "--ff-only"], signal);
-				message = "已快进拉取远端更新";
-				break;
-			case "push": {
-				let upstream: string | undefined;
-				try {
-					upstream = (
-						await git(repositoryRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
-					).trim();
-				} catch {
-					upstream = undefined;
+		return withGitOperation(async () => {
+			const projectRoot = canonicalDirectory(cwd);
+			const repositoryRoot = await resolveGitRepositoryRoot(projectRoot, repositoryPath);
+			const resolvedRepositoryPath = repositoryPathFromRoot(projectRoot, repositoryRoot);
+			let message: string;
+			switch (mutation.type) {
+				case "stage":
+					for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
+					await gitWrite(repositoryRoot, ["add", "--", ...mutation.paths], signal);
+					message = `已暂存 ${mutation.paths.length} 个文件`;
+					break;
+				case "unstage":
+					for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
+					await gitWrite(repositoryRoot, ["reset", "--quiet", "--", ...mutation.paths], signal);
+					message = `已取消暂存 ${mutation.paths.length} 个文件`;
+					break;
+				case "discard": {
+					for (const path of mutation.paths) assertGitFilePath(repositoryRoot, path);
+					const status = parseGitStatus(
+						repositoryRoot,
+						await git(repositoryRoot, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
+					);
+					const untrackedPaths = new Set(status.files.filter((file) => file.untracked).map((file) => file.path));
+					const tracked = mutation.paths.filter((path) => !untrackedPaths.has(path));
+					const untracked = mutation.paths.filter((path) => untrackedPaths.has(path));
+					if (tracked.length > 0)
+						await gitWrite(repositoryRoot, ["restore", "--worktree", "--", ...tracked], signal);
+					if (untracked.length > 0) await gitWrite(repositoryRoot, ["clean", "-f", "--", ...untracked], signal);
+					message = `已恢复 ${mutation.paths.length} 个文件`;
+					break;
 				}
-				if (upstream) {
-					await gitWrite(repositoryRoot, ["push"], signal);
-				} else {
-					const branch = await currentGitBranch(repositoryRoot);
-					if (!branch)
-						throw Object.assign(new Error("Detached HEAD 不能直接推送"), {
-							code: "git_detached_head",
-							retryable: false,
-						});
-					const remotes = (await git(repositoryRoot, ["remote"]))
-						.split("\n")
-						.map((remote) => remote.trim())
-						.filter(Boolean);
-					const remote = remotes[0];
-					if (!remote || remotes.length !== 1) {
-						throw Object.assign(new Error("当前分支没有上游，且无法确定唯一远端"), {
-							code: "git_upstream_required",
-							retryable: false,
-						});
+				case "commit": {
+					const commitMessage = mutation.message.trim();
+					if (!commitMessage)
+						throw Object.assign(new Error("提交说明不能为空"), { code: "git_commit_message_required" });
+					await gitWrite(repositoryRoot, ["commit", "-m", commitMessage], signal);
+					const shortHash = (await git(repositoryRoot, ["rev-parse", "--short", "HEAD"])).trim();
+					message = `已提交 ${shortHash}`;
+					break;
+				}
+				case "fetch":
+					await gitWrite(repositoryRoot, ["fetch"], signal);
+					message = "已获取远端更新";
+					break;
+				case "pull":
+					await gitWrite(repositoryRoot, ["pull", "--ff-only"], signal);
+					message = "已快进拉取远端更新";
+					break;
+				case "push": {
+					let upstream: string | undefined;
+					try {
+						upstream = (
+							await git(repositoryRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+						).trim();
+					} catch {
+						assertGitOperationActive();
+						upstream = undefined;
 					}
-					await gitWrite(repositoryRoot, ["push", "--set-upstream", remote, branch], signal);
+					if (upstream) {
+						await gitWrite(repositoryRoot, ["push"], signal);
+					} else {
+						const branch = await currentGitBranch(repositoryRoot);
+						if (!branch)
+							throw Object.assign(new Error("Detached HEAD 不能直接推送"), {
+								code: "git_detached_head",
+								retryable: false,
+							});
+						const remotes = (await git(repositoryRoot, ["remote"]))
+							.split("\n")
+							.map((remote) => remote.trim())
+							.filter(Boolean);
+						const remote = remotes[0];
+						if (!remote || remotes.length !== 1) {
+							throw Object.assign(new Error("当前分支没有上游，且无法确定唯一远端"), {
+								code: "git_upstream_required",
+								retryable: false,
+							});
+						}
+						await gitWrite(repositoryRoot, ["push", "--set-upstream", remote, branch], signal);
+					}
+					message = "已推送当前分支";
+					break;
 				}
-				message = "已推送当前分支";
-				break;
+				case "create_branch": {
+					const name = await validateGitBranchName(repositoryRoot, mutation.name);
+					await gitWrite(repositoryRoot, ["switch", "-c", name], signal);
+					message = `已创建并切换到 ${name}`;
+					break;
+				}
+				case "switch_branch": {
+					const name = await validateGitBranchName(repositoryRoot, mutation.name);
+					await gitWrite(repositoryRoot, ["switch", name], signal);
+					message = `已切换到 ${name}`;
+					break;
+				}
+				case "delete_branch": {
+					const name = await validateGitBranchName(repositoryRoot, mutation.name);
+					await gitWrite(repositoryRoot, ["branch", "-d", name], signal);
+					message = `已删除分支 ${name}`;
+					break;
+				}
+				case "merge": {
+					const source = await validateGitBranchName(repositoryRoot, mutation.source);
+					await gitWrite(repositoryRoot, ["merge", "--no-edit", "--", source], signal);
+					message = `已合并 ${source}`;
+					break;
+				}
+				case "abort_merge":
+					await gitWrite(repositoryRoot, ["merge", "--abort"], signal);
+					message = "已中止合并";
+					break;
 			}
-			case "create_branch": {
-				const name = await validateGitBranchName(repositoryRoot, mutation.name);
-				await gitWrite(repositoryRoot, ["switch", "-c", name], signal);
-				message = `已创建并切换到 ${name}`;
-				break;
-			}
-			case "switch_branch": {
-				const name = await validateGitBranchName(repositoryRoot, mutation.name);
-				await gitWrite(repositoryRoot, ["switch", name], signal);
-				message = `已切换到 ${name}`;
-				break;
-			}
-			case "delete_branch": {
-				const name = await validateGitBranchName(repositoryRoot, mutation.name);
-				await gitWrite(repositoryRoot, ["branch", "-d", name], signal);
-				message = `已删除分支 ${name}`;
-				break;
-			}
-			case "merge": {
-				const source = await validateGitBranchName(repositoryRoot, mutation.source);
-				await gitWrite(repositoryRoot, ["merge", "--no-edit", "--", source], signal);
-				message = `已合并 ${source}`;
-				break;
-			}
-			case "abort_merge":
-				await gitWrite(repositoryRoot, ["merge", "--abort"], signal);
-				message = "已中止合并";
-				break;
-		}
-		return {
-			repositoryPath: resolvedRepositoryPath,
-			action: mutation.type,
-			message,
-			status: await this.getGitStatus(projectRoot),
-		};
+			return {
+				repositoryPath: resolvedRepositoryPath,
+				action: mutation.type,
+				message,
+				status: await this.getGitStatus(projectRoot),
+			};
+		}, signal);
 	}
 
 	async checkForUpdates(): Promise<JsonValue> {

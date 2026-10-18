@@ -119,33 +119,30 @@ See the focused examples for [models](../examples/sdk/02-custom-model.ts), [tool
 
 ## File edits
 
-The coding-agent `edit` tool uses snapshots returned by `read`. Each text read displays a snapshot reference and numbered source lines; `details.source` exposes the same reference, revision, and displayed range to SDK callers. Line numbers are 1-based and ranges are inclusive. Replace a line or block by providing `newText` without the display prefixes. Empty text deletes the range. Insert before a line with `endLine = startLine - 1`; inserting after EOF requires a snapshot that includes EOF.
+The coding-agent `edit` tool takes `{ path, edits: [{ oldText, newText }] }`. Copy `oldText` from a read, without displayed line-number prefixes. Preserve source indentation, punctuation and Unicode characters; include enough unchanged context to identify one target. Only line endings are normalized for matching. Empty `newText` deletes the source text. To insert, replace an existing anchor with that anchor plus the inserted text; `oldText` cannot be empty.
 
-Standalone SDK tools can share an explicit state:
+Standalone tools do not need shared state:
 
 ```typescript
-import { createEditTool, createReadTool, FileEditState } from "@earendil-works/pi-coding-agent";
+import { createEditTool, createReadTool } from "@earendil-works/pi-coding-agent";
 
-const state = new FileEditState();
-const read = createReadTool(process.cwd(), { fileEditState: state });
-const edit = createEditTool(process.cwd(), { fileEditState: state });
+const read = createReadTool(process.cwd());
+const edit = createEditTool(process.cwd());
 const source = await read.execute("read-1", { path: "example.ts", offset: 1, limit: 20 });
-const snapshot = source.details?.source?.snapshot;
-if (!snapshot) throw new Error("No editable source snapshot was returned");
+console.log(source.content); // Numbered source text, not edit coordinates.
 await edit.execute("edit-1", {
   path: "example.ts",
-  snapshot,
-  edits: [{ startLine: 1, endLine: 1, newText: "export const enabled = true;" }],
+  edits: [{ oldText: "export const enabled = false;", newText: "export const enabled = true;" }],
 });
 ```
 
-Agent sessions share their own state automatically. Snapshots, pending plans, and verified receipts are bounded in-memory state. A restarted session must read again; an expired reference reports a conflict and never falls back to searching for similar text.
+All replacements are matched against the same current file, not against the results of earlier replacements. A batch with missing, ambiguous or overlapping targets writes nothing. The error reports failed indexes and bounded current source evidence. Correct the arguments and resubmit the complete batch; the tool does not retain a recovery plan or infer success from missing source text.
 
-A failed batch writes nothing and returns a retained `plan` in the error details. Resume with that plan and only corrected items, specifying their original `index` and a current snapshot. Other items remain pending. `dropIndexes` explicitly removes unwanted items. All remaining operations are revalidated before one write. Receipts recognize repeated completed operations only while their result still verifies against the current file.
+Other changes in the file do not invalidate an unchanged, identifiable target. The tool holds the shared file mutation lock, checks the file again before writing, and revalidates once against newly observed contents. It refuses continuously changing inputs and verifies completed writes. External writers that ignore the lock can still race between the final check and write; this is not filesystem compare-and-swap or a general atomic-write guarantee. A failed write reports `unknown` when completion cannot be confirmed; read the file before retrying.
 
-Result details include `status`, `writeState`, `path`, `plan`, source/result revisions, per-item statuses, applied/already-applied counts, and validation/write durations. Conflict details include the failed indexes, available current snapshots, attempt count, and `recoveryAllowed`. The third failed attempt against an unchanged file version ends automatic continuation; a later prompt can submit corrected work. Re-reading unchanged content or changing item indexes does not reset this budget.
+Read `details.source` retains the revision, displayed range and output hash as provenance, not an edit precondition. Edit result details expose `status`, `writeState`, source/result revisions, per-item statuses, applied counts and durations. Repeated unchanged failures are handled by the session's common recovery controller, not an edit-specific state machine.
 
-This replaces the coding-agent `oldText/newText` input contract. Extensions that construct edit arguments must migrate to snapshots and ranges. Historical results continue to render. The independent experimental durable tools retain their own documented contract.
+This replaces the snapshot/range protocol and removes the `FileEditState` and snapshot-type SDK exports. Extensions must send text replacements; `snapshot`, `plan` and `dropIndexes` are not accepted. Saved historical calls still render. The independent experimental durable tools are unchanged.
 
 ## Examples
 

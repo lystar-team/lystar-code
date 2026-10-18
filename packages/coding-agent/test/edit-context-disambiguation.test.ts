@@ -14,7 +14,7 @@ for (const [name, apply] of [
 			["log(ﬀ);", "log(ff);"],
 		])("uses explicit indentation while normalizing %s", (originalLine, oldLine) => {
 			const original = `header\n        ${originalLine}\n    ${originalLine}   \nfooter\n`;
-			expect(apply(original, [{ oldText: `    ${oldLine}`, newText: "    done();" }], "memory.txt").newContent).toBe(
+			expect(apply(original, [{ oldText: `    ${name === "coding-agent" ? originalLine : oldLine}`, newText: "    done();" }], "memory.txt").newContent).toBe(
 				`header\n        ${originalLine}\n    done();   \nfooter\n`,
 			);
 		});
@@ -25,8 +25,8 @@ for (const [name, apply] of [
 				apply(
 					original,
 					[
-						{ oldText: '\t\tlog("x");', newText: "\t\tfirst();" },
-						{ oldText: '\tlog("x");', newText: "\tsecond();" },
+						{ oldText: name === "coding-agent" ? "		log(“x”);" : '		log("x");', newText: "		first();" },
+						{ oldText: name === "coding-agent" ? "	log(“x”);" : '	log("x");', newText: "	second();" },
 					],
 					"memory.txt",
 				).newContent,
@@ -36,8 +36,8 @@ for (const [name, apply] of [
 		it("keeps identical normalized candidates ambiguous", () => {
 			expect(() =>
 				apply(
-					"    log(“x”);\n    log(”x”);\n",
-					[{ oldText: '    log("x");', newText: "    done();" }],
+					name === "coding-agent" ? "    log(“x”);\n    log(“x”);\n" : "    log(“x”);\n    log(”x”);\n",
+					[{ oldText: name === "coding-agent" ? "    log(“x”);" : '    log("x");', newText: "    done();" }],
 					"memory.txt",
 				),
 			).toThrow("Found 2 occurrences");
@@ -45,14 +45,14 @@ for (const [name, apply] of [
 
 		it("does not infer indentation that the arguments did not provide", () => {
 			expect(() =>
-				apply("        log(“x”);\n    log(“x”);\n", [{ oldText: 'log("x");', newText: "done();" }], "memory.txt"),
+				apply("        log(“x”);\n    log(“x”);\n", [{ oldText: name === "coding-agent" ? "log(“x”);" : 'log("x");', newText: "done();" }], "memory.txt"),
 			).toThrow("Found 2 occurrences");
 		});
 
-		it("retains unique whitespace-tolerant fallback and grapheme boundaries", () => {
-			expect(
-				apply("\tlog(“x”);\n", [{ oldText: '    log("x");', newText: "    done();" }], "memory.txt").newContent,
-			).toBe("    done();\n");
+		it("uses exact source for coding-agent and diagnostic-only whitespace candidates", () => {
+			const run = () => apply("\tlog(“x”);\n", [{ oldText: '    log("x");', newText: "    done();" }], "memory.txt");
+			if (name === "coding-agent") expect(run).toThrow("Could not find");
+			else expect(run().newContent).toBe("    done();\n");
 			expect(() => apply("    ﬀ\n", [{ oldText: "    f", newText: "    x" }], "memory.txt")).toThrow(
 				"Could not find",
 			);

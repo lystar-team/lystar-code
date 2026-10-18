@@ -18,9 +18,6 @@ import { splitBom } from "../../utils/text.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { registerBuiltInRecoveryError } from "../tool-recovery/registry.ts";
 import { normalizeToLF } from "./edit-diff.ts";
-import { formatFileSnapshot, getFileEditState } from "./file-edit-context.ts";
-import type { FileEditState } from "./file-edit-state.ts";
-import { getMutationQueueKey } from "./file-mutation-queue.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { readRenderers } from "./renderers/read.ts";
@@ -37,14 +34,13 @@ export const readToolSystemPromptContribution = {
 	snippet: "Read file contents",
 	guidelines: [
 		"Use read to examine files instead of cat or sed.",
-		'Text reads return a snapshot ID inside a header such as [snapshot r0123456789ab; lines 1-20 of 40] and numbered source lines. Set edit.snapshot to "r0123456789ab" and use the displayed ranges; do not reproduce oldText or include line-number prefixes in newText.',
+		"Text reads return numbered source lines. For edit.oldText, copy the source text exactly without line-number prefixes, preserving indentation and punctuation. Line numbers are for navigation, not edit coordinates.",
 	],
 } as const;
 
 export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadSourceDetails {
-	snapshot: string;
 	absolutePath: string;
 	revision: string;
 	startLine: number;
@@ -101,8 +97,6 @@ const defaultReadOperations: ReadOperations = {
 };
 
 export interface ReadToolOptions {
-	/** Shared read/edit state for standalone SDK tools. Sessions use their own state automatically. */
-	fileEditState?: FileEditState;
 	/** Whether to auto-resize images. Default: true */
 	autoResizeImages?: boolean;
 	/** Fallback resize profile when the execution context has no model metadata. */
@@ -460,7 +454,7 @@ export function createReadToolDefinition(
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Text reads return a snapshot reference and numbered source lines for edit. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is limited to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Use offset/limit to read the regions you need. Only displayed source ranges can be edited with the returned snapshot.`,
+		description: `Read the contents of a file. Text reads return numbered source lines; copy source text without the display prefixes when using edit. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is limited to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB. Use offset/limit to read the regions you need.`,
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,
@@ -541,37 +535,27 @@ export function createReadToolDefinition(
 								const numbered = selectedLines
 									.map((line, index) => `${startLine + index + 1}| ${line}`)
 									.join("\n");
-								// 给快照引用和补读说明预留空间；只有完整展示的源行进入快照范围。
+								// 给行范围标题和补读说明预留空间，只展示完整源行。
 								const truncation = truncateHead(numbered, { maxBytes: DEFAULT_MAX_BYTES - 512 });
 								let outputText: string;
 								if (truncation.firstLineExceedsLimit) {
 									const lineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf8"));
-									outputText = `[Line ${startLine + 1} is ${lineSize}, exceeds the text output limit. No edit snapshot was issued for this line.]`;
+									outputText = `[Line ${startLine + 1} is ${lineSize}, exceeds the text output limit. Read a smaller text segment with a suitable tool before editing.]`;
 									details = { truncation };
 								} else {
 									const displayedLines = selectedLines.slice(0, truncation.outputLines);
-									const state = getFileEditState(ctx?.cwd || cwd, ctx, options?.fileEditState);
-									const canonicalPath = await getMutationQueueKey(absolutePath);
-									if (aborted) return;
-									const snapshot = state.capture(
-										canonicalPath,
-										rawContent,
-										startLine + 1,
-										startLine + displayedLines.length,
-									);
-									state.recordRead(snapshot);
-									outputText = formatFileSnapshot(state, snapshot, displayedLines);
-									if (snapshot.endLine < allLines.length) {
-										const remaining = allLines.length - snapshot.endLine;
-										outputText += `\n\n[${remaining} more lines in file. Use offset=${snapshot.endLine + 1} to continue.]`;
+									const endLine = startLine + displayedLines.length;
+									outputText = `[lines ${startLine + 1}-${endLine} of ${allLines.length}]\n${displayedLines.map((line, index) => `${startLine + index + 1}| ${line}`).join("\n")}`;
+									if (endLine < allLines.length) {
+										const remaining = allLines.length - endLine;
+										outputText += `\n\n[${remaining} more lines in file. Use offset=${endLine + 1} to continue.]`;
 									}
 									const source: ReadSourceDetails = {
-										snapshot: snapshot.id,
 										absolutePath,
 										revision: sha256(buffer),
-										startLine: snapshot.startLine,
-										endLine: snapshot.endLine,
-										totalLines: snapshot.totalLines,
+										startLine: startLine + 1,
+										endLine,
+										totalLines: allLines.length,
 										outputHash: sha256(outputText),
 									};
 									details = { ...(truncation.truncated ? { truncation } : {}), source };

@@ -15,12 +15,14 @@ import {
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import type { Api, Model, NativeSteeringMode } from "@earendil-works/pi-ai";
 import { ProviderCompatSchema } from "@earendil-works/pi-ai/providers/compat-schema";
 import {
 	ModelCostSchema,
 	ModelInputLimitsSchema,
 	ModelInputModalitySchema,
 	ModelPromptCacheSchema,
+	NativeSteeringModeSchema,
 	ThinkingLevelMapSchema,
 } from "@earendil-works/pi-ai/providers/model-schema";
 import lockfile from "proper-lockfile";
@@ -44,6 +46,13 @@ const SamplingParamsByThinkingLevelSchema = Type.Object({
 
 const PositiveTokenCountSchema = Type.Number({ exclusiveMinimum: 0 });
 
+const NativeSteeringSettingSchema = Type.Union([NativeSteeringModeSchema, Type.Literal("inherit")]);
+const NativeSteeringFailureSchema = Type.Object({
+	modelId: Type.String({ minLength: 1 }),
+	baseUrl: Type.String({ minLength: 1 }),
+	api: Type.String({ minLength: 1 }),
+});
+
 const ModelDefinitionSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -51,6 +60,7 @@ const ModelDefinitionSchema = Type.Object({
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
 	fastModeSupported: Type.Optional(Type.Boolean()),
+	nativeSteering: Type.Optional(NativeSteeringSettingSchema),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(ModelInputModalitySchema)),
 	inputLimits: Type.Optional(ModelInputLimitsSchema),
@@ -68,6 +78,7 @@ const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
 	fastModeSupported: Type.Optional(Type.Boolean()),
+	nativeSteering: Type.Optional(NativeSteeringSettingSchema),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(ModelInputModalitySchema)),
 	inputLimits: Type.Optional(ModelInputLimitsSchema),
@@ -91,6 +102,8 @@ const ProviderConfigSchema = Type.Object({
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
 	authHeader: Type.Optional(Type.Boolean()),
+	nativeSteering: Type.Optional(NativeSteeringModeSchema),
+	nativeSteeringFailures: Type.Optional(Type.Array(NativeSteeringFailureSchema)),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),
 	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
 	disabledModels: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
@@ -179,6 +192,62 @@ async function updateModelsJson(path: string, update: (config: ModelsJson) => vo
 	}
 }
 
+export function resolveNativeSteering(
+	provider: ModelsJsonProvider | undefined,
+	modelId: string,
+	fallback?: NativeSteeringMode,
+): NativeSteeringMode {
+	const setting =
+		provider?.modelOverrides?.[modelId]?.nativeSteering ??
+		provider?.models?.find((model) => model.id === modelId)?.nativeSteering;
+	if (setting === "inherit") return provider?.nativeSteering ?? "auto";
+	return setting ?? provider?.nativeSteering ?? fallback ?? "auto";
+}
+
+export function isNativeSteeringUnavailable(
+	provider: ModelsJsonProvider | undefined,
+	model: Pick<Model<Api>, "id" | "baseUrl" | "api">,
+): boolean {
+	return (
+		provider?.nativeSteeringFailures?.some(
+			(failure) =>
+				failure.modelId === model.id &&
+				failure.baseUrl === model.baseUrl.replace(/\/+$/u, "") &&
+				failure.api === model.api,
+		) ?? false
+	);
+}
+
+function clearNativeSteeringFailures(provider: ModelsJsonProvider, modelId?: string): void {
+	const failures = modelId
+		? provider.nativeSteeringFailures?.filter((failure) => failure.modelId !== modelId)
+		: undefined;
+	if (failures?.length) provider.nativeSteeringFailures = failures;
+	else delete provider.nativeSteeringFailures;
+}
+
+export async function saveModelsJsonNativeSteeringFailure(modelsJsonPath: string, model: Model<Api>): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[model.provider] ?? {};
+		if (!isNativeSteeringUnavailable(provider, model)) {
+			provider.nativeSteeringFailures = [
+				...(provider.nativeSteeringFailures ?? []),
+				{ modelId: model.id, baseUrl: model.baseUrl.replace(/\/+$/u, ""), api: model.api },
+			];
+		}
+		config.providers[model.provider] = provider;
+	});
+}
+
+export async function resetModelsJsonNativeSteering(modelsJsonPath: string, providerId: string): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = config.providers[providerId];
+		if (!provider) return;
+		clearNativeSteeringFailures(provider);
+		if (Object.keys(provider).length === 0) delete config.providers[providerId];
+	});
+}
+
 export async function saveModelsJsonProvider(
 	modelsJsonPath: string,
 	providerId: string,
@@ -186,6 +255,7 @@ export async function saveModelsJsonProvider(
 ): Promise<void> {
 	await updateModelsJson(modelsJsonPath, (config) => {
 		config.providers[providerId] = { ...config.providers[providerId], ...structuredClone(provider) };
+		clearNativeSteeringFailures(config.providers[providerId]);
 	});
 }
 
@@ -211,6 +281,7 @@ export async function saveModelsJsonModel(
 ): Promise<void> {
 	await updateModelsJson(modelsJsonPath, (config) => {
 		const provider = config.providers[providerId] ?? {};
+		clearNativeSteeringFailures(provider, model.id);
 		const models = [...(provider.models ?? [])];
 		const index = models.findIndex((candidate) => candidate.id === model.id);
 		if (index >= 0) models[index] = structuredClone(model);
@@ -229,6 +300,7 @@ export async function saveModelsJsonModels(
 		const provider = config.providers[providerId] ?? {};
 		const current = [...(provider.models ?? [])];
 		for (const model of models) {
+			clearNativeSteeringFailures(provider, model.id);
 			const index = current.findIndex((candidate) => candidate.id === model.id);
 			if (index >= 0) current[index] = structuredClone(model);
 			else current.push(structuredClone(model));
@@ -245,6 +317,7 @@ export async function saveModelsJsonModelOverride(
 ): Promise<void> {
 	await updateModelsJson(modelsJsonPath, (config) => {
 		const provider = config.providers[providerId] ?? {};
+		clearNativeSteeringFailures(provider, modelId);
 		const previous = provider.modelOverrides?.[modelId] ?? {};
 		config.providers[providerId] = {
 			...provider,
@@ -344,6 +417,7 @@ export async function clearModelsJsonModelOverride(
 		const provider = config.providers[providerId];
 		if (!provider?.modelOverrides?.[modelId]) return;
 		const modelOverrides = { ...provider.modelOverrides };
+		clearNativeSteeringFailures(provider, modelId);
 		delete modelOverrides[modelId];
 		const nextProvider = { ...provider };
 		if (Object.keys(modelOverrides).length > 0) nextProvider.modelOverrides = modelOverrides;

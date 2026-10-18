@@ -4,10 +4,19 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type ProxyOptions } from "vite";
+import { defineConfig, type Plugin, type ProxyOptions, transformWithOxc } from "vite";
+import { devDelivery } from "./vite-dev-delivery.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const runtimeProtocolSource = fileURLToPath(new URL("../web-protocol/src/index.ts", import.meta.url));
+// 浏览器只用到协议包里的少量运行时函数；按子路径导入可以避免整份 schema 与 TypeBox 进入模块图。
+const runtimeProtocolDir = fileURLToPath(new URL("../web-protocol/src", import.meta.url));
+const runtimeProtocolAliases = Object.fromEntries(
+	["limits", "room-agent-alias", "schemas", "session-results", "uuid", "web-search"].map((name) => [
+		`@lystar/code-web-protocol/${name}`,
+		join(runtimeProtocolDir, `${name}.ts`),
+	]),
+);
 const WEB_DEV_PORT = 2420;
 const DEFAULT_GATEWAY_URL = "http://127.0.0.1:2422";
 const webConfigPath = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "web-dev-config.json");
@@ -43,12 +52,36 @@ const gatewayWebSocketProxy: ProxyOptions = {
 	headers: { Origin: gatewayUrl },
 };
 
+const reactHookRefresh: Plugin = {
+	name: "web-react-hook-refresh",
+	apply: (_config, environment) => environment.command === "serve" && environment.mode !== "production" && !process.env.VITEST,
+	enforce: "pre",
+	transform: {
+		filter: { id: /\/src\/.*\.ts(?:\?|$)/u, code: /\buse[A-Z]/u },
+		async handler(code, id) {
+			if (this.environment.config.consumer !== "client" || this.environment.config.server.hmr === false) return;
+			// Vite 只为 JSX 模块启用 refresh；纯 TS 自定义 Hook 也需要签名。
+			const result = await transformWithOxc(code, id.split("?")[0]!, {
+				jsx: { refresh: { refreshSig: "__lystarHookSignature" } }, sourcemap: true,
+			});
+			if (!result.code.includes("__lystarHookSignature")) return;
+			const runtime = JSON.stringify(`${this.environment.config.base}@react-refresh`);
+			return {
+				code: `${result.code}\nimport { createSignatureFunctionForTransform as __lystarHookSignature } from ${runtime};\n`,
+				map: result.map,
+			};
+		},
+	},
+};
+
 export default defineConfig({
 	// 开发服务与测试不能共用依赖缓存，否则测试重建缓存会使运行中的懒加载失效。
 	cacheDir: process.env.VITEST ? "node_modules/.vite-test" : "node_modules/.vite-web",
 	plugins: [
 		react(),
+		reactHookRefresh,
 		tailwindcss(),
+		devDelivery(),
 		{
 			name: "web-gateway-config",
 			configureServer(server) {
@@ -65,6 +98,8 @@ export default defineConfig({
 	],
 	resolve: {
 		alias: {
+			// 子路径别名必须排在包名别名之前：包名别名会前缀匹配子路径。
+			...runtimeProtocolAliases,
 			"@lystar/code-web-protocol": runtimeProtocolSource,
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
 		},

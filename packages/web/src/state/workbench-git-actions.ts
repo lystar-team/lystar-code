@@ -39,37 +39,58 @@ export function useWorkbenchGitActions({
 	gitStatsRepositoryRef,
 	loadGitStatusRef,
 }: WorkbenchGitActionsContext) {
+	const loadGitDiff = useCallback(
+		async (path?: string, staged = false, repositoryPath?: string, silent = false) => {
+			const projectId = stateRef.current.currentProjectId;
+			if (!projectId) return;
+			const requestId = ++gitDiffRequestRef.current;
+			if (!silent) updateState((current) => ({ ...current, gitDiff: undefined, gitDiffLoading: true }));
+			try {
+				const result = await webApi.gitDiff(projectId, path, staged, repositoryPath);
+				if (requestId !== gitDiffRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
+				updateState((current) => ({ ...current, gitDiff: result }));
+			} finally {
+				if (!silent && requestId === gitDiffRequestRef.current) {
+					updateState((current) => ({ ...current, gitDiffLoading: false }));
+				}
+			}
+		},
+		[updateState],
+	);
 	const loadGitStatus = useCallback(
 		(silent = false): Promise<void> => {
-			const pending = gitStatusPromiseRef.current;
-			if (pending) return pending;
 			const projectId = stateRef.current.currentProjectId;
 			if (!projectId) return Promise.resolve();
-			const requestId = ++gitStatusRequestRef.current;
-			gitStatsRepositoryRef.current.clear();
+			gitStatusRequestRef.current++;
+			const pending = gitStatusPromiseRef.current;
+			if (pending) return pending;
 			if (!silent) updateState((current) => ({ ...current, gitLoading: true }));
-			const run = (async () => {
+			const tracked = Promise.resolve().then(async () => {
 				try {
-					const result = await webApi.gitStatus(projectId, !silent);
-					if (requestId !== gitStatusRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
-					updateState((current) =>
-						sameGitStatus(current.gitStatus, result)
-							? current
-							: { ...current, gitStatus: result, gitFileStats: {} },
-					);
+					while (gitStatusPromiseRef.current === tracked && stateRef.current.currentProjectId === projectId) {
+						const requestId = gitStatusRequestRef.current;
+						gitStatsRepositoryRef.current.clear();
+						const result = await webApi.gitStatus(projectId, !silent);
+						if (gitStatusPromiseRef.current !== tracked || stateRef.current.currentProjectId !== projectId) return;
+						updateState((current) =>
+							sameGitStatus(current.gitStatus, result) ? current : { ...current, gitStatus: result, gitFileStats: {} },
+						);
+						const diff = stateRef.current.gitDiff;
+						if (diff && !diff.revision) await loadGitDiff(diff.path, diff.staged, diff.repositoryPath, true);
+						if (requestId === gitStatusRequestRef.current) return;
+					}
 				} finally {
-					if (!silent && requestId === gitStatusRequestRef.current) {
-						updateState((current) => ({ ...current, gitLoading: false }));
+					if (gitStatusPromiseRef.current === tracked) {
+						gitStatusPromiseRef.current = undefined;
+						if (!silent && stateRef.current.currentProjectId === projectId)
+							updateState((current) => ({ ...current, gitLoading: false }));
 					}
 				}
-			})();
-			const tracked = run.finally(() => {
-				if (gitStatusPromiseRef.current === tracked) gitStatusPromiseRef.current = undefined;
 			});
 			gitStatusPromiseRef.current = tracked;
 			return tracked;
 		},
-		[updateState],
+		[loadGitDiff, updateState],
 	);
 
 	const loadGitRepositoryStats = useCallback(
@@ -237,25 +258,6 @@ export function useWorkbenchGitActions({
 
 	const closeGitCredentialAuthorization = useCallback(
 		() => updateState((current) => ({ ...current, gitCredentialAuthorizationMessage: undefined })),
-		[updateState],
-	);
-
-	const loadGitDiff = useCallback(
-		async (path?: string, staged = false, repositoryPath?: string) => {
-			const projectId = stateRef.current.currentProjectId;
-			if (!projectId) return;
-			const requestId = ++gitDiffRequestRef.current;
-			updateState((current) => ({ ...current, gitDiff: undefined, gitDiffLoading: true }));
-			try {
-				const result = await webApi.gitDiff(projectId, path, staged, repositoryPath);
-				if (requestId !== gitDiffRequestRef.current || stateRef.current.currentProjectId !== projectId) return;
-				updateState((current) => ({ ...current, gitDiff: result }));
-			} finally {
-				if (requestId === gitDiffRequestRef.current) {
-					updateState((current) => ({ ...current, gitDiffLoading: false }));
-				}
-			}
-		},
 		[updateState],
 	);
 

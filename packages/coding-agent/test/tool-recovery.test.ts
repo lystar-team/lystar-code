@@ -140,13 +140,13 @@ function createTrustedBuiltInTool(name: "read" | "bash" | "edit"): AgentTool {
 	return tool;
 }
 
-function getReadSource(details: unknown): { snapshot: string; revision: string } {
+function getReadSource(details: unknown): { revision: string } {
 	if (!details || typeof details !== "object" || !("source" in details)) throw new Error("missing read source details");
 	const source = details.source;
 	if (!source || typeof source !== "object") throw new Error("missing read source details");
-	const { snapshot, revision } = source as { snapshot?: unknown; revision?: unknown };
-	if (typeof snapshot !== "string" || typeof revision !== "string") throw new Error("incomplete read source details");
-	return { snapshot, revision };
+	const { revision } = source as { revision?: unknown };
+	if (typeof revision !== "string") throw new Error("incomplete read source details");
+	return { revision };
 }
 
 function assistantMessage(
@@ -830,7 +830,7 @@ describe("Tool recovery observe ledger", () => {
 		sessionManager.dispose();
 	});
 
-	it("resets snapshot edit recovery after explicit reads across direct, off, assist, and auto calls", async () => {
+	it("keeps rebuilt text edits recoverable across direct, off, assist, and auto calls", async () => {
 		for (const mode of ["off", "assist", "auto"] as const) {
 			process.env.PI_TOOL_RECOVERY_MODE = mode;
 			const harness = await createHarness({ responses: ["unused"] });
@@ -850,23 +850,22 @@ describe("Tool recovery observe ledger", () => {
 						directRevision ??= source.revision;
 						expect(source.revision).toBe(directRevision);
 						const edits = Array.from({ length: attempt }, (_, index) => ({
-							startLine: index + 1,
-							endLine: index + 1,
+							oldText: ["one", "two", "three"][index],
 							newText: `changed-${attempt}-${index}`,
 						}));
-						edits.push({ startLine: 99, endLine: 99, newText: `invalid-${attempt}` });
+						edits.push({ oldText: `missing-${attempt}`, newText: `invalid-${attempt}` });
 						let directError: unknown;
 						try {
-							await activeEdit.execute("direct-edit", { path: "direct.txt", snapshot: source.snapshot, edits });
+							await activeEdit.execute("direct-edit", { path: "direct.txt", edits });
 						} catch (error) {
 							directError = error;
 						}
 						expect(directError).toBeInstanceOf(ToolExecutionError);
 						if (!(directError instanceof ToolExecutionError)) throw new Error("missing direct edit failure");
 						expect(directError).toMatchObject({
-							code: "RANGE_OUTSIDE_SNAPSHOT",
+							code: "MATCH_NOT_FOUND",
 							terminate: false,
-							details: { attempt: 1, recoveryAllowed: true, writeState: "not_written" },
+							details: { writeState: "not_written" },
 						});
 						const directHandler = (
 							directError as unknown as {
@@ -899,18 +898,17 @@ describe("Tool recovery observe ledger", () => {
 						readRevisions.push(source.revision);
 						const attempt = Math.floor(request / 3);
 						const edits = Array.from({ length: attempt }, (_, index) => ({
-							startLine: index + 1,
-							endLine: index + 1,
+							oldText: ["one", "two", "three"][index],
 							newText: `changed-${attempt}-${index}`,
 						}));
-						edits.push({ startLine: 99, endLine: 99, newText: `invalid-${attempt}` });
+						edits.push({ oldText: `missing-${attempt}`, newText: `invalid-${attempt}` });
 						message = assistantMessage(
 							[
 								{
 									type: "toolCall",
 									id: `edit-${request}`,
 									name: "edit",
-									arguments: { path: "target.txt", snapshot: source.snapshot, edits },
+									arguments: { path: "target.txt", edits },
 								},
 							],
 							"toolUse",
@@ -932,15 +930,11 @@ describe("Tool recovery observe ledger", () => {
 						message.role === "toolResult" && message.toolName === "edit",
 				);
 				const editDetails = editResults.map((result) => result.details as Record<string, unknown>);
-				expect(editDetails.map((details) => [details.attempt, details.recoveryAllowed])).toEqual([
-					[1, true],
-					[1, true],
-					[1, true],
-				]);
+				expect(editDetails.map((details) => details.writeState)).toEqual(["not_written", "not_written", "not_written"]);
 				expect(
 					editResults
 						.map((result) => result.content.map((content) => (content.type === "text" ? content.text : "")).join("\n"))
-						.every((text) => text.includes("RANGE_OUTSIDE_SNAPSHOT")),
+						.every((text) => text.includes("MATCH_NOT_FOUND")),
 				).toBe(true);
 				expect(
 					editDetails.map((details) => (details.issues as Array<{ editIndex: number }>)[0]?.editIndex),
@@ -949,7 +943,7 @@ describe("Tool recovery observe ledger", () => {
 				expect(requestCount).toBe(9);
 				const editEnd = harness.eventsOfType("tool_execution_end").findLast((event) => event.toolName === "edit");
 				expect(editEnd?.result).toMatchObject({
-					details: { recoveryAllowed: true, writeState: "not_written" },
+					details: { writeState: "not_written" },
 				});
 				expect(editEnd?.result.terminate).not.toBe(true);
 				expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\ntwo\nthree");
@@ -959,7 +953,7 @@ describe("Tool recovery observe ledger", () => {
 		}
 	});
 
-	it("returns bounded current-source evidence for a range outside the read snapshot", async () => {
+	it("returns bounded current-source evidence around an unmatched text anchor", async () => {
 		const harness = await createHarness();
 		try {
 			const lines = Array.from({ length: 420 }, (_, index) => `line ${index + 1}`);
@@ -968,14 +962,13 @@ describe("Tool recovery observe ledger", () => {
 			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
 			if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
 			const readResult = await activeRead.execute("anchor-read", { path: "target.txt", offset: 347, limit: 8 });
-			const source = getReadSource(readResult.details);
+			expect(getReadSource(readResult.details).revision).toEqual(expect.any(String));
 
 			let directError: unknown;
 			try {
 				await activeEdit.execute("range-failure", {
 					path: "target.txt",
-					snapshot: source.snapshot,
-					edits: [{ startLine: 360, endLine: 360, newText: "updated" }],
+					edits: [{ oldText: "line 359\nmissing", newText: "updated" }],
 				});
 			} catch (error) {
 				directError = error;
@@ -983,11 +976,10 @@ describe("Tool recovery observe ledger", () => {
 			expect(directError).toBeInstanceOf(ToolExecutionError);
 			if (!(directError instanceof ToolExecutionError)) throw new Error("missing range edit failure");
 			expect(directError).toMatchObject({
-				code: "RANGE_OUTSIDE_SNAPSHOT",
+				code: "MATCH_NOT_FOUND",
 				details: {
-					attempt: 1,
-					recoveryAllowed: true,
-					issues: [expect.objectContaining({ editIndex: 0, startLine: 360 })],
+					writeState: "not_written",
+					issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 0 })],
 				},
 			});
 			const directHandler = (
@@ -1005,16 +997,15 @@ describe("Tool recovery observe ledger", () => {
 			expect(evidence).not.toContain("\n1| line 1\n");
 			expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(16 * 1024);
 			expect(resolution.replacementResult?.details).toMatchObject({
-				issues: [expect.objectContaining({ editIndex: 0, startLine: 360 })],
-				attempt: 1,
-				recoveryAllowed: true,
+				issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 0 })],
+				writeState: "not_written",
 			});
 		} finally {
 			harness.cleanup();
 		}
 	});
 
-	it("reports every rejected range without dumping the whole file", async () => {
+	it("reports every unmatched source interval without dumping the whole file", async () => {
 		const harness = await createHarness();
 		try {
 			const lines = Array.from({ length: 520 }, (_, index) => `line ${index + 1}`);
@@ -1023,16 +1014,15 @@ describe("Tool recovery observe ledger", () => {
 			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
 			if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
 			const readResult = await activeRead.execute("range-read", { path: "target.txt", offset: 1, limit: 5 });
-			const source = getReadSource(readResult.details);
+			expect(getReadSource(readResult.details).revision).toEqual(expect.any(String));
 
 			let directError: unknown;
 			try {
 				await activeEdit.execute("multiple-range-failures", {
 					path: "target.txt",
-					snapshot: source.snapshot,
 					edits: [
-						{ startLine: 10, endLine: 10, newText: "TEN" },
-						{ startLine: 460, endLine: 460, newText: "FOUR SIXTY" },
+						{ oldText: "line 9\nmissing", newText: "TEN" },
+						{ oldText: "line 459\nmissing", newText: "FOUR SIXTY" },
 					],
 				});
 			} catch (error) {
@@ -1040,11 +1030,11 @@ describe("Tool recovery observe ledger", () => {
 			}
 			expect(directError).toBeInstanceOf(ToolExecutionError);
 			if (!(directError instanceof ToolExecutionError)) throw new Error("missing range edit failure");
-			expect(directError.code).toBe("RANGE_OUTSIDE_SNAPSHOT");
+			expect(directError.code).toBe("MATCH_NOT_FOUND");
 			expect(directError.details).toMatchObject({
 				issues: [
-					expect.objectContaining({ editIndex: 0, startLine: 10 }),
-					expect.objectContaining({ editIndex: 1, startLine: 460 }),
+					expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 0 }),
+					expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 1 }),
 				],
 			});
 			const directHandler = (
@@ -1063,11 +1053,10 @@ describe("Tool recovery observe ledger", () => {
 			expect(evidence).not.toContain("\n1| line 1\n");
 			expect(Buffer.byteLength(evidence)).toBeLessThanOrEqual(16 * 1024);
 			expect(resolution.replacementResult?.details).toMatchObject({
-				attempt: 1,
-				recoveryAllowed: true,
+				writeState: "not_written",
 				issues: [
-					expect.objectContaining({ editIndex: 0, startLine: 10 }),
-					expect.objectContaining({ editIndex: 1, startLine: 460 }),
+					expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 0 }),
+					expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 1 }),
 				],
 			});
 		} finally {
@@ -1075,7 +1064,7 @@ describe("Tool recovery observe ledger", () => {
 		}
 	});
 
-	it("rejects expired snapshots and overlapping ranges without writing", async () => {
+	it("rejects obsolete snapshot arguments and overlapping text edits without writing", async () => {
 		const harness = await createHarness();
 		try {
 			writeFileSync(join(harness.tempDir, "target.txt"), "one\ntwo\nthree");
@@ -1083,27 +1072,24 @@ describe("Tool recovery observe ledger", () => {
 			const activeEdit = harness.agent.state.tools.find((tool) => tool.name === "edit");
 			if (!activeRead || !activeEdit) throw new Error("missing builtin read or edit tool");
 			const readResult = await activeRead.execute("snapshot-read", { path: "target.txt", limit: 3 });
-			const source = getReadSource(readResult.details);
+			expect(getReadSource(readResult.details).revision).toEqual(expect.any(String));
 
 			for (const scenario of [
 				{
 					name: "expired-snapshot",
 					args: { path: "target.txt", snapshot: "expired-snapshot-reference", edits: [{ startLine: 1, endLine: 1, newText: "ONE" }] },
-					code: "SNAPSHOT_NOT_FOUND",
-					attempt: 1,
+					code: "INVALID_ARGUMENTS",
 				},
 				{
 					name: "overlapping-ranges",
 					args: {
 						path: "target.txt",
-						snapshot: source.snapshot,
 						edits: [
-							{ startLine: 1, endLine: 2, newText: "ONE TWO" },
-							{ startLine: 2, endLine: 3, newText: "TWO THREE" },
+							{ oldText: "one\ntwo", newText: "ONE TWO" },
+							{ oldText: "two\nthree", newText: "TWO THREE" },
 						],
 					},
 					code: "EDIT_OVERLAP",
-					attempt: 2,
 				},
 			] as const) {
 				let directError: unknown;
@@ -1116,7 +1102,7 @@ describe("Tool recovery observe ledger", () => {
 				if (!(directError instanceof ToolExecutionError)) throw new Error(`missing ${scenario.name} failure`);
 				expect(directError).toMatchObject({
 					code: scenario.code,
-					details: { attempt: scenario.attempt, recoveryAllowed: true, writeState: "not_written" },
+					details: { writeState: "not_written" },
 				});
 				expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\ntwo\nthree");
 			}

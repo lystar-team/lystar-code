@@ -295,6 +295,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Contract: must not throw or reject. Return [] when no steering messages are available.
 	 */
 	getSteeringMessages?: () => Promise<AgentMessage[]>;
+	/** 将尚未由原生后续响应确认的插话放回队首。 */
+	restoreSteeringMessages?: (messages: AgentMessage[]) => void;
 
 	/** 返回当前插话通知信号；与整个运行的停止信号分开。 */
 	getSteeringSignal?: () => AbortSignal | undefined;

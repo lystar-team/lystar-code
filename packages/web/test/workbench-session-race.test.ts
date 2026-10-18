@@ -365,7 +365,7 @@ describe("会话停止请求", () => {
 		const request = vi.spyOn(webApi, "abort").mockRejectedValueOnce(new Error("停止请求失败"));
 		const actions = renderWorkbench().actions;
 		await actions.abort();
-		expect(hooks.committed?.toast).toBe("停止请求失败");
+		expect(hooks.committed?.toast).toMatchObject({ message: "停止请求失败", type: "error" });
 		expect(hooks.committed?.pendingUserPrompts).toHaveLength(1);
 		expect(hooks.committed?.stoppingSessionIds[snapshot.id]).toBeUndefined();
 

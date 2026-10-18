@@ -126,13 +126,13 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 						</div>
 						<div className="shrink-0 px-4 pb-4 md:pt-2">
 							<div className="relative">
-								<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+								<Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
 								<Input
 									value={query}
 									onChange={(event) => setQuery(event.target.value)}
 									placeholder="搜索设置"
 									aria-label="搜索设置"
-									className="h-8 rounded-md border-0 bg-muted/60 pl-9 !text-sm !leading-5 shadow-none"
+									className="h-8 rounded-md border-0 bg-muted/60 pl-8 !text-[13px] !leading-5 shadow-none"
 								/>
 							</div>
 						</div>
@@ -152,19 +152,20 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 						<GsapReveal animationKey={state.settingsTab} className={cn("min-h-0 w-full", state.settingsTab === "subagents" && "h-full")} distance={16} duration={0.32}>
 							<div
 								className={cn(
-									"mx-auto w-full min-w-0 p-5 sm:p-8 lg:p-12 xl:p-16",
-									state.settingsTab === "subagents" ? "h-full max-w-[1680px] !px-4 !py-5 sm:!px-8 lg:!px-10 lg:!py-8" : "max-w-[1120px]",
+									"mx-auto w-full min-w-0 max-w-[1120px] p-5 sm:p-8 lg:p-12 xl:p-16",
+									state.settingsTab === "subagents" && "flex h-full min-h-0 flex-col",
 									state.settingsTab === "diagnostics" && "max-w-[1216px] px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-8 xl:px-12 xl:py-8",
 								)}
 							>
-								<div hidden={state.settingsTab === "subagents"}
-									className={
+								<div
+									className={cn(
+										"shrink-0",
 										state.settingsTab === "diagnostics"
 											? "mb-4"
 											: state.settingsTab === "instructions" || state.settingsTab === "skills"
 												? "mb-5 sm:mb-6"
-												: "mb-8 sm:mb-12"
-									}
+												: "mb-8 sm:mb-12",
+									)}
 								>
 								<div className="flex items-center justify-between gap-4">
 									<div className="min-w-0">
@@ -239,7 +240,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="skills">
 								<SkillsSettings state={state} actions={actions} />
 							</TabsContent>
-							<TabsContent className="m-0 h-full min-h-0 w-full min-w-0 max-w-full" value="subagents">
+							<TabsContent className="m-0 min-h-0 w-full min-w-0 max-w-full flex-1" value="subagents">
 								<SubagentSettings state={state} actions={actions} onLeaveGuardChange={onLeaveGuardChange} />
 							</TabsContent>
 							<TabsContent className="m-0 w-full min-w-0 max-w-full" value="imports">

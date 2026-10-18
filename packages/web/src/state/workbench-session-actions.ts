@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { createUuid } from "@lystar/code-web-protocol";
+import { createUuid } from "@lystar/code-web-protocol/uuid";
 import { webApi } from "../adapters/host-protocol/api.ts";
 import { recordBrowserDiagnostic } from "../lib/browser-diagnostics.ts";
 import type {
@@ -969,7 +969,7 @@ export function useWorkbenchSessionActions({
 				const result = await webApi.renameSession(sessionId, name);
 				updateState((next) => ({
 					...next,
-					projects: updateSessionSummaryName(next.projects, sessionId, result.session.name),
+					projects: next.workspaceRevision === current.workspaceRevision ? updateSessionSummaryName(next.projects, sessionId, result.session.name) : next.projects,
 					...(next.sessionId === sessionId ? { session: result.session } : {}),
 				}));
 				if (current.currentProjectId) await refreshProjectSessions(current.currentProjectId);
@@ -993,15 +993,16 @@ export function useWorkbenchSessionActions({
 				const result = await webApi.setSessionPinned(project.id, sessionId, pinned);
 				updateState((next) => ({
 					...next,
-					projects: next.projects.map((candidate) =>
+					projects: next.workspaceRevision !== current.workspaceRevision ? next.projects : next.projects.map((candidate) =>
 						candidate.id === result.project.id ? result.project : candidate,
 					),
 				}));
+				await refreshProjectSessions(project.id);
 			} catch (error) {
 				showToast(errorMessage(error), "error");
 			}
 		},
-		[showToast, updateState],
+		[refreshProjectSessions, showToast, updateState],
 	);
 
 	const deleteSessions = useCallback(

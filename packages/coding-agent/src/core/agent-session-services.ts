@@ -138,15 +138,6 @@ export async function createAgentSessionServices(
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
-	const modelRuntime =
-		options.modelRuntime ??
-		(await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-			// 扩展供应商注册完成后统一刷新，避免初始化时重复读取目录和认证。
-			refreshOnCreate: false,
-			signal: options.modelRuntimeSignal,
-		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
@@ -154,7 +145,17 @@ export async function createAgentSessionServices(
 		agentDir,
 		settingsManager,
 	});
-	await resourceLoader.reload(options.resourceLoaderReloadOptions);
+	const [modelRuntime] = await Promise.all([
+		options.modelRuntime ??
+			ModelRuntime.create({
+				authPath: join(agentDir, "auth.json"),
+				modelsPath: join(agentDir, "models.json"),
+				// 扩展供应商注册完成后统一刷新，避免初始化时重复读取目录和认证。
+				refreshOnCreate: false,
+				signal: options.modelRuntimeSignal,
+			}),
+		resourceLoader.reload(options.resourceLoaderReloadOptions),
+	]);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const extensionsResult = resourceLoader.getExtensions();

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { SessionSummary } from "@lystar/code-web-protocol";
 import { ProjectRegistry } from "../src/project-registry.ts";
@@ -26,9 +27,9 @@ test("ProjectRegistry 串行处理并发保存并保留完整项目索引", asyn
 		projectDirectories.map((cwd, index) => registry.add({ id: `project-${index}`, name: `项目 ${index}`, cwd })),
 	);
 
-	const saved = JSON.parse(await readFile(registry.path, "utf8")) as {
-		projects?: Array<{ id?: string; cwd?: string }>;
-	};
+	const database = new DatabaseSync(registry.path, { readOnly: true });
+	const saved = { projects: database.prepare("SELECT data FROM projects ORDER BY position").all().map((row) => JSON.parse(String(row.data)) as { id: string; cwd: string }) };
+	database.close();
 	assert.equal(saved.projects?.length, projectDirectories.length);
 	assert.deepEqual(
 		new Set(saved.projects?.map((project) => project.id)),

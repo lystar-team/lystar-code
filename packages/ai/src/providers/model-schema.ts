@@ -10,6 +10,7 @@ export const ThinkingLevelSchema = Type.Enum(THINKING_LEVELS);
 export const ModelThinkingLevelSchema = Type.Enum(MODEL_THINKING_LEVELS);
 export const ModelInputModalitySchema = Type.Enum(MODEL_INPUT_MODALITIES);
 export const CacheRetentionSchema = Type.Enum(CACHE_RETENTIONS);
+export const NativeSteeringModeSchema = Type.Enum(["auto", "off", "on"]);
 
 const ThinkingLevelMapValueSchema = Type.Union([Type.String(), Type.Null()]);
 export const ThinkingLevelMapSchema = Type.Partial(Type.Record(ModelThinkingLevelSchema, ThinkingLevelMapValueSchema));
@@ -87,6 +88,7 @@ export type ModelThinkingLevel = Static<typeof ModelThinkingLevelSchema>;
 export type ThinkingLevelMap = Static<typeof ThinkingLevelMapSchema>;
 export type ModelInputModality = Static<typeof ModelInputModalitySchema>;
 export type CacheRetention = Static<typeof CacheRetentionSchema>;
+export type NativeSteeringMode = Static<typeof NativeSteeringModeSchema>;
 export type ModelPromptCache = Static<typeof ModelPromptCacheSchema>;
 export type ModelCostRates = Static<typeof ModelCostRatesSchema>;
 export type ModelCostTier = Static<typeof ModelCostTierSchema>;

@@ -245,7 +245,7 @@ describe("AgentSession codemode tool", () => {
 		expect(toolResults).toHaveLength(1);
 	});
 
-	it("applies a repeated snapshot deletion once while editing a shifted range", async () => {
+	it("rejects a repeated deletion without changing another target and accepts the corrected batch", async () => {
 		const harness = await createHarness({ initialActiveToolNames: ["read", "edit"] });
 		harnesses.push(harness);
 		const original = "one\ntwo\nthree\nfour\nfive";
@@ -256,17 +256,14 @@ describe("AgentSession codemode tool", () => {
 		]);
 		await harness.session.prompt("read target");
 		const readResult = getToolResult(harness, "read");
-		const source = readResult.details as { source?: { snapshot?: unknown } } | undefined;
-		const snapshot = source?.source?.snapshot;
-		if (typeof snapshot !== "string") throw new Error("read did not return a source snapshot");
+		expect(readResult.details).toMatchObject({ source: { revision: expect.any(String) } });
 
 		harness.setResponses([
 			fauxAssistantMessage(
 				[
 					fauxToolCall("edit", {
 						path: "target.txt",
-						snapshot,
-						edits: [{ startLine: 2, endLine: 2, newText: "" }],
+						edits: [{ oldText: "two\n", newText: "" }],
 					}),
 				],
 				{ stopReason: "toolUse" },
@@ -280,32 +277,30 @@ describe("AgentSession codemode tool", () => {
 				[
 					fauxToolCall("edit", {
 						path: "target.txt",
-						snapshot,
 						edits: [
-							{ startLine: 2, endLine: 2, newText: "" },
-							{ startLine: 5, endLine: 5, newText: "FIVE" },
+							{ oldText: "two\n", newText: "" },
+							{ oldText: "five", newText: "FIVE" },
 						],
 					}),
 				],
 				{ stopReason: "toolUse" },
 			),
-			fauxAssistantMessage("reconciled snapshot edits"),
+			fauxAssistantMessage([fauxToolCall("edit", { path: "target.txt", edits: [{ oldText: "five", newText: "FIVE" }] })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("corrected source edit"),
 		]);
 		await harness.session.prompt("repeat the deletion and update the last source line");
 
+		const rejected = harness.session.messages.find((message) => message.role === "toolResult" && message.toolName === "edit" && message.isError);
+		expect(rejected).toMatchObject({ isError: true, details: { writeState: "not_written", issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 0 })] } });
 		expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe("one\nthree\nfour\nFIVE");
 		expect(getToolResult(harness, "edit").details).toMatchObject({
 			status: "written",
 			applied: 1,
-			alreadyApplied: 1,
-			edits: [
-				{ index: 0, status: "already_applied" },
-				{ index: 1, status: "applied" },
-			],
+			edits: [{ index: 0, status: "applied" }],
 		});
 	});
 
-	it("resumes a nested failed snapshot batch and matches direct edits", async () => {
+	it("corrects a nested failed text batch and matches direct edits", async () => {
 		const original = "one\ntwo\nthree\nfour\nfive";
 		const direct = await createHarness({ initialActiveToolNames: ["read", "edit"] });
 		harnesses.push(direct);
@@ -316,18 +311,15 @@ describe("AgentSession codemode tool", () => {
 		]);
 		await direct.session.prompt("read target");
 		const directRead = getToolResult(direct, "read");
-		const directSource = directRead.details as { source?: { snapshot?: unknown } } | undefined;
-		const directSnapshot = directSource?.source?.snapshot;
-		if (typeof directSnapshot !== "string") throw new Error("direct read did not return a source snapshot");
+		expect(directRead.details).toMatchObject({ source: { revision: expect.any(String) } });
 		direct.setResponses([
 			fauxAssistantMessage(
 				[
 					fauxToolCall("edit", {
 						path: "target.txt",
-						snapshot: directSnapshot,
 						edits: [
-							{ startLine: 2, endLine: 2, newText: "TWO" },
-							{ startLine: 5, endLine: 5, newText: "FIVE" },
+							{ oldText: "two", newText: "TWO" },
+							{ oldText: "five", newText: "FIVE" },
 						],
 					}),
 				],
@@ -347,37 +339,23 @@ describe("AgentSession codemode tool", () => {
 		const code = `
 			const path = "target.txt";
 			const source = await tools.read({ path, limit: 3 });
-			const header = source.split("\\n", 1)[0];
-			const snapshot = header.startsWith("[snapshot ") ? header.slice(10, header.indexOf(";")) : "";
+			if (!source.includes("2| two")) throw new Error("missing read source");
 			let failureMessage = "";
 			try {
 				await tools.edit({
 					path,
-					snapshot,
 					edits: [
-						{ startLine: 2, endLine: 2, newText: "TWO" },
-						{ startLine: 5, endLine: 5, newText: "FIVE" },
+						{ oldText: "two", newText: "TWO" },
+						{ oldText: "five-before", newText: "FIVE" },
 					],
 				});
 			} catch (error) {
 				failureMessage = String(error?.message ?? error);
 			}
-			const planOffset = failureMessage.indexOf("plan=");
-			const plan = planOffset < 0 ? "" : failureMessage.slice(planOffset + 5).split(" ")[0].split("。")[0];
-			const marker = "[snapshot ";
-			const snapshotOffset = failureMessage.indexOf(marker);
-			const snapshotEnd = failureMessage.indexOf(";", snapshotOffset);
-			const currentSnapshot =
-				snapshotOffset < 0 || snapshotEnd < 0
-					? ""
-					: failureMessage.slice(snapshotOffset + marker.length, snapshotEnd);
-			if (!failureMessage.includes("RANGE_OUTSIDE_SNAPSHOT") || !plan || !currentSnapshot) {
-				throw new Error("missing resumable range-conflict details");
-			}
+			if (!failureMessage.includes("MATCH_NOT_FOUND")) throw new Error("missing text-conflict evidence");
 			const corrected = await tools.edit({
 				path,
-				plan,
-				edits: [{ index: 1, snapshot: currentSnapshot, startLine: 5, endLine: 5, newText: "FIVE" }],
+				edits: [{ oldText: "two", newText: "TWO" }, { oldText: "five", newText: "FIVE" }],
 			});
 			return { conflictObserved: true, corrected };
 		`;
@@ -395,20 +373,15 @@ describe("AgentSession codemode tool", () => {
 		expect(editCalls[0]?.status).toBe("error");
 		expect(editCalls[0]?.diagnostics).toMatchObject({
 			status: "conflict",
-			plan: expect.any(String),
-			snapshot: expect.any(String),
 			sourceRevision: expect.any(String),
 			writeState: "not_written",
-			attempt: 1,
-			recoveryAllowed: true,
 			issueCount: 1,
-			issues: [expect.objectContaining({ code: "RANGE_OUTSIDE_SNAPSHOT", editIndex: 1, startLine: 5 })],
+			issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 1 })],
 		});
 		expect(editCalls[1]?.status).toBe("ok");
 		expect(editCalls[1]?.diagnostics).toMatchObject({
 			status: "written",
 			applied: 2,
-			alreadyApplied: 0,
 			sourceRevision: expect.any(String),
 			resultRevision: expect.any(String),
 		});
@@ -416,32 +389,42 @@ describe("AgentSession codemode tool", () => {
 		expect(readFileSync(join(harness.tempDir, "target.txt"), "utf8")).toBe(directContent);
 	});
 
-	it("preserves nested edit diagnostics and propagates the third same-version termination", async () => {
+	it("preserves nested edit diagnostics and propagates explicit nested termination", async () => {
 		const harness = await createHarness({
-			initialActiveToolNames: ["codemode", "read", "edit"],
-			extensionFactories: [createCodemodeExtension()],
+			initialActiveToolNames: ["codemode", "read", "edit", "stop"],
+			extensionFactories: [
+				createCodemodeExtension(),
+				(pi) => {
+					pi.registerTool({
+						name: "stop",
+						label: "Stop",
+						description: "Stop the current turn.",
+						parameters: Type.Object({}),
+						execute: async () => ({ content: [], details: {}, terminate: true }),
+					});
+				},
+			],
 		});
 		harnesses.push(harness);
 		writeFileSync(join(harness.tempDir, "target.txt"), "one\ntwo\nthree");
 		const code = `
 			const outcomes = [];
+			const source = await tools.read({ path: "target.txt", limit: 3 });
+			if (!source.includes("1| one")) throw new Error("missing source");
 			for (let attempt = 0; attempt < 3; attempt++) {
-				const source = await tools.read({ path: "target.txt", limit: 3 });
-				const header = source.split("\\n", 1)[0];
-				const snapshot = header.startsWith("[snapshot ") ? header.slice(10, header.indexOf(";")) : "";
 				const edits = Array.from({ length: attempt }, (_, index) => ({
-					startLine: index + 1,
-					endLine: index + 1,
+					oldText: ["one", "two", "three"][index],
 					newText: "not written",
 				}));
-				edits.push({ startLine: 99, endLine: 99, newText: "invalid" });
+				edits.push({ oldText: "missing", newText: "invalid" });
 				try {
-					await tools.edit({ path: "target.txt", snapshot, edits });
+					await tools.edit({ path: "target.txt", edits });
 					outcomes.push(false);
 				} catch (error) {
-					outcomes.push(String(error?.message ?? error).includes("RANGE_OUTSIDE_SNAPSHOT"));
+					outcomes.push(String(error?.message ?? error).includes("MATCH_NOT_FOUND"));
 				}
 			}
+			await tools.stop({});
 			return outcomes;
 		`;
 		harness.setResponses([
@@ -458,24 +441,21 @@ describe("AgentSession codemode tool", () => {
 		expect(editCalls.map((call) => call.diagnostics)).toMatchObject([
 			{
 				status: "conflict",
-				attempt: 1,
-				recoveryAllowed: true,
+				writeState: "not_written",
 				issueCount: 1,
-				issues: [expect.objectContaining({ editIndex: 0, startLine: 99 })],
+				issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 0 })],
 			},
 			{
 				status: "conflict",
-				attempt: 2,
-				recoveryAllowed: true,
+				writeState: "not_written",
 				issueCount: 1,
-				issues: [expect.objectContaining({ editIndex: 1, startLine: 99 })],
+				issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 1 })],
 			},
 			{
 				status: "conflict",
-				attempt: 3,
-				recoveryAllowed: false,
+				writeState: "not_written",
 				issueCount: 1,
-				issues: [expect.objectContaining({ editIndex: 2, startLine: 99 })],
+				issues: [expect.objectContaining({ code: "MATCH_NOT_FOUND", editIndex: 2 })],
 			},
 		]);
 		expect(harness.getPendingResponseCount()).toBe(1);
@@ -832,7 +812,7 @@ describe("codemode options and store", () => {
 		);
 		expect(result.isError).toBe(false);
 		expect(checkSavedImages(resultText(result))).toMatch(
-			/^==> text 1\/2 <==\n\[snapshot r[0-9a-f]+; lines 1-1 of 1\]\n1\| hello\n==> text 2\/2 <==\nRead image file \[image\/png\]\n<saved>\n<image>$/,
+			/^==> text 1\/2 <==\n\[lines 1-1 of 1\]\n1\| hello\n==> text 2\/2 <==\nRead image file \[image\/png\]\n<saved>\n<image>$/,
 		);
 		expect(result.content.at(-1)).toEqual({ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" });
 	});

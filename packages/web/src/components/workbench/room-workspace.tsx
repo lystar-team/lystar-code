@@ -60,16 +60,17 @@ function ActivityRow({ message }: { message: WebRoomMessage }) {
 	if (!label) return null;
 	const Icon = message.kind === "result" ? Check : message.kind === "status" ? Clock3 : Wrench;
 	return (
-		<div className="mt-2 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/45 px-2.5 py-2 text-xs text-muted-foreground">
-			<Icon className="size-3.5 shrink-0" aria-hidden="true" />
-			<span className="font-medium text-foreground">{label}</span>
-			<span className="min-w-0 truncate">{message.body}</span>
-			{message.kind === "result" ? <Check className="ml-auto size-3.5 shrink-0 text-[var(--success)]" /> : null}
+		<div className="mt-2 flex w-full min-w-0 items-start gap-2 rounded-lg border border-current/15 px-2.5 py-1.5 text-xs leading-5">
+			<Icon className="mt-0.5 size-3.5 shrink-0 opacity-70" aria-hidden="true" />
+			<span className="shrink-0 font-medium">{label}</span>
+			<span className="min-w-0 flex-1 whitespace-pre-wrap break-words opacity-80">{message.body}</span>
+			{message.kind === "result" ? <Check className="mt-0.5 size-3.5 shrink-0 text-[var(--success)]" /> : null}
 		</div>
 	);
 }
 
-
+const MESSAGE_COLUMN = "flex min-w-0 max-w-[min(calc(100%_-_2.75rem),680px)] flex-col";
+const MESSAGE_BUBBLE = "min-w-0 max-w-full rounded-xl px-3.5 py-2.5 text-sm";
 
 function MessageBubble({
 	message,
@@ -89,24 +90,24 @@ function MessageBubble({
 	openResource: WorkbenchActions["openResource"];
 }) {
 	return (
-		<article className={cn("flex gap-2.5", isCurrentUser ? "justify-end" : "justify-start")}>
+		<article className={cn("flex min-w-0 gap-3", isCurrentUser ? "justify-end" : "justify-start")}>
 			{isCurrentUser ? null : <AgentAvatar member={member} memberSession={memberSession} />}
-			<div className={cn("flex max-w-[min(78%,680px)] flex-col", isCurrentUser ? "items-end" : "items-start")}>
-				<div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-					<span className="font-medium text-foreground">{isCurrentUser ? "你" : memberLabel}</span>
-					<span>{formatMessageTime(message.createdAt)}</span>
+			<div className={cn(MESSAGE_COLUMN, isCurrentUser ? "items-end" : "items-start")}>
+				<div className="mb-1.5 flex max-w-full items-center gap-2 text-[11px] text-muted-foreground">
+					<span className="min-w-0 truncate font-medium text-foreground">{isCurrentUser ? "你" : memberLabel}</span>
+					<span className="shrink-0 tabular-nums">{formatMessageTime(message.createdAt)}</span>
 				</div>
 				<div
 					className={cn(
-						"rounded-2xl px-3.5 py-2.5 text-sm leading-6 shadow-sm",
+						MESSAGE_BUBBLE,
 						isCurrentUser
-							? "rounded-br-md bg-foreground text-background"
-							: "rounded-bl-md border border-border/70 bg-background text-foreground",
+							? "border border-transparent bg-muted text-foreground"
+							: "border border-border/70 bg-background text-foreground",
 					)}
 				>
 					{message.senderType === "agent" ? (
 						<MessageResponse
-							className="sd-prose min-w-0 max-w-full break-words text-sm leading-6"
+							className="min-w-0 max-w-full break-words text-sm"
 							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
 							linkSafety={{ enabled: true }}
 							onOpenPath={(path) => void openResource(path)}
@@ -115,14 +116,14 @@ function MessageBubble({
 							{message.body || " "}
 						</MessageResponse>
 					) : (
-						<p className="whitespace-pre-wrap break-words">{message.body}</p>
+						<p className="min-w-0 whitespace-pre-wrap break-words">{message.body}</p>
 					)}
 					{message.attachments?.length ? (
 						<ul className="mt-2 flex flex-wrap gap-1.5" aria-label="附件">
 							{message.attachments.map((attachment) => (
-								<li key={attachment.path} className="flex min-w-0 items-center gap-1 rounded-md border border-current/20 px-2 py-0.5 text-xs">
+								<li key={attachment.path} className="flex min-w-0 max-w-full items-center gap-1 rounded-md border border-current/20 px-2 py-0.5 text-xs">
 									<Paperclip className="size-3 shrink-0" aria-hidden="true" />
-									<span className="max-w-52 truncate" title={attachment.filename}>{attachment.filename}</span>
+									<span className="min-w-0 max-w-52 truncate" title={attachment.filename}>{attachment.filename}</span>
 								</li>
 							))}
 						</ul>
@@ -131,7 +132,7 @@ function MessageBubble({
 				</div>
 			</div>
 			{isCurrentUser ? (
-				<div className="mt-1 grid size-8 shrink-0 place-items-center rounded-full bg-foreground text-background">
+				<div className="mt-1 grid size-8 shrink-0 place-items-center rounded-full border border-border/70 bg-muted text-muted-foreground">
 					<MessageSquare className="size-4" aria-hidden="true" />
 				</div>
 			) : null}
@@ -151,15 +152,15 @@ function PendingAgentBubble({
 	member?: WebRoomMember;
 }) {
 	return (
-		<article className="flex gap-2.5" aria-label={`${memberLabel}正在处理`}>
+		<article className="flex min-w-0 gap-3" aria-label={`${memberLabel}正在处理`}>
 			<AgentAvatar member={member} memberSession={memberSession} />
-			<div className="flex max-w-[min(78%,680px)] flex-col items-start">
-				<div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-					<span className="font-medium text-foreground">{memberLabel}</span>
-					<span>{formatMessageTime(pending.createdAt)}</span>
+			<div className={cn(MESSAGE_COLUMN, "items-start")}>
+				<div className="mb-1.5 flex max-w-full items-center gap-2 text-[11px] text-muted-foreground">
+					<span className="min-w-0 truncate font-medium text-foreground">{memberLabel}</span>
+					<span className="shrink-0 tabular-nums">{formatMessageTime(pending.createdAt)}</span>
 				</div>
 				<div
-					className="flex min-w-0 items-center gap-2 rounded-2xl rounded-bl-md border border-border/70 bg-background px-3.5 py-2.5 text-sm leading-6 text-muted-foreground shadow-sm"
+					className={cn(MESSAGE_BUBBLE, "flex items-center gap-2 border border-border/70 bg-background text-muted-foreground")}
 					role="status"
 				>
 					<LoaderCircle className="size-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />

@@ -155,6 +155,10 @@ export function createEditRecoveryEvidence(
 		}
 	}
 
+	if (windows.length === 0 && lines.length <= MAX_RECOVERY_LINES) {
+		notes.push("未找到候选位置；以下仅为当前文件内容，不代表已匹配目标。");
+		windows.push({ start: 0, end: lines.length, editIndexes: [] });
+	}
 	notes.push(...expandIdenticalWindows(lines, windows, maxBytes - Buffer.byteLength(notes.join("\n"))));
 	windows.sort((left, right) => left.start - right.start);
 	const merged: RecoveryWindow[] = [];
@@ -186,13 +190,14 @@ export function createEditRecoveryEvidence(
 		const start = window.start;
 		const end = start + count;
 		const label = window.editIndexes.map((editIndex) => `edits[${editIndex}]`).join(", ");
-		const heading = `${label} 当前候选上下文，第 ${start + 1}—${end} 行（read offset=${start + 1} limit=${window.end - start}）：\n`;
+		const heading = `${label ? `${label} 当前候选上下文` : "当前文件内容"}，第 ${start + 1}—${end} 行（read offset=${start + 1} limit=${window.end - start}）：\n`;
 		// 给每个窗口和源行预留预算，长行不能挤掉其他候选。
 		const perLineBytes = Math.max(0, Math.floor((byteBudget - Buffer.byteLength(heading) - 48) / count) - 1);
-		const sourceLines = lines.slice(start, end).map((line) => {
-			const clipped = truncateEditEvidence(line, perLineBytes);
+		const sourceLines = lines.slice(start, end).map((line, index) => {
+			const prefix = `${start + index + 1}| `;
+			const clipped = truncateEditEvidence(line, Math.max(0, perLineBytes - Buffer.byteLength(prefix)));
 			if (clipped !== line) truncated = true;
-			return clipped;
+			return prefix + clipped;
 		});
 		const source = sourceLines.join("\n");
 		const backticks = Math.max(2, ...Array.from(source.matchAll(/`+/g), (match) => match[0].length));

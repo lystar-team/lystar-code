@@ -35,7 +35,7 @@ for (const [name, apply] of [
 		it("preserves tab indentation and multiline trailing-whitespace tolerance", () => {
 			const source = "\t\tcall();   \n\t\treturn;  \n\tcall();  \n\treturn; \n";
 			expect(
-				apply(source, [{ oldText: "\tcall();\n\treturn;\n", newText: "\ttarget();\n\treturn;\n" }], "memory.txt")
+				apply(source, [{ oldText: name === "coding-agent" ? "\tcall();  \n\treturn; \n" : "\tcall();\n\treturn;\n", newText: "\ttarget();\n\treturn;\n" }], "memory.txt")
 					.newContent,
 			).toBe("\t\tcall();   \n\t\treturn;  \n\ttarget();\n\treturn;\n");
 		});

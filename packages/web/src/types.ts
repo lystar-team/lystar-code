@@ -312,6 +312,7 @@ export interface QueuedUserPrompt {
 }
 
 export interface BootstrapResponse {
+	workspaceRevision: number;
 	projects: WebProject[];
 	projectGroups: ProjectGroup[];
 	capabilities: readonly string[];
@@ -334,7 +335,15 @@ export interface UiRequestEvent {
 export type GatewayEvent =
 	| { type: "session_stream"; sessionId: string; text: string; thinking: string; blocks: Array<{ blockId: string; kind: "text" | "thinking"; text: string } | { blockId: string; kind: "tool"; toolCallId: string }>; stepId?: string; seq?: number }
 	| { type: "bootstrap"; data: BootstrapResponse }
-	| { type: "project_updated"; project: WebProject }
+	| {
+			type: "workspace_updated";
+			workspaceRevision: number;
+			projectIds: string[];
+			projects: WebProject[];
+			sessionSummaries: Array<{ projectId: string; sessions: WebSessionSummary[] }>;
+			projectGroups: ProjectGroup[];
+	  }
+	| { type: "project_updated"; project: WebProject; workspaceRevision?: number }
 	| { type: "connection_state"; connected: boolean; message?: string }
 	| { type: "session_lease"; sessionId: string; lease: WebLease }
 	| { type: "model_catalog_changed"; revision: number }
@@ -421,6 +430,7 @@ export interface WebModelProviderInput {
 	apiKey?: string;
 	catalogProvider?: string;
 	clearCatalogProvider?: boolean;
+	nativeSteering?: "auto" | "off" | "on";
 }
 
 export interface WebProviderModelInput {
@@ -430,6 +440,7 @@ export interface WebProviderModelInput {
 	baseUrl?: string;
 	reasoning: boolean;
 	fastModeSupported?: boolean;
+	nativeSteering?: "auto" | "off" | "on" | "inherit";
 	thinkingLevelMap?: Partial<Record<WebThinkingLevel, string | null>>;
 	input: ("text" | "image")[];
 	resetOverride?: boolean;

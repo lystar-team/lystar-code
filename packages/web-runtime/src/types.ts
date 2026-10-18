@@ -215,6 +215,9 @@ export interface ModelSummary {
 	maxTokens: number;
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
+	nativeSteering?: "auto" | "off" | "on";
+	nativeSteeringOverride?: "auto" | "off" | "on" | "inherit";
+	nativeSteeringUnavailable?: boolean;
 	capabilitiesPending?: boolean;
 	hasOverrides?: boolean;
 	supportedThinkingLevels: ThinkingLevel[];
@@ -232,6 +235,8 @@ export interface ModelProviderSummary {
 	name: string;
 	api?: string;
 	baseUrl?: string;
+	nativeSteering?: "auto" | "off" | "on";
+	nativeSteeringUnavailable?: boolean;
 	authenticated: boolean;
 	authMethods: AuthType[];
 	authSource?: string;
@@ -251,6 +256,7 @@ export interface ModelProviderInput {
 	apiKey?: string;
 	catalogProvider?: string;
 	clearCatalogProvider?: boolean;
+	nativeSteering?: "auto" | "off" | "on";
 }
 
 export interface ProviderModelInput {
@@ -261,6 +267,7 @@ export interface ProviderModelInput {
 	baseUrl?: string;
 	reasoning: boolean;
 	fastModeSupported?: boolean;
+	nativeSteering?: "auto" | "off" | "on" | "inherit";
 	input: ("text" | "image")[];
 	thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
 	resetOverride?: boolean;

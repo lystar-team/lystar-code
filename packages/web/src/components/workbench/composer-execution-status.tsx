@@ -5,6 +5,7 @@ import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model";
 import { hasActiveSessionWork } from "../../state/chat-lifecycle";
 import type { WorkbenchState } from "../../state/workbench-types";
+import { runtimeNow, type RuntimeClock } from "../../state/runtime-clock.ts";
 import type { ToolBatchTool, WebSessionSnapshot } from "../../types";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -14,7 +15,7 @@ const SILENCE_NOTICE_MS = 30_000;
 const STATUS_CHECK_INTERVAL_MS = 10_000;
 const STATUS_CHECK_TIMEOUT_MS = 8_000;
 type Execution = NonNullable<WebSessionSnapshot["execution"]>;
-type StatusCheck = { session?: WebSessionSnapshot; receivedAt?: number; error?: string };
+type StatusCheck = { session?: WebSessionSnapshot; receivedAt?: number; clock?: RuntimeClock; error?: string };
 
 const phaseLabels: Record<Execution["phase"], string> = {
 	preparing: "正在准备请求",
@@ -82,7 +83,7 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 		state.currentOperation?.status === "waiting_for_input" ||
 		state.pendingUiRequests.some((request) => request.operationId === state.currentOperation?.operationId);
 	const stopping = Boolean(sessionId && state.stoppingSessionIds[sessionId]);
-	const active = hasActiveSessionWork(state) || waitingForInput || stopping;
+	const active = hasActiveSessionWork(state) || waitingForInput || stopping || Boolean(sessionId && connected && !sessionReady);
 	const [now, setNow] = useState(() => Date.now());
 	const [check, setCheck] = useState<StatusCheck>({});
 	const [detailsOpen, setDetailsOpen] = useState(false);
@@ -100,8 +101,8 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 	}, [active]);
 
 	useEffect(() => {
-		if (!active || !connected || !sessionReady || !sessionId) return;
 		setCheck({});
+		if (!active || !connected || !sessionId) return;
 		let disposed = false;
 		let timer: number | undefined;
 		let request: AbortController | undefined;
@@ -112,7 +113,11 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 			const timeout = window.setTimeout(() => controller.abort(), STATUS_CHECK_TIMEOUT_MS);
 			try {
 				const result = await webApi.session(sessionId, controller.signal);
-				if (!disposed) setCheck({ session: result.session, receivedAt: Date.now() });
+				if (!disposed) setCheck({
+					session: result.session,
+					receivedAt: Date.now(),
+					clock: result.session.observedAt === undefined ? undefined : { serverAt: result.session.observedAt, receivedAt: performance.now() },
+				});
 			} catch (error: unknown) {
 				if (!disposed) setCheck((previous) => ({
 					...previous,
@@ -137,11 +142,12 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 			request?.abort();
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 		};
-	}, [active, connected, sessionId, sessionReady]);
+	}, [active, connected, sessionId]);
 
 	if (!active) return null;
 	const liveExecution = state.session?.execution;
-	const checkedExecution = check.session?.execution;
+	const checked = check.session?.id === sessionId ? check : undefined;
+	const checkedExecution = checked?.session?.execution;
 	const candidateExecution = checkedExecution && (!liveExecution ||
 		(checkedExecution.lastProgressAt ?? 0) > (liveExecution.lastProgressAt ?? 0))
 		? checkedExecution : liveExecution;
@@ -157,21 +163,26 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 	const currentTool = liveTool ? toLiveToolViewModel(liveTool) : nestedCall ? toCodemodeToolViewModel(nestedCall)
 		: execution?.toolName ? { id: execution.toolName, name: execution.toolName, summary: "", state: "input-available" as const } : undefined;
 	const toolLabel = currentTool ? toolStatusTitle(currentTool) : undefined;
-	const observedAt = check.session?.observedAt;
-	const clockOffset = observedAt !== undefined && check.receivedAt !== undefined ? check.receivedAt - observedAt : 0;
-	const serverNow = now - clockOffset;
+	const observedAt = checked?.session?.observedAt;
+	const clock = checked?.clock && checked.clock.serverAt > (state.runtimeClock?.serverAt ?? -Infinity)
+		? checked.clock : state.runtimeClock;
+	const serverNow = clock ? runtimeNow(clock) : undefined;
+	const syncing = connected && !sessionReady && !state.sessionError;
 	const phaseStartedAt = waitingForInput && execution?.phase !== "waiting_input" ? undefined : execution?.phaseStartedAt;
 	const elapsedStartedAt = phaseStartedAt ?? operation?.acceptedAt;
-	const elapsed = elapsedStartedAt === undefined ? undefined
-		: formatElapsedDuration(Math.max(0, serverNow - elapsedStartedAt));
-	const silenceMs = execution?.lastProgressAt === undefined ? undefined : Math.max(0, serverNow - execution.lastProgressAt);
+	const elapsed = syncing
+		? state.sessionSyncStartedAt === undefined ? undefined : formatElapsedDuration(Math.max(0, performance.now() - state.sessionSyncStartedAt))
+		: !connected || !sessionReady || serverNow === undefined || elapsedStartedAt === undefined ? undefined
+			: formatElapsedDuration(Math.max(0, serverNow - elapsedStartedAt));
+	const elapsedLabel = syncing ? "同步耗时" : phaseStartedAt !== undefined ? "阶段耗时" : "任务已等待";
+	const silenceMs = serverNow === undefined || execution?.lastProgressAt === undefined ? undefined : Math.max(0, serverNow - execution.lastProgressAt);
 	const silence = silenceMs === undefined ? undefined : formatElapsedDuration(silenceMs);
-	const retryRemaining = execution?.retryAt === undefined ? undefined : Math.max(0, Math.ceil((execution.retryAt - serverNow) / 1_000));
+	const retryRemaining = serverNow === undefined || execution?.retryAt === undefined ? undefined : Math.max(0, Math.ceil((execution.retryAt - serverNow) / 1_000));
 	const waiting = waitingForInput || execution?.phase === "waiting_input";
 	const scheduledRetry = execution?.phase === "retry" && retryRemaining !== undefined && retryRemaining > 0;
 	const stale = connected && sessionReady && !waiting && !scheduledRetry && execution?.phase !== "idle" &&
 		silenceMs !== undefined && silenceMs >= SILENCE_NOTICE_MS;
-	let label = !connected ? "连接中断，运行状态未知" : !sessionReady ? "正在同步运行状态"
+	let label = !connected ? "连接中断，运行状态未知" : state.sessionError ? state.sessionError : !sessionReady ? "正在同步运行状态"
 		: stopping ? "正在停止，等待运行端确认" : waiting ? "等待你的确认"
 		: execution ? phaseLabels[execution.phase] : "运行状态尚未确认";
 	if (connected && sessionReady && !stopping && !waiting && execution) {
@@ -191,7 +202,7 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 		<div className="flex min-h-8 min-w-0 items-center gap-2 text-sm text-muted-foreground" data-testid="composer-execution-status">
 			<Icon aria-hidden="true" className={`size-4 shrink-0 ${Icon === LoaderCircle ? "animate-spin motion-reduce:animate-none" : ""} ${stale || statusUnknown ? "text-[var(--warning)]" : ""}`} />
 			<span className="min-w-0 truncate" role="status" aria-live="polite" title={label}>{label}</span>
-			{elapsed ? <span className="shrink-0 tabular-nums" aria-label={`${phaseStartedAt !== undefined ? "当前阶段耗时" : "任务已等待"} ${elapsed}`}>{elapsed}</span> : null}
+			{elapsed ? <span className="shrink-0 tabular-nums" aria-label={`${elapsedLabel} ${elapsed}`}>{elapsed}</span> : null}
 			<Tooltip open={detailsOpen} onOpenChange={(open) => {
 				if (!open) clickOpenedRef.current = false;
 				setDetailsOpen(open);
@@ -228,9 +239,9 @@ export function ComposerExecutionStatus({ state, onVisibilityChange }: { state: 
 					<div className="mb-3 text-sm font-medium">运行状态</div>
 					<div className="space-y-2">
 						<StatusDetail label="当前阶段" value={label} />
-						<StatusDetail label={phaseStartedAt !== undefined ? "阶段耗时" : "任务已等待"} value={elapsed ?? "尚未确认"} />
+						<StatusDetail label={elapsedLabel} value={elapsed ?? "尚未确认"} />
 						<StatusDetail label="最后进展" value={silence ? `${silence}前` : "尚未确认"} />
-						<StatusDetail label="模型最近事件" value={execution?.lastModelEventAt === undefined ? "尚未收到" : `${formatElapsedDuration(Math.max(0, serverNow - execution.lastModelEventAt))}前`} />
+						<StatusDetail label="模型最近事件" value={serverNow === undefined || execution?.lastModelEventAt === undefined ? "尚未收到" : `${formatElapsedDuration(Math.max(0, serverNow - execution.lastModelEventAt))}前`} />
 						{execution?.retryAttempt ? <StatusDetail label="重试次数" value={execution.retryMaxAttempts ? `${execution.retryAttempt}/${execution.retryMaxAttempts}` : String(execution.retryAttempt)} /> : null}
 						{scheduledRetry ? <StatusDetail label="下次重试" value={`${retryRemaining}秒后`} /> : null}
 						<StatusDetail label="连接确认" value={connectionLabel} />

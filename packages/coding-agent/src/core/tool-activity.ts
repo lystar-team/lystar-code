@@ -75,7 +75,28 @@ export function boundedText(value: string): string {
 	return `${value.slice(0, end)}…`;
 }
 
-function boundedDiffText(value: string): { text: string; truncated?: boolean } {
+function boundedDiffText(value: string, keepTail = false): { text: string; truncated?: boolean } {
+	if (keepTail) {
+		let start = Math.max(0, value.length - MAX_PROGRESS_TEXT_CHARS);
+		let lines = 1;
+		for (let index = value.length - 1; index >= start; index--) {
+			if (value.charCodeAt(index) !== 10) continue;
+			if (lines === MAX_PROGRESS_DIFF_LINES) {
+				start = index + 1;
+				break;
+			}
+			lines++;
+		}
+		if (start === 0) return { text: value };
+		if (
+			value.charCodeAt(start) >= 0xdc00 &&
+			value.charCodeAt(start) <= 0xdfff &&
+			value.charCodeAt(start - 1) >= 0xd800 &&
+			value.charCodeAt(start - 1) <= 0xdbff
+		)
+			start++;
+		return { text: value.slice(start), truncated: true };
+	}
 	let end = Math.min(value.length, MAX_PROGRESS_TEXT_CHARS);
 	let truncated = end < value.length;
 	let lineCount = 0;
@@ -115,21 +136,25 @@ function appendPrefixedLines(buffer: PreviewBuffer, text: string, prefix: string
 	let lineCount = 0;
 	forEachTextLine(text, (source, start, end) => {
 		lineCount++;
-		if (buffer.truncated) return;
-		if (buffer.lines.length >= MAX_PROGRESS_DIFF_LINES - 1) {
+		// 预览保留最新生成的内容；行数统计仍覆盖全文。
+		let contentStart = Math.max(start, end - (MAX_PROGRESS_TEXT_CHARS - prefix.length));
+		if (
+			contentStart > start &&
+			source.charCodeAt(contentStart) >= 0xdc00 &&
+			source.charCodeAt(contentStart) <= 0xdfff &&
+			source.charCodeAt(contentStart - 1) >= 0xd800 &&
+			source.charCodeAt(contentStart - 1) <= 0xdbff
+		)
+			contentStart++;
+		if (contentStart > start) buffer.truncated = true;
+		const line = `${prefix}${source.slice(contentStart, end)}`;
+		buffer.length += (buffer.lines.length > 0 ? 1 : 0) + line.length;
+		buffer.lines.push(line);
+		while (buffer.lines.length > MAX_PROGRESS_DIFF_LINES || buffer.length > MAX_PROGRESS_TEXT_CHARS) {
+			const removed = buffer.lines.shift();
+			if (removed !== undefined) buffer.length -= removed.length + (buffer.lines.length > 0 ? 1 : 0);
 			buffer.truncated = true;
-			return;
 		}
-		const separatorLength = buffer.lines.length > 0 ? 1 : 0;
-		const available = MAX_PROGRESS_TEXT_CHARS - buffer.length - separatorLength;
-		if (available <= prefix.length) {
-			buffer.truncated = true;
-			return;
-		}
-		const contentLength = Math.min(end - start, available - prefix.length);
-		buffer.lines.push(`${prefix}${source.slice(start, start + contentLength)}`);
-		buffer.length += separatorLength + prefix.length + contentLength;
-		if (contentLength < end - start) buffer.truncated = true;
 	});
 	return lineCount;
 }
@@ -265,7 +290,7 @@ function previewPatchDiff(args: Record<string, unknown>): ToolActivityDiff | und
 	if (typeof args.input !== "string") return undefined;
 	const input = args.input;
 	const { additions, deletions } = countPatchLines(input);
-	const preview = boundedDiffText(input);
+	const preview = boundedDiffText(input, true);
 	return {
 		files: [
 			{
@@ -521,8 +546,23 @@ export class ToolActivityTracker {
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const snapshots: ToolActivitySnapshot[] = [];
-			for (const content of event.message.content) {
-				if (content.type !== "toolCall") continue;
+			const toolCalls = event.message.content.filter((content) => content.type === "toolCall");
+			const executableIds = new Set(
+				event.message.stopReason === "error" || event.message.stopReason === "aborted"
+					? []
+					: toolCalls.map((content) => content.id),
+			);
+			// 插话或请求失败可能丢弃已展示的参数预览；在回复结束时收尾，不等整个运行结束。
+			for (const activity of this.activities.values()) {
+				if (activity.state !== "preparing" || executableIds.has(activity.toolCallId)) continue;
+				activity.state = "interrupted";
+				activity.args = undefined;
+				activity.diff = undefined;
+				activity.completedAt = Date.now();
+				snapshots.push(this.touch(activity));
+			}
+			for (const content of toolCalls) {
+				if (!executableIds.has(content.id)) continue;
 				const activity = this.getOrCreate(content.id, content.name, content.arguments);
 				if (!isTerminal(activity.state)) {
 					activity.state = "queued";

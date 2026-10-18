@@ -1,5 +1,5 @@
 import { ArrowRight, LoaderCircle, Plus } from "lucide-react";
-import { collaborationAlias } from "@lystar/code-web-protocol";
+import { collaborationAlias } from "@lystar/code-web-protocol/room-agent-alias";
 import { useEffect, useState } from "react";
 import type { RoomWorkspaceController } from "../../state/use-room-workspace";
 import type { WebRoomMember, WebRoomTask, WebRoomTaskStatus, WebSessionSummary, WebSessionWorkspaceMode } from "../../types";

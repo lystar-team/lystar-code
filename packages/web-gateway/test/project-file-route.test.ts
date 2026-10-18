@@ -3,10 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { test } from "node:test";
 import { inflateRawSync } from "node:zlib";
 import type { Command, ProjectResource } from "@lystar/code-web-protocol";
+import { ProjectFiles } from "../../web-runtime/src/project-files.ts";
 import type { ProjectRegistry } from "../src/project-registry.ts";
 import { WebGatewayServer } from "../src/server.ts";
 
@@ -50,18 +51,18 @@ function rawResponseCapture(): {
 	let status = 0;
 	let headers: Record<string, string> = {};
 	let body = Buffer.alloc(0);
-	return {
-		response: {
-			writeHead(code: number, values?: Record<string, string>) {
-				status = code;
-				headers = values ?? {};
-			},
-			end(value?: string | Uint8Array) {
-				body = value === undefined ? Buffer.alloc(0) : Buffer.from(value);
-			},
-		} as unknown as ServerResponse,
-		result: () => ({ status, headers, body }),
-	};
+	const response = new Writable({
+		write(chunk: Buffer, _encoding, callback) {
+			body = Buffer.concat([body, chunk]);
+			callback();
+		},
+	}) as unknown as ServerResponse;
+	response.writeHead = ((code: number, values?: Record<string, string>) => {
+		status = code;
+		headers = values ?? {};
+		return response;
+	}) as typeof response.writeHead;
+	return { response, result: () => ({ status, headers, body }) };
 }
 
 function request(method: string, body?: Record<string, unknown>): IncomingMessage {
@@ -125,7 +126,10 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 		staticDir: agentDir,
 		manageRuntime: false,
 	});
+	const files = new ProjectFiles();
+	const uploadSignal = new AbortController().signal;
 	t.after(async () => {
+		await files.dispose();
 		await server.close();
 		await rm(tempDir, { recursive: true, force: true });
 	});
@@ -145,15 +149,11 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 		request: async <T>(command: Command): Promise<T> => {
 			commands.push(command);
 			if (command.command === "resolve_project_resource") return resource as T;
-			if (command.command === "read_project_resource") {
+			if (command.command === "read_project_resource_preview") {
 				return {
-					contentRef: resource.path,
-					offset: 0,
-					nextOffset: 4,
-					byteLength: 4,
+					notModified: false,
+					resource,
 					data: Buffer.from("one\n").toString("base64"),
-					encoding: "base64",
-					done: true,
 				} as T;
 			}
 			if (command.command === "save_project_file") {
@@ -164,6 +164,15 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 					contentHash: "saved-hash",
 					contentVersion: "4:300:400",
 				} as T;
+			}
+			switch (command.command) {
+				case "read_project_file_chunk": return await files.readChunk(command.cwd, command.path, command.offset, command.limit, command.contentVersion) as T;
+				case "rename_project_file": return await files.rename(command.cwd, command.path, command.name) as T;
+				case "delete_project_files": return await files.delete(command.cwd, command.paths) as T;
+				case "archive_project_files": return await files.archive(command.cwd, command.paths, command.name) as T;
+				case "start_project_upload": return await files.startUpload("browser-one", command.cwd, command.path, command.name, uploadSignal) as T;
+				case "write_project_upload": return await files.writeUpload("browser-one", command.uploadId, command.offset, command.data, command.done) as T;
+				case "cancel_project_upload": return await files.cancelUpload("browser-one", command.uploadId) as T;
 			}
 			throw new Error(`Unexpected command: ${command.command}`);
 		},

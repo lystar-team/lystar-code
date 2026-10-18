@@ -1,12 +1,9 @@
 import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEditTool } from "../src/core/tools/edit.ts";
-import { normalizeToLF } from "../src/core/tools/edit-diff.ts";
-import { FileEditState } from "../src/core/tools/file-edit-state.ts";
 import { withFileMutationQueue } from "../src/core/tools/file-mutation-queue.ts";
-import { splitBom } from "../src/utils/text.ts";
 import { createWriteTool } from "../src/core/tools/write.ts";
 
 function delay(ms: number): Promise<void> {
@@ -31,11 +28,6 @@ async function createTempDir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "pi-file-mutation-queue-"));
 	tempDirs.push(dir);
 	return dir;
-}
-
-function captureSnapshot(state: FileEditState, path: string, content: string): string {
-	const totalLines = normalizeToLF(splitBom(content).text).split("\n").length;
-	return state.capture(resolve(path), content, 1, totalLines).id;
 }
 
 afterEach(async () => {
@@ -124,11 +116,8 @@ describe("built-in edit and write tools", () => {
 		const filePath = join(dir, "parallel-edit.txt");
 		const original = "alpha\nbeta\ngamma\n";
 		await writeFile(filePath, original, "utf8");
-		const state = new FileEditState();
-		const snapshot = captureSnapshot(state, filePath, original);
 
 		const editTool = createEditTool(dir, {
-			fileEditState: state,
 			operations: {
 				access,
 				readFile: async (path) => {
@@ -146,13 +135,11 @@ describe("built-in edit and write tools", () => {
 		await Promise.all([
 			editTool.execute("call-1", {
 				path: filePath,
-				snapshot,
-				edits: [{ startLine: 1, endLine: 1, newText: "ALPHA\n" }],
+				edits: [{ oldText: "alpha", newText: "ALPHA" }],
 			}),
 			editTool.execute("call-2", {
 				path: filePath,
-				snapshot,
-				edits: [{ startLine: 2, endLine: 2, newText: "BETA\n" }],
+				edits: [{ oldText: "beta", newText: "BETA" }],
 			}),
 		]);
 
@@ -165,11 +152,8 @@ describe("built-in edit and write tools", () => {
 		const filePath = join(dir, "mixed.txt");
 		const original = "original\n";
 		await writeFile(filePath, original, "utf8");
-		const state = new FileEditState();
-		const snapshot = captureSnapshot(state, filePath, original);
 
 		const editTool = createEditTool(dir, {
-			fileEditState: state,
 			operations: {
 				access,
 				readFile: async (path) => {
@@ -195,8 +179,7 @@ describe("built-in edit and write tools", () => {
 
 		const editPromise = editTool.execute("call-1", {
 			path: filePath,
-			snapshot,
-			edits: [{ startLine: 1, endLine: 1, newText: "edited\n" }],
+			edits: [{ oldText: "original", newText: "edited" }],
 		});
 		await delay(5);
 		const writePromise = writeTool.execute("call-2", {
@@ -260,15 +243,12 @@ describe("built-in edit and write tools", () => {
 		const filePath = join(dir, "abort-edit.txt");
 		const original = "alpha\nbeta\n";
 		await writeFile(filePath, original, "utf8");
-		const state = new FileEditState();
-		const snapshot = captureSnapshot(state, filePath, original);
 		const firstWriteStarted = createDeferred();
 		const finishFirstWrite = createDeferred();
 		const secondWriteStarted = createDeferred();
 		let firstWriteSettled = false;
 
 		const editTool = createEditTool(dir, {
-			fileEditState: state,
 			operations: {
 				access,
 				readFile,
@@ -293,7 +273,7 @@ describe("built-in edit and write tools", () => {
 		const controller = new AbortController();
 		const firstEdit = editTool.execute(
 			"call-1",
-			{ path: filePath, snapshot, edits: [{ startLine: 1, endLine: 1, newText: "ALPHA\n" }] },
+			{ path: filePath, edits: [{ oldText: "alpha", newText: "ALPHA" }] },
 			controller.signal,
 		);
 		await firstWriteStarted.promise;
@@ -301,8 +281,7 @@ describe("built-in edit and write tools", () => {
 
 		const secondEdit = editTool.execute("call-2", {
 			path: filePath,
-			snapshot,
-			edits: [{ startLine: 2, endLine: 2, newText: "BETA\n" }],
+			edits: [{ oldText: "beta", newText: "BETA" }],
 		});
 		expect(await resolvesWithin(secondWriteStarted.promise, 20)).toBe(false);
 

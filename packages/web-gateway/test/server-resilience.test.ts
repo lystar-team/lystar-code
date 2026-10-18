@@ -29,6 +29,7 @@ interface TestContext {
 	bootstrapCache?: {
 		generation: number;
 		value: {
+			workspaceRevision: number;
 			projects: unknown[];
 			projectGroups: unknown[];
 			capabilities: readonly string[];
@@ -52,6 +53,7 @@ interface TestSocket {
 
 interface GatewayInternals {
 	server: Server;
+	workspace: { revision: number };
 	createContext(id: string): TestContext;
 	handleHostEvent(context: TestContext, event: ServerEvent): void;
 	handleRuntimeDisconnect(context: TestContext): void;
@@ -207,6 +209,7 @@ test("Gateway 复用当前 bootstrap 时只发送轻量连接确认", async (t) 
 	context.bootstrapCache = {
 		generation: 3,
 		value: {
+			workspaceRevision: internal.workspace.revision,
 			projects: [],
 			projectGroups: [],
 			capabilities: [],
@@ -239,6 +242,7 @@ test("Gateway 同一浏览器未漏事件时复用断线 generation 轻量恢复
 	context.bootstrapCache = {
 		generation: 3,
 		value: {
+			workspaceRevision: internal.workspace.revision,
 			projects: [],
 			projectGroups: [],
 			capabilities: [],
@@ -276,6 +280,7 @@ test("Gateway Runtime 断开时不复用旧 resume generation", async (t) => {
 	context.bootstrapCache = {
 		generation: 3,
 		value: {
+			workspaceRevision: internal.workspace.revision,
 			projects: [],
 			projectGroups: [],
 			capabilities: [],

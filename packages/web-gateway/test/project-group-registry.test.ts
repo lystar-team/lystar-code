@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { ProjectGroupRegistry } from "../src/project-group-registry.ts";
 
@@ -26,10 +27,10 @@ test("ProjectGroupRegistry 持久化项目组和项目归属", async (t) => {
 	await restored.load();
 	assert.deepEqual(restored.list(), registry.list());
 	assert.equal((await stat(restored.path)).mode & 0o777, 0o600);
-	assert.deepEqual(JSON.parse(await readFile(restored.path, "utf8")), {
-		version: 1,
-		groups: [{ id: group.id, name: "重要项目", projectIds: [] }],
-	});
+	const database = new DatabaseSync(restored.path, { readOnly: true });
+	assert.deepEqual(database.prepare("SELECT data FROM project_groups ORDER BY position").all().map((row) => JSON.parse(String(row.data))), [{ id: group.id, name: "重要项目", projectIds: [] }]);
+	assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 1);
+	database.close();
 });
 
 test("ProjectGroupRegistry 支持持久化项目组顺序", async (t) => {
@@ -62,6 +63,7 @@ test("ProjectGroupRegistry 串行保存并保留并发创建的全部项目组",
 
 	await Promise.all(Array.from({ length: 24 }, (_, index) => registry.create(`项目组 ${index}`)));
 	assert.equal(registry.list().length, 24);
-	const saved = JSON.parse(await readFile(registry.path, "utf8")) as { groups?: unknown[] };
-	assert.equal(saved.groups?.length, 24);
+	const database = new DatabaseSync(registry.path, { readOnly: true });
+	assert.equal(database.prepare("SELECT COUNT(*) AS count FROM project_groups").get()?.count, 24);
+	database.close();
 });

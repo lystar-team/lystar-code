@@ -44,6 +44,7 @@ import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { extractOpenAICodexAccountId } from "./openai-codex-auth.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import { processNativeResponsesStream, supportsNativeResponsesSteering } from "./openai-responses-steering.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 // ============================================================================
@@ -245,7 +246,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
 	(async () => {
-		const output: AssistantMessage = {
+		let output: AssistantMessage = {
 			role: "assistant",
 			content: [],
 			api: "openai-codex-responses" as Api,
@@ -316,16 +317,19 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							model,
 							() => {
 								websocketStarted = true;
-								if (!startEmitted) {
-									startEmitted = true;
-									stream.push({ type: "start", partial: output });
-								}
+								if (startEmitted) return false;
+								startEmitted = true;
+								return true;
 							},
 							httpTimeoutMs,
 							websocketConnectTimeoutMs,
 							cacheSessionId,
 							accountId,
 							grammarToolInputProperties,
+							normalizedContext,
+							(message) => {
+								output = message;
+							},
 							options,
 						);
 
@@ -1153,7 +1157,7 @@ async function connectWebSocket(
 	});
 }
 
-async function acquireWebSocket(
+export async function acquireWebSocket(
 	url: string,
 	headers: Headers,
 	sessionId: string | undefined,
@@ -1500,12 +1504,14 @@ async function processWebSocketStream(
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 	model: Model<"openai-codex-responses">,
-	onStart: () => void,
+	onStart: () => boolean,
 	idleTimeoutMs: number | undefined,
 	websocketConnectTimeoutMs: number | undefined,
 	cacheSessionId: string | undefined,
 	accountId: string,
 	grammarToolInputProperties: ReadonlyMap<string, string>,
+	context: TranscriptContext,
+	onOutput: (message: AssistantMessage) => void,
 	options?: OpenAICodexResponsesOptions,
 ): Promise<void> {
 	const { socket, entry, reused, release } = await acquireWebSocket(
@@ -1517,6 +1523,34 @@ async function processWebSocketStream(
 		websocketConnectTimeoutMs,
 		options?.env,
 	);
+	if (options?.steering && cacheSessionId && supportsNativeResponsesSteering(model)) {
+		if (entry) entry.continuation = undefined;
+		await processNativeResponsesStream({
+			connection: { socket, release },
+			body: body as ResponseCreateParamsStreaming,
+			messages: context.messages,
+			output,
+			stream,
+			model,
+			options,
+			onOutput,
+			onStart,
+			convertMessages: (messages) =>
+				convertResponsesMessages(model, normalizeContext({ messages }), CODEX_TOOL_CALL_PROVIDERS, {
+					includeSystemPrompt: false,
+					grammarToolInputProperties,
+					supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages,
+				}),
+			processOptions: {
+				onProviderStreamEvent: options.onProviderStreamEvent,
+				serviceTier: options.serviceTier,
+				grammarToolInputProperties,
+				resolveServiceTier: resolveCodexServiceTier,
+				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+			},
+		});
+		return;
+	}
 	let keepConnection = true;
 	const useCachedContext = options?.transport === "websocket-cached" || options?.transport === "auto";
 	// ChatGPT Codex Responses rejects `store: true` ("Store must be set to false").
@@ -1551,7 +1585,9 @@ async function processWebSocketStream(
 					model,
 					options?.onProviderStreamEvent,
 				),
-				onStart,
+				() => {
+					if (onStart()) stream.push({ type: "start", partial: output });
+				},
 			),
 			output,
 			stream,

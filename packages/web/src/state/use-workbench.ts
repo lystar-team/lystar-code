@@ -1,4 +1,5 @@
-import { MAX_TRANSCRIPT_PAGE_SIZE, type SessionProgress, type SessionResultState } from "@lystar/code-web-protocol";
+import type { SessionProgress, SessionResultState } from "@lystar/code-web-protocol";
+import { MAX_TRANSCRIPT_PAGE_SIZE } from "@lystar/code-web-protocol/limits";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import type { ProjectGroup, TranscriptResponse, UiRequestEvent, WebLease, WebOperation, WebProject } from "../types.ts";
@@ -205,15 +206,18 @@ export function useWorkbench() {
 			next = { ...next, displayedResultRevision: undefined };
 		}
 		if (next.projects !== current.projects) {
-			const previousProjects = new Map(current.projects.map((project) => [project.id, project]));
-			const projects = next.projects.map((project) => {
-				const previous = previousProjects.get(project.id);
-				if (!previous || previous === project) return project;
-				const sessions = mergeSessionSummaries(previous.sessions, project.sessions);
-				return sessions === project.sessions ? project : { ...project, sessions };
-			});
+			const projects = mergeProjectSessions(current.projects, next.projects);
 			next = { ...next, projects, unreadSessionIds: sessionUnreadIndex(projects, current.unreadSessionIds) };
 		}
+		if (next.sessionId && !next.sessionReady) {
+			if (next.sessionId !== current.sessionId || current.sessionReady || current.sessionSyncStartedAt === undefined)
+				next = { ...next, sessionSyncStartedAt: performance.now() };
+		} else if (next.sessionSyncStartedAt !== undefined) {
+			next = { ...next, sessionSyncStartedAt: undefined };
+		}
+		const observedAt = next.session?.observedAt;
+		if (next.session !== current.session && observedAt !== undefined && observedAt > (current.runtimeClock?.serverAt ?? -Infinity))
+			next = { ...next, runtimeClock: { serverAt: observedAt, receivedAt: performance.now() } };
 		stateRef.current = next;
 		// 后台仍接收完整状态；控制权、连接和交互请求继续驱动原有副作用。
 		if (
@@ -282,6 +286,7 @@ export function useWorkbench() {
 
 	const applyBootstrap = useCallback(
 		(data: {
+			workspaceRevision: number;
 			projects: WebProject[];
 			projectGroups: ProjectGroup[];
 			capabilities: readonly string[];
@@ -294,7 +299,8 @@ export function useWorkbench() {
 			const next = updateState((current) => {
 				const nextLease = bootstrapLeaseForSession(current.sessionId, current.lease, data.leases ?? []);
 				const operations = mergeOperationSnapshots(current.operations, data.operations);
-				const projects = mergeProjectSessions(current.projects, data.projects);
+				const sharedIsCurrent = current.workspaceRevision === undefined || data.workspaceRevision >= current.workspaceRevision;
+				const projects = sharedIsCurrent ? mergeProjectSessions(current.projects, data.projects) : current.projects;
 				const connection = connectionStateAfterHostUpdate(
 					current,
 					data.connection.connected,
@@ -303,10 +309,9 @@ export function useWorkbench() {
 				);
 				return {
 					...current,
-					projects: current.session
-						? updateSessionSummaryName(projects, current.sessionId!, current.session.name)
-						: projects,
-					projectGroups: data.projectGroups ?? [],
+					workspaceRevision: sharedIsCurrent ? data.workspaceRevision : current.workspaceRevision,
+					projects,
+					projectGroups: sharedIsCurrent ? data.projectGroups : current.projectGroups,
 					operations,
 					pendingUiRequests: data.pendingUiRequests,
 					...connection,
@@ -315,10 +320,7 @@ export function useWorkbench() {
 					readOnly: current.sessionId ? nextLease === undefined : current.readOnly,
 					sessionReady: current.sessionId ? current.sessionReady && connection.connected : false,
 					currentProjectId:
-						current.currentProjectId && data.projects.some((project) => project.id === current.currentProjectId)
-							? current.currentProjectId
-							: undefined,
-					currentOperation: operationForSessionSnapshot(operations, current.session),
+						projects.some((project) => project.id === current.currentProjectId) ? current.currentProjectId : undefined,
 				};
 			});
 			if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
@@ -342,8 +344,10 @@ export function useWorkbench() {
 			const run = async () => {
 				do {
 					refreshState.rerun = false;
+					const workspaceRevision = stateRef.current.workspaceRevision;
 					const result = await webApi.projectSessions(projectId);
 					updateState((current) => {
+						if (current.workspaceRevision !== workspaceRevision) return current;
 						const projects = mergeProjectSessions(current.projects, current.projects.map((project) =>
 							project.id === projectId
 								? { ...project, sessions: result.sessions, sessionsLoaded: true, sessionsError: undefined }
@@ -413,6 +417,7 @@ export function useWorkbench() {
 			const requestedHistory = {
 				generation: stateRef.current.transcriptGeneration,
 				leafId: stateRef.current.transcriptLeafId,
+				previousCursor: stateRef.current.previousCursor,
 			};
 			const historySelection = selectionRef.current;
 			const historyRequestIsActive = () =>
@@ -484,6 +489,7 @@ export function useWorkbench() {
 				const currentHistoryChangedSinceRequest = cursor
 					? requestedHistory.generation !== current.transcriptGeneration ||
 						(requestedHistory.leafId !== current.transcriptLeafId &&
+							requestedHistory.previousCursor !== current.previousCursor &&
 							!current.transcript.some((item) => item.entryId === requestedHistory.leafId))
 					: isTranscriptResponseObsolete(
 							requestedHistory,
@@ -497,7 +503,9 @@ export function useWorkbench() {
 					) ||
 						(current.transcriptGeneration === result.transcriptGeneration &&
 							(cursor
-								? current.transcript.some((item) => item.entryId === result.leafId)
+								// 游标可绑定未展示的 Hook 结束记录，尾页更新后仍属于同一历史。
+								? current.previousCursorLeafId === result.leafId ||
+									current.transcript.some((item) => item.entryId === result.leafId)
 								: result.items.some((item) => item.entryId === current.transcriptLeafId || item.parentId === current.transcriptLeafId)))) &&
 					!(
 						current.transcriptPageLoaded &&
@@ -1411,6 +1419,7 @@ export function useWorkbench() {
 		reorderSessions,
 		removeProject,
 	} = useWorkbenchProjectActions({
+		refreshBootstrap,
 		stateRef,
 		updateState,
 		showToast,
@@ -1788,6 +1797,7 @@ export function useWorkbench() {
 			if (document.visibilityState !== "visible") return;
 			if (stateRef.current === previous) setState(stateRef.current);
 			resumeConnectionRef.current();
+			if (webApi.hasToken() && browserNetworkOnline()) void refreshBootstrap().catch((error) => showToast(errorMessage(error), "error"));
 		};
 		const handlePageShow = (event: PageTransitionEvent) => {
 			if (event.persisted) handleVisibilityChange();
@@ -1798,7 +1808,7 @@ export function useWorkbench() {
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 			window.removeEventListener("pageshow", handlePageShow);
 		};
-	}, [flushPendingTextProgress]);
+	}, [flushPendingTextProgress, refreshBootstrap, showToast]);
 
 	useEffect(() => {
 		mountedRef.current = true;

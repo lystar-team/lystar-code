@@ -35,6 +35,21 @@ export function GsapCollapsibleContent({
 	useLayoutEffect(() => {
 		const element = elementRef.current;
 		if (!element) return;
+		if (!open) {
+			const active = element.ownerDocument.activeElement;
+			// 收起后内容不可见，先把焦点交回摘要行，避免焦点留在被隐藏的内容里。
+			if (active instanceof HTMLElement && element.contains(active)) {
+				const trigger = element.parentElement?.querySelector<HTMLElement>('[data-slot="collapsible-trigger"]');
+				if (trigger) trigger.focus({ preventScroll: true });
+				else active.blur();
+			}
+		}
+		// 用 inert 代替 aria-hidden：既把收起内容移出辅助技术，也避免隐藏仍持有焦点的子树。
+		element.inert = !open;
+	}, [mounted, open]);
+	useLayoutEffect(() => {
+		const element = elementRef.current;
+		if (!element) return;
 
 		if (open && !mounted) {
 			setMounted(true);
@@ -114,7 +129,6 @@ export function GsapCollapsibleContent({
 	return (
 		<CollapsibleContent
 			{...props}
-			aria-hidden={open ? undefined : true}
 			forceMount
 			hidden={!mounted}
 			ref={elementRef}

@@ -19,13 +19,13 @@ export function BrandLogo({ alt = "", className, logo, ...props }: BrandLogoProp
 			<img
 				{...props}
 				className={cn("brand-logo-light", className)}
-				src="/brand/lystar-mark-light.png"
+				src="/brand/lystar-mark-light.webp"
 				alt={alt}
 			/>
 			<img
 				{...props}
 				className={cn("brand-logo-dark", className)}
-				src="/brand/lystar-mark-dark.png"
+				src="/brand/lystar-mark-dark.webp"
 				alt={alt}
 			/>
 		</span>

@@ -40,6 +40,7 @@ export { getBuiltinThemeNames } from "../modes/interactive/theme/theme.ts";
 export { getFullChangelogMarkdown } from "../utils/changelog.ts";
 export { copyToClipboard, readClipboardText } from "../utils/clipboard.ts";
 export { readClipboardImage } from "../utils/clipboard-image.ts";
+export { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../utils/shell.ts";
 export {
 	formatVersionCheckError,
 	getLatestPiRelease,
@@ -180,6 +181,7 @@ export {
 	clearModelsJsonImageModelProvidersConfig,
 	clearModelsJsonModelOverride,
 	clearModelsJsonProviderCatalogProvider,
+	isNativeSteeringUnavailable,
 	ModelConfig,
 	type ModelsJsonImageModelProviders,
 	type ModelsJsonModel,

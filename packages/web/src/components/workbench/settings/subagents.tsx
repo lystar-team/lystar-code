@@ -17,7 +17,7 @@ import { AgentNicknameDialog } from "./agent-nickname-dialog";
 import { SubagentBatchDialog } from "./subagent-batch-dialog";
 
 const LIST_COLUMNS =
-	"@min-[1000px]/agents:grid-cols-[32px_minmax(320px,1fr)_64px_260px_96px_96px_120px]";
+	"@min-[900px]/agents:grid-cols-[24px_minmax(0,1fr)_56px_176px_80px_80px_88px]";
 
 type ScopeFilter = "all" | "user" | "project";
 
@@ -30,7 +30,7 @@ export function SubagentSettings({
 	actions: WorkbenchActions;
 	onLeaveGuardChange: (guard: AgentLeaveGuard | undefined) => void;
 }) {
-	const [editor, setEditor] = useState<{ config?: SubagentConfig }>();
+	const [editor, setEditor] = useState<{ config?: SubagentConfig; scope: SubagentConfig["scope"] }>();
 	const [query, setQuery] = useState("");
 	const [scope, setScope] = useState<ScopeFilter>("all");
 	const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -71,7 +71,7 @@ export function SubagentSettings({
 	const openEditor = (config?: SubagentConfig) => {
 		listOffset.current = scrollRef.current?.scrollTop ?? 0;
 		returnKey.current = config ? `${config.scope}:${config.id}` : undefined;
-		setEditor({ config });
+		setEditor({ config, scope: scope === "project" ? "project" : "user" });
 	};
 	const remove = async (config: SubagentConfig) => {
 		if (!window.confirm(`确定删除 ${config.name} 配置吗？`)) return;
@@ -81,6 +81,7 @@ export function SubagentSettings({
 		return (
 			<AgentEditor
 				config={editor.config}
+				defaultScope={editor.scope}
 				state={state}
 				actions={actions}
 				onClose={closeEditor}
@@ -108,44 +109,8 @@ export function SubagentSettings({
 		},
 	];
 	return (
-		<div className="@container/agents flex h-full min-h-0 min-w-0 flex-col">
-			<div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-				<h1 className="text-2xl font-semibold leading-8 tracking-tight">智能体</h1>
-				<div className="flex flex-wrap items-center gap-2">
-					<Button
-						variant="outline"
-						size="sm"
-						className="!text-[13px] !font-medium"
-						onClick={() => setNicknameOpen(true)}
-					>
-						协作昵称
-					</Button>
-					<Button
-						variant="outline"
-						size="icon-sm"
-						aria-label="刷新智能体"
-						onClick={() => void actions.refreshSubagentConfigs()}
-						disabled={state.subagentConfigsLoading}
-					>
-						<RefreshCw className={`size-4 ${state.subagentConfigsLoading ? "animate-spin" : ""}`} />
-					</Button>
-					<Button size="sm" className="!text-[13px] !font-medium" onClick={() => openEditor()} disabled={busy}>
-						<Plus className="size-4" aria-hidden />
-						新建智能体
-					</Button>
-				</div>
-			</div>
-			<div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
-				<div className="relative w-full sm:w-80">
-					<Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden />
-					<Input
-						className="h-9 pl-9 !text-base md:!text-sm"
-						aria-label="搜索智能体"
-						placeholder="搜索名称或描述"
-						value={query}
-						onChange={(event) => setQuery(event.target.value)}
-					/>
-				</div>
+		<div className="@container/agents flex h-full min-h-0 min-w-0 flex-col gap-3">
+			<div className="flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
 				<Tabs className="shrink-0" value={scope} onValueChange={(value) => setScope(value as ScopeFilter)}>
 					<WorkbenchTabBar activeId={scope} label="智能体范围" tabs={scopeTabs} variant="navigation" className="h-8" />
 					{(["all", "user", "project"] as const)
@@ -154,8 +119,37 @@ export function SubagentSettings({
 							<TabsContent key={option} value={option} forceMount className="hidden" />
 						))}
 				</Tabs>
+				<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 lg:flex-none">
+					<div className="relative w-full min-w-0 sm:w-64 sm:flex-none">
+						<Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+						<Input
+							className="h-8 rounded-md pl-9 !text-sm !leading-5"
+							aria-label="搜索智能体"
+							placeholder="搜索名称或描述"
+							value={query}
+							onChange={(event) => setQuery(event.target.value)}
+						/>
+					</div>
+					<Button
+						variant="outline"
+						size="icon-sm"
+						aria-label="刷新智能体"
+						title="刷新智能体"
+						onClick={() => void actions.refreshSubagentConfigs()}
+						disabled={state.subagentConfigsLoading}
+					>
+						<RefreshCw className={`size-4 ${state.subagentConfigsLoading ? "animate-spin" : ""}`} />
+					</Button>
+					<Button variant="outline" size="sm" className="!text-sm !leading-5" onClick={() => setNicknameOpen(true)}>
+						协作昵称
+					</Button>
+					<Button size="sm" className="!text-sm !leading-5" onClick={() => openEditor()} disabled={busy}>
+						<Plus className="size-4" aria-hidden />
+						新建智能体
+					</Button>
+				</div>
 			</div>
-			<div className="mt-2 flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs">
+			<div className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs">
 				<div className="flex flex-wrap items-center gap-3">
 					<label className="flex min-h-11 items-center gap-2 sm:min-h-7">
 						<input
@@ -211,7 +205,7 @@ export function SubagentSettings({
 				</Button>
 			</div>
 			{state.subagentConfigsError ? (
-				<p className="mt-2 shrink-0 break-words text-sm text-destructive" role="alert">
+				<p className="shrink-0 break-words text-sm text-destructive" role="alert">
 					{state.subagentConfigsError}
 				</p>
 			) : null}
@@ -224,7 +218,7 @@ export function SubagentSettings({
 			>
 				<div
 					aria-hidden
-					className={`sticky top-0 z-10 hidden h-9 items-center gap-4 border-b border-border bg-muted px-3 text-xs text-muted-foreground @min-[1000px]/agents:grid ${LIST_COLUMNS}`}
+					className={`sticky top-0 z-10 hidden h-9 items-center gap-4 border-b border-border bg-muted px-3 text-xs text-muted-foreground @min-[900px]/agents:grid ${LIST_COLUMNS}`}
 				>
 					<span />
 					<span>名称与职责</span>
@@ -258,9 +252,9 @@ export function SubagentSettings({
 								<li
 									data-agent-key={key}
 									key={key}
-									className={`grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-3 border-b border-border px-2 py-3 sm:gap-4 sm:px-3 @min-[1000px]/agents:min-h-[72px] @min-[1000px]/agents:items-center @min-[1000px]/agents:py-3.5 ${LIST_COLUMNS} ${selectedKeys.has(key) ? "bg-muted/50" : ""}`}
+									className={`grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-3 border-b border-border px-2 py-3 sm:gap-4 sm:px-3 @min-[900px]/agents:min-h-[72px] @min-[900px]/agents:items-center @min-[900px]/agents:py-3.5 ${LIST_COLUMNS} ${selectedKeys.has(key) ? "bg-muted/50" : ""}`}
 								>
-									<label className="flex min-h-11 items-center @min-[1000px]/agents:min-h-0">
+									<label className="flex min-h-11 items-center @min-[900px]/agents:min-h-0">
 										<input
 											aria-label={`选择${config.scope === "user" ? "个人" : "项目"}智能体 ${config.name}`}
 											className="size-4 accent-foreground focus-visible:ring-2 focus-visible:ring-ring"
@@ -298,12 +292,12 @@ export function SubagentSettings({
 											{config.description}
 										</p>
 										<AgentTagList className="mt-1" tags={config.tags} />
-										<div className="mt-1 flex min-w-0 flex-wrap gap-x-3 text-xs leading-[18px] text-muted-foreground @min-[1000px]/agents:hidden">
+										<div className="mt-1 flex min-w-0 flex-wrap gap-x-3 text-xs leading-[18px] text-muted-foreground @min-[900px]/agents:hidden">
 											<span>{config.scope === "user" ? "个人" : "项目"}</span>
 											<span>{workspaceModeLabel(config.workspaceMode ?? "direct")}</span>
 											<span>{tools}</span>
 										</div>
-										<div className="flex min-w-0 flex-wrap gap-x-2 text-xs leading-[18px] @min-[1000px]/agents:hidden">
+										<div className="flex min-w-0 flex-wrap gap-x-2 text-xs leading-[18px] @min-[900px]/agents:hidden">
 											<span className="min-w-0 truncate font-mono" title={modelLabel}>
 												{modelLabel}
 											</span>
@@ -312,10 +306,10 @@ export function SubagentSettings({
 											) : null}
 										</div>
 									</div>
-									<span className="hidden text-xs leading-[18px] @min-[1000px]/agents:block">
+									<span className="hidden text-xs leading-[18px] @min-[900px]/agents:block">
 										{config.scope === "user" ? "个人" : "项目"}
 									</span>
-									<div className="hidden min-w-0 text-xs leading-[18px] @min-[1000px]/agents:block">
+									<div className="hidden min-w-0 text-xs leading-[18px] @min-[900px]/agents:block">
 										<span className="block truncate font-mono" title={modelLabel}>
 											{modelLabel}
 										</span>
@@ -323,10 +317,10 @@ export function SubagentSettings({
 											<span className="block text-muted-foreground">思考 {config.thinkingLevel}</span>
 										) : null}
 									</div>
-									<span className="hidden text-xs leading-[18px] @min-[1000px]/agents:block">
+									<span className="hidden text-xs leading-[18px] @min-[900px]/agents:block">
 										{workspaceModeLabel(config.workspaceMode ?? "direct")}
 									</span>
-									<span className="hidden text-xs leading-[18px] text-muted-foreground @min-[1000px]/agents:block">
+									<span className="hidden text-xs leading-[18px] text-muted-foreground @min-[900px]/agents:block">
 										{tools}
 									</span>
 									<div className="flex items-center justify-end gap-1">

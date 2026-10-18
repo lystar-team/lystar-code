@@ -78,7 +78,15 @@ import {
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage, FileAuthStorageBackend } from "./auth-storage.ts";
-import { ModelConfig, type ModelsJsonImageModelProviders, setModelsJsonModelDisabled } from "./model-config.ts";
+import {
+	isNativeSteeringUnavailable,
+	ModelConfig,
+	type ModelsJsonImageModelProviders,
+	resetModelsJsonNativeSteering,
+	resolveNativeSteering,
+	saveModelsJsonNativeSteeringFailure,
+	setModelsJsonModelDisabled,
+} from "./model-config.ts";
 import { ModelMetadataStore, withModelMetadata } from "./model-metadata.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import { getProviderAttributionHeaders } from "./provider-attribution.ts";
@@ -703,6 +711,7 @@ export class ModelRuntime implements Models {
 	): Promise<void> {
 		try {
 			signal.throwIfAborted();
+			if (this.modelsPath) await resetModelsJsonNativeSteering(this.modelsPath, providerId);
 			this.recomposeProvider(providerId);
 			const compositionError = this.compositionErrors.get(providerId);
 			if (compositionError) throw new Error(compositionError);
@@ -795,6 +804,31 @@ export class ModelRuntime implements Models {
 		};
 	}
 
+	private async prepareChatRequest<TApi extends Api>(
+		model: Model<TApi>,
+		options?: StreamOptions & ModelsRequestTransforms,
+	) {
+		const prepared = await this.prepareRequest(model, options);
+		const steering = prepared.options.steering;
+		if (!steering || (model.api !== "openai-responses" && model.api !== "openai-codex-responses")) return prepared;
+		const config = this.modelsPath ? await ModelConfig.load(this.modelsPath) : this.config;
+		const provider = config.getProvider(model.provider);
+		const mode = resolveNativeSteering(provider, model.id, model.nativeSteering);
+		prepared.model = { ...prepared.model, nativeSteering: mode };
+		if (mode === "off" || (mode === "auto" && isNativeSteeringUnavailable(provider, prepared.model))) {
+			prepared.options.steering = undefined;
+		} else {
+			prepared.options.steering = {
+				...steering,
+				onUnsupported: async (error) => {
+					if (this.modelsPath) await saveModelsJsonNativeSteeringFailure(this.modelsPath, prepared.model);
+					await steering.onUnsupported?.(error);
+				},
+			};
+		}
+		return prepared;
+	}
+
 	stream<TApi extends Api>(
 		model: Model<TApi>,
 		context: Context,
@@ -803,7 +837,7 @@ export class ModelRuntime implements Models {
 		const transcript = normalizeContext(context);
 		return lazyStream(model, async () => {
 			assertChatModel(model);
-			const prepared = await this.prepareRequest(
+			const prepared = await this.prepareChatRequest(
 				model,
 				options as (StreamOptions & ModelsRequestTransforms) | undefined,
 			);
@@ -842,7 +876,7 @@ export class ModelRuntime implements Models {
 		}
 		return lazyStream(model, async () => {
 			assertChatModel(model);
-			const prepared = await this.prepareRequest(model, options);
+			const prepared = await this.prepareChatRequest(model, options);
 			return prepared.provider.streamSimple(prepared.model, transcript, prepared.options as SimpleStreamOptions);
 		});
 	}

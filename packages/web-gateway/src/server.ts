@@ -1,27 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, type Stats } from "node:fs";
-import {
-	type FileHandle,
-	link,
-	lstat,
-	mkdir,
-	open,
-	readdir,
-	readFile,
-	realpath,
-	rename,
-	rm,
-	stat,
-	unlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createTcpServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type Duplex, Transform, Writable } from "node:stream";
+import { type Duplex, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { crc32, createDeflateRaw, gzip } from "node:zlib";
+import { gzip } from "node:zlib";
 import {
 	type Command,
 	type CompletionResult,
@@ -47,6 +33,7 @@ import {
 	type ProjectFileSaveResult,
 	type ProjectInstruction,
 	type ProjectResource,
+	type ProjectResourcePreview,
 	type ProjectTrust,
 	type ReadImageContentResult,
 	type RuntimeProtocolClient,
@@ -120,7 +107,7 @@ import {
 	shouldSendProgressImmediately,
 	type WebSessionProgressEvent,
 } from "./progress-coalescing.ts";
-import { ProjectFileWatcher } from "./project-file-watcher.ts";
+import { downloadProjectFile, uploadProjectFile } from "./project-file-transfer.ts";
 import { type ProjectGroup, ProjectGroupRegistry } from "./project-group-registry.ts";
 import { ProjectRegistry, type WebProject } from "./project-registry.ts";
 import { PushNotifications, parsePushSubscription } from "./push-notifications.ts";
@@ -128,6 +115,7 @@ import { markRoomAgentSessions, type RoomSessionMembership } from "./room-sessio
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 import { SessionResultRegistry } from "./session-result-registry.ts";
 import { WebSocketWriter } from "./websocket-writer.ts";
+import { WorkspaceDatabase } from "./workspace-database.ts";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
@@ -164,8 +152,6 @@ function acceptsGzip(header: string | string[] | undefined): boolean {
 	}
 	return wildcardAllowed;
 }
-const PROJECT_WATCH_DEBOUNCE_MS = 150;
-const MAX_PROJECT_WATCH_PATHS = 256;
 const UPLOAD_EXTENSIONS: Record<string, string> = {
 	"application/pdf": ".pdf",
 	"application/zip": ".zip",
@@ -277,12 +263,6 @@ interface SessionDeleteResult {
 	failures: SessionDeleteFailure[];
 }
 
-interface ProjectWatcher {
-	watcher: ProjectFileWatcher;
-	paths: Set<string>;
-	timer?: ReturnType<typeof setTimeout>;
-}
-
 type ModelSettingsResult = {
 	models: ModelSummary[];
 	providers: (ModelProviderSummary & { catalogProvider?: string })[];
@@ -317,6 +297,7 @@ interface BrowserContext {
 	leaseRestoreTimer?: ReturnType<typeof setTimeout>;
 	leaseRestoreAttempt: number;
 	sockets: Set<WebSocket>;
+	projectFileWatches: Map<string, string>;
 	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
 	projectSessionListGenerations: Map<string, number>;
@@ -354,14 +335,8 @@ interface WebProjectResponse {
 	sessionsError?: string;
 }
 
-interface DirectoryResponse {
-	path: string;
-	parent?: string;
-	home: string;
-	entries: Array<{ name: string; path: string; hidden: boolean; kind: "directory" | "file" }>;
-}
-
 interface BootstrapResponse {
+	workspaceRevision: number;
 	projects: WebProjectResponse[];
 	projectGroups: ProjectGroup[];
 	capabilities: readonly string[];
@@ -567,11 +542,35 @@ function toError(error: unknown): HttpError {
 	if (code === "instruction_conflict")
 		return new HttpError(409, code, "全局 AGENTS.md 已被外部修改，请重新加载后再保存");
 	if (code === "instruction_path_invalid") return new HttpError(400, code, "全局 AGENTS.md 路径无效");
-	if (code === "project_file_conflict") return new HttpError(409, code, "文件已被外部修改，请重新加载后再保存");
+	if (code === "project_file_conflict") return new HttpError(409, code, message);
+	if (code === "invalid_content_chunk") return new HttpError(502, code, message);
 	if (code === "git_credentials_required") return new HttpError(409, code, message);
 	if (code === "project_file_not_editable" || code === "project_file_too_large") {
 		return new HttpError(400, code, message);
 	}
+	if (
+		[
+			"invalid_project_path",
+			"file_path_required",
+			"file_name_required",
+			"file_name_invalid",
+			"file_not_regular",
+			"file_not_directory",
+			"upload_target_not_directory",
+			"archive_name_invalid",
+			"archive_empty",
+		].includes(code)
+	)
+		return new HttpError(400, code, message);
+	if (code === "project_path_escape" || code === "EACCES" || code === "EPERM")
+		return new HttpError(403, code, message);
+	if (code === "ENOENT" || code === "ENOTDIR") return new HttpError(404, "file_not_found", "文件或目录不存在");
+	if (code === "file_not_found" || code === "upload_not_found" || code === "resource_not_found")
+		return new HttpError(404, code, message);
+	if (["file_name_conflict", "archive_name_conflict", "upload_offset_conflict"].includes(code))
+		return new HttpError(409, code, message);
+	if (["archive_entry_limit", "archive_path_too_long", "archive_too_large", "archive_entry_too_large"].includes(code))
+		return new HttpError(413, code, message);
 	return new HttpError(statusOf(error), code, message);
 }
 
@@ -763,234 +762,6 @@ function isInside(root: string, candidate: string): boolean {
 	return value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
 }
 
-function relativePath(root: string, candidate: string): string {
-	const value = relative(root, candidate);
-	return value === "." ? "" : value.split(sep).join("/");
-}
-
-interface ZipSourceEntry {
-	path: string;
-	archivePath: string;
-	directory: boolean;
-	mode: number;
-	modifiedAt: Date;
-}
-
-interface ZipCentralEntry extends ZipSourceEntry {
-	crc: number;
-	compressedSize: number;
-	uncompressedSize: number;
-	localOffset: number;
-	method: number;
-}
-
-const ZIP_MAX_VALUE = 0xffffffff;
-const ZIP_MAX_ENTRIES = 0xffff;
-
-function zipDateTime(date: Date): { date: number; time: number } {
-	const year = Math.min(2107, Math.max(1980, date.getFullYear()));
-	return {
-		date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
-		time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
-	};
-}
-
-async function writeZipBuffer(handle: FileHandle, position: number, value: Buffer): Promise<number> {
-	let offset = 0;
-	while (offset < value.length) {
-		const result = await handle.write(value, offset, value.length - offset, position + offset);
-		offset += result.bytesWritten;
-	}
-	return position + value.length;
-}
-
-async function collectZipEntries(
-	root: string,
-	selections: ReadonlyArray<{ path: string; kind: "file" | "directory" }>,
-): Promise<ZipSourceEntry[]> {
-	const unique = [...new Map(selections.map((entry) => [entry.path, entry])).values()].sort(
-		(left, right) => left.path.length - right.path.length || left.path.localeCompare(right.path),
-	);
-	const roots = unique.filter(
-		(entry) =>
-			!unique.some(
-				(candidate) =>
-					candidate.path !== entry.path && candidate.kind === "directory" && isInside(candidate.path, entry.path),
-			),
-	);
-	const result: ZipSourceEntry[] = [];
-	const archivePaths = new Set<string>();
-	const visitedDirectories = new Set<string>();
-	const append = (entry: ZipSourceEntry) => {
-		if (archivePaths.has(entry.archivePath)) return;
-		if (result.length >= ZIP_MAX_ENTRIES) {
-			throw new HttpError(413, "archive_entry_limit", "ZIP 内文件数量超过 65535 个");
-		}
-		archivePaths.add(entry.archivePath);
-		result.push(entry);
-	};
-	const visit = async (path: string, archivePath: string): Promise<void> => {
-		const canonicalPath = await realpath(path);
-		if (!isInside(root, canonicalPath)) return;
-		const info = await stat(canonicalPath);
-		const normalizedPath = archivePath.replaceAll("\\", "/").replace(/^\/+/, "");
-		if (info.isDirectory()) {
-			const directoryPath = normalizedPath.endsWith("/") ? normalizedPath : `${normalizedPath}/`;
-			append({
-				path: canonicalPath,
-				archivePath: directoryPath,
-				directory: true,
-				mode: info.mode,
-				modifiedAt: info.mtime,
-			});
-			if (visitedDirectories.has(canonicalPath)) return;
-			visitedDirectories.add(canonicalPath);
-			const children = await readdir(canonicalPath, { withFileTypes: true });
-			children.sort((left, right) => left.name.localeCompare(right.name));
-			for (const child of children) {
-				const childCandidate = resolve(canonicalPath, child.name);
-				let childPath: string;
-				try {
-					childPath = await realpath(childCandidate);
-				} catch {
-					continue;
-				}
-				if (!isInside(root, childPath)) continue;
-				await visit(childPath, normalizedPath ? `${normalizedPath}/${child.name}` : child.name);
-			}
-			return;
-		}
-		if (!info.isFile()) return;
-		append({
-			path: canonicalPath,
-			archivePath: normalizedPath,
-			directory: false,
-			mode: info.mode,
-			modifiedAt: info.mtime,
-		});
-	};
-	for (const selection of roots) await visit(selection.path, relativePath(root, selection.path));
-	return result;
-}
-
-async function createZipArchive(outputPath: string, entries: readonly ZipSourceEntry[]): Promise<void> {
-	const temporaryPath = join(dirname(outputPath), `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`);
-	let handle: FileHandle | undefined;
-	try {
-		handle = await open(temporaryPath, "wx", 0o600);
-		let position = 0;
-		const centralEntries: ZipCentralEntry[] = [];
-		for (const entry of entries) {
-			const name = Buffer.from(entry.archivePath, "utf8");
-			if (name.length > ZIP_MAX_ENTRIES) throw new HttpError(413, "archive_path_too_long", "ZIP 内路径过长");
-			if (position > ZIP_MAX_VALUE) throw new HttpError(413, "archive_too_large", "ZIP 文件超过 4 GiB 上限");
-			const timestamp = zipDateTime(entry.modifiedAt);
-			const localOffset = position;
-			const method = entry.directory ? 0 : 8;
-			const flags = entry.directory ? 0x0800 : 0x0808;
-			const localHeader = Buffer.alloc(30);
-			localHeader.writeUInt32LE(0x04034b50, 0);
-			localHeader.writeUInt16LE(20, 4);
-			localHeader.writeUInt16LE(flags, 6);
-			localHeader.writeUInt16LE(method, 8);
-			localHeader.writeUInt16LE(timestamp.time, 10);
-			localHeader.writeUInt16LE(timestamp.date, 12);
-			localHeader.writeUInt16LE(name.length, 26);
-			position = await writeZipBuffer(handle, position, localHeader);
-			position = await writeZipBuffer(handle, position, name);
-
-			let checksum = 0;
-			let compressedSize = 0;
-			let uncompressedSize = 0;
-			if (!entry.directory) {
-				const checksumStream = new Transform({
-					transform(chunk: Buffer, _encoding, callback) {
-						const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-						uncompressedSize += data.length;
-						checksum = crc32(data, checksum) >>> 0;
-						if (uncompressedSize > ZIP_MAX_VALUE) {
-							callback(new HttpError(413, "archive_entry_too_large", "ZIP 内单个文件超过 4 GiB 上限"));
-							return;
-						}
-						callback(null, data);
-					},
-				});
-				const output = new Writable({
-					write(chunk: Buffer, _encoding, callback) {
-						const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-						void writeZipBuffer(handle!, position, data)
-							.then((nextPosition) => {
-								position = nextPosition;
-								compressedSize += data.length;
-								if (compressedSize > ZIP_MAX_VALUE || position > ZIP_MAX_VALUE) {
-									callback(new HttpError(413, "archive_too_large", "ZIP 文件超过 4 GiB 上限"));
-									return;
-								}
-								callback();
-							})
-							.catch((error) => callback(error as Error));
-					},
-				});
-				await pipeline(createReadStream(entry.path), checksumStream, createDeflateRaw(), output);
-				const descriptor = Buffer.alloc(16);
-				descriptor.writeUInt32LE(0x08074b50, 0);
-				descriptor.writeUInt32LE(checksum, 4);
-				descriptor.writeUInt32LE(compressedSize, 8);
-				descriptor.writeUInt32LE(uncompressedSize, 12);
-				position = await writeZipBuffer(handle, position, descriptor);
-			}
-			centralEntries.push({ ...entry, crc: checksum, compressedSize, uncompressedSize, localOffset, method });
-		}
-
-		const centralOffset = position;
-		for (const entry of centralEntries) {
-			const name = Buffer.from(entry.archivePath, "utf8");
-			const timestamp = zipDateTime(entry.modifiedAt);
-			const header = Buffer.alloc(46);
-			header.writeUInt32LE(0x02014b50, 0);
-			header.writeUInt16LE(0x0314, 4);
-			header.writeUInt16LE(20, 6);
-			header.writeUInt16LE(entry.directory ? 0x0800 : 0x0808, 8);
-			header.writeUInt16LE(entry.method, 10);
-			header.writeUInt16LE(timestamp.time, 12);
-			header.writeUInt16LE(timestamp.date, 14);
-			header.writeUInt32LE(entry.crc, 16);
-			header.writeUInt32LE(entry.compressedSize, 20);
-			header.writeUInt32LE(entry.uncompressedSize, 24);
-			header.writeUInt16LE(name.length, 28);
-			header.writeUInt32LE((((entry.mode & 0xffff) << 16) | (entry.directory ? 0x10 : 0)) >>> 0, 38);
-			header.writeUInt32LE(entry.localOffset, 42);
-			position = await writeZipBuffer(handle, position, header);
-			position = await writeZipBuffer(handle, position, name);
-		}
-		const centralSize = position - centralOffset;
-		if (centralOffset > ZIP_MAX_VALUE || centralSize > ZIP_MAX_VALUE) {
-			throw new HttpError(413, "archive_too_large", "ZIP 文件超过 4 GiB 上限");
-		}
-		const end = Buffer.alloc(22);
-		end.writeUInt32LE(0x06054b50, 0);
-		end.writeUInt16LE(centralEntries.length, 8);
-		end.writeUInt16LE(centralEntries.length, 10);
-		end.writeUInt32LE(centralSize, 12);
-		end.writeUInt32LE(centralOffset, 16);
-		await writeZipBuffer(handle, position, end);
-		await handle.sync();
-		await handle.close();
-		handle = undefined;
-		try {
-			await link(temporaryPath, outputPath);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-				throw new HttpError(409, "archive_name_conflict", "项目根目录下已有同名 ZIP 文件");
-			}
-			throw error;
-		}
-	} finally {
-		await handle?.close().catch(() => {});
-		await unlink(temporaryPath).catch(() => {});
-	}
-}
-
 async function readChunks(read: (offset: number) => Promise<ContentChunk>, maxBytes: number): Promise<Uint8Array> {
 	const chunks: Uint8Array[] = [];
 	let offset = 0;
@@ -1020,6 +791,10 @@ export class WebGatewayServer {
 	readonly config: WebGatewayConfig;
 	readonly registry: ProjectRegistry;
 	readonly projectGroups: ProjectGroupRegistry;
+	private readonly workspace: WorkspaceDatabase;
+	private workspaceSnapshot?: ReturnType<WorkspaceDatabase["snapshot"]>;
+	private readonly workspaceReadySockets = new WeakSet<WebSocket>();
+	private workspaceTimer?: ReturnType<typeof setInterval>;
 	private readonly sessionResults: SessionResultRegistry;
 	private readonly modelProviderVisibility: ModelProviderVisibilityRegistry;
 	private readonly contexts = new Map<string, BrowserContext>();
@@ -1040,7 +815,6 @@ export class WebGatewayServer {
 	private readonly uploadedFiles = new Map<string, UploadedFile>();
 	private readonly staticGzipCache = new Map<string, StaticGzipCacheEntry>();
 	private staticGzipCacheBytes = 0;
-	private readonly projectWatchers = new Map<string, ProjectWatcher>();
 	private readonly productUpdate: ProductUpdateController;
 	private readonly pushNotifications: PushNotifications;
 	private pushContext?: BrowserContext;
@@ -1063,15 +837,20 @@ export class WebGatewayServer {
 	constructor(config: WebGatewayConfig) {
 		configureServiceEventLog(config.agentDir, config.serviceProfile);
 		this.config = { ...config, host: DEFAULT_WEB_HOST };
-		this.registry = new ProjectRegistry(config.agentDir);
-		this.projectGroups = new ProjectGroupRegistry(config.agentDir);
+		this.workspace = new WorkspaceDatabase(config.agentDir);
+		this.registry = new ProjectRegistry(config.agentDir, this.workspace);
+		this.projectGroups = new ProjectGroupRegistry(config.agentDir, this.workspace);
 		this.modelProviderVisibility = new ModelProviderVisibilityRegistry(config.agentDir);
-		this.sessionResults = new SessionResultRegistry(config.agentDir, (result) => {
-			for (const context of this.contexts.values()) {
-				context.bootstrapCache = undefined;
-				this.broadcast(context, { type: "session_result", result });
-			}
-		});
+		this.sessionResults = new SessionResultRegistry(
+			config.agentDir,
+			(result) => {
+				for (const context of this.contexts.values()) {
+					context.bootstrapCache = undefined;
+					this.broadcast(context, { type: "session_result", result });
+				}
+			},
+			this.workspace,
+		);
 		this.productUpdate = new ProductUpdateController(config.agentDir);
 		this.pushNotifications = new PushNotifications(config.agentDir, config.serviceProfile);
 		this.server = createServer((request, response) => void this.handleRequest(request, response));
@@ -1093,6 +872,17 @@ export class WebGatewayServer {
 		await this.projectGroups.load();
 		await this.modelProviderVisibility.load();
 		await this.sessionResults.load();
+		this.workspaceSnapshot = this.workspace.snapshot();
+		this.workspaceTimer = setInterval(() => {
+			try {
+				this.synchronizeWorkspace();
+			} catch (error) {
+				logGatewayConnection("workspace_sync_failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}, 500);
+		this.workspaceTimer.unref?.();
 		await this.pushNotifications.load();
 		await new Promise<void>((resolvePromise, reject) => {
 			this.server.once("error", reject);
@@ -1120,6 +910,7 @@ export class WebGatewayServer {
 		this.stopEventLoopWatch();
 		clearInterval(this.heartbeatTimer);
 		clearInterval(this.uploadCleanupTimer);
+		clearInterval(this.workspaceTimer);
 		// 未完成的 HTTP 请求和未响应关闭帧的 WebSocket 不能阻塞重新监听。
 		const forceClose = setTimeout(() => {
 			for (const socket of this.webSockets.clients) socket.terminate();
@@ -1127,11 +918,6 @@ export class WebGatewayServer {
 		}, 1_000);
 		try {
 			await this.cleanupUploadedFiles(true);
-			for (const state of this.projectWatchers.values()) {
-				if (state.timer) clearTimeout(state.timer);
-				state.watcher.close();
-			}
-			this.projectWatchers.clear();
 			for (const context of this.contexts.values()) {
 				if (context.idleTimer) clearTimeout(context.idleTimer);
 				if (context.reconnectTimer) clearTimeout(context.reconnectTimer);
@@ -1157,6 +943,7 @@ export class WebGatewayServer {
 			this.listening = false;
 		} finally {
 			clearTimeout(forceClose);
+			await this.workspace.close();
 			logGatewayConnection("service_stopped");
 			flushServiceEventLog();
 		}
@@ -1183,6 +970,7 @@ export class WebGatewayServer {
 			leasesToRestore: new Map(),
 			leaseRestoreAttempt: 0,
 			sockets: new Set(),
+			projectFileWatches: new Map(),
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
 			projectSessionListGenerations: new Map(),
@@ -1328,10 +1116,78 @@ export class WebGatewayServer {
 		if (context.sockets.size === 0) this.invalidateSessionDetails(context);
 	}
 
-	private invalidateAllBootstraps(projectId?: string): void {
+	private invalidateAllBootstraps(_projectId?: string): void {
+		this.synchronizeWorkspace();
+	}
+
+	private synchronizeWorkspace(): void {
+		const previous = this.workspaceSnapshot;
+		if (this.closed || this.workspace.revision === previous?.revision) return;
+		const snapshot = this.workspace.snapshot();
+		const previousProjects = new Map(previous?.projects.map((project) => [project.id, project]));
+		const changedResults = new Set(
+			Object.keys(snapshot.results).filter(
+				(id) => JSON.stringify(snapshot.results[id]) !== JSON.stringify(previous?.results[id]),
+			),
+		);
+		const projects: WebProjectResponse[] = [];
+		const sessionSummaries: Array<{ projectId: string; sessions: WebSessionSummary[] }> = [];
+		for (const project of snapshot.projects) {
+			const old = previousProjects.get(project.id);
+			const sessions = project.recentSessions ?? [];
+			if (old === project && !sessions.some((session) => changedResults.has(session.id))) continue;
+			const { recentSessions: oldSessions = [], ...oldSettings } = old ?? {};
+			const { recentSessions: _sessions, ...settings } = project;
+			if (
+				!old ||
+				JSON.stringify(settings) !== JSON.stringify(oldSettings) ||
+				sessions.length !== oldSessions.length ||
+				sessions.some((session, index) => session.id !== oldSessions[index]?.id)
+			) {
+				projects.push(
+					this.publicProject(project, sessions, project.sessionsIndexed === true, undefined, snapshot.results),
+				);
+				continue;
+			}
+			const changed = sessions.filter(
+				(session, index) =>
+					changedResults.has(session.id) ||
+					(old !== project && JSON.stringify(session) !== JSON.stringify(oldSessions[index])),
+			);
+			if (changed.length > 0)
+				sessionSummaries.push({
+					projectId: project.id,
+					sessions: changed.map((session) =>
+						publicSessionSummary(session, project.pinnedSessionIds, snapshot.results[session.id]),
+					),
+				});
+		}
+		this.workspaceSnapshot = snapshot;
+		const byId = new Map(snapshot.projects.map((project) => [project.id, project]));
+		const payload = JSON.stringify({
+			type: "workspace_updated",
+			workspaceRevision: snapshot.revision,
+			projectIds: snapshot.projects.map((project) => project.id),
+			projects,
+			sessionSummaries,
+			projectGroups: snapshot.groups,
+		});
 		for (const context of this.contexts.values()) {
-			this.invalidateBootstrap(context, projectId);
-			if (context.sockets.size > 0) void this.pushBootstrap(context);
+			context.bootstrapCache = undefined;
+			for (const [projectId, cached] of context.sessionListCache) {
+				const project = byId.get(projectId);
+				if (!project) context.sessionListCache.delete(projectId);
+				else if (project !== previousProjects.get(projectId))
+					cached.value = orderSessionSummaries(project.recentSessions ?? [], project.sessionOrder);
+			}
+			if (context.sockets.size > 0 && context.client?.getSnapshot().connected)
+				this.refreshBootstrapProjects(
+					context,
+					snapshot.projects.filter((project) => !project.sessionsIndexed),
+				);
+			for (const socket of context.sockets) {
+				if (this.workspaceReadySockets.has(socket)) this.sendWebSocket(socket, payload);
+			}
 		}
 	}
 	private projectSessionListGeneration(context: BrowserContext, projectId: string): number {
@@ -1420,45 +1276,27 @@ export class WebGatewayServer {
 		return tracked;
 	}
 
-	private ensureProjectWatcher(project: WebProject): void {
-		if (this.projectWatchers.has(project.id)) return;
-		const onChange = (_eventType: string, filename: string | Buffer | null) => {
-			const state = this.projectWatchers.get(project.id);
-			if (!state) return;
-			const path = filename ? String(filename).split(sep).join("/") : "";
-			if (path === ".git/objects" || path.startsWith(".git/objects/")) return;
-			if (state.paths.has("")) return;
-			if (!path || state.paths.size >= MAX_PROJECT_WATCH_PATHS) {
-				state.paths.clear();
-				state.paths.add("");
-			} else {
-				state.paths.add(path);
-			}
-			if (state.timer) clearTimeout(state.timer);
-			state.timer = setTimeout(() => {
-				state.timer = undefined;
-				const paths = [...state.paths];
-				state.paths.clear();
-				for (const context of this.contexts.values()) {
-					if (context.sockets.size > 0)
-						this.broadcastProject(context, project.id, {
-							type: "project_files_changed",
-							projectId: project.id,
-							paths,
-						});
-				}
-			}, PROJECT_WATCH_DEBOUNCE_MS);
-			state.timer.unref?.();
-		};
-		const watcher = new ProjectFileWatcher(project.cwd, onChange);
-		const state: ProjectWatcher = { watcher, paths: new Set() };
-		watcher.on("error", (error: Error) => {
-			logGatewayConnection("project_watcher_failed", { projectId: project.id, error: error.message });
-			if (state.timer) clearTimeout(state.timer);
-			watcher.close();
-			if (this.projectWatchers.get(project.id) === state) this.projectWatchers.delete(project.id);
-		});
-		this.projectWatchers.set(project.id, state);
+	private async syncProjectWatcher(context: BrowserContext, projectId: string): Promise<void> {
+		const project = this.registry.get(projectId);
+		const cwd = project?.cwd ?? context.projectFileWatches.get(projectId);
+		if (!cwd) return;
+		const subscribed =
+			project && [...context.sockets].some((socket) => this.projectSubscriptionsFor(socket).has(projectId));
+		if (subscribed) context.projectFileWatches.set(projectId, cwd);
+		else context.projectFileWatches.delete(projectId);
+		try {
+			const client = context.client ?? (subscribed ? await this.getClient(context) : undefined);
+			if (!client) return;
+			await client.request({
+				command: context.projectFileWatches.has(projectId) ? "watch_project_files" : "unwatch_project_files",
+				cwd,
+			});
+		} catch (error) {
+			logGatewayConnection("project_watcher_failed", {
+				projectId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	private contextFor(request: IncomingMessage, response?: ServerResponse, url?: URL): BrowserContext {
@@ -1537,6 +1375,7 @@ export class WebGatewayServer {
 				connectedClient = result.client;
 				context.client = result.client;
 				context.initial = result.initial;
+				for (const projectId of context.projectFileWatches.keys()) void this.syncProjectWatcher(context, projectId);
 				void this.restoreContextLeases(context, result.client).catch((error: unknown) => {
 					logGatewayConnection("lease_restore_failed", {
 						clientInstanceId: context.id,
@@ -1701,7 +1540,12 @@ export class WebGatewayServer {
 
 	private async buildBootstrap(context: BrowserContext): Promise<BootstrapResponse> {
 		const cached = context.bootstrapCache;
-		if (cached && cached.generation === context.bootstrapGeneration) return cached.value;
+		if (
+			cached &&
+			cached.generation === context.bootstrapGeneration &&
+			cached.value.workspaceRevision === this.workspace.revision
+		)
+			return cached.value;
 		if (context.bootstrapPromise) return context.bootstrapPromise;
 		const startedAt = Date.now();
 		logGatewayConnection("bootstrap_started", {
@@ -1717,15 +1561,13 @@ export class WebGatewayServer {
 			context.initial = initial;
 			const generation = context.bootstrapGeneration;
 			const sessionIdsByPath = new Map(this.sessionIdsByPath);
-			const registeredProjects = this.registry.list();
-			await this.sessionResults.observe(registeredProjects.flatMap((project) => project.recentSessions ?? []));
+			await this.sessionResults.observe(this.registry.list().flatMap((project) => project.recentSessions ?? []));
+			const shared = this.workspace.snapshot();
+			const registeredProjects = shared.projects;
 			const projects = registeredProjects.map((project) => {
-				const cachedSessions = context.sessionListCache.get(project.id);
-				const sessionsLoaded =
-					cachedSessions?.generation === this.projectSessionListGeneration(context, project.id);
-				const sessions = sessionsLoaded ? cachedSessions.value : (project.recentSessions ?? []);
+				const sessions = project.recentSessions ?? [];
 				for (const session of sessions) sessionIdsByPath.set(session.path, session.id);
-				return this.publicProject(project, sessions, sessionsLoaded);
+				return this.publicProject(project, sessions, project.sessionsIndexed === true, undefined, shared.results);
 			});
 			const operations = new Map(initial.operations.map((operation) => [operation.operationId, operation]));
 			for (const operation of client.getSnapshot().operations.values()) {
@@ -1737,8 +1579,9 @@ export class WebGatewayServer {
 				sessionIdsByPath.set(snapshot.path, snapshot.id);
 			}
 			const value: BootstrapResponse = {
+				workspaceRevision: shared.revision,
 				projects,
-				projectGroups: this.projectGroups.list(),
+				projectGroups: shared.groups,
 				capabilities: hello?.capabilities ?? [],
 				connection: {
 					connected: true,
@@ -1791,6 +1634,7 @@ export class WebGatewayServer {
 		if (pending) return pending;
 		if (cached?.generation === generation && !cached.dirty) return cached.value;
 		if (cached) cached.dirty = false;
+		const sessionsRevision = this.registry.getSessionRevision(project.id);
 		const request = (async () => {
 			const client = await this.getClient(context);
 			const cachedRooms = this.roomMembershipCache.get(project.cwd);
@@ -1856,10 +1700,10 @@ export class WebGatewayServer {
 				this.sessionIdsByPath.set(session.path, session.id);
 			}
 			await this.sessionResults.observe(uniqueSessions);
-			if (generation === this.projectSessionListGeneration(context, project.id))
-				await this.registry.setRecentSessions(project.id, uniqueSessions);
-			const refreshedProject = this.registry.get(project.id) ?? project;
 			const roomAwareSessions = markRoomAgentSessions(uniqueSessions, rooms);
+			if (generation === this.projectSessionListGeneration(context, project.id))
+				await this.registry.setRecentSessions(project.id, uniqueSessions, sessionsRevision);
+			const refreshedProject = this.registry.get(project.id) ?? project;
 			const orderedSessions = orderSessionSummaries(roomAwareSessions, refreshedProject.sessionOrder);
 			if (generation === this.projectSessionListGeneration(context, project.id)) {
 				context.sessionListCache.set(project.id, {
@@ -1891,6 +1735,7 @@ export class WebGatewayServer {
 		sessions: SessionSummary[],
 		sessionsLoaded = true,
 		sessionsError?: string,
+		results: Record<string, SessionResultState> = this.workspace.readResults().results,
 	): WebProjectResponse {
 		return {
 			id: project.id,
@@ -1900,7 +1745,7 @@ export class WebGatewayServer {
 			...(project.color ? { color: project.color } : {}),
 			...(project.archived ? { archived: true } : {}),
 			sessions: sessions.map((session) =>
-				publicSessionSummary(session, project.pinnedSessionIds, this.sessionResults.get(session.id)),
+				publicSessionSummary(session, project.pinnedSessionIds, results[session.id]),
 			),
 			sessionsLoaded,
 			...(sessionsError === undefined ? {} : { sessionsError }),
@@ -1931,7 +1776,7 @@ export class WebGatewayServer {
 			if (this.projectSessionListGeneration(context, job.project.id) !== job.sessionListGeneration) continue;
 			state.activeWorkers += 1;
 			void this.listProjectSessions(context, job.project)
-				.then((sessions) => {
+				.then(() => {
 					if (this.projectSessionListGeneration(context, job.project.id) !== job.sessionListGeneration) return;
 					const currentProject = this.registry.get(job.project.id);
 					if (
@@ -1939,9 +1784,7 @@ export class WebGatewayServer {
 						context.sessionListCache.get(job.project.id)?.generation !== job.sessionListGeneration
 					)
 						return;
-					const response = this.publicProject(currentProject, sessions, true);
-					this.updateBootstrapProject(context, context.bootstrapGeneration, response);
-					this.emitProjectUpdate(context, context.bootstrapGeneration, response);
+					this.synchronizeWorkspace();
 				})
 				.catch((error: unknown) => {
 					if (
@@ -1988,6 +1831,13 @@ export class WebGatewayServer {
 	): void {
 		const ref = this.sessions.get(sessionId);
 		if (!ref) return;
+		const { writeAccess: _writeAccess, ...sharedUpdate } = update;
+		void this.registry.updateSessionSummary(ref.projectId, sessionId, sharedUpdate).catch((error: unknown) => {
+			logGatewayConnection("workspace_summary_write_failed", {
+				sessionId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 		const cached = context.sessionListCache.get(ref.projectId);
 		if (cached?.generation !== this.projectSessionListGeneration(context, ref.projectId)) return;
 		const index = cached.value.findIndex((session) => session.id === sessionId);
@@ -1998,18 +1848,19 @@ export class WebGatewayServer {
 			...update,
 			updatedAt: Math.max(previous.updatedAt, update.updatedAt ?? previous.updatedAt),
 		};
-		const project = this.registry.get(ref.projectId);
-		if (project)
-			this.updateBootstrapProject(
-				context,
-				context.bootstrapGeneration,
-				this.publicProject(project, cached.value, true),
-			);
+		const project = context.bootstrapCache?.value.projects.find((project) => project.id === ref.projectId);
+		const sessionIndex = project?.sessions.findIndex((session) => session.id === sessionId) ?? -1;
+		if (!project || sessionIndex < 0) return;
+		project.sessions[sessionIndex] = publicSessionSummary(
+			cached.value[index],
+			project.sessions[sessionIndex].pinned ? [sessionId] : undefined,
+			this.sessionResults.get(sessionId),
+		);
 	}
 
 	private emitProjectUpdate(context: BrowserContext, generation: number, project: WebProjectResponse): void {
 		if (context.bootstrapGeneration !== generation) return;
-		const event = { type: "project_updated", project };
+		const event = { type: "project_updated", project, workspaceRevision: this.workspace.revision };
 		if (context.sockets.size > 0) this.broadcast(context, event);
 		else context.pendingProjectUpdates.set(project.id, { generation, project });
 	}
@@ -2056,106 +1907,6 @@ export class WebGatewayServer {
 		if (!isInside(project.cwd, candidate))
 			throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
 		return candidate;
-	}
-
-	private async projectEntryPath(
-		project: WebProject,
-		input: string,
-	): Promise<{ path: string; root: string; kind: "file" | "directory" }> {
-		const root = await realpath(resolve(project.cwd));
-		const candidate = this.projectPath(project, input);
-		let path: string;
-		try {
-			path = await realpath(candidate);
-		} catch {
-			throw new HttpError(404, "file_not_found", "文件或目录不存在");
-		}
-		if (!isInside(root, path)) throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
-		const info = await stat(path);
-		if (!info.isFile() && !info.isDirectory()) {
-			throw new HttpError(400, "file_not_regular", "目标不是普通文件或目录");
-		}
-		return { path, root, kind: info.isDirectory() ? "directory" : "file" };
-	}
-
-	private async projectFilePath(project: WebProject, input: string): Promise<{ path: string; root: string }> {
-		const entry = await this.projectEntryPath(project, input);
-		if (entry.kind !== "file") throw new HttpError(400, "file_not_regular", "目标不是普通文件");
-		return entry;
-	}
-
-	private async projectMutableEntryPath(
-		project: WebProject,
-		input: string,
-	): Promise<{ path: string; root: string; kind: "file" | "directory" }> {
-		if (!input.trim()) throw new HttpError(400, "file_path_required", "文件或目录路径不能为空");
-		const root = resolve(project.cwd);
-		const canonicalRoot = await realpath(root);
-		const path = this.projectPath(project, input);
-		let info: Awaited<ReturnType<typeof lstat>>;
-		let canonicalParent: string;
-		try {
-			[info, canonicalParent] = await Promise.all([lstat(path), realpath(dirname(path))]);
-		} catch {
-			throw new HttpError(404, "file_not_found", "文件或目录不存在");
-		}
-		if (!isInside(canonicalRoot, canonicalParent)) {
-			throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
-		}
-		if (info.isSymbolicLink()) return { path, root, kind: "file" };
-		let canonicalPath: string;
-		try {
-			canonicalPath = await realpath(path);
-		} catch {
-			throw new HttpError(404, "file_not_found", "文件或目录不存在");
-		}
-		if (!isInside(canonicalRoot, canonicalPath)) {
-			throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
-		}
-		if (!info.isFile() && !info.isDirectory()) {
-			throw new HttpError(400, "file_not_regular", "目标不是普通文件或目录");
-		}
-		return { path, root, kind: info.isDirectory() ? "directory" : "file" };
-	}
-
-	private async projectTree(project: WebProject, input: string | undefined): Promise<DirectoryResponse> {
-		const root = resolve(project.cwd);
-		const directory = this.projectPath(project, input);
-		const entries = await readdir(directory, { withFileTypes: true });
-		const mapped = await Promise.all(
-			entries.map(async (entry) => {
-				const candidate = resolve(directory, entry.name);
-				try {
-					const canonicalPath = await realpath(candidate);
-					if (!isInside(root, canonicalPath)) return undefined;
-					const info = await stat(canonicalPath);
-					if (!info.isDirectory() && !info.isFile()) return undefined;
-					return {
-						name: entry.name,
-						path: relativePath(root, canonicalPath),
-						hidden: entry.name.startsWith("."),
-						kind: info.isDirectory() ? ("directory" as const) : ("file" as const),
-					};
-				} catch {
-					return undefined;
-				}
-			}),
-		);
-		const visibleEntries = mapped.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-		visibleEntries.sort(
-			(left, right) =>
-				Number(right.kind === "directory") - Number(left.kind === "directory") ||
-				left.name.localeCompare(right.name),
-		);
-		const parentCandidate = resolve(directory, "..");
-		const parent =
-			directory !== root && isInside(root, parentCandidate) ? relativePath(root, parentCandidate) : undefined;
-		return {
-			path: relativePath(root, directory),
-			...(parent === undefined ? {} : { parent }),
-			home: "",
-			entries: visibleEntries,
-		};
 	}
 
 	private async deleteSessions(context: BrowserContext, sessionIds: string[]): Promise<SessionDeleteResult> {
@@ -2788,6 +2539,9 @@ export class WebGatewayServer {
 					...(stringValue(body.apiKey) ? { apiKey: stringValue(body.apiKey) } : {}),
 					...(stringValue(body.catalogProvider) ? { catalogProvider: stringValue(body.catalogProvider) } : {}),
 					...(body.clearCatalogProvider === true ? { clearCatalogProvider: true } : {}),
+					...(body.nativeSteering === "auto" || body.nativeSteering === "off" || body.nativeSteering === "on"
+						? { nativeSteering: body.nativeSteering }
+						: {}),
 					clientInstanceId: context.id,
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 				});
@@ -2813,6 +2567,12 @@ export class WebGatewayServer {
 					baseUrl: stringValue(body.baseUrl),
 					reasoning: body.reasoning === true,
 					...(typeof body.fastModeSupported === "boolean" ? { fastModeSupported: body.fastModeSupported } : {}),
+					...(body.nativeSteering === "auto" ||
+					body.nativeSteering === "off" ||
+					body.nativeSteering === "on" ||
+					body.nativeSteering === "inherit"
+						? { nativeSteering: body.nativeSteering }
+						: {}),
 					input,
 					...(thinkingLevelMap
 						? { thinkingLevelMap: jsonValue(thinkingLevelMap) as Record<string, string | null> }
@@ -2965,7 +2725,11 @@ export class WebGatewayServer {
 		const groupId = parts[2];
 		if (request.method === "PATCH") {
 			const body = await parseJsonBody(request);
-			const group = await this.projectGroups.update(groupId, stringValue(body.name) ?? "");
+			const group = await this.projectGroups.update(
+				groupId,
+				stringValue(body.name) ?? "",
+				stringValue(body.expectedName),
+			);
 			this.invalidateAllBootstraps();
 			sendJson(response, 200, { group, groups: this.projectGroups.list() });
 			return;
@@ -3021,15 +2785,24 @@ export class WebGatewayServer {
 		const project = this.project(projectId);
 		if (parts.length === 3 && request.method === "PATCH") {
 			const body = await parseJsonBody(request);
-			const name = stringValue(body.name) ?? project.name;
-			const update = await this.registry.update(projectId, {
-				name,
-				pinned: body.pinned === true,
-				color: ["red", "orange", "green", "blue", "purple", "gray"].includes(String(body.color))
-					? (body.color as WebProject["color"])
+			const update = await this.registry.update(
+				projectId,
+				{
+					...(Object.hasOwn(body, "name") ? { name: stringValue(body.name) ?? "" } : {}),
+					...(Object.hasOwn(body, "pinned") ? { pinned: body.pinned === true } : {}),
+					...(Object.hasOwn(body, "color")
+						? {
+								color: ["red", "orange", "green", "blue", "purple", "gray"].includes(String(body.color))
+									? (body.color as WebProject["color"])
+									: undefined,
+							}
+						: {}),
+					...(Object.hasOwn(body, "archived") ? { archived: body.archived === true } : {}),
+				},
+				body.expected && typeof body.expected === "object" && !Array.isArray(body.expected)
+					? (body.expected as Record<string, unknown>)
 					: undefined,
-				archived: body.archived === true,
-			});
+			);
 			this.invalidateAllBootstraps(projectId);
 			sendJson(response, 200, {
 				project: this.publicProject(update, await this.listProjectSessions(context, update)),
@@ -3044,10 +2817,10 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 3 && request.method === "DELETE") {
-			const watcher = this.projectWatchers.get(projectId);
-			if (watcher?.timer) clearTimeout(watcher.timer);
-			watcher?.watcher.close();
-			this.projectWatchers.delete(projectId);
+			for (const browser of this.contexts.values()) {
+				for (const socket of browser.sockets) this.projectSubscriptionsFor(socket).delete(projectId);
+				await this.syncProjectWatcher(browser, projectId);
+			}
 			await this.registry.remove(projectId);
 			this.roomMembershipGeneration.set(project.cwd, (this.roomMembershipGeneration.get(project.cwd) ?? 0) + 1);
 			this.roomMembershipCache.delete(project.cwd);
@@ -3450,8 +3223,15 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length >= 4 && parts[3] === "tree" && request.method === "GET") {
-			this.ensureProjectWatcher(project);
-			sendJson(response, 200, await this.projectTree(project, url.searchParams.get("path") ?? undefined));
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request({
+					command: "list_project_files",
+					cwd: project.cwd,
+					path: url.searchParams.get("path") ?? "",
+				}),
+			);
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "upload" && request.method === "POST") {
@@ -3461,41 +3241,11 @@ export class WebGatewayServer {
 			if (name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
 				throw new HttpError(400, "file_name_invalid", "文件名不能包含路径分隔符");
 			}
-			const directory = await this.projectEntryPath(project, directoryPath);
-			if (directory.kind !== "directory") {
-				throw new HttpError(400, "upload_target_not_directory", "上传目标不是目录");
-			}
-			const target = resolve(directory.path, name);
-			if (dirname(target) !== directory.path) {
-				throw new HttpError(403, "project_path_escape", "上传目标不在当前目录范围内");
-			}
-			try {
-				await lstat(target);
-				throw new HttpError(409, "file_name_conflict", "同一目录下已有同名文件或目录");
-			} catch (error) {
-				if (error instanceof HttpError) throw error;
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
-			const temporaryPath = join(directory.path, `.${name}.${process.pid}.${randomUUID()}.upload`);
-			try {
-				await pipeline(request, createWriteStream(temporaryPath, { flags: "wx", mode: 0o644 }));
-				try {
-					await link(temporaryPath, target);
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-						throw new HttpError(409, "file_name_conflict", "同一目录下已有同名文件或目录");
-					}
-					throw error;
-				}
-				const info = await stat(target);
-				this.ensureProjectWatcher(project);
-				sendJson(response, 200, {
-					path: relativePath(directory.root, target),
-					byteLength: info.size,
-				});
-			} finally {
-				await unlink(temporaryPath).catch(() => {});
-			}
+			sendJson(
+				response,
+				200,
+				await uploadProjectFile(await this.getClient(context), request, project.cwd, directoryPath, name),
+			);
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "archive" && request.method === "POST") {
@@ -3518,45 +3268,21 @@ export class WebGatewayServer {
 			) {
 				throw new HttpError(400, "archive_paths_invalid", "请选择 1 至 1000 个文件或目录");
 			}
-			const sources = await Promise.all(
-				body.paths.map((path) => this.projectEntryPath(project, (path as string).trim())),
+			sendJson(
+				response,
+				200,
+				await (await this.getClient(context)).request(
+					{ command: "archive_project_files", cwd: project.cwd, paths: body.paths as string[], name },
+					{ timeoutMs: 0 },
+				),
 			);
-			const root = sources[0].root;
-			const outputPath = resolve(root, name);
-			if (dirname(outputPath) !== root) {
-				throw new HttpError(403, "project_path_escape", "ZIP 必须生成在项目根目录");
-			}
-			try {
-				await stat(outputPath);
-				throw new HttpError(409, "archive_name_conflict", "项目根目录下已有同名 ZIP 文件");
-			} catch (error) {
-				if (error instanceof HttpError) throw error;
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
-			const archiveEntries = await collectZipEntries(root, sources);
-			if (archiveEntries.length === 0) throw new HttpError(400, "archive_empty", "选中内容没有可压缩文件");
-			this.ensureProjectWatcher(project);
-			await createZipArchive(outputPath, archiveEntries);
-			sendJson(response, 200, { path: name, entryCount: archiveEntries.length });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "file") {
 			if (request.method === "GET" && url.searchParams.get("download") === "true") {
 				const path = url.searchParams.get("path")?.trim();
 				if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
-				const file = await this.projectFilePath(project, path);
-				const info = await stat(file.path);
-				const filename = encodeURIComponent(basename(file.path)).replace(
-					/[!'()*]/gu,
-					(value) => `%${value.charCodeAt(0).toString(16).toUpperCase()}`,
-				);
-				response.writeHead(200, {
-					"Cache-Control": "no-store",
-					"Content-Disposition": `attachment; filename*=UTF-8''${filename}`,
-					"Content-Length": String(info.size),
-					"Content-Type": "application/octet-stream",
-				});
-				response.end(await readFile(file.path));
+				await downloadProjectFile(await this.getClient(context), response, project.cwd, path);
 				return;
 			}
 			if (request.method === "PATCH") {
@@ -3568,24 +3294,16 @@ export class WebGatewayServer {
 				if (name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
 					throw new HttpError(400, "file_name_invalid", "文件名不能包含路径分隔符");
 				}
-				const source = await this.projectMutableEntryPath(project, path);
-				if (basename(source.path) === name) {
-					sendJson(response, 200, { path: relativePath(source.root, source.path) });
-					return;
-				}
-				const target = resolve(dirname(source.path), name);
-				if (!isInside(source.root, target)) {
-					throw new HttpError(403, "project_path_escape", "目标路径不在当前项目范围内");
-				}
-				try {
-					await lstat(target);
-					throw new HttpError(409, "file_name_conflict", "同一目录下已有同名文件或目录");
-				} catch (error) {
-					if (error instanceof HttpError) throw error;
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				}
-				await rename(source.path, target);
-				sendJson(response, 200, { path: relativePath(source.root, target) });
+				sendJson(
+					response,
+					200,
+					await (await this.getClient(context)).request({
+						command: "rename_project_file",
+						cwd: project.cwd,
+						path,
+						name,
+					}),
+				);
 				return;
 			}
 			if (request.method === "DELETE") {
@@ -3598,38 +3316,27 @@ export class WebGatewayServer {
 				) {
 					throw new HttpError(400, "delete_paths_invalid", "请选择 1 至 1000 个文件或目录");
 				}
-				const entries = await Promise.all(
-					body.paths.map((path) => this.projectMutableEntryPath(project, (path as string).trim())),
+				sendJson(
+					response,
+					200,
+					await (await this.getClient(context)).request({
+						command: "delete_project_files",
+						cwd: project.cwd,
+						paths: body.paths as string[],
+					}),
 				);
-				const uniqueEntries = [...new Map(entries.map((entry) => [entry.path, entry])).values()];
-				const deletionRoots = uniqueEntries.filter(
-					(entry) =>
-						!uniqueEntries.some(
-							(candidate) =>
-								candidate.path !== entry.path &&
-								candidate.kind === "directory" &&
-								isInside(candidate.path, entry.path),
-						),
-				);
-				this.ensureProjectWatcher(project);
-				for (const entry of deletionRoots) {
-					await rm(entry.path, { recursive: entry.kind === "directory", force: false });
-				}
-				sendJson(response, 200, {
-					paths: deletionRoots.map((entry) => relativePath(entry.root, entry.path)),
-				});
 				return;
 			}
 			const client = await this.getClient(context);
 			if (request.method === "GET") {
 				const path = url.searchParams.get("path")?.trim();
 				if (!path) throw new HttpError(400, "file_path_required", "文件路径不能为空");
-				const resource = await client.request<ProjectResource>({
-					command: "resolve_project_resource",
-					cwd: project.cwd,
-					target: path,
-				});
 				if (url.searchParams.get("metadata") === "true") {
+					const resource = await client.request<ProjectResource>({
+						command: "resolve_project_resource",
+						cwd: project.cwd,
+						target: path,
+					});
 					sendJson(response, 200, {
 						kind: resource.kind,
 						path: resource.displayPath,
@@ -3639,52 +3346,73 @@ export class WebGatewayServer {
 					});
 					return;
 				}
-				const bytes = await readChunks(
-					(offset) =>
-						client.request<ContentChunk>({
-							command: "read_project_resource",
-							cwd: project.cwd,
-							path: resource.path,
-							offset,
-							limit: 1024 * 1024,
-						}),
-					resource.kind === "text" ? MAX_TEXT_PREVIEW_BYTES : MAX_BINARY_PREVIEW_BYTES,
-				);
+				const preview = await client.request<ProjectResourcePreview>({
+					command: "read_project_resource_preview",
+					cwd: project.cwd,
+					target: path,
+					textLimit: MAX_TEXT_PREVIEW_BYTES,
+					binaryLimit: MAX_BINARY_PREVIEW_BYTES,
+					ifNoneMatch: request.headers["if-none-match"],
+				});
+				const { resource } = preview;
+				const etag = resource.contentVersion ? `W/"${resource.contentVersion}"` : undefined;
+				const headers = etag ? { ETag: etag } : undefined;
+				if (preview.notModified) {
+					response.writeHead(304, { "Cache-Control": "no-store", ...headers });
+					response.end();
+					return;
+				}
+				const bytes = Buffer.from(preview.data, "base64");
 				const truncated = bytes.byteLength < resource.byteLength;
 				if (resource.kind === "image") {
-					sendJson(response, 200, {
-						kind: resource.kind,
-						path: resource.displayPath,
-						mimeType: resource.mimeType,
-						byteLength: resource.byteLength,
-						previewByteLength: bytes.byteLength,
-						truncated,
-						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
-						...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
-					});
+					sendJson(
+						response,
+						200,
+						{
+							kind: resource.kind,
+							path: resource.displayPath,
+							mimeType: resource.mimeType,
+							byteLength: resource.byteLength,
+							previewByteLength: bytes.byteLength,
+							truncated,
+							...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+							...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
+						},
+						headers,
+					);
 				} else if (resource.kind === "binary") {
-					sendJson(response, 200, {
-						kind: resource.kind,
-						path: resource.displayPath,
-						mimeType: resource.mimeType,
-						byteLength: resource.byteLength,
-						previewByteLength: bytes.byteLength,
-						truncated,
-						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
-						...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
-					});
+					sendJson(
+						response,
+						200,
+						{
+							kind: resource.kind,
+							path: resource.displayPath,
+							mimeType: resource.mimeType,
+							byteLength: resource.byteLength,
+							previewByteLength: bytes.byteLength,
+							truncated,
+							...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+							...(truncated ? {} : { data: Buffer.from(bytes).toString("base64") }),
+						},
+						headers,
+					);
 				} else {
-					sendJson(response, 200, {
-						kind: resource.kind,
-						path: resource.displayPath,
-						mimeType: resource.mimeType,
-						byteLength: resource.byteLength,
-						previewByteLength: bytes.byteLength,
-						truncated,
-						...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
-						contentHash: contentHash(bytes),
-						content: Buffer.from(bytes).toString("utf8"),
-					});
+					sendJson(
+						response,
+						200,
+						{
+							kind: resource.kind,
+							path: resource.displayPath,
+							mimeType: resource.mimeType,
+							byteLength: resource.byteLength,
+							previewByteLength: bytes.byteLength,
+							truncated,
+							...(resource.contentVersion ? { contentVersion: resource.contentVersion } : {}),
+							contentHash: contentHash(bytes),
+							content: Buffer.from(bytes).toString("utf8"),
+						},
+						headers,
+					);
 				}
 				return;
 			}
@@ -3729,7 +3457,6 @@ export class WebGatewayServer {
 			throw new HttpError(405, "method_not_allowed", "文件接口不支持当前方法");
 		}
 		if (parts.length === 5 && parts[3] === "git" && parts[4] === "status" && request.method === "GET") {
-			this.ensureProjectWatcher(project);
 			sendJson(
 				response,
 				200,
@@ -5170,6 +4897,31 @@ export class WebGatewayServer {
 		throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
 	}
 
+	private sendBootstrap(context: BrowserContext, bootstrap: BootstrapResponse, socket?: WebSocket): void {
+		const snapshot = this.workspace.snapshot();
+		// 索引可能在异步初始化期间推进；先发送当前完整基线，再允许该连接接收增量。
+		if (bootstrap.workspaceRevision !== snapshot.revision)
+			bootstrap = {
+				...bootstrap,
+				workspaceRevision: snapshot.revision,
+				projects: snapshot.projects.map((project) =>
+					this.publicProject(
+						project,
+						project.recentSessions ?? [],
+						project.sessionsIndexed === true,
+						undefined,
+						snapshot.results,
+					),
+				),
+				projectGroups: snapshot.groups,
+			};
+		const payload = JSON.stringify({ type: "bootstrap", data: bootstrap });
+		for (const target of socket ? [socket] : context.sockets) {
+			this.sendWebSocket(target, payload);
+			this.workspaceReadySockets.add(target);
+		}
+	}
+
 	private async pushBootstrap(context: BrowserContext): Promise<void> {
 		if (context.bootstrapPushPromise) return context.bootstrapPushPromise;
 		const promise = (async () => {
@@ -5183,7 +4935,7 @@ export class WebGatewayServer {
 				if (context.bootstrapRetryTimer) clearTimeout(context.bootstrapRetryTimer);
 				context.bootstrapRetryTimer = undefined;
 				context.bootstrapRetryAttempt = 0;
-				this.broadcast(context, { type: "bootstrap", data: bootstrap });
+				this.sendBootstrap(context, bootstrap);
 			} catch {
 				this.broadcast(context, {
 					type: "connection_state",
@@ -5220,6 +4972,17 @@ export class WebGatewayServer {
 	}
 
 	private handleHostEvent(context: BrowserContext, event: ServerEvent): void {
+		if (event.type === "project_files_changed") {
+			for (const project of this.registry.list()) {
+				if (project.cwd === event.cwd)
+					this.broadcastProject(context, project.id, {
+						type: "project_files_changed",
+						projectId: project.id,
+						paths: event.paths,
+					});
+			}
+			return;
+		}
 		if (
 			event.type === "operation_updated" &&
 			isSessionResultOperation(event.operation) &&
@@ -5669,11 +5432,16 @@ export class WebGatewayServer {
 		activity: SessionActivity,
 		operationUpdatedAt?: number,
 	): void {
+		const previous = context.sessionSummaryState.get(sessionId);
+		if (
+			previous?.activity === activity &&
+			(operationUpdatedAt === undefined || previous.operationUpdatedAt === operationUpdatedAt)
+		)
+			return;
 		this.updateSessionListSummary(context, sessionId, {
 			activity,
 			...(operationUpdatedAt === undefined ? {} : { operationUpdatedAt, updatedAt: operationUpdatedAt }),
 		});
-		const previous = context.sessionSummaryState.get(sessionId);
 		if (previous?.activity === activity) {
 			if (operationUpdatedAt !== undefined && previous.operationUpdatedAt !== operationUpdatedAt) {
 				context.sessionSummaryState.set(sessionId, { ...previous, operationUpdatedAt });
@@ -5821,6 +5589,7 @@ export class WebGatewayServer {
 					if (!projectId) return;
 					if (message.type === "subscribe_project") projectSubscriptions.add(projectId);
 					else projectSubscriptions.delete(projectId);
+					void this.syncProjectWatcher(context, projectId);
 					return;
 				}
 				const sessionId = stringValue(message?.sessionId);
@@ -5845,6 +5614,7 @@ export class WebGatewayServer {
 			if (removed) return;
 			removed = true;
 			context.sockets.delete(socket);
+			for (const projectId of projectSubscriptions) void this.syncProjectWatcher(context, projectId);
 			if (context.sockets.size === 0) {
 				this.flushPendingProgress(context);
 				context.resumeGeneration = context.bootstrapGeneration;
@@ -5864,9 +5634,11 @@ export class WebGatewayServer {
 			const cached = context.bootstrapCache;
 			if (
 				cached &&
+				cached.value.workspaceRevision === this.workspace.revision &&
 				context.connectionState !== "disconnected" &&
 				(cached.generation === context.bootstrapGeneration || resumeGeneration === context.bootstrapGeneration)
 			) {
+				this.workspaceReadySockets.add(socket);
 				this.sendWebSocket(
 					socket,
 					JSON.stringify({ type: "connection_state", connected: cached.value.connection.connected, message: "" }),
@@ -5882,7 +5654,7 @@ export class WebGatewayServer {
 			if (socket.readyState !== WebSocket.OPEN) return;
 			this.sendWebSocket(socket, JSON.stringify({ type: "connection_state", connected: true, message: "" }));
 			const bootstrap = await this.buildBootstrap(context);
-			this.sendWebSocket(socket, JSON.stringify({ type: "bootstrap", data: bootstrap }));
+			this.sendBootstrap(context, bootstrap, socket);
 			this.flushPendingProjectUpdates(context, socket);
 		} catch (error) {
 			logGatewayConnection("websocket_bootstrap_failed", {

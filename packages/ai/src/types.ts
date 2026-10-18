@@ -23,6 +23,7 @@ import type {
 	ModelInputModality,
 	ModelPromptCache,
 	ModelThinkingLevel,
+	NativeSteeringMode,
 	ThinkingLevel,
 	ThinkingLevelMap,
 } from "./providers/model-schema.ts";
@@ -53,6 +54,7 @@ export type {
 	ModelInputModality,
 	ModelPromptCache,
 	ModelThinkingLevel,
+	NativeSteeringMode,
 	ThinkingLevel,
 	ThinkingLevelMap,
 } from "./providers/model-schema.ts";
@@ -212,6 +214,18 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	maxRetryDelayMs?: number;
 }
 
+export interface NativeSteeringInput {
+	id: string;
+	messages: UserMessage[];
+}
+
+export interface NativeSteering {
+	getSignal: () => AbortSignal | undefined;
+	getInput: () => Promise<NativeSteeringInput | undefined>;
+	/** 仅在上游明确拒绝原生插话时调用。 */
+	onUnsupported?: (error: Error) => void | Promise<void>;
+}
+
 export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	/**
 	 * Optional callback invoked after an HTTP response is received and before
@@ -224,6 +238,8 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * Adapter support is explicit; unsupported adapters do not invoke it.
 	 */
 	onProviderStreamEvent?: (data: unknown, model: Model<Api>) => void | Promise<void>;
+	/** 运行中插话通道；支持的 Provider 在同一连接上投递，不支持的 Provider 保留队列处理。 */
+	steering?: NativeSteering;
 	temperature?: number;
 	/**
 	 * Arbitrary sampling parameters merged into the request body as-is, after the named request
@@ -835,7 +851,7 @@ export type TranscriptContext = {
  * `toolcall_delta` carries subsequent JSON updates.
  */
 export type AssistantMessageEvent =
-	| { type: "start"; partial: AssistantMessage }
+	| { type: "start"; partial: AssistantMessage; steering?: { inputIds: string[]; previous: AssistantMessage } }
 	| { type: "text_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "text_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "text_end"; contentIndex: number; content: string; partial: AssistantMessage }
@@ -890,6 +906,8 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 	reasoning: boolean;
 	/** 手工指定快速模式支持状态；未设置时由模型目录判断。 */
 	fastModeSupported?: boolean;
+	/** 原生 WS 插话策略；默认自动判断，独立于普通响应的传输方式。 */
+	nativeSteering?: NativeSteeringMode;
 	/**
 	 * Maps pi thinking levels to provider/model-specific values.
 	 * Missing keys use provider defaults. null marks a level as unsupported.

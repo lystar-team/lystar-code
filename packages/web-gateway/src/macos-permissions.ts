@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { WorkspaceDatabase } from "./workspace-database.ts";
 
 export type MacosPermissionId = "administrator" | "keychain" | "accessibility" | "automation" | "screen-recording";
 export type MacosPermissionState = "granted" | "required" | "unknown" | "unsupported";
@@ -484,10 +485,15 @@ function gitHttpsHosts(cwd: string): string[] {
 function registeredGitHttpsHosts(agentDir: string): string[] {
 	if (!toolAvailable("git", ["--version"])) return [];
 	let projects: unknown;
+	const workspace = new WorkspaceDatabase(agentDir);
 	try {
-		projects = JSON.parse(readFileSync(join(agentDir, "web", "projects.json"), "utf8"));
+		projects = existsSync(workspace.path)
+			? { projects: workspace.readProjects().projects }
+			: JSON.parse(readFileSync(join(agentDir, "web", "projects.json"), "utf8"));
 	} catch {
 		return [];
+	} finally {
+		workspace.close();
 	}
 	if (!projects || typeof projects !== "object" || Array.isArray(projects)) return [];
 	const entries = (projects as { projects?: unknown }).projects;

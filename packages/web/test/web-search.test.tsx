@@ -88,7 +88,7 @@ describe("Web search tool card", () => {
 	});
 
 	it("renders clickable sources with site favicons", () => {
-		const markup = renderToStaticMarkup(createElement(ToolBatch, { tools: [tool] }));
+		const markup = renderToStaticMarkup(createElement(ToolBatch, { initialOpen: true, tools: [tool] }));
 
 		expect(markup).toContain("搜索网页 uni-app Canvas touch event");
 		expect(markup).toContain("uni-app Canvas 文档");

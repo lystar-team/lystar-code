@@ -500,7 +500,7 @@ export const MessageResponse: NamedExoticComponent<MessageResponseProps> = memo(
 			<Streamdown
 				{...streamdownProps}
 				className={cn(
-					"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+					"w-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
 					contentClassName,
 				)}
 				mode={virtualized ? "static" : mode}
@@ -572,7 +572,7 @@ export function PromptResponse({ className, children }: PromptResponseProps): Re
 	return (
 		<Streamdown
 			className={cn(
-				"size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+				"w-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
 				className,
 			)}
 			mode="static"

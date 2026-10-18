@@ -24,7 +24,7 @@ import {
 	WrenchIcon,
 	XCircleIcon,
 } from "lucide-react";
-import { type ComponentProps, type ReactNode, memo, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { cn } from "@/lib/utils";
 import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model.ts";
@@ -385,56 +385,78 @@ function ToolDiffOutput({
 	onOpenPath?: (path: string) => void;
 	plainText?: boolean;
 }) {
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const followOutput = useRef(true);
+	useLayoutEffect(() => {
+		const element = scrollRef.current;
+		if (plainText && followOutput.current && element) element.scrollTop = element.scrollHeight;
+	}, [diff, plainText]);
+
 	return (
-		<div className="grid gap-1">
-			{diff.files.map((file, index) => {
-				const displayPath = file.path || (diff.files.length === 1 ? fallbackPath : undefined);
-				if (!file.diff) return null;
-				return (
-					<div className="grid gap-1" key={`${file.path ?? "file"}-${file.operation ?? "change"}-${index}`}>
-						<CodeBlock
-							className="my-0 border-border/60 bg-muted/25"
-							code={file.diff}
-							language={"diff" as BundledLanguage}
-							diffLanguage={displayPath ? codeLanguageForPath(displayPath) : ("text" as BundledLanguage)}
-							plainText={plainText}
-						>
-							<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
-								<CodeBlockTitle className="min-w-0 text-foreground">
-									<FileCode2Icon className="size-3.5 shrink-0" />
-									{onOpenPath && displayPath ? (
-										<button
-											className="min-w-0 truncate text-left font-mono text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
-											onClick={() => onOpenPath(displayPath)}
-											title={displayPath}
-											type="button"
-										>
-											{displayPath}
-										</button>
-									) : (
-										<span className="min-w-0 truncate font-mono" title={displayPath}>{displayPath || "修改预览（等待文件路径）"}</span>
-									)}
-								</CodeBlockTitle>
-								<CodeBlockActions>
-									{onOpenPath && displayPath ? (
-										<Button
-											aria-label="预览文件"
-											className="shrink-0"
-											onClick={() => onOpenPath(displayPath)}
-											size="icon"
-											type="button"
-											variant="ghost"
-										>
-											<EyeIcon size={14} />
-										</Button>
-									) : null}
-									<CodeBlockCopyButton aria-label="复制差异" />
-								</CodeBlockActions>
-							</CodeBlockHeader>
-						</CodeBlock>
-					</div>
-				);
-			})}
+		<div className="grid min-w-0 gap-1">
+			{diff.files.some((file) => file.truncated) ? (
+				<p className="text-xs text-muted-foreground">
+					{plainText ? "内容较长，仅显示最近生成的部分内容。" : "差异较长，仅显示部分内容。"}
+				</p>
+			) : null}
+			<div
+				className="grid min-w-0 max-h-[min(32rem,60vh)] gap-1 overflow-auto overscroll-y-auto"
+				data-tool-diff-scroll
+				onScroll={(event) => {
+					const element = event.currentTarget;
+					followOutput.current = element.scrollHeight - element.clientHeight - element.scrollTop <= 4;
+				}}
+				ref={scrollRef}
+			>
+				{diff.files.map((file, index) => {
+					const displayPath = file.path || (diff.files.length === 1 ? fallbackPath : undefined);
+					if (!file.diff) return null;
+					return (
+						<div className="grid gap-1" key={`${file.path ?? "file"}-${file.operation ?? "change"}-${index}`}>
+							<CodeBlock
+								className="my-0 border-border/60 bg-muted/25"
+								code={file.diff}
+								language={"diff" as BundledLanguage}
+								diffLanguage={displayPath ? codeLanguageForPath(displayPath) : ("text" as BundledLanguage)}
+								plainText={plainText}
+							>
+								<CodeBlockHeader className="border-b-0 bg-transparent px-2 py-1">
+									<CodeBlockTitle className="min-w-0 text-foreground">
+										<FileCode2Icon className="size-3.5 shrink-0" />
+										{onOpenPath && displayPath ? (
+											<button
+												className="min-w-0 truncate text-left font-mono text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+												onClick={() => onOpenPath(displayPath)}
+												title={displayPath}
+												type="button"
+											>
+												{displayPath}
+											</button>
+										) : (
+											<span className="min-w-0 truncate font-mono" title={displayPath}>{displayPath || "修改预览（等待文件路径）"}</span>
+										)}
+									</CodeBlockTitle>
+									<CodeBlockActions>
+										{onOpenPath && displayPath ? (
+											<Button
+												aria-label="预览文件"
+												className="shrink-0"
+												onClick={() => onOpenPath(displayPath)}
+												size="icon"
+												type="button"
+												variant="ghost"
+											>
+												<EyeIcon size={14} />
+											</Button>
+										) : null}
+										<CodeBlockCopyButton aria-label="复制差异" />
+									</CodeBlockActions>
+								</CodeBlockHeader>
+							</CodeBlock>
+						</div>
+					);
+				})}
+			</div>
 		</div>
 	);
 }
@@ -1306,7 +1328,7 @@ function ToolBatchRow({
 					data-transcript-resize-anchor
 					className={cn(
 						"min-w-0 pb-0.5 pl-6 pr-0 pt-0",
-						tool.name === "image_gen" || tool.name === "codemode" || tool.name === "codemode_wait"
+						tool.name === "image_gen" || tool.name === "codemode" || tool.name === "codemode_wait" || hasVisibleDiff(tool.diff)
 							? "overflow-visible"
 							: "max-h-[min(32rem,60vh)] overflow-y-auto overflow-x-hidden overscroll-y-auto",
 					)}

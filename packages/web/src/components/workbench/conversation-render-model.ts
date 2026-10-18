@@ -2,6 +2,7 @@ import type { AgentStep } from "@lystar/code-web-protocol";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { formatElapsedDuration } from "./conversation-format";
+import { runtimeNow } from "../../state/runtime-clock.ts";
 import type { LiveCompactionState } from "../../state/compaction-state";
 import { agentStepsFromIndex, mergeAgentStepIndex } from "../../state/session-timeline";
 import { shouldJoinToolBatch, skillNameFromTool } from "../../state/tool-batching";
@@ -89,7 +90,7 @@ export type AgentStepRenderItem = {
 	kind: "agent-step";
 	key: string;
 	live: boolean;
-	/** 将服务端步骤时间对齐到本轮客户端发送时间，不改动持久化的起止时间。 */
+	/** 将服务端步骤时间按运行端校时对齐到浏览器时钟。 */
 	clientClockOffsetMs?: number;
 	step: AgentStep;
 	items: AgentStepChildRenderItem[];
@@ -703,29 +704,21 @@ function messageStartedAt(message: MessageRenderItem): number | undefined {
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-/**
- * 回合结束后位于最终回复下方的耗时。
- * 优先用客户端亲眼看到的实时值，保证与上方「已处理」完全一致；
- * 其次从用户消息的发送时刻算到末条文本回复，历史回合回退到会话时间戳。
- */
+/** 已完成回合只使用服务端落盘的起止时间，切换会话后沿用同一口径。 */
 function completedTurnDurationLabel(
 	userMessage: MessageRenderItem | undefined,
 	finalMessage: MessageRenderItem,
-	observedElapsed?: (sentAt: number) => number | undefined,
 ): string | undefined {
-	if (!userMessage) return undefined;
-	const observed = userMessage.sentAt === undefined ? undefined : observedElapsed?.(userMessage.sentAt);
-	if (observed !== undefined) return formatElapsedDuration(observed);
-	const start = messageStartedAt(userMessage);
+	const start = userMessage?.timestamp ? Date.parse(userMessage.timestamp) : Number.NaN;
 	const end = finalMessage.timestamp ? Date.parse(finalMessage.timestamp) : Number.NaN;
-	if (start === undefined || !Number.isFinite(end) || end < start) return undefined;
+	if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
 	return formatElapsedDuration(end - start);
 }
 
 function markCompletedTurnResult(
 	turn: ConversationContentRenderItem[],
 	completed: boolean,
-	observedElapsed?: (sentAt: number) => number | undefined,
+	runtimeClock?: WorkbenchState["runtimeClock"],
 	settledOutcome?: "completed" | "failed" | "aborted",
 ): ConversationRenderItem[] {
 	const hooks = turn.filter(
@@ -746,12 +739,12 @@ function markCompletedTurnResult(
 		? { kind: "hook-group", key: `hook-group:${userMessage?.key ?? errors[0]!.key}`, items: errors }
 		: undefined;
 	if (!completed) {
-		const startedAt = userMessage ? messageStartedAt(userMessage) : undefined;
-		if (!userMessage || startedAt === undefined) return hookGroup ? [...content, hookGroup] : content;
+		if (!userMessage) return hookGroup ? [...content, hookGroup] : content;
 		const serverStartedAt = userMessage.timestamp ? Date.parse(userMessage.timestamp) : Number.NaN;
-		const clientClockOffsetMs = userMessage.sentAt !== undefined && Number.isFinite(serverStartedAt)
-			? userMessage.sentAt - serverStartedAt
-			: 0;
+		const clientClockOffsetMs = runtimeClock ? Date.now() - runtimeNow(runtimeClock) : 0;
+		const startedAt = Number.isFinite(serverStartedAt) && runtimeClock
+			? serverStartedAt + clientClockOffsetMs : messageStartedAt(userMessage);
+		if (startedAt === undefined) return hookGroup ? [...content, hookGroup] : content;
 		return [
 			userMessage,
 			{ kind: "live-elapsed", key: `live-elapsed:${userMessage.key}`, startedAt },
@@ -774,7 +767,7 @@ function markCompletedTurnResult(
 	if (finalMessageIndex < 0) return hookGroup ? [...content, hookGroup] : content;
 	const finalMessage = content[finalMessageIndex];
 	if (!finalMessage || finalMessage.kind !== "message") return content;
-	const durationLabel = completedTurnDurationLabel(userMessage, finalMessage, observedElapsed);
+	const durationLabel = completedTurnDurationLabel(userMessage, finalMessage);
 	const completedTurn = durationLabel
 		? content.map((entry, index) => (index === finalMessageIndex ? { ...entry, durationLabel } : entry))
 		: content;
@@ -806,20 +799,20 @@ function markCompletedTurnResult(
 function markCompletedTurnResults(
 	rendered: ConversationContentRenderItem[],
 	responseActive: boolean,
-	observedElapsed?: (sentAt: number) => number | undefined,
+	runtimeClock?: WorkbenchState["runtimeClock"],
 	settledOutcome?: "completed" | "failed" | "aborted",
 ): ConversationRenderItem[] {
 	const next: ConversationRenderItem[] = [];
 	let turn: ConversationContentRenderItem[] = [];
 	for (const entry of rendered) {
 		if (entry.kind === "message" && entry.role === "user") {
-			if (turn.length) next.push(...markCompletedTurnResult(turn, true, observedElapsed));
+			if (turn.length) next.push(...markCompletedTurnResult(turn, true, runtimeClock));
 			turn = [entry];
 		} else {
 			turn.push(entry);
 		}
 	}
-	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive, observedElapsed, settledOutcome));
+	if (turn.length) next.push(...markCompletedTurnResult(turn, !responseActive, runtimeClock, settledOutcome));
 	return next;
 }
 
@@ -866,7 +859,7 @@ export function buildConversationRenderItems(
 	responseActive: boolean,
 	canEditPrompts = false,
 	liveSteps: WorkbenchState["liveSteps"] = {},
-	observedElapsed?: (sentAt: number) => number | undefined,
+	runtimeClock?: WorkbenchState["runtimeClock"],
 	editingEntryId?: string,
 	settledOutcome?: "completed" | "failed" | "aborted",
 	thinkingActive = responseActive,
@@ -896,5 +889,5 @@ export function buildConversationRenderItems(
 			break;
 		}
 	}
-	return markCompletedTurnResults(withLive, responseActive, observedElapsed, settledOutcome);
+	return markCompletedTurnResults(withLive, responseActive, runtimeClock, settledOutcome);
 }

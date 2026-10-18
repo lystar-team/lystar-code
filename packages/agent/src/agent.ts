@@ -157,6 +157,10 @@ class PendingMessageQueue {
 		this.messages.push(message);
 	}
 
+	prepend(messages: AgentMessage[]): void {
+		this.messages.unshift(...messages);
+	}
+
 	hasItems(): boolean {
 		return this.messages.length > 0;
 	}
@@ -548,6 +552,7 @@ export class Agent {
 				if (this.activeRun) this.activeRun.steeringController = new AbortController();
 				return messages;
 			},
+			restoreSteeringMessages: (messages) => this.steeringQueue.prepend(messages),
 			getFollowUpMessages: async () => this.followUpQueue.drain(),
 		};
 	}

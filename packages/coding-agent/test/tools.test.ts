@@ -12,8 +12,7 @@ import {
 	createLocalBashOperations,
 } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition, type EditToolOptions } from "../src/core/tools/edit.ts";
-import { normalizeToLF } from "../src/core/tools/edit-diff.ts";
-import { FileEditState, type SnapshotRangeEdit } from "../src/core/tools/file-edit-state.ts";
+import { normalizeToLF, type Edit } from "../src/core/tools/edit-diff.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
@@ -49,22 +48,27 @@ function getTextOutput(result: any): string {
 	);
 }
 
+// 行范围仅用于复用已有夹具；实际工具调用只传源文本，不传快照或行坐标。
 async function executeSnapshotEdit(
 	cwd: string,
 	callId: string,
 	path: string,
 	rawContent: string,
-	edits: SnapshotRangeEdit[],
+	ranges: Array<Edit | { startLine: number; endLine: number; newText: string }>,
 	options?: EditToolOptions,
 	signal?: AbortSignal,
 	context?: ExtensionToolContext,
 ) {
-	const state = new FileEditState();
-	const effectiveCwd = context?.cwd || cwd;
-	const totalLines = normalizeToLF(splitBom(rawContent).text).split("\n").length;
-	const snapshot = state.capture(resolve(effectiveCwd, path), rawContent, 1, totalLines);
-	const tool = createEditTool(cwd, { ...options, fileEditState: state });
-	return tool.execute(callId, { path, snapshot: snapshot.id, edits }, signal, undefined, context);
+	const lines = normalizeToLF(splitBom(rawContent).text).split("\n");
+	const edits = ranges.map((range): Edit => {
+		if ("oldText" in range) return range;
+		const hasEnding = range.endLine < lines.length;
+		return {
+			oldText: lines.slice(range.startLine - 1, range.endLine).join("\n") + (hasEnding ? "\n" : ""),
+			newText: range.newText + (hasEnding && range.newText && !range.newText.endsWith("\n") ? "\n" : ""),
+		};
+	});
+	return createEditTool(cwd, options).execute(callId, { path, edits }, signal, undefined, context);
 }
 
 function createTinyBmp1x1Red24bpp(): Buffer {
@@ -107,11 +111,10 @@ describe("Coding Agent Tools", () => {
 			const result = await readTool.execute("test-call-1", { path: testFile });
 
 			const output = getTextOutput(result);
-			expect(output).toMatch(/^\[snapshot [^;]+; lines 1-3[^\]]*\]\n1\| Hello, world!\n2\| Line 2\n3\| Line 3$/);
+			expect(output).toBe("[lines 1-3 of 3]\n1| Hello, world!\n2| Line 2\n3| Line 3");
 			// No continuation message since the complete file was displayed.
 			expect(output).not.toContain("Use offset=");
 			expect(result.details?.source).toMatchObject({
-				snapshot: expect.any(String),
 				absolutePath: testFile,
 				startLine: 1,
 				endLine: 3,
@@ -380,44 +383,38 @@ describe("Coding Agent Tools", () => {
 					{ startLine: 1, endLine: 1, newText: "ALPHA\n" },
 				], { operations }),
 			).rejects.toMatchObject({
-				code: "SOURCE_CHANGED",
-				category: "stale_state",
+				code: "MATCH_NOT_FOUND",
+				category: "precondition",
 				retryable: false,
 				details: {
 					path: testFile,
-					plan: expect.any(String),
 					writeState: "not_written",
-					issues: expect.arrayContaining([expect.objectContaining({ code: "SOURCE_CHANGED" })]),
+					issues: expect.arrayContaining([expect.objectContaining({ code: "MATCH_NOT_FOUND" })]),
 				},
-				fingerprintConstraint: { kind: "edit_snapshot", revision: expect.any(String) },
+				fingerprintConstraint: { kind: "edit_content", revision: expect.any(String), edits: expect.any(String) },
 			});
 			expect(writeCount).toBe(0);
 			expect(readFileSync(testFile, "utf-8")).toBe("changed\n");
 		});
 
-		it("should reject a reused snapshot after a prior edit changes the file", async () => {
+		it("should reject reused source text after a prior edit changes the target", async () => {
 			const testFile = join(testDir, "edit-stale-snapshot.txt");
 			const original = "alpha\nbeta\n";
 			writeFileSync(testFile, original);
-			const state = new FileEditState();
-			const totalLines = normalizeToLF(splitBom(original).text).split("\n").length;
-			const snapshot = state.capture(resolve(testFile), original, 1, totalLines);
-			const tool = createEditTool(process.cwd(), { fileEditState: state });
+			const tool = createEditTool(process.cwd());
 
 			await tool.execute("test-call-stale-first", {
 				path: testFile,
-				snapshot: snapshot.id,
-				edits: [{ startLine: 1, endLine: 1, newText: "ALPHA\n" }],
+				edits: [{ oldText: "alpha", newText: "ALPHA" }],
 			});
 			await expect(
 				tool.execute("test-call-stale-second", {
 					path: testFile,
-					snapshot: snapshot.id,
-					edits: [{ startLine: 1, endLine: 1, newText: "changed\n" }],
+					edits: [{ oldText: "alpha", newText: "changed" }],
 				}),
 			).rejects.toMatchObject({
-				code: "SOURCE_CHANGED",
-				category: "stale_state",
+				code: "MATCH_NOT_FOUND",
+				category: "precondition",
 				details: { writeState: "not_written" },
 			});
 			expect(readFileSync(testFile, "utf-8")).toBe("ALPHA\nbeta\n");
@@ -429,8 +426,7 @@ describe("Coding Agent Tools", () => {
 			await expect(
 				tool.execute("test-call-missing", {
 					path: missingFile,
-					snapshot: "unavailable-snapshot",
-					edits: [{ startLine: 1, endLine: 1, newText: "world" }],
+					edits: [{ oldText: "hello", newText: "world" }],
 				}),
 			).rejects.toMatchObject({ code: "TARGET_NOT_FOUND", details: { path: missingFile, writeState: "not_written" } });
 		});
@@ -440,7 +436,7 @@ describe("Coding Agent Tools", () => {
 			const original = "foo\nfoo\nfoo\n";
 			writeFileSync(testFile, original);
 			await executeSnapshotEdit(process.cwd(), "test-call-repeated-lines", testFile, original, [
-				{ startLine: 2, endLine: 2, newText: "bar\n" },
+				{ oldText: original, newText: "foo\nbar\nfoo\n" },
 			]);
 			expect(readFileSync(testFile, "utf-8")).toBe("foo\nbar\nfoo\n");
 		});
@@ -450,7 +446,7 @@ describe("Coding Agent Tools", () => {
 			const original = "\uFEFFbefore\r\nrepeat\r\nmiddle\r\nrepeat\r\nafter\r\nrepeat\r\n";
 			writeFileSync(testFile, original);
 			await executeSnapshotEdit(process.cwd(), "test-call-duplicate-lines", testFile, original, [
-				{ startLine: 4, endLine: 4, newText: "changed\n" },
+				{ oldText: "middle\nrepeat", newText: "middle\nchanged" },
 			]);
 			expect(readFileSync(testFile, "utf-8")).toBe("\uFEFFbefore\r\nrepeat\r\nmiddle\r\nchanged\r\nafter\r\nrepeat\r\n");
 		});
@@ -470,7 +466,7 @@ describe("Coding Agent Tools", () => {
 			const original = Array.from({ length: 101 }, () => "target").join("\n");
 			writeFileSync(testFile, original);
 			await executeSnapshotEdit(process.cwd(), "test-call-many-duplicates", testFile, original, [
-				{ startLine: 101, endLine: 101, newText: "changed" },
+				{ oldText: original, newText: `${Array.from({ length: 100 }, () => "target").join("\n")}\nchanged` },
 			]);
 			const lines = readFileSync(testFile, "utf-8").split("\n");
 			expect(lines).toHaveLength(101);
@@ -533,7 +529,7 @@ describe("Coding Agent Tools", () => {
 			writeFileSync(testFile, "hello\nworld\n");
 
 			await expect(executeSnapshotEdit(process.cwd(), "test-call-11", testFile, "hello\nworld\n", [])).rejects.toThrow(
-				/at least one/i,
+				/INVALID_ARGUMENTS/i,
 			);
 		});
 
@@ -566,11 +562,11 @@ describe("Coding Agent Tools", () => {
 				retryable: false,
 				details: {
 							issues: expect.arrayContaining([
-								expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 1, startLine: 2, endLine: 3 }),
+								expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 }),
 							]),
 					writeState: "not_written",
 				},
-				fingerprintConstraint: { kind: "edit_snapshot", revision: expect.any(String) },
+				fingerprintConstraint: { kind: "edit_content", revision: expect.any(String), edits: expect.any(String) },
 			});
 		});
 
@@ -579,13 +575,13 @@ describe("Coding Agent Tools", () => {
 			const original = "current";
 			writeFileSync(testFile, original);
 			const firstError = await executeSnapshotEdit(process.cwd(), "test-call-fingerprint-1", testFile, original, [
-				{ startLine: 2, endLine: 2, newText: "a" },
+				{ oldText: "missing", newText: "a" },
 			]).then(
 				() => undefined,
 				(error: unknown) => error,
 			);
 			const secondError = await executeSnapshotEdit(process.cwd(), "test-call-fingerprint-2", testFile, original, [
-				{ startLine: 3, endLine: 3, newText: "b" },
+				{ oldText: "missing", newText: "a" },
 			]).then(
 				() => undefined,
 				(error: unknown) => error,
@@ -606,7 +602,7 @@ describe("Coding Agent Tools", () => {
 			await expect(
 				executeSnapshotEdit(process.cwd(), "test-call-13", testFile, originalContent, [
 					{ startLine: 1, endLine: 1, newText: "ALPHA\n" },
-					{ startLine: 8, endLine: 8, newText: "MISSING\n" },
+					{ oldText: "missing", newText: "MISSING\n" },
 				]),
 			).rejects.toMatchObject({
 				details: {
@@ -649,12 +645,10 @@ describe("Coding Agent Tools", () => {
 			).rejects.toMatchObject({ code: "UNCLASSIFIED", message: "disk offline" });
 		});
 
-		it("should render only supplied ranges before execution and return the real diff after execution", async () => {
+		it("should preview supplied text without IO and return the real diff after execution", async () => {
 			initTheme("dark");
 			const testFile = join(testDir, "preview-range.txt");
 			const original = "first\nsecond\nthird\nfourth\n";
-			const state = new FileEditState();
-			const snapshot = state.capture(resolve(testFile), original, 1, 5);
 			let current = Buffer.from(original, "utf-8");
 			const operations = {
 				access: vi.fn(async () => {}),
@@ -663,11 +657,10 @@ describe("Coding Agent Tools", () => {
 					current = Buffer.from(content, "utf-8");
 				}),
 			};
-			const definition = createEditToolDefinition(testDir, { fileEditState: state, operations });
+			const definition = createEditToolDefinition(testDir, { operations });
 			const args = {
 				path: testFile,
-				snapshot: snapshot.id,
-				edits: [{ startLine: 2, endLine: 3, newText: "replacement\n" }],
+				edits: [{ oldText: "second\nthird\n", newText: "replacement\n" }],
 			};
 			const preview = definition.renderCall!(args as never, theme, {
 				args,
@@ -684,10 +677,10 @@ describe("Coding Agent Tools", () => {
 				isError: false,
 			} as never);
 			const previewText = stripAnsi(preview.render(120).join("\n"));
-			expect(previewText).toContain("@@ read lines 2-3 @@");
+			expect(previewText).toContain("@@ edit 1 @@");
 			expect(previewText).toContain("replacement");
-			expect(previewText).not.toContain("second");
-			expect(previewText).not.toContain("third");
+			expect(previewText).toContain("second");
+			expect(previewText).toContain("third");
 			expect(operations.access).not.toHaveBeenCalled();
 			expect(operations.readFile).not.toHaveBeenCalled();
 
@@ -1351,7 +1344,7 @@ describe("tool cwd resolution", () => {
 	});
 });
 
-describe("edit tool explicit line ranges", () => {
+describe("edit tool exact source replacements", () => {
 	let testDir: string;
 
 	beforeEach(() => {
@@ -1388,7 +1381,7 @@ describe("edit tool explicit line ranges", () => {
 		expect(readFileSync(testFile, "utf-8")).toBe("你好，pi\n你好(pi)\n");
 	});
 
-	it("should replace Unicode source lines by their snapshot range", async () => {
+	it("should replace exact Unicode source text without normalizing other lines", async () => {
 		const testFile = join(testDir, "unicode-compatibility.txt");
 		const original = "ＡＢＣ１２３\ncafe\u0301\n";
 		writeFileSync(testFile, original);
@@ -1466,14 +1459,14 @@ describe("edit tool explicit line ranges", () => {
 		expect(readFileSync(testFile, "utf-8")).toBe("const x = 'changed';\nconst y = 'other';\n");
 	});
 
-	it("should reject a range outside the returned snapshot", async () => {
+	it("should reject source text absent from the current file", async () => {
 		const testFile = join(testDir, "invalid-range.txt");
 		const original = "completely different content";
 		writeFileSync(testFile, original);
 
 		await expect(
 			executeSnapshotEdit(process.cwd(), "invalid-range", testFile, original, [
-				{ startLine: 2, endLine: 2, newText: "replacement" },
+				{ oldText: "missing", newText: "replacement" },
 			]),
 		).rejects.toMatchObject({
 			details: { writeState: "not_written", issues: expect.arrayContaining([expect.objectContaining({ editIndex: 0 })]) },
@@ -1648,7 +1641,7 @@ describe("edit tool CRLF handling", () => {
 		writeFileSync(testFile, original);
 
 		await executeSnapshotEdit(process.cwd(), "range-mixed-endings", testFile, original, [
-			{ startLine: 4, endLine: 4, newText: "replaced\n" },
+			{ oldText: "---\nhello", newText: "---\nreplaced" },
 		]);
 		expect(readFileSync(testFile, "utf-8")).toBe("hello\r\nworld\r\n---\r\nreplaced\nworld\n");
 	});

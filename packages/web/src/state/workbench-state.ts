@@ -173,6 +173,7 @@ export function mergeSessionSummaries(
 	const currentById = new Map(current.map((session) => [session.id, session]));
 	const merged = incoming.map((next) => {
 		const previous = currentById.get(next.id);
+		if (previous === next) return previous;
 		const preservedName = !Object.hasOwn(next, "name") && previous?.name?.trim() ? { name: previous.name } : {};
 		const preservedFirstMessage =
 			previous &&
@@ -246,7 +247,7 @@ export function mergeProjectSessions(current: WebProject[], incoming: readonly W
 	const currentById = new Map(current.map((project) => [project.id, project]));
 	const merged = incoming.map((project) => {
 		const previous = currentById.get(project.id);
-		if (!previous) return project;
+		if (!previous || previous === project) return project;
 		const incomplete = project.sessionsLoaded === false;
 		const knownIds = incomplete ? new Set(previous.sessions.map((session) => session.id)) : undefined;
 		const incomingById = incomplete ? new Map(project.sessions.map((session) => [session.id, session])) : undefined;

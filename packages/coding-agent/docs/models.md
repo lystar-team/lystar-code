@@ -66,6 +66,33 @@ The dummy key makes the model available to Pi; Ollama ignores it. For an authent
 
 Opening `/model` reloads the file. A `models` entry adds or replaces a model with the same ID on that provider. Use `modelOverrides` to change metadata for an existing built-in or extension-provided model without replacing the provider's model list. Unknown override IDs are ignored.
 
+### Configure native WebSocket steering
+
+`nativeSteering` controls mid-response steering for `openai-responses` and `openai-codex-responses`. Set it on a provider, a `models` entry, or a `modelOverrides` entry. A model setting overrides its provider; omitted model settings and `"inherit"` follow the provider. The default is `"auto"`.
+
+| Value | Behavior |
+|---|---|
+| `"auto"` | Try native steering for GPT-6 models during actual use. Remember an explicit rejection and process later steering through the queue. |
+| `"off"` | Process steering through the queue after the current response. |
+| `"on"` | Allow native steering, including model aliases, and retry even when a rejection was recorded. |
+
+```json
+{
+  "providers": {
+    "openai": {
+      "nativeSteering": "auto",
+      "modelOverrides": {
+        "gpt-6-luna": { "nativeSteering": "off" }
+      }
+    }
+  }
+}
+```
+
+An explicit rejection is stored in the provider's `nativeSteeringFailures` in `models.json`, keyed by API, endpoint, and model ID. It remains effective across sessions. Timeouts and temporary errors do not create this record. Detection uses real steering requests without a separate model probe.
+
+In Web **模型与认证**, edit a provider or model to choose the policy. Saving its configuration clears the corresponding rejection records; **保存并重新判断** retries on the next steering input. Setting `"off"` leaves an explicitly selected ordinary WebSocket transport available.
+
 ### Describe model input and caching
 
 Use `inputLimits.images.resize` to control how Pi encodes new image attachments, `read` results, and tool-result images before storing them in conversation history:

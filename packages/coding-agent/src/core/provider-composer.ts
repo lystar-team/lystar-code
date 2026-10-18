@@ -27,7 +27,13 @@ import {
 } from "@earendil-works/pi-ai";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import { classifierErrorResult, imageErrorResult } from "@earendil-works/pi-ai/utils/model-operations";
-import type { ModelConfig, ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
+import {
+	type ModelConfig,
+	type ModelsJsonModel,
+	type ModelsJsonModelOverride,
+	type ModelsJsonProvider,
+	resolveNativeSteering,
+} from "./model-config.ts";
 import {
 	clearConfigValueCache,
 	getConfigValueEnvVarNames,
@@ -71,6 +77,7 @@ export interface ProviderChatModelConfig extends ProviderModelConfigBase {
 	samplingParams?: Model<Api>["samplingParams"];
 	samplingParamsByThinkingLevel?: Model<Api>["samplingParamsByThinkingLevel"];
 	compat?: Model<Api>["compat"];
+	nativeSteering?: Model<Api>["nativeSteering"];
 }
 
 export interface ProviderImageModelConfig extends ProviderModelConfigBase {
@@ -314,6 +321,8 @@ function applyModelsJson(
 		!config.baseUrl &&
 		!config.headers &&
 		!config.compat &&
+		config.nativeSteering === undefined &&
+		!config.nativeSteeringFailures?.length &&
 		!hasOverrides &&
 		!config.disabledModels?.length &&
 		!config.apiKey &&
@@ -575,8 +584,13 @@ export function composeModelProvider(
 		return models
 			.filter((model) => !disabledModels.has(model.id))
 			.map((model) => {
+				if (!isModelType(model, "chat")) return model;
 				const override = config?.modelOverrides?.[model.id];
-				return override && isModelType(model, "chat") ? applyModelOverride(model, override) : model;
+				const configured = override ? applyModelOverride(model, override) : model;
+				return {
+					...configured,
+					nativeSteering: resolveNativeSteering(config, model.id, configured.nativeSteering),
+				};
 			});
 	};
 	// Validate eagerly so registration/reload reports structural errors immediately.

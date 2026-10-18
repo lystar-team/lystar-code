@@ -152,8 +152,12 @@ export function GitPanel({ state, actions }: { state: WorkbenchState; actions: W
 		if (!status || !selectedRepository) return;
 		actions.closeGitCommit();
 		void actions.loadGitRepositoryStats(selectedRepository.path);
+	}, [actions.closeGitCommit, actions.loadGitRepositoryStats, selectedRepository?.path, status]);
+
+	useEffect(() => {
+		if (!selectedRepository) return;
 		void actions.loadGitBranches(selectedRepository.path);
-	}, [actions.closeGitCommit, actions.loadGitBranches, actions.loadGitRepositoryStats, selectedRepository?.path, status]);
+	}, [actions.loadGitBranches, selectedRepository?.path, state.currentProjectId]);
 
 	useEffect(() => {
 		if (panelTab !== "history" || !selectedRepository) return;

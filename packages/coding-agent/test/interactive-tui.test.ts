@@ -544,11 +544,13 @@ describe("createInteractiveTui", () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const workspaceInputHandler = vi.fn(() => ({ consume: true as const }));
 		const received: string[] = [];
+		const handleOverlayMouse = vi.fn(() => ({ consume: true as const }));
 		const overlay: Component & { focused: boolean } = {
 			focused: false,
 			render: () => ["overlay"],
 			invalidate: () => {},
 			handleInput: (data) => received.push(data),
+			handleMouse: handleOverlayMouse,
 		};
 		const renderer = createInteractiveTui({
 			tuiMode: "fullscreen",
@@ -563,9 +565,10 @@ describe("createInteractiveTui", () => {
 		try {
 			await terminal.waitForRender();
 			terminal.sendInput("\x1b[5~");
-			terminal.sendInput("\x1b[<64;10;4M");
+			terminal.sendInput("\x1b[<64;10;2M");
 
-			expect(received).toEqual(["\x1b[5~", "\x1b[<64;10;4M"]);
+			expect(received).toEqual(["\x1b[5~"]);
+			expect(handleOverlayMouse).toHaveBeenCalledWith(expect.objectContaining({ type: "wheel", screenX: 9, screenY: 1 }));
 			expect(workspaceInputHandler).not.toHaveBeenCalled();
 		} finally {
 			handle.hide();

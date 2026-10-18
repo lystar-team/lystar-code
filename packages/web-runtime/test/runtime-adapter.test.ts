@@ -23,6 +23,7 @@ import {
 	type SessionEntry,
 	SessionManager,
 } from "../../coding-agent/src/core/session-manager.ts";
+import * as sessionNameConfig from "../../coding-agent/src/extensions/session-name/config.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
 	appendSessionRecoveryLedger,
@@ -765,24 +766,34 @@ describe("CodingAgentRuntimeAdapter", () => {
 		).toHaveLength(1);
 	});
 
-	it("keeps summary and metadata Session list caches independent", async () => {
+	it("keeps summary and metadata Session list results independent", async () => {
 		const adapter = new CodingAgentRuntimeAdapter("/tmp/web-runtime-cache-test");
-		const list = vi.spyOn(SessionManager, "list").mockResolvedValue([]);
+		const summarySession = {
+			path: "/tmp/project/session.jsonl",
+			id: "session-1",
+			cwd: "/tmp/project",
+			created: new Date(1),
+			modified: new Date(2),
+			messageCount: 3,
+			firstMessage: "summary",
+			allMessagesText: "summary",
+		} satisfies Awaited<ReturnType<typeof SessionManager.list>>[number];
+		const metadataSession = { ...summarySession, messageCount: 0, firstMessage: "metadata" };
+		const list = vi
+			.spyOn(adapter.getSessionReadIndex(), "list")
+			.mockResolvedValueOnce([summarySession])
+			.mockResolvedValueOnce([metadataSession])
+			.mockResolvedValueOnce([summarySession]);
 		try {
-			await adapter.listSessions("/tmp/project");
-			await adapter.listSessions("/tmp/project", { metadataOnly: true });
-			await adapter.listSessions("/tmp/project");
+			const summaryBefore = await adapter.listSessions("/tmp/project");
+			const metadata = await adapter.listSessions("/tmp/project", { metadataOnly: true });
+			const summaryAfter = await adapter.listSessions("/tmp/project");
 
-			const cacheArg = (index: number) => {
-				const arg = list.mock.calls[index]?.[3];
-				return arg && !(arg instanceof AbortSignal) ? arg.cache : undefined;
-			};
-			const summaryCache = cacheArg(0);
-			const metadataCache = cacheArg(1);
-			expect(summaryCache).toBeDefined();
-			expect(metadataCache).toBeDefined();
-			expect(metadataCache).not.toBe(summaryCache);
-			expect(cacheArg(2)).toBe(summaryCache);
+			expect(list.mock.calls.map(([, , metadataOnly]) => metadataOnly)).toEqual([false, true, false]);
+			expect(summaryBefore[0]).toMatchObject({ messageCount: 3, firstMessage: "summary" });
+			expect(metadata[0]).toMatchObject({ messageCount: 0, firstMessage: "metadata" });
+			expect(summaryAfter).toEqual(summaryBefore);
+			expect(metadata).not.toEqual(summaryBefore);
 		} finally {
 			list.mockRestore();
 		}
@@ -883,6 +894,10 @@ describe("CodingAgentRuntimeAdapter", () => {
 	});
 
 	it("generates and persists a title for the first Web Runtime prompt", async () => {
+		const sessionNameConfigSpy = vi
+			.spyOn(sessionNameConfig, "loadSessionNameConfig")
+			.mockReturnValue({ thinkingLevel: "off" });
+		cleanups.push(() => sessionNameConfigSpy.mockRestore());
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-session-name-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
@@ -958,6 +973,10 @@ describe("CodingAgentRuntimeAdapter", () => {
 	});
 
 	it("queues ordinary input behind an active Room turn without sharing its turn context", async () => {
+		const sessionNameConfigSpy = vi
+			.spyOn(sessionNameConfig, "loadSessionNameConfig")
+			.mockReturnValue({ thinkingLevel: "off" });
+		cleanups.push(() => sessionNameConfigSpy.mockRestore());
 		const tempDir = mkdtempSync(join(tmpdir(), "web-runtime-room-turn-queue-"));
 		const agentDir = join(tempDir, "agent");
 		const cwd = join(tempDir, "project");
