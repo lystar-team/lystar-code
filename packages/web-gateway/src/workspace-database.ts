@@ -191,7 +191,7 @@ export class WorkspaceDatabase {
 			this.storage.load();
 			const worker = new Worker(
 				/\$bunfs|~BUN|%7EBUN/u.test(import.meta.url)
-					? "./src/bun/workspace-database-worker.ts"
+					? "./src/bun/workspace-database-worker.mjs"
 					: new URL(
 							import.meta.url.endsWith(".ts")
 								? "./workspace-database-worker.ts"

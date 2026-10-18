@@ -26,7 +26,7 @@ try {
     # 使用无源码路径别名的配置，避免 dist 入口再次导入 src 并产生两份运行时状态。
     Push-Location $PackageDir
     try {
-        & bun build --compile --no-compile-autoload-bunfig --tsconfig-override="$Root\tsconfig.base.json" --windows-icon="$PackageDir\assets\lystar-windows-icon.ico" ../../scripts/lystar-bun-cli.mjs ./src/utils/image-resize-worker.ts ./src/bun/workspace-database-worker.ts --outfile (Join-Path $BundleDir "lc.exe")
+        & bun build --compile --no-compile-autoload-bunfig --tsconfig-override="$Root\tsconfig.base.json" --windows-icon="$PackageDir\assets\lystar-windows-icon.ico" ../../scripts/lystar-bun-cli.mjs ./src/utils/image-resize-worker.ts ./src/bun/workspace-database-worker.mjs --outfile (Join-Path $BundleDir "lc.exe")
         if ($LASTEXITCODE -ne 0) { throw "lc.exe 构建失败。" }
     }
     finally {
