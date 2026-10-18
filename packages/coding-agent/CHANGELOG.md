@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.7] - 2026-10-18
+
 ### Breaking Changes
 
 - `edit` 改为 `{ path, edits: [{ oldText, newText }] }` 内容替换协议；不再接受 `snapshot`、行范围、`plan` 或 `dropIndexes`。移除 `FileEditState` 及快照类型的 SDK 导出，Read 保留编号原文与来源信息。
