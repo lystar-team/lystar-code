@@ -6,10 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 )
 
-func (f *historyFile) readHeader(handle *os.File, maxLine int64) error {
+func (f *historyFile) readHeader(handle *historyReader, maxLine int64) error {
 	reader := bufio.NewReaderSize(io.NewSectionReader(handle, 0, f.Complete), int(historyWindowBytes))
 	var offset int64
 	for offset < f.Complete {
@@ -47,7 +46,7 @@ func (f *historyFile) readHeader(handle *os.File, maxLine int64) error {
 }
 
 // Index another suffix block only when a requested ancestor is not yet known.
-func (f *historyFile) expand(handle *os.File, maxLine int64) error {
+func (f *historyFile) expand(handle *historyReader, maxLine int64) error {
 	end := f.ScannedFrom
 	start := max(f.HeaderLength, end-256*1024)
 	buffer := make([]byte, historyWindowBytes)

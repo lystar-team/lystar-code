@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
 
 	"github.com/tidwall/gjson"
 )
@@ -15,7 +14,7 @@ type historyJSONView []byte
 func (value *historyJSONView) UnmarshalJSON(raw []byte) error { *value = raw; return nil }
 
 // 小行已在索引时验证；路由只提取字段，正文保持原始 JSON。
-func readRawHistoryItem(handle *os.File, source *historyEntry) (historyItem, error) {
+func readRawHistoryItem(handle *historyReader, source *historyEntry) (historyItem, error) {
 	raw := make([]byte, source.Length)
 	if _, err := handle.ReadAt(raw, source.Offset); err != nil {
 		return historyItem{}, err

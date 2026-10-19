@@ -274,9 +274,15 @@ export class TranscriptReader {
 	async read(
 		sessionPath: string,
 		options: SessionTranscriptOptions,
+		signal?: AbortSignal,
 	): Promise<TranscriptPage & { contextCalls?: TranscriptItem[] }> {
 		try {
-			const { stepItems, ...page } = await this.index.readTranscript(sessionPath, options, this.maxJsonlLineBytes);
+			const { stepItems, ...page } = await this.index.readTranscript(
+				sessionPath,
+				options,
+				this.maxJsonlLineBytes,
+				signal,
+			);
 			const steps = stepItems
 				.map(projectedAgentStepFromItem)
 				.filter((step): step is AgentStep => step !== undefined)

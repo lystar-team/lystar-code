@@ -2,7 +2,7 @@ import { useCallback, useRef } from "react";
 import type { WorkbenchState } from "../../state/use-workbench";
 import type { WorkbenchActions } from "./types";
 
-export const HISTORY_LOAD_THRESHOLD = 240;
+export const HISTORY_LOAD_THRESHOLD = 800;
 type HistoryState = Pick<WorkbenchState, "hasMorePrevious" | "loadingEarlier" | "previousCursor" | "transcriptError">;
 
 type ConversationHistoryOptions = HistoryState & {

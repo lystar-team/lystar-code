@@ -2,12 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 )
 
 // Old updates retain only their validated step ID in the offset index.
 // Cache full association data only for versions actually used by a branch.
-func (f *historyFile) stepState(handle *os.File, source *historyEntry, maxLine int64) (*historyStep, error) {
+func (f *historyFile) stepState(handle *historyReader, source *historyEntry, maxLine int64) (*historyStep, error) {
 	if step := f.StepStates[source.Offset]; step != nil {
 		return step, nil
 	}

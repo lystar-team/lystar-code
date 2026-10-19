@@ -22,10 +22,14 @@ function normalizeJson(value: unknown): JsonValue | undefined {
 export async function readTranscriptPageWithinFrameBudget(
 	limit: number,
 	readPage: (limit: number, byteBudget: number) => Promise<unknown>,
+	signal?: AbortSignal,
 ): Promise<JsonValue> {
 	let pageLimit = limit;
 	while (true) {
-		const page = normalizeJson(await readPage(pageLimit, TRANSCRIPT_RAW_BYTE_BUDGET));
+		signal?.throwIfAborted();
+		const raw = await readPage(pageLimit, TRANSCRIPT_RAW_BYTE_BUDGET);
+		signal?.throwIfAborted();
+		const page = normalizeJson(raw);
 		if (page === undefined) throw new TypeError("历史读取没有返回 JSON 值");
 		const bytes = Buffer.byteLength(JSON.stringify(page));
 		if (bytes <= TRANSCRIPT_PAGE_BYTE_BUDGET || pageLimit === 1) {

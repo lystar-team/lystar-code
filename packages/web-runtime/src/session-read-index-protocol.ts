@@ -38,7 +38,15 @@ export type SessionIndexTranscriptPage = Omit<TranscriptPage, "agentSteps"> & {
 
 export interface SessionIndexRequest {
 	id: number;
-	command: "metadata" | "subagents" | "remove" | "history" | "history_content" | "history_image" | "history_join";
+	command:
+		| "metadata"
+		| "subagents"
+		| "remove"
+		| "history"
+		| "history_content"
+		| "history_image"
+		| "history_join"
+		| "cancel";
 	path: string;
 	writerLocked: boolean;
 	transcript?: SessionTranscriptOptions & { maxJsonlLineBytes: number };

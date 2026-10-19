@@ -1,10 +1,9 @@
 package main
 
-import (
-	"os"
-)
-
-func (h *historyEngine) pageItem(handle *os.File, path string, file *historyFile, source *historyEntry, options historyOptions) (historyItem, int64, error) {
+func (h *historyEngine) pageItem(handle *historyReader, path string, file *historyFile, source *historyEntry, options historyOptions) (historyItem, int64, error) {
+	if err := handle.ctx.Err(); err != nil {
+		return historyItem{}, 0, err
+	}
 	if options.Compact {
 		if cached, ok := file.Compacted[source.Offset]; ok && h.content.refresh(cached.item.Value) {
 			return cached.item, cached.bytes, nil

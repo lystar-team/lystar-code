@@ -50,7 +50,6 @@ import {
 	type SubagentSnapshot,
 	type ThinkingLevel,
 	type TranscriptItem,
-	type TranscriptPage,
 } from "@lystar/code-web-protocol";
 import {
 	configureServiceEventLog,
@@ -114,6 +113,7 @@ import { PushNotifications, parsePushSubscription } from "./push-notifications.t
 import { markRoomAgentSessions, type RoomSessionMembership } from "./room-session-visibility.ts";
 import { connectRuntimeClient, ensurePersistentRuntime, type RuntimeInitialSnapshot } from "./runtime-client.ts";
 import { SessionResultRegistry } from "./session-result-registry.ts";
+import { readTranscriptForResponse } from "./transcript-request.ts";
 import { WebSocketWriter } from "./websocket-writer.ts";
 import { WorkspaceDatabase } from "./workspace-database.ts";
 
@@ -2043,6 +2043,7 @@ export class WebGatewayServer {
 				}
 				await this.handleStatic(request, response, url.pathname);
 			} catch (error) {
+				if (response.destroyed) return;
 				logGatewayConnection("http_request_error", {
 					requestId,
 					path,
@@ -3853,7 +3854,7 @@ export class WebGatewayServer {
 					}),
 				);
 			} else {
-				const page = await client.request<TranscriptPage>({
+				const page = await readTranscriptForResponse(client, response, {
 					command: "read_transcript",
 					sessionPath: childSession.sessionFile,
 					...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
@@ -3882,7 +3883,7 @@ export class WebGatewayServer {
 			} else {
 				await this.sessionResults.observe([]);
 				const resultRevision = this.sessionResults.get(sessionId)?.revision;
-				const page = await client.request<TranscriptPage>({
+				const page = await readTranscriptForResponse(client, response, {
 					command: "read_transcript",
 					sessionPath: session.path,
 					...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),

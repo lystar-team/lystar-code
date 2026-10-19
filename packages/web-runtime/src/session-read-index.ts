@@ -21,6 +21,7 @@ export class SessionReadIndex {
 		{
 			resolve(value: SessionIndexResponse["result"]): void;
 			reject(error: Error): void;
+			cancel?(): void;
 			transcript?: { items: TranscriptItem[]; stepItems: TranscriptItem[]; contextCalls: TranscriptItem[] };
 		}
 	>();
@@ -48,10 +49,17 @@ export class SessionReadIndex {
 		path: string,
 		options: SessionTranscriptOptions,
 		maxJsonlLineBytes: number,
+		signal?: AbortSignal,
 	): Promise<SessionIndexTranscriptPage> {
-		return (await this.request("history", path, false, {
-			transcript: { ...options, maxJsonlLineBytes },
-		})) as SessionIndexTranscriptPage;
+		return (await this.request(
+			"history",
+			path,
+			false,
+			{
+				transcript: { ...options, maxJsonlLineBytes },
+			},
+			signal,
+		)) as SessionIndexTranscriptPage;
 	}
 
 	async readContent(path: string, contentRef: string, offset: number, limit: number): Promise<ContentChunk> {
@@ -65,13 +73,15 @@ export class SessionReadIndex {
 	async resolveJoinedText<T extends Pick<TranscriptItem, "view">>(
 		path: string,
 		items: readonly T[],
+		signal?: AbortSignal,
 	): Promise<readonly T[]> {
+		signal?.throwIfAborted();
 		const joins = new Set<string>();
 		for (const { view } of items) {
 			if (view && "contentRef" in view && view.contentRef?.startsWith("native:join:")) joins.add(view.contentRef);
 		}
 		if (joins.size === 0) return items;
-		const resolved = (await this.request("history_join", path, false, { joins: [...joins] })) as Record<
+		const resolved = (await this.request("history_join", path, false, { joins: [...joins] }, signal)) as Record<
 			string,
 			string
 		>;
@@ -141,7 +151,9 @@ export class SessionReadIndex {
 		path: string,
 		writerLocked: boolean,
 		fields: Pick<SessionIndexRequest, "transcript" | "contentRef" | "offset" | "limit" | "joins"> = {},
+		signal?: AbortSignal,
 	): Promise<SessionIndexResponse["result"]> {
+		if (signal?.aborted) return Promise.reject(signal.reason);
 		if (this.disposed) return Promise.reject(new Error("会话读取索引已关闭"));
 		if (!this.worker) {
 			const worker = spawn(getSessionIndexBinaryPath(), ["--database", this.databasePath], {
@@ -198,12 +210,7 @@ export class SessionReadIndex {
 							...(contextCalls.length ? { contextCalls } : {}),
 						});
 					} else pending.resolve(response.result);
-					if (this.pending.size === 0) {
-						worker.unref();
-						for (const stream of [worker.stdin, worker.stdout, worker.stderr]) {
-							if (stream instanceof Socket) stream.unref();
-						}
-					}
+					this.releaseWorker(worker);
 				}
 			});
 			for (const stream of [worker.stdin, worker.stdout, worker.stderr]) {
@@ -219,11 +226,39 @@ export class SessionReadIndex {
 			if (stream instanceof Socket) stream.ref();
 		}
 		return new Promise((resolve, reject) => {
+			const cleanup = () => signal?.removeEventListener("abort", onAbort);
+			const onAbort = () => {
+				const pending = this.pending.get(id);
+				if (!pending) return;
+				this.pending.delete(id);
+				pending.cancel?.();
+				pending.reject(signal?.reason);
+				this.releaseWorker(worker);
+			};
 			this.pending.set(id, {
-				resolve,
-				reject,
-				...(command === "history" ? { transcript: { items: [], stepItems: [], contextCalls: [] } } : {}),
+				resolve(value) {
+					cleanup();
+					resolve(value);
+				},
+				reject(error) {
+					cleanup();
+					reject(error);
+				},
+				...(command === "history"
+					? {
+							transcript: { items: [], stepItems: [], contextCalls: [] },
+							cancel: () => {
+								worker.stdin.write(
+									`${JSON.stringify({ id, command: "cancel", path: resolvePath(path), writerLocked: false } satisfies SessionIndexRequest)}\n`,
+									(error) => {
+										if (error) this.fail(worker, error);
+									},
+								);
+							},
+						}
+					: {}),
 			});
+			signal?.addEventListener("abort", onAbort, { once: true });
 			worker.stdin.write(
 				`${JSON.stringify({ id, command, path: resolvePath(path), writerLocked, ...fields } satisfies SessionIndexRequest)}\n`,
 				(error) => {
@@ -231,6 +266,14 @@ export class SessionReadIndex {
 				},
 			);
 		});
+	}
+
+	private releaseWorker(worker: ChildProcessWithoutNullStreams): void {
+		if (this.worker !== worker || this.pending.size > 0) return;
+		worker.unref();
+		for (const stream of [worker.stdin, worker.stdout, worker.stderr]) {
+			if (stream instanceof Socket) stream.unref();
+		}
 	}
 
 	private fail(worker: ChildProcessWithoutNullStreams, error: Error): void {
@@ -253,9 +296,12 @@ export class SessionReadIndex {
 		for (const stream of [worker.stdin, worker.stdout, worker.stderr]) {
 			if (stream instanceof Socket) stream.ref();
 		}
-		for (const pending of this.pending.values()) pending.reject(new Error("会话读取索引已关闭"));
+		for (const pending of this.pending.values()) {
+			pending.cancel?.();
+			pending.reject(new Error("会话读取索引已关闭"));
+		}
 		this.pending.clear();
-		// EOF lets Go finish in-flight work and remove its temporary content files.
+		// 取消读取后发送 EOF，让 Go 回收任务及临时内容文件。
 		worker.stdin.end();
 		await closed;
 	}

@@ -452,7 +452,7 @@ describe("会话切换时的记录状态", () => {
 		expect(hooks.committed?.transcriptLoading).toBe(false);
 	});
 
-	it("向上阅读跨页回合时保持加载状态，并阻止重复请求", async () => {
+	it("向上阅读跨页回合时逐页显示历史，并阻止重复请求", async () => {
 		const earlierTool = {
 			...item,
 			entryId: "tool-a",
@@ -489,7 +489,7 @@ describe("会话切换时的记录状态", () => {
 		const loading = actions.loadEarlier();
 		await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
 		expect(hooks.committed?.loadingEarlier).toBe(true);
-		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([item.entryId]);
+		expect(hooks.committed?.transcript.map((entry) => entry.entryId)).toEqual([earlierTool.entryId, item.entryId]);
 		await actions.loadEarlier();
 		expect(request).toHaveBeenCalledTimes(2);
 		resolveOlder({ ...page, items: [earlierUser], hasMorePrevious: false });

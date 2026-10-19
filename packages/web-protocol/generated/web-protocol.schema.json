@@ -5218,6 +5218,25 @@
             }
           },
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "cancel_read"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
         }
       ]
     },
@@ -6738,7 +6757,7 @@
             },
             "version": {
               "type": "integer",
-              "const": 14
+              "const": 15
             },
             "productVersion": {
               "type": "string",
@@ -6746,7 +6765,7 @@
             },
             "protocolVersion": {
               "type": "integer",
-              "const": 14
+              "const": 15
             },
             "serverInstanceId": {
               "type": "string",

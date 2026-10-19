@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -142,7 +143,7 @@ type subagent struct {
 }
 
 type pathLock struct {
-	sync.Mutex
+	token chan struct{}
 	users int
 }
 type index struct {
@@ -628,18 +629,16 @@ func commandJSON(data json.RawMessage, err error) (*commandResult, error) {
 	return &commandResult{data: data}, err
 }
 
-func (i *index) handle(input request) (*commandResult, error) {
+func (i *index) handle(ctx context.Context, input request) (*commandResult, error) {
 	i.mu.Lock()
 	lock := i.locks[input.Path]
 	if lock == nil {
-		lock = &pathLock{}
+		lock = &pathLock{token: make(chan struct{}, 1)}
 		i.locks[input.Path] = lock
 	}
 	lock.users++
 	i.mu.Unlock()
-	lock.Lock()
 	defer func() {
-		lock.Unlock()
 		i.mu.Lock()
 		lock.users--
 		if lock.users == 0 {
@@ -647,11 +646,20 @@ func (i *index) handle(input request) (*commandResult, error) {
 		}
 		i.mu.Unlock()
 	}()
+	select {
+	case lock.token <- struct{}{}:
+		defer func() { <-lock.token }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if input.Command == "history" {
 		if input.Transcript == nil {
 			return nil, errors.New("Transcript options are required")
 		}
-		page, err := i.history.read(input.Path, *input.Transcript)
+		page, err := i.history.read(ctx, input.Path, *input.Transcript)
 		return &commandResult{transcript: page}, err
 	}
 	if input.Command == "history_content" || input.Command == "history_image" {
@@ -703,6 +711,8 @@ func run() error {
 	input, output := json.NewDecoder(os.Stdin), bufio.NewWriterSize(os.Stdout, 64*1024)
 	var outputMu sync.Mutex
 	var jobs sync.WaitGroup
+	var readsMu sync.Mutex
+	reads := make(map[int64]context.CancelFunc)
 	defer jobs.Wait()
 	for {
 		var message request
@@ -712,10 +722,34 @@ func run() error {
 			}
 			return err
 		}
+		if message.Command == "cancel" {
+			readsMu.Lock()
+			if cancel := reads[message.ID]; cancel != nil {
+				cancel()
+			}
+			readsMu.Unlock()
+			continue
+		}
+		ctx := context.Background()
+		if message.Command == "history" {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			readsMu.Lock()
+			reads[message.ID] = cancel
+			readsMu.Unlock()
+		}
 		jobs.Add(1)
 		go func() {
 			defer jobs.Done()
-			result, err := index.handle(message)
+			if message.Command == "history" {
+				defer func() {
+					readsMu.Lock()
+					reads[message.ID]()
+					delete(reads, message.ID)
+					readsMu.Unlock()
+				}()
+			}
+			result, err := index.handle(ctx, message)
 			reply := response{ID: message.ID}
 			if result != nil {
 				reply.Result, reply.Transcript = result.data, result.transcript
@@ -724,7 +758,9 @@ func run() error {
 				var reason *indexError
 				if !errors.As(err, &reason) {
 					reason = &indexError{Message: err.Error()}
-					if errors.Is(err, os.ErrNotExist) {
+					if errors.Is(err, context.Canceled) {
+						reason = cancelledHistoryRead()
+					} else if errors.Is(err, os.ErrNotExist) {
 						reason.Code = "ENOENT"
 					}
 				}
@@ -732,7 +768,7 @@ func run() error {
 			}
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			if err := writeIndexResponse(output, reply); err != nil {
+			if err := writeIndexResponse(ctx, output, reply); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}

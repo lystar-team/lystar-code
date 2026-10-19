@@ -1671,14 +1671,14 @@ export class WebRuntimeService {
 
 	createConnection(send: (message: ServerMessage) => Promise<void>): {
 		id: string;
-		handle(message: ClientMessage): Promise<void>;
+		handle(message: ClientMessage, signal?: AbortSignal): Promise<void>;
 		close(): Promise<void>;
 	} {
 		const connection: ClientConnection = { id: randomUUID(), send, fileAbort: new AbortController() };
 		this.clients.set(connection.id, connection);
 		return {
 			id: connection.id,
-			handle: (message) => this.handle(connection, message),
+			handle: (message, signal) => this.handle(connection, message, signal),
 			close: () => this.detachConnection(connection),
 		};
 	}
@@ -1784,7 +1784,9 @@ export class WebRuntimeService {
 		return pending;
 	}
 
-	private async handle(connection: ClientConnection, message: ClientMessage): Promise<void> {
+	private async handle(connection: ClientConnection, message: ClientMessage, signal?: AbortSignal): Promise<void> {
+		// 取消帧由读取队列处理，不作为业务命令执行。
+		if (message.type === "cancel_read") return;
 		if (message.type === "hello") {
 			if (message.version !== RUNTIME_PROTOCOL_VERSION) {
 				await connection.send({
@@ -1836,12 +1838,25 @@ export class WebRuntimeService {
 			return;
 		}
 
+		const readSignal =
+			message.request.command === "read_transcript"
+				? signal
+					? AbortSignal.any([signal, connection.fileAbort.signal])
+					: connection.fileAbort.signal
+				: undefined;
 		let afterResponse: (() => void) | undefined;
 		let result: JsonValue;
 		try {
-			const value = await this.executeCommand(connection, message.request, (action) => {
-				afterResponse = action;
-			});
+			readSignal?.throwIfAborted();
+			const value = await this.executeCommand(
+				connection,
+				message.request,
+				(action) => {
+					afterResponse = action;
+				},
+				readSignal,
+			);
+			readSignal?.throwIfAborted();
 			// transcript 在分页边界完成规范化，不再把整页转成 JSON 重建一次。
 			result = message.request.command === "read_transcript" ? (value as JsonValue) : jsonValue(value);
 			if (message.request.command in WORKSPACE_COMMANDS) {
@@ -1851,6 +1866,7 @@ export class WebRuntimeService {
 				);
 			}
 		} catch (error) {
+			if (readSignal?.aborted) return;
 			await connection.send({ type: "response", id: message.id, ok: false, error: protocolError(error) });
 			return;
 		}
@@ -1878,6 +1894,7 @@ export class WebRuntimeService {
 		connection: ClientConnection,
 		request: Extract<ClientMessage, { type: "request" }>["request"],
 		afterResponse: (action: () => void) => void,
+		signal?: AbortSignal,
 	): Promise<JsonValue> {
 		switch (request.command) {
 			case "session_workspaces": {
@@ -2094,33 +2111,44 @@ export class WebRuntimeService {
 				const runtime = this.runtimes.get(sessionPath);
 				const runtimeState = runtime ? runtimeReadState(runtime) : undefined;
 				const emptyGeneration = runtimeState?.transcriptGeneration;
-				return readTranscriptPageWithinFrameBudget(request.limit, async (limit, byteBudget) => {
-					const page = await measureRuntimePhaseAsync("transcript.native_read", { sessionPath, limit }, () =>
-						this.transcriptReader.read(sessionPath, {
-							...request,
-							limit,
-							byteBudget,
-							compact: true,
-							emptyGeneration,
-							...(runtimeState ? { leafId: runtimeState.leafId } : {}),
-						}),
-					);
-					const { contextCalls, ...transcriptPage } = page;
-					const items = measureRuntimePhase("transcript.project", { sessionPath, items: page.items.length }, () =>
-						this.projectTranscriptItems(
-							sessionPath,
-							page.items,
-							page.agentSteps,
-							contextCalls,
-							undefined,
-							true,
-						).map(({ payload: _payload, ...item }) => item),
-					);
-					const resolvedItems = await measureRuntimePhaseAsync("transcript.content_join", { sessionPath }, () =>
-						this.sessionReadIndex.resolveJoinedText(sessionPath, items),
-					);
-					return { ...transcriptPage, requestContext: request.context, items: resolvedItems };
-				});
+				return readTranscriptPageWithinFrameBudget(
+					request.limit,
+					async (limit, byteBudget) => {
+						const page = await measureRuntimePhaseAsync("transcript.native_read", { sessionPath, limit }, () =>
+							this.transcriptReader.read(
+								sessionPath,
+								{
+									...request,
+									limit,
+									byteBudget,
+									compact: true,
+									emptyGeneration,
+									...(runtimeState ? { leafId: runtimeState.leafId } : {}),
+								},
+								signal,
+							),
+						);
+						const { contextCalls, ...transcriptPage } = page;
+						const items = measureRuntimePhase(
+							"transcript.project",
+							{ sessionPath, items: page.items.length },
+							() =>
+								this.projectTranscriptItems(
+									sessionPath,
+									page.items,
+									page.agentSteps,
+									contextCalls,
+									undefined,
+									true,
+								).map(({ payload: _payload, ...item }) => item),
+						);
+						const resolvedItems = await measureRuntimePhaseAsync("transcript.content_join", { sessionPath }, () =>
+							this.sessionReadIndex.resolveJoinedText(sessionPath, items, signal),
+						);
+						return { ...transcriptPage, requestContext: request.context, items: resolvedItems };
+					},
+					signal,
+				);
 			}
 			case "search_transcript": {
 				const sessionPath = canonicalSessionPath(request.sessionPath);

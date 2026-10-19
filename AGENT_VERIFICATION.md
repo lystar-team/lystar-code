@@ -11,6 +11,13 @@
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
 - 上游 Pi 基线为 `v1.3.0`（`71023aec1546d6d677a65669c5665c0927ce0dd0`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.3.0-lystar.13`，上一正式 Tag 为 `v1.3.0-lystar.12`。
 
+## Web 历史加载与取消验证
+
+- Linux x64：完整 `npm run check` 与 `git diff --check` 通过；Web、Runtime、Protocol 和 Gateway 的 154 项相关既有测试通过。
+- Gateway 的 `runtime-protocol-upgrade.test.ts` 3 项通过：活跃旧 Runtime 保留运行，空闲旧 Runtime 可替换并连接协议 15。
+- 真实 HTTP 链路连续取消 100 次历史加载、传输层突发取消 500 次、取消 1000 个排队读取任务后，待处理请求归零，共享连接及 Go 索引进程保持可用，后续会话读取成功。
+- 128 MiB 文件的 12 次原生读取取消全部返回取消响应，本次最长 2 毫秒。压力验证结果保存在 `/tmp/lystar-history-cancel-stress-result.json`。
+
 ## 1.3.0-lystar.13 自动发布验证
 
 - 记录时间：2026-10-19T14:56:13.596Z。Annotated Tag `v1.3.0-lystar.13` 指向 `023f412e23cee42ef5872fc3664e7a0cf66e4d8c`；Release workflow `39272734984` 的全部 job 成功，公开 Release 不是 draft/prerelease。

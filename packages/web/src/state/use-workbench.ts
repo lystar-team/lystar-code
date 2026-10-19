@@ -3,7 +3,7 @@ import { MAX_TRANSCRIPT_PAGE_SIZE } from "@lystar/code-web-protocol/limits";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UnauthorizedError, webApi } from "../adapters/host-protocol/api.ts";
 import type { ProjectGroup, TranscriptResponse, UiRequestEvent, WebLease, WebOperation, WebProject } from "../types.ts";
-import { reconcileCommittedTurn, reconcilePendingUserPrompts } from "./chat-lifecycle.ts";
+import { useWorkbenchTranscript } from "./workbench-transcript.ts";
 import { reconcileCompactionState } from "./compaction-state.ts";
 import {
 	connectionStateAfterHostUpdate,
@@ -14,20 +14,16 @@ import { readLastSession, saveLastSession } from "./session-persistence.ts";
 import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
-	isSameTranscriptHistory,
-	isTranscriptResponseObsolete,
 	mergeOperationSnapshots,
 	replaceSessionOperationSnapshots,
 } from "./session-sync.ts";
-import { agentStepIndexChanged, mergeAgentStepIndex } from "./session-timeline.ts";
-import { mergeTranscriptEntries, mergeTranscriptPage, transcriptRenderIdOverrides } from "./transcript-state.ts";
+import { mergeAgentStepIndex } from "./session-timeline.ts";
+import { mergeTranscriptPage } from "./transcript-state.ts";
 import {
 	applySubagentProgress,
 	createSubagentConversationState,
 	mergeSubagentSnapshots,
-	reconcileLiveUserPrompts,
 	restoreRuntimeActivities,
-	withPromptSendTimes,
 } from "./workbench-live-state.ts";
 import {
 	ACTIVE_OPERATION_STATUSES,
@@ -47,7 +43,6 @@ import {
 	resolveHiddenModelProviders,
 	migrateModelProviderVisibility,
 	sessionTitle,
-	shouldClearLiveTurn,
 	transcriptText,
 	updateSessionActivity,
 	updateSessionSummaryName,
@@ -401,232 +396,10 @@ export function useWorkbench() {
 		[updateState],
 	);
 
-	const loadTranscript = useCallback(
-		async function readTranscript(
-			sessionId = stateRef.current.sessionId,
-			cursor?: string,
-			deferCommit = false,
-			completeTurn = false,
-			recoveringCursor = false,
-		): Promise<void> {
-			if (!sessionId) return;
-			const requestedHistory = {
-				generation: stateRef.current.transcriptGeneration,
-				leafId: stateRef.current.transcriptLeafId,
-				previousCursor: stateRef.current.previousCursor,
-			};
-			const historySelection = selectionRef.current;
-			const historyRequestIsActive = () =>
-				selectionRef.current === historySelection && stateRef.current.sessionId === sessionId;
-			const historyStillCurrent = () =>
-				historyRequestIsActive() && stateRef.current.transcriptGeneration === requestedHistory.generation;
-			const requestId = cursor ? transcriptRequestRef.current : ++transcriptRequestRef.current;
-			if (!cursor && (!stateRef.current.transcriptPageLoaded || stateRef.current.transcriptError)) {
-				updateState((current) =>
-					current.sessionId === sessionId
-						? { ...current, transcriptLoading: true, transcriptError: undefined }
-						: current,
-				);
-			}
-			try {
-				const readPage = (pageCursor?: string) => {
-					const limit = pageCursor || stateRef.current.transcriptPageLoaded ? MAX_TRANSCRIPT_PAGE_SIZE : 120;
-					const key = JSON.stringify([historySelection, sessionId, pageCursor, limit,
-						stateRef.current.transcriptGeneration, stateRef.current.transcriptRevision]);
-					const pending = transcriptReadsRef.current.get(key);
-					if (pending) return pending;
-					const request = readSelectedSession(sessionId, (signal) =>
-						webApi.transcript(sessionId, { cursor: pageCursor, limit, signal }));
-					const tracked = request.finally(() => {
-						if (transcriptReadsRef.current.get(key) === tracked) transcriptReadsRef.current.delete(key);
-					});
-					transcriptReadsRef.current.set(key, tracked);
-					return tracked;
-				};
-				const response = await readPage(cursor);
-				if (!response) return;
-			let result: TranscriptResponse = response;
-			const pages = [response];
-			const visitedCursors = new Set(cursor ? [cursor] : []);
-			const userIds = new Set(result.items.filter((item) => item.view?.type === "user").map((item) => item.entryId));
-			const requiredUsers = stateRef.current.transcript.some((item) => item.view?.type === "user") ? 1 : 2;
-			while (cursor && completeTurn && result.hasMorePrevious && userIds.size < requiredUsers) {
-				if (!historyStillCurrent()) {
-					if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
-					return;
-				}
-				if (stateRef.current.transcriptError) throw new Error(stateRef.current.transcriptError);
-				if (!result.previousCursor || visitedCursors.has(result.previousCursor)) throw new Error("历史游标未前进");
-				visitedCursors.add(result.previousCursor);
-				const older = await readPage(result.previousCursor);
-				if (!older) return;
-				if (older.transcriptGeneration !== response.transcriptGeneration || older.leafId !== response.leafId)
-					throw new Error("历史记录发生变化，请重新打开会话");
-				pages.push(older);
-				for (const item of older.items) if (item.view?.type === "user") userIds.add(item.entryId);
-				result = older;
-			}
-			if (pages.length > 1) {
-				result = {
-					...result,
-					items: pages
-						.slice()
-						.reverse()
-						.flatMap((page) => page.items),
-					agentSteps: pages.flatMap((page) => page.agentSteps ?? []),
-				};
-			}
-			if (cursor && !historyStillCurrent()) {
-				if (historyRequestIsActive()) throw new Error("历史记录已更新，请重新打开会话");
-				return;
-			}
-			(deferCommit && !cursor ? transitionState : updateState)((current) => {
-				if (current.sessionId !== sessionId) return current;
-				const currentHistoryChangedSinceRequest = cursor
-					? requestedHistory.generation !== current.transcriptGeneration ||
-						(requestedHistory.leafId !== current.transcriptLeafId &&
-							requestedHistory.previousCursor !== current.previousCursor &&
-							!current.transcript.some((item) => item.entryId === requestedHistory.leafId))
-					: isTranscriptResponseObsolete(
-							requestedHistory,
-							{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
-							result,
-						);
-				const sameHistory =
-					(isSameTranscriptHistory(
-						{ generation: current.transcriptGeneration, leafId: current.transcriptLeafId },
-						result,
-					) ||
-						(current.transcriptGeneration === result.transcriptGeneration &&
-							(cursor
-								// 游标可绑定未展示的 Hook 结束记录，尾页更新后仍属于同一历史。
-								? current.previousCursorLeafId === result.leafId ||
-									current.transcript.some((item) => item.entryId === result.leafId)
-								: result.items.some((item) => item.entryId === current.transcriptLeafId || item.parentId === current.transcriptLeafId)))) &&
-					!(
-						current.transcriptPageLoaded &&
-						current.transcriptGeneration === undefined &&
-						current.transcript.length > 0
-					);
-				const staleRevision =
-					sameHistory &&
-					current.transcriptGeneration === result.transcriptGeneration &&
-					current.transcriptRevision !== undefined &&
-					current.transcriptRevision > result.transcriptRevision;
-				const incomingAgentStepsChanged = agentStepIndexChanged(current.agentSteps, result.agentSteps);
-				if (currentHistoryChangedSinceRequest)
-					return cursor ? { ...current, transcriptError: "历史记录已更新，请重新打开会话" } : { ...current, transcriptLoading: false };
-				if (cursor && !sameHistory) return { ...current, transcriptError: "历史记录已更新，请重新打开会话" };
-				if (staleRevision && !cursor) {
-					return cursor
-						? current
-						: {
-								...current,
-								transcriptLoading: false,
-								...(shouldClearLiveTurn(current) ? { liveTools: {}, liveTurnItems: [] } : {}),
-							};
-				}
-				if (
-					!cursor &&
-					!recoveringCursor &&
-					sameHistory &&
-					current.transcriptPageLoaded &&
-					current.transcriptRevision === result.transcriptRevision &&
-					!shouldClearLiveTurn(current) &&
-					!incomingAgentStepsChanged
-				) {
-					const pendingUserPrompts = reconcilePendingUserPrompts(current.pendingUserPrompts, current.transcript);
-					const liveTurnItems = reconcileLiveUserPrompts(current.liveTurnItems, current.transcript);
-					if (
-						pendingUserPrompts.length === current.pendingUserPrompts.length &&
-						liveTurnItems.length === current.liveTurnItems.length
-					)
-						return !current.transcriptLoading && current.displayedResultRevision === result.resultRevision
-							? current
-							: { ...current, transcriptLoading: false, displayedResultRevision: result.resultRevision };
-					return {
-						...current,
-						agentSteps: mergeAgentStepIndex(current.agentSteps, result.agentSteps),
-						transcriptLoading: false,
-						displayedResultRevision: result.resultRevision,
-						pendingUserPrompts,
-						promptSendTimes: withPromptSendTimes(current, current.transcript),
-						liveTurnItems,
-					};
-				}
-				const renderIdOverrides =
-					!cursor && sameHistory
-						? transcriptRenderIdOverrides(
-								current.liveTurnItems,
-								current.liveCompaction ? `live-compaction:${current.liveTurnId}` : undefined,
-								result.items,
-							)
-						: undefined;
-				const transcriptWindow = mergeTranscriptPage(
-					current,
-					result,
-					// 有游标的是补更早历史，放前面；无游标的首屏在未加载过时放前面，已加载过是尾页更新放后面。
-					Boolean(cursor) || !current.transcriptPageLoaded,
-					sameHistory && !recoveringCursor,
-					renderIdOverrides,
-				);
-				const pendingUserPrompts = cursor
-					? current.pendingUserPrompts
-					: reconcilePendingUserPrompts(current.pendingUserPrompts, transcriptWindow.transcript);
-				const promptSendTimes = cursor
-					? current.promptSendTimes
-					: withPromptSendTimes(current, transcriptWindow.transcript);
-				const completedTurnSynced = !cursor && shouldClearLiveTurn(current);
-				const knownIds = new Set(current.transcript.map((item) => item.entryId));
-				const next =
-					!cursor && sameHistory
-						? reconcileCommittedTurn(
-								current,
-								result.items.filter((item) => !knownIds.has(item.entryId)),
-								result.transcriptRevision,
-							)
-						: current;
-				const updated = {
-					...next,
-					...transcriptWindow,
-					agentSteps: mergeAgentStepIndex(sameHistory ? current.agentSteps : {}, result.agentSteps),
-					transcriptLoading: false,
-					transcriptError: undefined,
-					pendingUserPrompts,
-					promptSendTimes,
-					liveTurnItems: cursor
-						? next.liveTurnItems
-						: reconcileLiveUserPrompts(next.liveTurnItems, transcriptWindow.transcript),
-					transcriptGeneration: result.transcriptGeneration,
-					transcriptRevision: sameHistory
-						? Math.max(current.transcriptRevision ?? 0, result.transcriptRevision)
-						: result.transcriptRevision,
-					transcriptLeafId: cursor ? current.transcriptLeafId : result.leafId,
-					...(!cursor ? { displayedResultRevision: result.resultRevision } : {}),
-					...(completedTurnSynced ? { liveTools: {}, liveSteps: {}, liveTurnItems: [] } : {}),
-				};
-				return {
-					...updated,
-					liveCompaction: reconcileCompactionState(updated.liveCompaction, updated.transcript),
-				};
-			});
-			} catch (error) {
-				if (!historyRequestIsActive() || (!cursor && requestId !== transcriptRequestRef.current)) return;
-				if (!recoveringCursor && error instanceof Error && "code" in error && error.code === "cursor_stale") {
-					// 失效后从尾页重建窗口和游标；最多恢复一次，避免持续变化时循环请求。
-					await readTranscript(sessionId, undefined, deferCommit, false, true);
-					return;
-				}
-				updateState((current) => ({
-					...current,
-					transcriptLoading: false,
-					transcriptError: errorMessage(error),
-				}));
-				throw error;
-			}
-		},
-		[readSelectedSession, transitionState, updateState],
-	);
+	const loadTranscript = useWorkbenchTranscript({
+		state, stateRef, selectionRef, transcriptRequestRef, transcriptReadsRef,
+		readSelectedSession, updateState, transitionState,
+	});
 
 	const loadSessionOperations = useCallback(
 		async (sessionId: string) => {

@@ -34,12 +34,14 @@ export interface RuntimeRequestDiagnostic {
 	requestId: string;
 	command: Command["command"];
 	phase: "start" | "end";
-	outcome?: "ok" | "error" | "timeout" | "disconnected";
+	outcome?: "ok" | "error" | "timeout" | "disconnected" | "cancelled";
 	elapsedMs?: number;
 	errorCode?: string;
 }
 
 export interface RequestOptions {
+	/** 取消历史分页读取，同时保留共享连接。 */
+	signal?: AbortSignal;
 	/** Use 0 only for a command that intentionally has no deadline. */
 	timeoutMs?: number;
 	timeoutMessage?: string;
@@ -85,8 +87,7 @@ export class RuntimeProtocolClient {
 			resolve: (value: unknown) => void;
 			reject: (error: Error) => void;
 			onResult?: (value: unknown) => void;
-			finish: (outcome: "ok" | "error" | "timeout" | "disconnected", errorCode?: string) => void;
-			timeout?: ReturnType<typeof setTimeout>;
+			finish: (outcome: NonNullable<RuntimeRequestDiagnostic["outcome"]>, errorCode?: string) => void;
 		}
 	>();
 	private readonly listeners = new Set<() => void>();
@@ -166,12 +167,23 @@ export class RuntimeProtocolClient {
 
 	async request<T = unknown>(request: Command, options: RequestOptions = {}): Promise<T> {
 		if (this.closed) throw new Error("Web Runtime 连接已关闭");
+		if (options.signal && request.command !== "read_transcript") throw new TypeError("取消信号仅适用于历史分页读取");
+		options.signal?.throwIfAborted();
 		const id = createClientRequestId();
 		const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		const keepConnectionOnTimeout =
 			options.keepConnectionOnTimeout ?? this.keepConnectionOnRequestTimeout?.(request) ?? false;
 		const startedAt = Date.now();
+		let sendStarted = false;
 		let sent = false;
+		const transportFailed = (error: unknown) => {
+			this.handleClose(error instanceof Error ? error : new Error(String(error)));
+			void this.transport.close().catch(() => {});
+		};
+		const sendCancel = () => {
+			if (sendStarted && request.command === "read_transcript")
+				void this.transport.send(encodeClientMessage({ type: "cancel_read", id })).catch(transportFailed);
+		};
 		const report = (
 			phase: RuntimeRequestDiagnostic["phase"],
 			outcome?: RuntimeRequestDiagnostic["outcome"],
@@ -190,39 +202,50 @@ export class RuntimeProtocolClient {
 				// 诊断回调不能改变请求的结果或传输状态。
 			}
 		};
+		report("start");
 		const result = new Promise<T>((resolve, reject) => {
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			const onAbort = () => {
+				if (!this.pending.delete(id)) return;
+				pending.finish("cancelled", "request_cancelled");
+				reject(options.signal?.reason);
+				sendCancel();
+			};
 			const pending = {
 				resolve: (value: unknown) => resolve(value as T),
 				reject,
 				onResult: options.onResult,
-				finish: (outcome: "ok" | "error" | "timeout" | "disconnected", errorCode?: string) =>
-					report("end", outcome, errorCode),
-				timeout: undefined as ReturnType<typeof setTimeout> | undefined,
+				finish: (outcome: NonNullable<RuntimeRequestDiagnostic["outcome"]>, errorCode?: string) => {
+					if (timeout) globalThis.clearTimeout(timeout);
+					options.signal?.removeEventListener("abort", onAbort);
+					report("end", outcome, errorCode);
+				},
 			};
 			if (timeoutMs > 0) {
-				pending.timeout = globalThis.setTimeout(() => {
+				timeout = globalThis.setTimeout(() => {
 					if (!this.pending.delete(id)) return;
-					const timeoutError = new Error(options.timeoutMessage ?? `Web Runtime请求超时：${request.command}`);
+					const error = new Error(options.timeoutMessage ?? `Web Runtime请求超时：${request.command}`);
 					pending.finish("timeout", "request_timeout");
-					reject(timeoutError);
-					if (keepConnectionOnTimeout && sent) return;
-					this.handleClose(timeoutError);
-					void this.transport.close().catch(() => {});
+					reject(error);
+					if (keepConnectionOnTimeout && sent) sendCancel();
+					else transportFailed(error);
 				}, timeoutMs);
 			}
 			this.pending.set(id, pending);
+			options.signal?.addEventListener("abort", onAbort, { once: true });
+			if (options.signal?.aborted) onAbort();
 		});
-		report("start");
-		// 响应等待与发送并行：发送受阻时，请求超时也必须能够结束调用。
+		// 发送前取消则不再发出请求；发送中取消的帧排在原请求之后。
 		void Promise.resolve()
-			.then(() => this.transport.send(encodeClientMessage({ type: "request", id, request })))
+			.then(() => {
+				if (request.command === "read_transcript" && !this.pending.has(id)) return;
+				sendStarted = true;
+				return this.transport.send(encodeClientMessage({ type: "request", id, request }));
+			})
 			.then(() => {
 				sent = true;
 			})
-			.catch((error) => {
-				this.handleClose(error instanceof Error ? error : new Error(String(error)));
-				void this.transport.close().catch(() => {});
-			});
+			.catch(transportFailed);
 		const value = await result;
 		if (request.command === "read_transcript") {
 			if (this.trustedServerMessages) {
@@ -278,7 +301,6 @@ export class RuntimeProtocolClient {
 			const pending = this.pending.get(message.id);
 			if (!pending) return;
 			this.pending.delete(message.id);
-			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
 			if (message.ok) {
 				try {
 					pending.onResult?.(message.result);
@@ -369,7 +391,6 @@ export class RuntimeProtocolClient {
 		this.closed = true;
 		const reason = error ?? new Error("Web Runtime连接已关闭");
 		for (const pending of this.pending.values()) {
-			if (pending.timeout) globalThis.clearTimeout(pending.timeout);
 			pending.finish("disconnected", error instanceof RuntimeProtocolError ? error.code : "connection_closed");
 			pending.reject(reason);
 		}

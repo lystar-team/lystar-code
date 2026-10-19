@@ -7,6 +7,7 @@ import {
 } from "@lystar/code-web-protocol";
 import { logRuntimeConnection, measureRuntimePhase, withRuntimeRequest } from "./connection-log.ts";
 import type { WebRuntimeService } from "./service.ts";
+import { TranscriptReadQueue } from "./transcript-read-queue.ts";
 
 export const MAX_RUNTIME_WRITE_BYTES = 32 * 1024 * 1024;
 const WRITE_TIMEOUT_MS = 10_000;
@@ -224,7 +225,6 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	const decoder = new ClientMessageDecoder();
 	let processing = Promise.resolve();
 	let handshake = Promise.resolve();
-	let transcriptProcessing = Promise.resolve();
 	let updateCheckProcessing = Promise.resolve();
 	let archiveProcessing = Promise.resolve();
 	const acquisitions = new Set<Promise<void>>();
@@ -236,8 +236,10 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	let queuedRequests = 0;
 	let queuedBytes = 0;
 	let closed = false;
-	const fail = (error: unknown) => {
+	const transcriptReads = new TranscriptReadQueue(fail);
+	function fail(error: unknown) {
 		closed = true;
+		transcriptReads.close();
 		logRuntimeConnection("connection_failure", {
 			clientInstanceId,
 			queuedRequests,
@@ -245,7 +247,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 			error: error instanceof Error ? error.message : String(error),
 		});
 		input.destroy(error instanceof Error ? error : new Error(String(error)));
-	};
+	}
 	const syncReads = createReadBatch(fail, 2);
 	void syncReads.done.catch(fail);
 	let readBatch: ReadBatch | undefined;
@@ -256,6 +258,10 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 	const onData = (chunk: Buffer) => {
 		try {
 			for (const message of decoder.push(chunk)) {
+				if (message.type === "cancel_read") {
+					transcriptReads.cancel(message.id);
+					continue;
+				}
 				if (message.type === "hello") {
 					clientInstanceId = message.clientInstanceId;
 					logRuntimeConnection("connection_open", { clientInstanceId });
@@ -303,9 +309,13 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 						queuedBytes,
 						queueLane,
 					});
-				const handle = async () => {
+				const release = () => {
+					queuedRequests--;
+					queuedBytes -= byteLength;
+				};
+				const handle = async (signal?: AbortSignal) => {
 					const startedAt = performance.now();
-					const handled = !closed;
+					const handled = !closed && !signal?.aborted;
 					try {
 						if (handled && message.type === "request")
 							logRuntimeConnection("request_started", {
@@ -327,7 +337,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 										? { requestId: message.id, command: message.request.command, queueLane }
 										: {}),
 								},
-								() => connection.handle(message),
+								() => connection.handle(message, signal),
 							);
 					} finally {
 						if (message.type === "request")
@@ -347,8 +357,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 										}
 									: {}),
 							});
-						queuedRequests--;
-						queuedBytes -= byteLength;
+						if (!signal) release();
 					}
 				};
 				if (message.type === "ui_response") {
@@ -383,11 +392,22 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 							fail(error);
 						});
 				} else if (message.type === "request" && message.request.command === "archive_project_files") {
-					archiveProcessing = Promise.all([handshake, archiveProcessing]).then(handle).catch(fail);
+					archiveProcessing = Promise.all([handshake, archiveProcessing])
+						.then(() => handle())
+						.catch(fail);
 				} else if (message.type === "request" && message.request.command === "check_for_updates") {
-					updateCheckProcessing = Promise.all([handshake, updateCheckProcessing]).then(handle).catch(fail);
+					updateCheckProcessing = Promise.all([handshake, updateCheckProcessing])
+						.then(() => handle())
+						.catch(fail);
 				} else if (message.type === "request" && message.request.command === "read_transcript") {
-					transcriptProcessing = Promise.all([handshake, transcriptProcessing]).then(handle).catch(fail);
+					transcriptReads.add(
+						message.id,
+						async (signal) => {
+							await handshake;
+							await handle(signal);
+						},
+						release,
+					);
 				} else if (
 					message.type === "request" &&
 					(message.request.command === "acquire_session" || message.request.command === "release_session")
@@ -400,7 +420,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 							? [processing, ...pendingSessionReads(sessionPath)]
 							: []),
 					])
-						.then(handle)
+						.then(() => handle())
 						.catch(fail);
 					acquisitions.add(acquisition);
 					if (sessionPath) sessionLifecycle.set(sessionPath, acquisition);
@@ -435,7 +455,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 				} else {
 					sealReadBatch();
 					processing = Promise.all([processing, lifecycleBarrier, ...pendingSessionReads(sessionPath)])
-						.then(handle)
+						.then(() => handle())
 						.catch(fail);
 					if (message.type === "hello") handshake = processing;
 				}
@@ -458,7 +478,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 					syncReads.seal();
 					void Promise.all([
 						processing,
-						transcriptProcessing,
+						transcriptReads.idle(),
 						updateCheckProcessing,
 						archiveProcessing,
 						...acquisitions,
@@ -474,6 +494,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 			};
 			const onClose = () => {
 				closed = true;
+				transcriptReads.close();
 				sealReadBatch();
 				syncReads.seal();
 				cleanup();
@@ -490,6 +511,7 @@ export async function runRuntimeStream(service: WebRuntimeService, input: Readab
 		});
 	} finally {
 		closed = true;
+		transcriptReads.close();
 		logRuntimeConnection("connection_closed", { clientInstanceId, queuedRequests, queuedBytes });
 		input.off("data", onData);
 		await connection.close();

@@ -9,7 +9,7 @@ import {
 	MAX_TRANSCRIPT_SEARCH_LIMIT,
 } from "./limits.ts";
 
-export const RUNTIME_PROTOCOL_VERSION = 14 as const;
+export const RUNTIME_PROTOCOL_VERSION = 15 as const;
 export {
 	MAX_GIT_HISTORY_PAGE_SIZE,
 	MAX_PROJECT_FILE_CHUNK_BYTES,
@@ -2657,7 +2657,13 @@ export const UiResponseSchema = StrictObject({
 	confirmed: Type.Optional(Type.Boolean()),
 	cancelled: Type.Optional(Type.Boolean()),
 });
-export const ClientMessageSchema = Type.Union([ClientHelloSchema, RequestEnvelopeSchema, UiResponseSchema]);
+export const CancelReadSchema = StrictObject({ type: Type.Literal("cancel_read"), id: Id });
+export const ClientMessageSchema = Type.Union([
+	ClientHelloSchema,
+	RequestEnvelopeSchema,
+	UiResponseSchema,
+	CancelReadSchema,
+]);
 export type ClientMessage = Static<typeof ClientMessageSchema>;
 
 export const ProtocolErrorSchema = StrictObject({

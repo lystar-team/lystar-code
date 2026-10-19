@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -107,7 +106,7 @@ func historyLineError(limit int64) error {
 	return &indexError{fmt.Sprintf("Transcript JSONL line exceeds the %d byte limit", limit), "transcript_line_too_large", false}
 }
 
-func completeHistorySize(file *os.File, size int64) (int64, error) {
+func completeHistorySize(file *historyReader, size int64) (int64, error) {
 	buffer := make([]byte, historyWindowBytes)
 	for end := size; end > 0; {
 		start := max(int64(0), end-historyWindowBytes)
@@ -139,7 +138,7 @@ var historyMessageKey = regexp.MustCompile(`"message"\s*:`)
 
 // Large canonical message rows expose their routing fields before the body.
 // Unusual property order is decoded from disk rather than guessed from a prefix.
-func historyRowFields(file *os.File, prefix []byte, offset, length, maxLine int64) (historyFields, bool, error) {
+func historyRowFields(file *historyReader, prefix []byte, offset, length, maxLine int64) (historyFields, bool, error) {
 	var fields historyFields
 	if key := historyMessageKey.FindIndex(prefix); key != nil {
 		header := bytes.TrimRight(bytes.TrimSpace(prefix[:key[0]]), ",")
@@ -169,11 +168,17 @@ func historyRowFields(file *os.File, prefix []byte, offset, length, maxLine int6
 	return fields, valid, nil
 }
 
-func indexHistoryRows(file *os.File, index *historyFile, start, end, maxLine int64) error {
+func indexHistoryRows(file *historyReader, index *historyFile, start, end, maxLine int64) error {
+	if err := file.ctx.Err(); err != nil {
+		return err
+	}
 	reader := historyScanReaders.Get().(*bufio.Reader)
 	reader.Reset(io.NewSectionReader(file, start, end-start))
 	defer func() { reader.Reset(nil); historyScanReaders.Put(reader) }()
 	for offset := start; offset < end; {
+		if err := file.ctx.Err(); err != nil {
+			return err
+		}
 		var prefix []byte
 		var length int64
 		for {
@@ -248,8 +253,11 @@ func (f *historyFile) before(id string, boundary int64) *historyEntry {
 	return entries[position]
 }
 
-func (f *historyFile) lookup(handle *os.File, id string, boundary, maxLine int64) (*historyEntry, error) {
+func (f *historyFile) lookup(handle *historyReader, id string, boundary, maxLine int64) (*historyEntry, error) {
 	for {
+		if err := handle.ctx.Err(); err != nil {
+			return nil, err
+		}
 		if item := f.before(id, boundary); item != nil {
 			return item, nil
 		}
@@ -262,7 +270,7 @@ func (f *historyFile) lookup(handle *os.File, id string, boundary, maxLine int64
 	}
 }
 
-func (h *historyEngine) load(path string, handle *os.File, maxLine int64) (*historyFile, error) {
+func (h *historyEngine) load(path string, handle *historyReader, maxLine int64) (*historyFile, error) {
 	version, err := statVersion(path)
 	if err != nil {
 		return nil, err

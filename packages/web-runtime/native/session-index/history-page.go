@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -62,7 +63,7 @@ func historyVisible(item *historyEntry) bool {
 	return false
 }
 
-func readHistoryItem(file *os.File, item *historyEntry, maxLine int64) (historyItem, error) {
+func readHistoryItem(file *historyReader, item *historyEntry, maxLine int64) (historyItem, error) {
 	if item.Length-1 > maxLine {
 		return historyItem{}, historyLineError(maxLine)
 	}
@@ -152,7 +153,10 @@ func historyMessage(item historyItem) map[string]any {
 	return message
 }
 
-func (h *historyEngine) read(path string, options historyOptions) (*historyPage, error) {
+func (h *historyEngine) read(ctx context.Context, path string, options historyOptions) (*historyPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if options.Limit < 1 || options.MaxLineBytes < 1 {
 		return nil, errors.New("Invalid transcript read limits")
 	}
@@ -172,11 +176,12 @@ func (h *historyEngine) read(path string, options historyOptions) (*historyPage,
 		}
 		return nil, err
 	}
-	handle, err := os.Open(path)
+	opened, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer handle.Close()
+	defer opened.Close()
+	handle := &historyReader{File: opened, ctx: ctx}
 	file, err := h.load(path, handle, options.MaxLineBytes)
 	if err != nil {
 		return nil, err
@@ -254,6 +259,9 @@ func (h *historyEngine) read(path string, options historyOptions) (*historyPage,
 	var pageBytes int64
 	wanted, boundary := "", file.Complete
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		item, err := branch.entry(handle, file, position, options.MaxLineBytes)
 		if err != nil {
 			return nil, err
@@ -315,7 +323,7 @@ func (h *historyEngine) read(path string, options historyOptions) (*historyPage,
 	return &page, nil
 }
 
-func (h *historyEngine) associations(handle *os.File, file *historyFile, branch *historyBranch, end int, selected []*historyEntry, page *historyPage, maxLine int64) error {
+func (h *historyEngine) associations(handle *historyReader, file *historyFile, branch *historyBranch, end int, selected []*historyEntry, page *historyPage, maxLine int64) error {
 	entries, calls, stepIDs, missing := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, item := range selected {
 		entries[item.ID] = true
@@ -400,6 +408,9 @@ func (h *historyEngine) associations(handle *os.File, file *historyFile, branch 
 		}
 	}
 	for _, source := range branch.Steps {
+		if err := handle.ctx.Err(); err != nil {
+			return err
+		}
 		if source.Position >= position {
 			continue
 		}

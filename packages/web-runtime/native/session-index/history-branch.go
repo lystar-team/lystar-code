@@ -1,7 +1,5 @@
 package main
 
-import "os"
-
 type historyBranchStep struct {
 	Source   *historyEntry
 	Position int
@@ -39,8 +37,14 @@ func (f *historyFile) branch(leaf string, leafOffset int64) *historyBranch {
 	return branch
 }
 
-func (b *historyBranch) entry(handle *os.File, file *historyFile, position int, maxLine int64) (*historyEntry, error) {
+func (b *historyBranch) entry(handle *historyReader, file *historyFile, position int, maxLine int64) (*historyEntry, error) {
+	if err := handle.ctx.Err(); err != nil {
+		return nil, err
+	}
 	for len(b.Entries) <= position && b.NextID != "" {
+		if err := handle.ctx.Err(); err != nil {
+			return nil, err
+		}
 		source, err := file.lookup(handle, b.NextID, b.Boundary, maxLine)
 		if err != nil {
 			return nil, err
@@ -61,7 +65,7 @@ func (b *historyBranch) entry(handle *os.File, file *historyFile, position int, 
 	return b.Entries[position], nil
 }
 
-func (b *historyBranch) start(handle *os.File, file *historyFile, cursor *historyCursor, maxLine int64) (int, error) {
+func (b *historyBranch) start(handle *historyReader, file *historyFile, cursor *historyCursor, maxLine int64) (int, error) {
 	if cursor == nil {
 		return 0, nil
 	}
