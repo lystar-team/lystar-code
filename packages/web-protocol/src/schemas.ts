@@ -317,8 +317,10 @@ export const SessionUsageSchema = StrictObject({
 		StrictObject({
 			outputTokens: Type.Integer({ minimum: 0 }),
 			elapsedMs: Type.Integer({ minimum: 1 }),
+			streaming: Type.Optional(Type.Boolean()),
 		}),
 	),
+	estimatedInput: Type.Optional(Type.Boolean()),
 	estimatedOutput: Type.Boolean(),
 });
 export type SessionUsage = Static<typeof SessionUsageSchema>;

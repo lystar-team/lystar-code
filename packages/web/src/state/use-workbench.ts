@@ -8,7 +8,6 @@ import { reconcileCompactionState } from "./compaction-state.ts";
 import {
 	connectionStateAfterHostUpdate,
 	offlineConnectionState,
-	reconnectDelayMs,
 	reconnectingConnectionState,
 } from "./connection-recovery.ts";
 import { readLastSession, saveLastSession } from "./session-persistence.ts";
@@ -60,6 +59,7 @@ import { useWorkbenchFileActions } from "./workbench-file-actions.ts";
 import { useWorkbenchSessionActions } from "./workbench-session-actions.ts";
 import { useWorkbenchProjectActions } from "./workbench-project-actions.ts";
 import { useWorkbenchStreamActions } from "./workbench-stream-actions.ts";
+import { useWorkbenchConnection } from "./workbench-connection.ts";
 import type { ShowToast, SubagentConversationState, WorkbenchState } from "./workbench-types.ts";
 import { applySessionResult, sessionUnreadIndex } from "./session-result-state.ts";
 
@@ -104,8 +104,6 @@ export function useWorkbench() {
 	const stateRef = useRef(state);
 	const mountedRef = useRef(true);
 	const socketRef = useRef<WebSocket | undefined>(undefined);
-	const streamGenerationRef = useRef(0);
-	const reconnectTimerRef = useRef<number | undefined>(undefined);
 	const reconnectAttemptRef = useRef(0);
 	const bootstrapLoadedRef = useRef(false);
 	const resultReadRequestRef = useRef<Promise<void>>();
@@ -150,7 +148,6 @@ export function useWorkbench() {
 	const sessionSubscriptionWaitersRef = useRef(new Map<string, Set<SessionSubscriptionWaiter>>());
 	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
 	const initializeRef = useRef<() => Promise<void>>(async () => {});
-	const resumeConnectionRef = useRef<() => void>(() => {});
 	const runtimeRecoverySessionRef = useRef<string | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
@@ -164,7 +161,6 @@ export function useWorkbench() {
 	const refreshModelSettingsRef = useRef<() => Promise<void>>(async () => {});
 	const sessionReadControllersRef = useRef(new Set<AbortController>());
 	const transcriptReadsRef = useRef(new Map<string, Promise<TranscriptResponse | undefined>>());
-	const streamConnectStartedAtRef = useRef(0);
 
 	const cancelSessionReads = useCallback(() => {
 		for (const waiters of [...sessionSubscriptionWaitersRef.current.values()]) {
@@ -934,94 +930,10 @@ export function useWorkbench() {
 		handledNotifyIdsRef,
 	});
 
-	const scheduleReconnect = useCallback(() => {
-		if (
-			reconnectTimerRef.current ||
-			!mountedRef.current ||
-			!webApi.hasToken() ||
-			!browserNetworkOnline() || document.visibilityState === "hidden"
-		)
-			return;
-		const attempt = reconnectAttemptRef.current;
-		reconnectAttemptRef.current += 1;
-		const delayMs = reconnectDelayMs(attempt);
-		console.info("Web 连接重试", { attempt: attempt + 1, delayMs, time: new Date().toISOString() });
-		reconnectTimerRef.current = window.setTimeout(() => {
-			reconnectTimerRef.current = undefined;
-			if (mountedRef.current) resumeConnectionRef.current();
-		}, delayMs);
-	}, []);
-
-	const connectStream = useCallback(() => {
-		if (!browserNetworkOnline()) {
-			settleSessionSubscriptionWaiters("closed");
-			updateState((current) => ({
-				...current,
-				...offlineConnectionState(),
-				lease: undefined,
-				readOnly: Boolean(current.sessionId),
-				sessionReady: false,
-			}));
-			return;
-		}
-		streamConnectStartedAtRef.current = Date.now();
-		const generation = streamGenerationRef.current + 1;
-		streamGenerationRef.current = generation;
-		console.info("Web 实时连接开始", { generation, sessionId: stateRef.current.sessionId, time: new Date().toISOString() });
-		if (reconnectTimerRef.current) {
-			window.clearTimeout(reconnectTimerRef.current);
-			reconnectTimerRef.current = undefined;
-		}
-		settleSessionSubscriptionWaiters("closed");
-		const previous = socketRef.current;
-		socketRef.current = undefined;
-		if (previous && previous.readyState !== WebSocket.CLOSED) previous.close();
-
-		updateState((current) => ({
-			...current,
-			...reconnectingConnectionState(),
-			...(current.sessionId ? { sessionReady: false } : {}),
-		}));
-		let socket: WebSocket;
-		socket = webApi.connect(
-			(event) => {
-				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
-				handleEvent(event);
-			},
-			(event) => {
-				if (streamGenerationRef.current !== generation || socketRef.current !== socket) return;
-				console.info("Web 实时连接结束", { generation, code: event.code, sessionId: stateRef.current.sessionId, time: new Date().toISOString() });
-				socketRef.current = undefined;
-				settleSessionSubscriptionWaiters("closed");
-				if (!mountedRef.current) return;
-				const networkOnline = browserNetworkOnline();
-				updateState((current) => ({
-					...current,
-					...(networkOnline
-						? reconnectingConnectionState("Web Host 连接已断开，正在重连")
-						: offlineConnectionState()),
-					lease: undefined,
-					readOnly: Boolean(current.sessionId),
-					sessionReady: false,
-				}));
-				if (networkOnline) scheduleReconnect();
-			},
-		);
-		const subscribeSelectedState = () => {
-			const { currentProjectId, sessionId } = stateRef.current;
-			if (currentProjectId) webApi.subscribeProject(socket, currentProjectId);
-			if (sessionId) restoreSelectedSessionSubscription(sessionId);
-		};
-		socket.addEventListener("open", subscribeSelectedState, { once: true });
-		socketRef.current = socket;
-		if (socket.readyState === WebSocket.OPEN) subscribeSelectedState();
-	}, [
-		handleEvent,
-		restoreSelectedSessionSubscription,
-		scheduleReconnect,
-		settleSessionSubscriptionWaiters,
-		updateState,
-	]);
+	const { connectStream, disconnectStream, resumeConnection, scheduleReconnect } = useWorkbenchConnection({
+		state, stateRef, mountedRef, socketRef, reconnectAttemptRef, bootstrapLoadedRef, initializeRef,
+		updateState, handleEvent, restoreSelectedSessionSubscription, settleSessionSubscriptionWaiters,
+	});
 
 	const refreshModelOptions = useCallback((): Promise<void> => {
 		modelOptionsRefreshRef.current += 1;
@@ -1228,35 +1140,6 @@ export function useWorkbench() {
 	]);
 	initializeRef.current = initialize;
 
-	const resumeConnection = useCallback(() => {
-		if (!mountedRef.current || !webApi.hasToken() || !browserNetworkOnline() || document.visibilityState === "hidden") return;
-		if (reconnectTimerRef.current) {
-			window.clearTimeout(reconnectTimerRef.current);
-			reconnectTimerRef.current = undefined;
-		}
-		const socket = socketRef.current;
-		if (socket?.readyState === WebSocket.OPEN) {
-			void refreshModelOptionsRef.current().catch((error) => showToast(errorMessage(error), "error"));
-			if (stateRef.current.settingsOpen && stateRef.current.settingsTab === "models")
-				void refreshModelSettingsRef.current().catch((error) => showToast(errorMessage(error), "error"));
-			const { sessionId, currentProjectId, connected } = stateRef.current;
-			if (currentProjectId) webApi.subscribeProject(socket, currentProjectId);
-			if (!connected || !sessionId) void refreshBootstrap().catch(() => socket.close(4002, "连接核对失败"));
-			if (sessionId && !sessionSubscriptionWaitersRef.current.has(sessionId)) {
-				updateState((current) => ({ ...current, sessionReady: false, reconnecting: true }));
-				restoreSelectedSessionSubscription(sessionId);
-			}
-			return;
-		}
-		if (socket?.readyState === WebSocket.CONNECTING && Date.now() - streamConnectStartedAtRef.current < 1500) return;
-		if (bootstrapLoadedRef.current) {
-			connectStream();
-			return;
-		}
-		void initializeRef.current();
-	}, [connectStream, refreshBootstrap, restoreSelectedSessionSubscription, showToast, updateState]);
-	resumeConnectionRef.current = resumeConnection;
-
 	const submitToken = useCallback(
 		async (token: string) => {
 			bootstrapLoadedRef.current = false;
@@ -1269,16 +1152,9 @@ export function useWorkbench() {
 
 	const signOut = useCallback(() => {
 		cancelSessionReads();
-		streamGenerationRef.current += 1;
 		bootstrapLoadedRef.current = false;
 		reconnectAttemptRef.current = 0;
-		settleSessionSubscriptionWaiters("closed");
-		if (reconnectTimerRef.current) {
-			window.clearTimeout(reconnectTimerRef.current);
-			reconnectTimerRef.current = undefined;
-		}
-		socketRef.current?.close();
-		socketRef.current = undefined;
+		disconnectStream();
 		webApi.clearToken();
 		viewedResultKeyRef.current = undefined;
 		sessionDetailCacheRef.current.clear();
@@ -1289,7 +1165,7 @@ export function useWorkbench() {
 			connected: false,
 			projects: [],
 		}));
-	}, [cancelSessionReads, settleSessionSubscriptionWaiters, updateState]);
+	}, [cancelSessionReads, disconnectStream, updateState]);
 
 	const {
 		selectSession,
@@ -1750,54 +1626,12 @@ export function useWorkbench() {
 	}, [ensureSessionControl, state.connected, state.readOnly, state.sessionId, state.sessionReady]);
 
 	useEffect(() => {
-		const handleOffline = () => {
-			if (reconnectTimerRef.current) {
-				window.clearTimeout(reconnectTimerRef.current);
-				reconnectTimerRef.current = undefined;
-			}
-			streamGenerationRef.current += 1;
-			settleSessionSubscriptionWaiters("closed");
-			const socket = socketRef.current;
-			socketRef.current = undefined;
-			if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
-			updateState((current) => ({
-				...current,
-				...offlineConnectionState(),
-				lease: undefined,
-				readOnly: Boolean(current.sessionId),
-				sessionReady: false,
-			}));
-		};
-		const handleOnline = () => {
-			if (!webApi.hasToken()) {
-				updateState((current) => ({ ...current, networkOnline: true }));
-				return;
-			}
-			updateState((current) => ({
-				...current,
-				...reconnectingConnectionState(),
-				lease: undefined,
-				readOnly: Boolean(current.sessionId),
-				sessionReady: false,
-			}));
-			resumeConnectionRef.current();
-		};
-		window.addEventListener("offline", handleOffline);
-		window.addEventListener("online", handleOnline);
-		return () => {
-			window.removeEventListener("offline", handleOffline);
-			window.removeEventListener("online", handleOnline);
-		};
-	}, [settleSessionSubscriptionWaiters, updateState]);
-
-	useEffect(() => {
 		const handleVisibilityChange = () => {
 			const previous = stateRef.current;
 			flushPendingTextProgress();
 			if (document.visibilityState !== "visible") return;
 			if (stateRef.current === previous) setState(stateRef.current);
-			resumeConnectionRef.current();
-			if (webApi.hasToken() && browserNetworkOnline()) void refreshBootstrap().catch((error) => showToast(errorMessage(error), "error"));
+			resumeConnection();
 		};
 		const handlePageShow = (event: PageTransitionEvent) => {
 			if (event.persisted) handleVisibilityChange();
@@ -1808,7 +1642,7 @@ export function useWorkbench() {
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 			window.removeEventListener("pageshow", handlePageShow);
 		};
-	}, [flushPendingTextProgress, refreshBootstrap, showToast]);
+	}, [flushPendingTextProgress, resumeConnection]);
 
 	useEffect(() => {
 		mountedRef.current = true;
@@ -1816,12 +1650,9 @@ export function useWorkbench() {
 		return () => {
 			mountedRef.current = false;
 			cancelSessionReads();
-			streamGenerationRef.current += 1;
-			settleSessionSubscriptionWaiters("closed");
+			disconnectStream();
 			sessionDetailCacheRef.current.clear();
 			sessionDetailSeqRef.current.clear();
-			socketRef.current?.close();
-			socketRef.current = undefined;
 			if (pendingTextFrameRef.current !== undefined) {
 				window.cancelAnimationFrame(pendingTextFrameRef.current);
 				pendingTextFrameRef.current = undefined;
@@ -1831,14 +1662,10 @@ export function useWorkbench() {
 				pendingTextTimeoutRef.current = undefined;
 			}
 			pendingTextProgressRef.current = [];
-			if (reconnectTimerRef.current) {
-				window.clearTimeout(reconnectTimerRef.current);
-				reconnectTimerRef.current = undefined;
-			}
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
 		};
-	}, [cancelSessionReads, initialize, settleSessionSubscriptionWaiters]);
+	}, [cancelSessionReads, disconnectStream, initialize]);
 
 	return {
 		state,

@@ -1,12 +1,14 @@
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import { estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentSessionEvent } from "./agent-session.ts";
+import { estimateProjectedContextTokens } from "./compaction/compaction.ts";
 import type { SessionEntry, SessionManager } from "./session-manager.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export interface SessionUsage {
 	tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-	outputSpeed?: { outputTokens: number; elapsedMs: number };
+	outputSpeed?: { outputTokens: number; elapsedMs: number; streaming?: boolean };
+	estimatedInput?: boolean;
 	estimatedOutput: boolean;
 }
 
@@ -23,6 +25,8 @@ export class SessionUsageTracker {
 		message: AssistantMessage;
 		parts: string[];
 		estimatedTokens: number;
+		estimatedInput?: number;
+		firstTokenAt?: number;
 		sampledAt: number;
 		finished: boolean;
 	};
@@ -47,9 +51,15 @@ export class SessionUsageTracker {
 				return true;
 			}
 			const delta = event.assistantMessageEvent;
-			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta")
+			if (
+				(delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") &&
+				delta.delta.length > 0
+			) {
 				live.parts.push(delta.delta);
-			if (now - live.sampledAt < 250) return false;
+				const firstToken = live.firstTokenAt === undefined;
+				live.firstTokenAt ??= now;
+				if (!firstToken && now - live.sampledAt < 250) return false;
+			} else if (now - live.sampledAt < 250) return false;
 			live.sampledAt = now;
 			live.estimatedTokens = estimateTextTokens(live.parts.join(""));
 			return true;
@@ -57,7 +67,7 @@ export class SessionUsageTracker {
 		return event.type === "entry_appended";
 	}
 
-	snapshot(manager: SessionManager): SessionUsage {
+	snapshot(manager: SessionManager, now = performance.now()): SessionUsage {
 		const count = manager.getEntryCount();
 		if (
 			manager !== this.manager ||
@@ -110,6 +120,8 @@ export class SessionUsageTracker {
 		const totals = { ...this.totals };
 		let outputTokens = this.speedTokens;
 		let elapsedMs = this.speedMs;
+		let streaming = false;
+		let estimatedInput = false;
 		let estimatedOutput = false;
 		const live = this.live;
 		if (
@@ -121,9 +133,25 @@ export class SessionUsageTracker {
 			)
 		) {
 			addUsageToTotals(totals, live.message.usage);
-			if (!live.finished && live.message.usage.output === 0 && live.estimatedTokens > 0) {
-				totals.output += live.estimatedTokens;
-				estimatedOutput = true;
+			if (!live.finished) {
+				const usage = live.message.usage;
+				if (usage.input + usage.cacheRead + usage.cacheWrite === 0) {
+					live.estimatedInput ??= estimateProjectedContextTokens(
+						manager.buildSessionProjection(),
+						manager.getBranch(),
+					).tokens;
+					totals.input += live.estimatedInput;
+					estimatedInput = live.estimatedInput > 0;
+				}
+				if (live.estimatedTokens > usage.output) {
+					totals.output += live.estimatedTokens - usage.output;
+					estimatedOutput = true;
+				}
+				if (live.firstTokenAt !== undefined) {
+					outputTokens += Math.max(usage.output, live.estimatedTokens);
+					elapsedMs += Math.max(1, Math.round(now - live.firstTokenAt));
+					streaming = true;
+				}
 			}
 			const duration = live.message.decodeDurationMs;
 			if (
@@ -140,7 +168,10 @@ export class SessionUsageTracker {
 		const { input, output, cacheRead, cacheWrite } = totals;
 		return {
 			tokens: { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite },
-			...(elapsedMs > 0 ? { outputSpeed: { outputTokens, elapsedMs } } : {}),
+			...(elapsedMs > 0
+				? { outputSpeed: { outputTokens, elapsedMs, ...(streaming ? { streaming: true } : {}) } }
+				: {}),
+			...(estimatedInput ? { estimatedInput: true } : {}),
 			estimatedOutput,
 		};
 	}

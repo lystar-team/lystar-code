@@ -36,6 +36,7 @@ function MetricBreakdown({
 	totalInput,
 	lastOutputSpeed,
 	speed,
+	estimatedInput,
 	estimatedOutput,
 }: {
 	metric: Metric;
@@ -43,24 +44,25 @@ function MetricBreakdown({
 	totalInput?: number;
 	lastOutputSpeed?: OutputSpeed;
 	speed?: number;
+	estimatedInput?: boolean;
 	estimatedOutput?: boolean;
 }) {
 	return (
 		<div className="space-y-2">
 			{metric === "tps" ? (
 				<>
-					<DetailRow label="累计输出" value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
+					<DetailRow label="累计输出" value={lastOutputSpeed && speed !== undefined ? `${estimatedOutput && lastOutputSpeed.streaming ? "≈" : ""}${exactTokens(lastOutputSpeed.outputTokens)}` : "—"} />
 					<DetailRow label="累计生成耗时" value={lastOutputSpeed && speed !== undefined ? `${(lastOutputSpeed.elapsedMs / 1_000).toFixed(1)} 秒` : "—"} />
 				</>
 			) : metric === "cache" ? (
 				<>
 					<DetailRow label="缓存读取" value={tokens ? exactTokens(tokens.cacheRead) : "—"} />
-					<DetailRow label="输入总量" value={totalInput === undefined ? "—" : exactTokens(totalInput)} />
+					<DetailRow label="输入总量" value={totalInput === undefined ? "—" : `${estimatedInput ? "≈" : ""}${exactTokens(totalInput)}`} />
 					<p className="pt-1 text-xs text-muted-foreground">缓存读取 ÷ 输入总量</p>
 				</>
 			) : metric === "input" ? (
 				<>
-					<DetailRow label="普通输入" value={tokens ? exactTokens(tokens.input) : "—"} />
+					<DetailRow label={estimatedInput ? "普通输入（含估算）" : "普通输入"} value={tokens ? `${estimatedInput ? "≈" : ""}${exactTokens(tokens.input)}` : "—"} />
 					<DetailRow label="缓存读取" value={tokens ? exactTokens(tokens.cacheRead) : "—"} />
 					<DetailRow label="缓存写入" value={tokens ? exactTokens(tokens.cacheWrite) : "—"} />
 				</>
@@ -79,7 +81,20 @@ export function ComposerSessionStats({
 	align?: "start" | "end";
 }) {
 	const tokens = usage?.tokens;
-	const lastOutputSpeed = usage?.outputSpeed;
+	const speedSample = usage?.outputSpeed;
+	const [liveSample, setLiveSample] = useState<{ speed: OutputSpeed; elapsedMs: number }>();
+	const lastOutputSpeed = speedSample ? {
+		...speedSample,
+		elapsedMs: speedSample.elapsedMs + (speedSample.streaming && liveSample?.speed === speedSample ? liveSample.elapsedMs : 0),
+	} : undefined;
+	useEffect(() => {
+		if (!speedSample?.streaming) return;
+		const receivedAt = performance.now();
+		const timer = window.setInterval(() => {
+			setLiveSample({ speed: speedSample, elapsedMs: performance.now() - receivedAt });
+		}, 100);
+		return () => window.clearInterval(timer);
+	}, [speedSample]);
 	const [openMetric, setOpenMetric] = useState<Metric>();
 	const [selectedMetric, setSelectedMetric] = useState<Metric>("tps");
 	const [visibleMetricCount, setVisibleMetricCount] = useState(0);
@@ -130,9 +145,9 @@ export function ComposerSessionStats({
 		? Math.round(lastOutputSpeed.outputTokens * 1_000 / lastOutputSpeed.elapsedMs * 10) / 10
 		: undefined;
 	const values: Record<Metric, string> = {
-		tps: speed === undefined ? "—" : `${speed} tok/s`,
-		cache: cacheHit === undefined ? "—" : `${cacheHit}%`,
-		input: totalInput === undefined ? "—" : compactTokens(totalInput),
+		tps: speed === undefined ? "—" : `${usage?.estimatedOutput && speedSample?.streaming ? "≈" : ""}${speed} tok/s`,
+		cache: cacheHit === undefined ? "—" : `${usage?.estimatedInput ? "≈" : ""}${cacheHit}%`,
+		input: totalInput === undefined ? "—" : `${usage?.estimatedInput ? "≈" : ""}${compactTokens(totalInput)}`,
 		output: tokens === undefined ? "—" : `${usage?.estimatedOutput ? "≈" : ""}${compactTokens(tokens.output)}`,
 	};
 
@@ -181,7 +196,7 @@ export function ComposerSessionStats({
 						})}
 					</div>
 					<div className="mt-3 border-t border-border pt-3">
-						<MetricBreakdown metric={selectedMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} estimatedOutput={usage?.estimatedOutput} />
+						<MetricBreakdown metric={selectedMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} estimatedInput={usage?.estimatedInput} estimatedOutput={usage?.estimatedOutput} />
 					</div>
 				</PopoverContent>
 			</Popover>
@@ -203,7 +218,7 @@ export function ComposerSessionStats({
 						<PopoverContent align="start" collisionPadding={8} side="top" sideOffset={8} className="w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-popover p-3 shadow-md">
 							<div className="mb-2 text-sm font-medium">{labels[metric]}</div>
 							<div className="mb-3 text-lg font-semibold tabular-nums">{values[metric]}</div>
-							<MetricBreakdown metric={metric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} estimatedOutput={usage?.estimatedOutput} />
+							<MetricBreakdown metric={metric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} estimatedInput={usage?.estimatedInput} estimatedOutput={usage?.estimatedOutput} />
 						</PopoverContent>
 					</Popover>
 				))}

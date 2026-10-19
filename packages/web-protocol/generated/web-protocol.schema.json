@@ -6628,9 +6628,15 @@
                         "elapsedMs": {
                           "type": "integer",
                           "minimum": 1
+                        },
+                        "streaming": {
+                          "type": "boolean"
                         }
                       },
                       "additionalProperties": false
+                    },
+                    "estimatedInput": {
+                      "type": "boolean"
                     },
                     "estimatedOutput": {
                       "type": "boolean"
@@ -7825,9 +7831,15 @@
                                 "elapsedMs": {
                                   "type": "integer",
                                   "minimum": 1
+                                },
+                                "streaming": {
+                                  "type": "boolean"
                                 }
                               },
                               "additionalProperties": false
+                            },
+                            "estimatedInput": {
+                              "type": "boolean"
                             },
                             "estimatedOutput": {
                               "type": "boolean"
@@ -15460,9 +15472,15 @@
                 "elapsedMs": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "streaming": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
+            },
+            "estimatedInput": {
+              "type": "boolean"
             },
             "estimatedOutput": {
               "type": "boolean"
@@ -16299,9 +16317,15 @@
                 "elapsedMs": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "streaming": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
+            },
+            "estimatedInput": {
+              "type": "boolean"
             },
             "estimatedOutput": {
               "type": "boolean"
@@ -17138,9 +17162,15 @@
                 "elapsedMs": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "streaming": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
+            },
+            "estimatedInput": {
+              "type": "boolean"
             },
             "estimatedOutput": {
               "type": "boolean"
@@ -17985,9 +18015,15 @@
                     "elapsedMs": {
                       "type": "integer",
                       "minimum": 1
+                    },
+                    "streaming": {
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false
+                },
+                "estimatedInput": {
+                  "type": "boolean"
                 },
                 "estimatedOutput": {
                   "type": "boolean"
@@ -18841,9 +18877,15 @@
                     "elapsedMs": {
                       "type": "integer",
                       "minimum": 1
+                    },
+                    "streaming": {
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false
+                },
+                "estimatedInput": {
+                  "type": "boolean"
                 },
                 "estimatedOutput": {
                   "type": "boolean"
@@ -19689,9 +19731,15 @@
                 "elapsedMs": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "streaming": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
+            },
+            "estimatedInput": {
+              "type": "boolean"
             },
             "estimatedOutput": {
               "type": "boolean"
@@ -20763,9 +20811,15 @@
                     "elapsedMs": {
                       "type": "integer",
                       "minimum": 1
+                    },
+                    "streaming": {
+                      "type": "boolean"
                     }
                   },
                   "additionalProperties": false
+                },
+                "estimatedInput": {
+                  "type": "boolean"
                 },
                 "estimatedOutput": {
                   "type": "boolean"
