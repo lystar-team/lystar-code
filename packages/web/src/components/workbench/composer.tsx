@@ -340,15 +340,7 @@ export const Composer = memo(function Composer({
 	const sessionStats = !inline && !roomMode && state.sessionId ? (
 		<ComposerSessionStats
 			key={state.sessionId}
-			sessionId={state.sessionId}
-			revision={state.session?.transcriptRevision}
-			phase={state.session?.phase}
-			ready={state.sessionReady}
-			connected={state.connected}
-			lastOutputSpeed={state.lastOutputSpeed}
-			lease={state.lease}
-			readOnly={state.readOnly}
-			controlPending={(state.pendingSessionControls?.[state.sessionId] ?? 0) > 0}
+			usage={state.session?.usage}
 			align={statsInFooter ? "start" : "end"}
 		/>
 	) : null;

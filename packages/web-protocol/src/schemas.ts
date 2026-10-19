@@ -304,7 +304,27 @@ export const SessionActivitySchema = Type.Union([
 ]);
 export type SessionActivity = Static<typeof SessionActivitySchema>;
 
+export const SessionUsageTokensSchema = StrictObject({
+	input: Type.Integer({ minimum: 0 }),
+	output: Type.Integer({ minimum: 0 }),
+	cacheRead: Type.Integer({ minimum: 0 }),
+	cacheWrite: Type.Integer({ minimum: 0 }),
+	total: Type.Integer({ minimum: 0 }),
+});
+export const SessionUsageSchema = StrictObject({
+	tokens: SessionUsageTokensSchema,
+	outputSpeed: Type.Optional(
+		StrictObject({
+			outputTokens: Type.Integer({ minimum: 0 }),
+			elapsedMs: Type.Integer({ minimum: 1 }),
+		}),
+	),
+	estimatedOutput: Type.Boolean(),
+});
+export type SessionUsage = Static<typeof SessionUsageSchema>;
+
 export const UsageProgressSchema = StrictObject({
+	sessionUsage: Type.Optional(SessionUsageSchema),
 	outputSpeed: Type.Optional(
 		Type.Union([
 			StrictObject({
@@ -607,6 +627,7 @@ export const SessionStateSnapshotSchema = StrictObject({
 	toolActivityRevision: Type.Optional(Type.Integer({ minimum: 0 })),
 	toolActivities: Type.Optional(Type.Array(ToolActivitySchema, { maxItems: 128 })),
 	activeStep: Type.Optional(AgentStepSchema),
+	usage: Type.Optional(SessionUsageSchema),
 });
 export type SessionStateSnapshot = Static<typeof SessionStateSnapshotSchema>;
 
@@ -1560,13 +1581,7 @@ export const SessionInfoResultSchema = StrictObject({
 		toolCalls: SessionInfoCountSchema,
 		toolResults: SessionInfoCountSchema,
 	}),
-	tokens: StrictObject({
-		input: SessionInfoCountSchema,
-		output: SessionInfoCountSchema,
-		cacheRead: SessionInfoCountSchema,
-		cacheWrite: SessionInfoCountSchema,
-		total: SessionInfoCountSchema,
-	}),
+	tokens: SessionUsageTokensSchema,
 	cost: Type.Number({ minimum: 0 }),
 	usageBreakdown: Type.Array(
 		StrictObject({

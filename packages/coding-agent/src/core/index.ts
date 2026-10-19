@@ -321,6 +321,7 @@ export {
 	createSessionStopTool,
 	createSessionWaitTool,
 } from "./session-tool.ts";
+export { type SessionUsage, SessionUsageTracker } from "./session-usage.ts";
 export {
 	type DefaultProjectTrust,
 	type Settings,

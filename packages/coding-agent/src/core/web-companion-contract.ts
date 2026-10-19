@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import type { SessionExecutionStatus } from "./session-execution.ts";
+import type { SessionUsage } from "./session-usage.ts";
 import type { ToolActivitySnapshot } from "./tool-activity.ts";
 import type { WebConversationBlockMapping, WebConversationMessage } from "./web-conversation-stream.ts";
 
@@ -94,6 +95,7 @@ export interface WebCompanionSnapshot {
 	queuedFollowUpMessages?: WebCompanionQueueMessage[];
 	contextTokens?: number | null;
 	contextWindow?: number;
+	usage?: SessionUsage;
 	transcriptGeneration: string;
 	transcriptRevision: number;
 	toolActivityEpoch: string;

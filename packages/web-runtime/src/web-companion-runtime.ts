@@ -30,7 +30,6 @@ import type {
 	UsageProgress,
 } from "@lystar/code-web-protocol";
 import { measureRuntimePhaseAsync } from "./connection-log.ts";
-import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
 import { projectedToolActivity } from "./transcript-projection.ts";
 import type { RuntimeEvent, RuntimeSession } from "./types.ts";
 import { webSearchProgressFromCall, webSearchProgressSummary } from "./web-search-progress.ts";
@@ -373,6 +372,7 @@ function snapshot(
 		...(value.queuedFollowUpMessages?.length ? { queuedFollowUpMessages: value.queuedFollowUpMessages } : {}),
 		...(value.contextTokens === undefined ? {} : { contextTokens: value.contextTokens }),
 		...(value.contextWindow === undefined ? {} : { contextWindow: value.contextWindow }),
+		...(value.usage === undefined ? {} : { usage: value.usage }),
 		transcriptGeneration: value.transcriptGeneration,
 		transcriptRevision: value.transcriptRevision,
 		...(value.toolActivityEpoch ? { toolActivityEpoch: value.toolActivityEpoch } : {}),
@@ -392,7 +392,6 @@ export class WebCompanionRuntime implements RuntimeSession {
 	private heartbeat?: ReturnType<typeof setInterval>;
 	private snapshotValue: WebCompanionSnapshot;
 	private liveMessage?: WebConversationMessage;
-	private readonly outputSpeed = new OutputSpeedTracker();
 	private revision = 0;
 	private disposed = false;
 	private capabilities: WebCompanionCapability[];
@@ -824,17 +823,6 @@ export class WebCompanionRuntime implements RuntimeSession {
 			return;
 		}
 		if (message.type === "agent_event") {
-			const event = record(message.event);
-			const assistant = record(event?.message);
-			const stream = record(event?.assistantMessageEvent);
-			if (event?.type === "message_start" && assistant?.role === "assistant") this.outputSpeed.start();
-			const liveOutputSpeed =
-				event?.type === "message_update" &&
-				assistant?.role === "assistant" &&
-				(stream?.type === "text_delta" || stream?.type === "toolcall_delta") &&
-				typeof stream.delta === "string"
-					? this.outputSpeed.update(stream.delta)
-					: undefined;
 			for (const progress of projectAgentEvent(message.event)) {
 				this.liveMessage ??= { text: "", thinking: "", blocks: [] };
 				if (this.liveMessage) {
@@ -881,27 +869,6 @@ export class WebCompanionRuntime implements RuntimeSession {
 						this.liveMessage = { text: "", thinking: "", blocks: [] };
 				}
 				this.emit({ type: "progress", payload: progress });
-			}
-			if (liveOutputSpeed)
-				this.emit({ type: "progress", payload: { type: "usage", usage: { outputSpeed: liveOutputSpeed } } });
-			if (event?.type === "message_end" && assistant?.role === "assistant") {
-				const assistantUsage = record(assistant.usage);
-				const outputSpeed = this.outputSpeed.finish(
-					visibleOutputTokens(
-						typeof assistantUsage?.output === "number" ? assistantUsage.output : undefined,
-						typeof assistantUsage?.reasoning === "number" ? assistantUsage.reasoning : undefined,
-					),
-					typeof assistant.stopReason === "string" ? assistant.stopReason : undefined,
-				);
-				this.emit({
-					type: "progress",
-					payload: {
-						type: "usage",
-						usage: {
-							outputSpeed: outputSpeed ? { ...outputSpeed, estimated: false, streaming: false } : null,
-						},
-					},
-				});
 			}
 			return;
 		}

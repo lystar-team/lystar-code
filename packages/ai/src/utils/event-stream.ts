@@ -159,6 +159,7 @@ function coalesceAssistantMessageEvent(
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	readonly #startedAt = Date.now();
 	readonly #startedAtMonotonic = performance.now();
+	#firstTokenAt?: number;
 
 	constructor() {
 		super(
@@ -176,6 +177,12 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 	}
 
 	override push(event: AssistantMessageEvent): void {
+		if (
+			(event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") &&
+			event.delta.length > 0
+		) {
+			this.#firstTokenAt ??= performance.now();
+		}
 		if (event.type === "done") this.#time(event.message);
 		else if (event.type === "error") this.#time(event.error);
 		super.push(event);
@@ -187,8 +194,11 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 	}
 
 	#time(message: AssistantMessage): void {
-		if (this.done || message.durationMs !== undefined || message.timestamp < this.#startedAt) return;
-		message.durationMs = Math.max(0, Math.round(performance.now() - this.#startedAtMonotonic));
+		if (this.done || message.timestamp < this.#startedAt) return;
+		const now = performance.now();
+		message.durationMs ??= Math.max(0, Math.round(now - this.#startedAtMonotonic));
+		if (this.#firstTokenAt !== undefined)
+			message.decodeDurationMs ??= Math.max(0, Math.round(now - this.#firstTokenAt));
 	}
 }
 

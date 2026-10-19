@@ -99,6 +99,7 @@ import {
 	SessionManager,
 	type SessionProfile,
 	type SessionProfileSnapshot,
+	SessionUsageTracker,
 	type SessionWorkspaceSnapshot,
 	SettingsManager,
 	type SubagentDetails,
@@ -171,7 +172,6 @@ import {
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
 import { assertGitOperationActive, git, gitWrite, withGitOperation } from "./git-execution.ts";
-import { OutputSpeedTracker, visibleOutputTokens } from "./output-speed.ts";
 import { plainTextSummary } from "./plain-text-summary.ts";
 import {
 	migrateLegacyWebAttachments,
@@ -1881,7 +1881,7 @@ class CoreRuntimeSession implements RuntimeSession {
 	private readonly activePromptOperations = new Set<Promise<AgentTurnContext | undefined>>();
 	private readonly activeBashControllers = new Set<AbortController>();
 	private readonly activeBashOperations = new Set<Promise<JsonValue>>();
-	private readonly outputSpeed = new OutputSpeedTracker();
+	private sessionUsage = new SessionUsageTracker();
 	private publishedExecution?: SessionStateSnapshot["execution"];
 	private turnAssistantText?: string;
 	private contextUsageSnapshot?: {
@@ -2047,6 +2047,7 @@ class CoreRuntimeSession implements RuntimeSession {
 			...(toolActivityRevision === undefined ? {} : { toolActivityRevision }),
 			...(toolActivities === undefined ? {} : { toolActivities }),
 			...(this.stepController.activeStep ? { activeStep: this.stepController.activeStep } : {}),
+			usage: this.sessionUsage.snapshot(session.sessionManager),
 		};
 	}
 
@@ -2710,7 +2711,7 @@ class CoreRuntimeSession implements RuntimeSession {
 		if (this.stateChangedTimer) clearTimeout(this.stateChangedTimer);
 		this.stateChangedTimer = undefined;
 		this.progress.clear();
-		this.outputSpeed.start();
+		this.sessionUsage = new SessionUsageTracker();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.unsubscribeSteps?.();
@@ -2830,13 +2831,7 @@ class CoreRuntimeSession implements RuntimeSession {
 				(event.message.stopReason === "stop" || event.message.stopReason === "length")
 			)
 				this.turnAssistantText = contentText(event.message.content, "");
-			if (event.type === "message_start" && event.message.role === "assistant") this.outputSpeed.start();
-			const liveOutputSpeed =
-				event.type === "message_update" &&
-				event.message.role === "assistant" &&
-				(event.assistantMessageEvent.type === "text_delta" || event.assistantMessageEvent.type === "toolcall_delta")
-					? this.outputSpeed.update(event.assistantMessageEvent.delta)
-					: undefined;
+			const usageChanged = this.sessionUsage.update(event);
 			if (
 				event.type === "entry_appended" &&
 				event.entry.type === "custom" &&
@@ -2917,15 +2912,10 @@ class CoreRuntimeSession implements RuntimeSession {
 			)) {
 				this.progress.push(progressWithAgentStep(progress, this.stepController));
 			}
-			if (liveOutputSpeed) this.progress.push({ type: "usage", usage: { outputSpeed: liveOutputSpeed } });
-			if (event.type === "message_end" && event.message.role === "assistant") {
-				const outputSpeed = this.outputSpeed.finish(
-					visibleOutputTokens(event.message.usage.output, event.message.usage.reasoning),
-					event.message.stopReason,
-				);
+			if (usageChanged) {
 				this.progress.push({
 					type: "usage",
-					usage: { outputSpeed: outputSpeed ? { ...outputSpeed, estimated: false, streaming: false } : null },
+					usage: { sessionUsage: this.sessionUsage.snapshot(session.sessionManager) },
 				});
 			}
 			this.publishStateChanged(

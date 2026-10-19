@@ -28,8 +28,7 @@ npm run release:lystar
 4. 只提交发行生成的文件，提交钩子复用已通过的发行检查，继续检查锁文件提交授权和暂存差异；随后推送 `main` 和 annotated Tag。
 5. 等待本版的 Release workflow，确认全部 job 成功和十个公开资产齐全。
 6. 下载当前平台归档、manifest、SHA 清单和三个安装器，核对十个公开资产的名称、五平台清单及公开归档大小，校验当前平台归档 SHA、安装器内容和来源证明。
-7. 在临时 HOME 中从最近的旧正式版执行 `lc update`，检查 `current/previous`、重复更新和正式包的版本、帮助、离线模型列表。
-8. 提交并推送 `AGENT_VERIFICATION.md` 中的实际验证结果。
+7. 提交并推送 `AGENT_VERIFICATION.md` 中的实际验证结果。
 
 开发代码提交执行完整 `npm run check`，包括类型、Web 和浏览器打包检查。发行入口执行 `npm run check:release`，检查产品版本、workspace 内部依赖、依赖固定和发行锁文件；五平台原生构建与包检查由 Release workflow 执行。纯 Markdown 提交由提交钩子执行暂存差异检查。脚本不会自动发起真实模型请求或执行手工终端检查；功能改动按[验证范围](verification.md)完成对应检查。
 
@@ -94,7 +93,7 @@ npm run release:lystar -- --verify 1.1.0-lystar.11
 npm run release:lystar -- --verify 1.3.0-lystar.2 --all-platforms
 ```
 
-`--all-platforms` 仅与 `--verify` 配合使用。两种模式均核对十个公开资产、五平台 manifest 与 SHA 清单、公开归档大小和三个安装器；归档内容的 SHA 校验范围分别为当前平台或全部五平台。安装器内容以目标 Tag 为准，元数据校验器使用当前工作区的实现。历史版本不执行指向 latest 的升级；当前最新版本会验证隔离升级。验证目录在命令输出中保留，便于查看下载资产和启动日志。CI 的断言或行为失败需要修复后递增新修订号；`--resume` 不自动重跑失败工作流。
+`--all-platforms` 仅与 `--verify` 配合使用。两种模式均核对十个公开资产、五平台 manifest 与 SHA 清单、公开归档大小和三个安装器；归档内容的 SHA 校验范围分别为当前平台或全部五平台。安装器内容以目标 Tag 为准，元数据校验器使用当前工作区的实现。验证目录在命令输出中保留，便于查看下载资产。CI 的断言或行为失败需要修复后递增新修订号；`--resume` 不自动重跑失败工作流。
 
 本入口只发布 LYStar GitHub Release，不执行上游 npm 发布；`release:patch/minor/major` 继续用于上游 npm 流程。
 
@@ -200,8 +199,6 @@ gh release view <tag> --repo lystar-team/lystar-code --json url,assets,isDraft,i
 - 五平台包、三个安装器、`SHA256SUMS` 和 manifest 共 10 个公开资产。
 - 下载的 manifest 与 SHA 正确。
 - 当前平台资产存在 provenance attestation。
-- 从旧版执行 `lc update` 后 current/previous 正确。
-- 再次更新显示已是最新版本。
 
 ## 失败处理
 

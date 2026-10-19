@@ -1,16 +1,14 @@
-import type { SessionInfoResult } from "@lystar/code-web-protocol";
+import type { SessionUsage } from "@lystar/code-web-protocol";
 import { ArrowDown, ArrowUp, Gauge, Layers3 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { webApi } from "../../adapters/host-protocol/api";
-import type { WorkbenchState } from "../../state/workbench-types";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 type Metric = "tps" | "cache" | "input" | "output";
-type Tokens = SessionInfoResult["tokens"];
-type OutputSpeed = WorkbenchState["lastOutputSpeed"];
+type Tokens = SessionUsage["tokens"];
+type OutputSpeed = SessionUsage["outputSpeed"];
 
 const metrics: Metric[] = ["tps", "cache", "input", "output"];
-const labels: Record<Metric, string> = { tps: "TPS", cache: "缓存命中", input: "输入", output: "输出" };
+const labels: Record<Metric, string> = { tps: "平均 TPS", cache: "缓存命中", input: "输入", output: "输出" };
 const metricIcons = { tps: Gauge, cache: Layers3, input: ArrowDown, output: ArrowUp };
 
 function compactTokens(value: number): string {
@@ -38,20 +36,21 @@ function MetricBreakdown({
 	totalInput,
 	lastOutputSpeed,
 	speed,
+	estimatedOutput,
 }: {
 	metric: Metric;
 	tokens?: Tokens;
 	totalInput?: number;
 	lastOutputSpeed?: OutputSpeed;
 	speed?: number;
+	estimatedOutput?: boolean;
 }) {
 	return (
 		<div className="space-y-2">
 			{metric === "tps" ? (
 				<>
-					<DetailRow label={lastOutputSpeed?.streaming ? "当前输出（估算）" : "最近一次可见输出"} value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
-					<DetailRow label="输出耗时" value={lastOutputSpeed && speed !== undefined ? `${(lastOutputSpeed.elapsedMs / 1_000).toFixed(1)} 秒` : "—"} />
-					{lastOutputSpeed?.estimated && speed !== undefined ? <p className="pt-1 text-xs text-muted-foreground">流式输出期间为估算值，完成后按模型用量校正。</p> : null}
+					<DetailRow label="累计输出" value={lastOutputSpeed && speed !== undefined ? exactTokens(lastOutputSpeed.outputTokens) : "—"} />
+					<DetailRow label="累计生成耗时" value={lastOutputSpeed && speed !== undefined ? `${(lastOutputSpeed.elapsedMs / 1_000).toFixed(1)} 秒` : "—"} />
 				</>
 			) : metric === "cache" ? (
 				<>
@@ -66,36 +65,21 @@ function MetricBreakdown({
 					<DetailRow label="缓存写入" value={tokens ? exactTokens(tokens.cacheWrite) : "—"} />
 				</>
 			) : (
-				<DetailRow label="会话累计输出" value={tokens ? exactTokens(tokens.output) : "—"} />
+				<DetailRow label={estimatedOutput ? "会话累计输出（估算）" : "会话累计输出"} value={tokens ? `${estimatedOutput ? "≈" : ""}${exactTokens(tokens.output)}` : "—"} />
 			)}
 		</div>
 	);
 }
 
 export function ComposerSessionStats({
-	sessionId,
-	revision,
-	ready,
-	connected,
-	phase,
-	lastOutputSpeed,
-	lease,
-	readOnly,
-	controlPending = false,
+	usage,
 	align = "start",
 }: {
-	sessionId: string;
-	revision?: number;
-	ready: boolean;
-	connected: boolean;
-	phase?: string;
-	lastOutputSpeed?: OutputSpeed;
-	lease?: WorkbenchState["lease"];
-	readOnly?: boolean;
-	controlPending?: boolean;
+	usage?: SessionUsage;
 	align?: "start" | "end";
 }) {
-	const [tokens, setTokens] = useState<Tokens>();
+	const tokens = usage?.tokens;
+	const lastOutputSpeed = usage?.outputSpeed;
 	const [openMetric, setOpenMetric] = useState<Metric>();
 	const [selectedMetric, setSelectedMetric] = useState<Metric>("tps");
 	const [visibleMetricCount, setVisibleMetricCount] = useState(0);
@@ -139,38 +123,17 @@ export function ComposerSessionStats({
 		if (visibleMetricCount === metrics.length) setStatsOpen(false);
 		if (openMetric && metrics.indexOf(openMetric) >= visibleMetricCount) setOpenMetric(undefined);
 	}, [openMetric, visibleMetricCount]);
-	useEffect(() => {
-		if (
-			!ready ||
-			!connected ||
-			!lease ||
-			readOnly ||
-			controlPending ||
-			(phase !== "idle" && phase !== "waiting_for_input" && phase !== "interrupted")
-		)
-			return;
-		let cancelled = false;
-		void webApi.sessionUsage(sessionId).then(
-			(result) => {
-				if (!cancelled) setTokens(result.tokens);
-			},
-			() => {
-				if (!cancelled) setTokens(undefined);
-			},
-		);
-		return () => { cancelled = true; };
-	}, [connected, controlPending, lease, phase, readOnly, ready, revision, sessionId]);
 
 	const totalInput = tokens ? tokens.input + tokens.cacheRead + tokens.cacheWrite : undefined;
 	const cacheHit = totalInput ? Math.round((tokens?.cacheRead ?? 0) / totalInput * 100) : undefined;
-	const speed = lastOutputSpeed?.elapsedMs && (phase !== "turn" || lastOutputSpeed.streaming !== undefined)
-		? Math.round(lastOutputSpeed.outputTokens * 1_000 / lastOutputSpeed.elapsedMs)
+	const speed = lastOutputSpeed?.elapsedMs
+		? Math.round(lastOutputSpeed.outputTokens * 1_000 / lastOutputSpeed.elapsedMs * 10) / 10
 		: undefined;
 	const values: Record<Metric, string> = {
-		tps: speed === undefined ? phase === "turn" ? "计算中" : "—" : `${lastOutputSpeed?.estimated ? "≈" : ""}${speed} tok/s`,
+		tps: speed === undefined ? "—" : `${speed} tok/s`,
 		cache: cacheHit === undefined ? "—" : `${cacheHit}%`,
 		input: totalInput === undefined ? "—" : compactTokens(totalInput),
-		output: tokens === undefined ? "—" : compactTokens(tokens.output),
+		output: tokens === undefined ? "—" : `${usage?.estimatedOutput ? "≈" : ""}${compactTokens(tokens.output)}`,
 	};
 
 	return (
@@ -218,7 +181,7 @@ export function ComposerSessionStats({
 						})}
 					</div>
 					<div className="mt-3 border-t border-border pt-3">
-						<MetricBreakdown metric={selectedMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} />
+						<MetricBreakdown metric={selectedMetric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} estimatedOutput={usage?.estimatedOutput} />
 					</div>
 				</PopoverContent>
 			</Popover>
@@ -240,7 +203,7 @@ export function ComposerSessionStats({
 						<PopoverContent align="start" collisionPadding={8} side="top" sideOffset={8} className="w-72 max-w-[calc(100vw-1rem)] rounded-xl border-border bg-popover p-3 shadow-md">
 							<div className="mb-2 text-sm font-medium">{labels[metric]}</div>
 							<div className="mb-3 text-lg font-semibold tabular-nums">{values[metric]}</div>
-							<MetricBreakdown metric={metric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} />
+							<MetricBreakdown metric={metric} tokens={tokens} totalInput={totalInput} lastOutputSpeed={lastOutputSpeed} speed={speed} estimatedOutput={usage?.estimatedOutput} />
 						</PopoverContent>
 					</Popover>
 				))}

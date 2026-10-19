@@ -645,6 +645,8 @@ export interface AssistantMessage {
 	 * for deferred results fetched later.
 	 */
 	durationMs?: number;
+	/** 首个思考、正文或工具参数增量到回复结束的耗时，用于累计平均输出速度。 */
+	decodeDurationMs?: number;
 }
 
 /** A tool call that another tool made while it ran, for example from a codemode script. */

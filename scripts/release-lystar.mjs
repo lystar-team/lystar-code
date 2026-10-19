@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -207,9 +206,9 @@ async function waitForRelease(tag, sha) {
 }
 
 function verifyRelease(version, tag, sha) {
-	phase = "核验公开资产与升级";
+	phase = "核验公开资产";
 	const latest = JSON.parse(gh(["release", "view", "--json", "tagName"]));
-	if (options.mode !== "verify" && latest.tagName !== tag) throw new Error(`${tag} 已不是 GitHub latest；使用 --verify 核验历史资产，不执行升级`);
+	if (options.mode !== "verify" && latest.tagName !== tag) throw new Error(`${tag} 已不是 GitHub latest；使用 --verify 核验历史资产`);
 	const release = JSON.parse(gh(["release", "view", tag, "--json", "url,isDraft,isPrerelease,publishedAt,assets"]));
 	if (release.isDraft || release.isPrerelease) throw new Error(`${tag} 不是公开正式 Release`);
 	const expected = releaseAssetNames(version);
@@ -240,51 +239,8 @@ function verifyRelease(version, tag, sha) {
 		throw new Error("公开归档大小与 manifest 不一致");
 	}
 	gh(["attestation", "verify", join(assets, archive), "--signer-workflow", `${repository}/.github/workflows/release.yml`, "--source-ref", `refs/tags/${tag}`, "--source-digest", sha], { stdio: "inherit", timeout: 180_000 });
-	const home = join(directory, "home");
-	const versions = join(home, ".local/share/lystar-agent/versions");
-	const releases = JSON.parse(gh(["release", "list", "--limit", "100", "--json", "tagName,isDraft,isPrerelease"]));
-	const previous = releases
-		.filter((entry) => !entry.isDraft && !entry.isPrerelease && versionPattern.test(entry.tagName.slice(1)) && compareVersions(entry.tagName.slice(1), version) < 0)
-		.sort((a, b) => compareVersions(b.tagName.slice(1), a.tagName.slice(1)))[0];
-	const env = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi/agent") };
-	delete env.PI_OFFLINE;
-	delete env.LYSTAR_WEB_SERVICE_VERSION;
-	delete env.LYSTAR_WEB_SERVICE_TARGET_VERSION;
-	const current = join(home, ".local/share/lystar-agent/current");
-	const upgrade = previous && latest.tagName === tag;
-	if (upgrade) {
-		const oldVersion = previous.tagName.slice(1);
-		const oldArchive = releaseAssetNames(oldVersion).find((name) => name.endsWith(`-${platform}.tar.gz`));
-		const oldAssets = join(directory, "previous-assets");
-		mkdirSync(oldAssets);
-		gh(["release", "download", previous.tagName, "--pattern", oldArchive, "--pattern", "SHA256SUMS", "--dir", oldAssets], { stdio: "inherit", timeout: 900_000 });
-		const expectedHash = readFileSync(join(oldAssets, "SHA256SUMS"), "utf8").split("\n").find((line) => line.endsWith(`  ${oldArchive}`))?.slice(0, 64);
-		if (createHash("sha256").update(readFileSync(join(oldAssets, oldArchive))).digest("hex") !== expectedHash) throw new Error("旧版升级基线的归档 SHA 不正确");
-		mkdirSync(join(versions, oldVersion), { recursive: true });
-		run("tar", ["-xzf", join(oldAssets, oldArchive), "-C", join(versions, oldVersion), "--strip-components=1"], { stdio: "inherit" });
-		symlinkSync(`versions/${oldVersion}`, current);
-		const oldBinary = join(current, "lc");
-		run(oldBinary, ["update"], { cwd: directory, env, stdio: "inherit", timeout: 900_000 });
-		const previousLink = join(home, ".local/share/lystar-agent/previous");
-		if (readlinkSync(current) !== `versions/${version}` || readlinkSync(previousLink) !== `versions/${oldVersion}`) {
-			throw new Error("升级后的 current/previous 指针不正确；检查 GitHub latest 是否已变化");
-		}
-		run(join(current, "lc"), ["update"], { cwd: directory, env, stdio: "inherit", timeout: 180_000 });
-		if (readlinkSync(current) !== `versions/${version}` || readlinkSync(previousLink) !== `versions/${oldVersion}`) throw new Error("重复更新改变了版本指针");
-	} else {
-		mkdirSync(join(versions, version), { recursive: true });
-		run("tar", ["-xzf", join(assets, archive), "-C", join(versions, version), "--strip-components=1"], { stdio: "inherit" });
-		symlinkSync(`versions/${version}`, current);
-	}
-	const binary = join(current, "lc");
-	const offline = { cwd: directory, env: { ...env, PI_OFFLINE: "1" } };
-	if (run(binary, ["--version"], offline).trim() !== version) throw new Error("正式发行包的版本不正确");
-	for (const flag of ["--help", "--list-models"]) {
-		writeFileSync(join(directory, `${flag.slice(2)}.log`), run(binary, [flag], offline));
-	}
-	console.log(`公开资产、来源证明、${upgrade ? "升级与重复更新、" : ""}离线启动检查通过。验证文件保留在 ${directory}`);
-	if (latest.tagName !== tag) console.log(`历史版核验跳过 lc update；GitHub latest 为 ${latest.tagName}。`);
-	return { release, previous: upgrade ? previous.tagName : null, directory, checksumScope };
+	console.log(`公开资产、来源证明与安装器一致性检查通过。验证文件保留在 ${directory}`);
+	return { release, directory, checksumScope };
 }
 
 async function main() {
@@ -395,7 +351,7 @@ async function main() {
 		const path = join(root, "AGENT_VERIFICATION.md");
 		let text = readFileSync(path, "utf8");
 		text = text.replace(`当前产品版本为 \`${version}\``, `当前正式版本为 \`${version}\``).replace(/^> 更新日期：.+$/m, `> 更新日期：${new Intl.DateTimeFormat("sv-SE").format(new Date())}`);
-		const record = `## ${version} 自动发布验证\n\n- 记录时间：${new Date().toISOString()}。Annotated Tag \`${tag}\` 指向 \`${sha}\`；Release workflow \`${workflow}\` 的全部 job 成功，公开 Release 不是 draft/prerelease。\n- ${releaseAssetNames(version).length} 个公开资产清单、五平台 manifest 与 SHA 清单、三个安装器一致性校验通过；${result.checksumScope} 归档 SHA 和大小校验通过；${process.platform}-${process.arch} 来源证明及独立包版本、帮助、离线模型列表通过。\n- ${result.previous ? `隔离 HOME 中从 \`${result.previous}\` 升级至 \`${tag}\`；current/previous 和重复更新检查通过。` : "没有更早正式版，本次检查独立包启动。"}\n- 验证产物：\`${result.directory}\`。未自动执行真实模型请求或手工终端检查。\n\n`;
+		const record = `## ${version} 自动发布验证\n\n- 记录时间：${new Date().toISOString()}。Annotated Tag \`${tag}\` 指向 \`${sha}\`；Release workflow \`${workflow}\` 的全部 job 成功，公开 Release 不是 draft/prerelease。\n- ${releaseAssetNames(version).length} 个公开资产清单、五平台 manifest 与 SHA 清单、三个安装器一致性校验通过；${result.checksumScope} 归档 SHA 和大小校验通过；${process.platform}-${process.arch} 来源证明通过。\n- 验证产物：\`${result.directory}\`。\n\n`;
 		text = text.replace(/\n(?=## (?!当前事实))/, `\n${record}`);
 		writeFileSync(path, text);
 		commit(new Set(["AGENT_VERIFICATION.md"]), `docs: 记录 ${version} 自动发布验证`);

@@ -16,6 +16,7 @@ import type { AgentSession } from "./agent-session.ts";
 import { getLystarSetting, getLystarSettingsForUi } from "./lystar-settings-catalog.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { type SessionEntry, SessionManager } from "./session-manager.ts";
+import { SessionUsageTracker } from "./session-usage.ts";
 import {
 	getWebCompanionEndpoint,
 	getWebSessionHandoffEndpoint,
@@ -431,6 +432,7 @@ const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium
 const SNAPSHOT_BROADCAST_DELAY_MS = 250;
 
 export class WebCompanionServer {
+	private readonly sessionUsage = new SessionUsageTracker();
 	private readonly sockets = new Set<Socket>();
 	private readonly readySockets = new Set<Socket>();
 	private server?: Server;
@@ -478,6 +480,7 @@ export class WebCompanionServer {
 			if (process.platform !== "win32") chmodSync(endpoint, 0o600);
 			const conversationStream = getWebConversationStream(this.session);
 			this.unsubscribe = this.session.subscribe((event) => {
+				this.sessionUsage.update(event);
 				conversationStream.apply(event);
 				const progress = companionProgressEvent(event);
 				const contentIndex =
@@ -975,6 +978,7 @@ export class WebCompanionServer {
 			...(hasQueueDetails && queuedFollowUpMessages.length > 0 ? { queuedFollowUpMessages } : {}),
 			contextTokens: usage?.tokens,
 			contextWindow: usage?.contextWindow,
+			usage: this.sessionUsage.snapshot(this.session.sessionManager),
 			transcriptGeneration: this.session.sessionManager.getSessionId(),
 			transcriptRevision: stat?.size ?? 0,
 			toolActivityEpoch,

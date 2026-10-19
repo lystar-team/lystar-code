@@ -12,7 +12,8 @@ export function readSourcePresentation(tool: Pick<ToolBatchTool, "state" | "summ
 	if (tool.state !== "output-available" || tool.detail === undefined) return undefined;
 	const output = tool.detail;
 	const lines = output.split(/\r?\n/u);
-	const header = lines[0]?.match(/^\[snapshot \S+; lines (\d+)-(\d+) of (\d+)\]$/u);
+	// packages/coding-agent/src/core/tools/read.ts 输出 [lines start-end of total]，正文每行以 n| 开头。
+	const header = lines[0]?.match(/^\[(?:snapshot \S+; )?lines (\d+)-(\d+) of (\d+)\]$/u);
 	if (header) {
 		const startLine = Number(header[1]);
 		const endLine = Number(header[2]);

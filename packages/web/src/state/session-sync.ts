@@ -47,6 +47,7 @@ export function isSameSessionSnapshot(current: WebSessionSnapshot | undefined, i
 		JSON.stringify(current.queuedFollowUpMessages ?? []) === JSON.stringify(incoming.queuedFollowUpMessages ?? []) &&
 		current.contextTokens === incoming.contextTokens &&
 		current.contextWindow === incoming.contextWindow &&
+		JSON.stringify(current.usage) === JSON.stringify(incoming.usage) &&
 		current.transcriptGeneration === incoming.transcriptGeneration &&
 		current.transcriptRevision === incoming.transcriptRevision &&
 		current.toolActivityEpoch === incoming.toolActivityEpoch &&

@@ -6574,6 +6574,70 @@
             "usage": {
               "type": "object",
               "properties": {
+                "sessionUsage": {
+                  "type": "object",
+                  "required": [
+                    "tokens",
+                    "estimatedOutput"
+                  ],
+                  "properties": {
+                    "tokens": {
+                      "type": "object",
+                      "required": [
+                        "input",
+                        "output",
+                        "cacheRead",
+                        "cacheWrite",
+                        "total"
+                      ],
+                      "properties": {
+                        "input": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "output": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "cacheRead": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "cacheWrite": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "outputSpeed": {
+                      "type": "object",
+                      "required": [
+                        "outputTokens",
+                        "elapsedMs"
+                      ],
+                      "properties": {
+                        "outputTokens": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "elapsedMs": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "estimatedOutput": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "outputSpeed": {
                   "anyOf": [
                     {
@@ -7703,6 +7767,70 @@
                             "summary": {
                               "type": "string",
                               "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "usage": {
+                          "type": "object",
+                          "required": [
+                            "tokens",
+                            "estimatedOutput"
+                          ],
+                          "properties": {
+                            "tokens": {
+                              "type": "object",
+                              "required": [
+                                "input",
+                                "output",
+                                "cacheRead",
+                                "cacheWrite",
+                                "total"
+                              ],
+                              "properties": {
+                                "input": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "output": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "cacheRead": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "cacheWrite": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "total": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "outputSpeed": {
+                              "type": "object",
+                              "required": [
+                                "outputTokens",
+                                "elapsedMs"
+                              ],
+                              "properties": {
+                                "outputTokens": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "elapsedMs": {
+                                  "type": "integer",
+                                  "minimum": 1
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "estimatedOutput": {
+                              "type": "boolean"
                             }
                           },
                           "additionalProperties": false
@@ -15277,6 +15405,70 @@
             }
           },
           "additionalProperties": false
+        },
+        "usage": {
+          "type": "object",
+          "required": [
+            "tokens",
+            "estimatedOutput"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "object",
+              "required": [
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "total"
+              ],
+              "properties": {
+                "input": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheRead": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheWrite": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "total": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSpeed": {
+              "type": "object",
+              "required": [
+                "outputTokens",
+                "elapsedMs"
+              ],
+              "properties": {
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "elapsedMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "estimatedOutput": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -16052,6 +16244,70 @@
             }
           },
           "additionalProperties": false
+        },
+        "usage": {
+          "type": "object",
+          "required": [
+            "tokens",
+            "estimatedOutput"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "object",
+              "required": [
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "total"
+              ],
+              "properties": {
+                "input": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheRead": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheWrite": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "total": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSpeed": {
+              "type": "object",
+              "required": [
+                "outputTokens",
+                "elapsedMs"
+              ],
+              "properties": {
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "elapsedMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "estimatedOutput": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -16824,6 +17080,70 @@
             "summary": {
               "type": "string",
               "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        },
+        "usage": {
+          "type": "object",
+          "required": [
+            "tokens",
+            "estimatedOutput"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "object",
+              "required": [
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "total"
+              ],
+              "properties": {
+                "input": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheRead": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheWrite": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "total": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSpeed": {
+              "type": "object",
+              "required": [
+                "outputTokens",
+                "elapsedMs"
+              ],
+              "properties": {
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "elapsedMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "estimatedOutput": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -17607,6 +17927,70 @@
                 "summary": {
                   "type": "string",
                   "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
+            },
+            "usage": {
+              "type": "object",
+              "required": [
+                "tokens",
+                "estimatedOutput"
+              ],
+              "properties": {
+                "tokens": {
+                  "type": "object",
+                  "required": [
+                    "input",
+                    "output",
+                    "cacheRead",
+                    "cacheWrite",
+                    "total"
+                  ],
+                  "properties": {
+                    "input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cacheRead": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cacheWrite": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "outputSpeed": {
+                  "type": "object",
+                  "required": [
+                    "outputTokens",
+                    "elapsedMs"
+                  ],
+                  "properties": {
+                    "outputTokens": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "elapsedMs": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "estimatedOutput": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
@@ -18402,6 +18786,70 @@
                 }
               },
               "additionalProperties": false
+            },
+            "usage": {
+              "type": "object",
+              "required": [
+                "tokens",
+                "estimatedOutput"
+              ],
+              "properties": {
+                "tokens": {
+                  "type": "object",
+                  "required": [
+                    "input",
+                    "output",
+                    "cacheRead",
+                    "cacheWrite",
+                    "total"
+                  ],
+                  "properties": {
+                    "input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cacheRead": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cacheWrite": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "outputSpeed": {
+                  "type": "object",
+                  "required": [
+                    "outputTokens",
+                    "elapsedMs"
+                  ],
+                  "properties": {
+                    "outputTokens": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "elapsedMs": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "estimatedOutput": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -19183,6 +19631,70 @@
             "summary": {
               "type": "string",
               "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        },
+        "usage": {
+          "type": "object",
+          "required": [
+            "tokens",
+            "estimatedOutput"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "object",
+              "required": [
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "total"
+              ],
+              "properties": {
+                "input": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheRead": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheWrite": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "total": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSpeed": {
+              "type": "object",
+              "required": [
+                "outputTokens",
+                "elapsedMs"
+              ],
+              "properties": {
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "elapsedMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "estimatedOutput": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -20193,6 +20705,70 @@
                 "summary": {
                   "type": "string",
                   "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
+            },
+            "usage": {
+              "type": "object",
+              "required": [
+                "tokens",
+                "estimatedOutput"
+              ],
+              "properties": {
+                "tokens": {
+                  "type": "object",
+                  "required": [
+                    "input",
+                    "output",
+                    "cacheRead",
+                    "cacheWrite",
+                    "total"
+                  ],
+                  "properties": {
+                    "input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cacheRead": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cacheWrite": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "outputSpeed": {
+                  "type": "object",
+                  "required": [
+                    "outputTokens",
+                    "elapsedMs"
+                  ],
+                  "properties": {
+                    "outputTokens": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "elapsedMs": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "estimatedOutput": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
