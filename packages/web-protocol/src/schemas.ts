@@ -1270,6 +1270,7 @@ export const HostDirectoryListingSchema = StrictObject({
 	path: Type.String({ minLength: 1 }),
 	home: Type.String({ minLength: 1 }),
 	parent: Type.Optional(Type.String({ minLength: 1 })),
+	drives: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 	entries: Type.Array(HostDirectoryEntrySchema),
 });
 export type HostDirectoryListing = Static<typeof HostDirectoryListingSchema>;

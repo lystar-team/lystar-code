@@ -3633,7 +3633,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		});
 		entries.sort((left, right) => left.name.localeCompare(right.name));
 		const parent = dirname(current);
-		return { path: current, home, ...(parent !== current ? { parent } : {}), entries };
+		const drives =
+			process.platform === "win32"
+				? Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:\\`).filter((drive) =>
+						existsSync(drive),
+					)
+				: undefined;
+		return { path: current, home, ...(parent !== current ? { parent } : {}), ...(drives ? { drives } : {}), entries };
 	}
 
 	completeProjectFiles(cwd: string, query: string, limit: number): CompletionItem[] {

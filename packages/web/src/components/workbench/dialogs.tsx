@@ -26,6 +26,7 @@ export function DirectoryDialog({
 	onClose: () => void;
 }) {
 	const [selectedDirectory, setSelectedDirectory] = useState<string>();
+	const [directoryInput, setDirectoryInput] = useState("");
 	const [adding, setAdding] = useState(false);
 	const [addError, setAddError] = useState<string>();
 	const directoryPathRef = useRef<string>();
@@ -43,6 +44,7 @@ export function DirectoryDialog({
 			setAddError(undefined);
 		}
 		directoryPathRef.current = listing?.path;
+		setDirectoryInput(listing?.path ?? "");
 	}, [listing?.path, open]);
 	useEffect(() => {
 		if (!open || adding) return;
@@ -65,11 +67,12 @@ export function DirectoryDialog({
 		if (!listing.entries.some((entry) => entry.path === selectedDirectory)) setSelectedDirectory(undefined);
 	}, [listing, open, selectedDirectory]);
 	const addProject = async () => {
-		if (!listing || adding || state.directoryLoading) return;
+		const path = selectedDirectory ?? directoryInput.trim();
+		if (!listing || adding || state.directoryLoading || !path) return;
 		setAdding(true);
 		setAddError(undefined);
 		try {
-			await actions.addProject(selectedDirectory ?? listing.path);
+			await actions.addProject(path);
 			onClose();
 		} catch (error) {
 			setAddError(errorMessage(error));
@@ -91,20 +94,37 @@ export function DirectoryDialog({
 				</DialogHeader>
 				{listing ? (
 					<>
-						<div className="flex items-center gap-2">
-							<HardDrive className="size-4 text-muted-foreground" />
+						<form
+							className="flex items-center gap-2"
+							onSubmit={(event) => {
+								event.preventDefault();
+								if (adding || state.directoryLoading || !directoryInput.trim()) return;
+								setSelectedDirectory(undefined);
+								requestDirectory(directoryInput.trim());
+							}}
+						>
+							<HardDrive className="size-4 shrink-0 text-muted-foreground" />
 							<Input
 								className="min-w-0 flex-1"
-								value={listing.path}
+								value={directoryInput}
 								disabled={adding}
 								onChange={(event) => {
-									const path = event.target.value;
-									setSelectedDirectory(path);
-									requestDirectory(path);
+									setDirectoryInput(event.target.value);
+									setSelectedDirectory(undefined);
 								}}
 								aria-label="当前目录"
 							/>
 							<Button
+								type="submit"
+								size="icon"
+								variant="ghost"
+								disabled={adding || state.directoryLoading || !directoryInput.trim()}
+								aria-label="打开目录"
+							>
+								<ChevronRight className="size-4" />
+							</Button>
+							<Button
+								type="button"
 								size="icon"
 								variant="ghost"
 								onClick={() => requestDirectory(listing.path)}
@@ -113,8 +133,27 @@ export function DirectoryDialog({
 							>
 								<RefreshCw className={state.directoryLoading ? "size-4 animate-spin" : "size-4"} />
 							</Button>
-						</div>
-						<div className="flex gap-2">
+						</form>
+						<div className="flex flex-wrap gap-2">
+							{listing.drives?.length ? (
+								<Select
+									value={listing.drives.find((drive) => listing.path.toLowerCase().startsWith(drive.toLowerCase())) ?? ""}
+									disabled={adding || state.directoryLoading}
+									onValueChange={(drive) => {
+										setSelectedDirectory(undefined);
+										requestDirectory(drive);
+									}}
+								>
+									<SelectTrigger className="h-8 w-28" aria-label="选择盘符">
+										<SelectValue placeholder="选择盘符" />
+									</SelectTrigger>
+									<SelectContent>
+										{listing.drives.map((drive) => (
+											<SelectItem key={drive} value={drive}>{drive}</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							) : null}
 							<Button
 								size="sm"
 								variant="outline"
@@ -172,10 +211,10 @@ export function DirectoryDialog({
 						<DialogFooter>
 							<div className="mr-auto min-w-0 text-left">
 								<p className="text-xs text-muted-foreground">当前选择</p>
-								<p className="max-w-80 truncate font-mono text-xs">{selectedDirectory ?? listing.path}</p>
+								<p className="max-w-80 truncate font-mono text-xs">{selectedDirectory ?? directoryInput.trim()}</p>
 							</div>
 							<Button
-								disabled={adding || state.directoryLoading}
+								disabled={adding || state.directoryLoading || !directoryInput.trim()}
 								onClick={() => void addProject()}
 							>
 								{adding ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}

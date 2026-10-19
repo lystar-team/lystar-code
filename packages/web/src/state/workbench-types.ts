@@ -12,6 +12,7 @@ import type {
 	WebSearchProgress,
 } from "@lystar/code-web-protocol";
 import type {
+	DirectoryListing,
 	FileResponse,
 	HarnessImportResultResponse,
 	HarnessImportsResponse,
@@ -192,12 +193,7 @@ export interface WorkbenchState {
 		depth: number;
 	}>;
 	sessionTreeLoading: boolean;
-	directoryListing?: {
-		path: string;
-		parent?: string;
-		home: string;
-		entries: Array<{ name: string; path: string; hidden: boolean; kind?: "directory" | "file" }>;
-	};
+	directoryListing?: DirectoryListing;
 	directoryLoading: boolean;
 	settingsOpen: boolean;
 	settingsTab: SettingsTab;

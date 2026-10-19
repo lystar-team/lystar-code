@@ -15,6 +15,7 @@ import type {
 	HarnessImportResult,
 	HarnessImportSource,
 	HostDirectoryEntry,
+	HostDirectoryListing,
 	ImageModelSettings,
 	ModelOption,
 	ModelOptionProvider,
@@ -260,12 +261,7 @@ export interface ProductUpdateCheckResponse extends ProductUpdateStatusResponse 
 	url?: string | null;
 }
 
-export interface DirectoryListing {
-	path: string;
-	parent?: string;
-	home: string;
-	entries: HostDirectoryEntry[];
-}
+export type DirectoryListing = HostDirectoryListing;
 
 export interface FileResponse {
 	kind: "text" | "image" | "binary";
