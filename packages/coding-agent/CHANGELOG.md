@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.11] - 2026-10-19
+
 ### Fixed
 
 - 修复 Windows Web 更新的日志文件占用；完善 Windows、Linux 和 macOS 的后台交接、任务状态、目标版本确认和服务切换失败后的重试。
