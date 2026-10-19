@@ -22,6 +22,7 @@ import { main } from "../src/main.ts";
 import { ConfigSelectorComponent } from "../src/modes/interactive/components/config-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";
+import * as lystarUpdater from "../src/utils/lystar-updater.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
 describe("package commands", () => {
@@ -681,24 +682,18 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 		}
 	});
 
-	it("repairs Web services when a Web update retry finds the app already current", async () => {
+	it("hands Web service repair to the installer when the app is already current", async () => {
 		vi.stubEnv("LYSTAR_WEB_SERVICE_TARGET_VERSION", VERSION);
 		vi.stubEnv("LYSTAR_WEB_PREVIOUS_SERVICE_VERSION", "0.85.1-lystar.12");
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => Response.json({ version: VERSION })),
-		);
+		const installer = vi.spyOn(lystarUpdater, "runLystarInstaller").mockResolvedValue(undefined);
 		const reconcile = vi.fn(async () => {});
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await expect(
 			handlePackageCommand(["update", "--self"], { reconcileWebServicesAfterUpdate: reconcile }),
 		).resolves.toBe(true);
 
-		expect(reconcile).toHaveBeenCalledWith(VERSION, "0.85.1-lystar.12");
-		expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
-			"应用已是最新版本，正在修复 Web 服务",
-		);
+		expect(installer).toHaveBeenCalledExactlyOnceWith("lystar-team/lystar-code", ["--version", VERSION]);
+		expect(reconcile).not.toHaveBeenCalled();
 		expect(process.exitCode).toBeUndefined();
 	});
 

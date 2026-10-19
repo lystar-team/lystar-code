@@ -4410,7 +4410,14 @@ export class WebGatewayServer {
 		context: BrowserContext,
 		parts: string[],
 	): Promise<void> {
-		const currentVersion = await this.currentProductVersion(context);
+		let currentVersion: string;
+		try {
+			currentVersion = await this.currentProductVersion(context);
+		} catch (error) {
+			if (parts.length !== 2 || request.method !== "GET") throw error;
+			// Runtime 切换期间仍需读取后台任务，未知版本不能作为更新完成的依据。
+			currentVersion = "unknown";
+		}
 		const job = await this.productUpdate.status(currentVersion);
 		if (parts.length === 2 && request.method === "GET") {
 			sendJson(response, 200, { currentVersion, ...(job ? { job } : {}) });
@@ -4454,10 +4461,15 @@ export class WebGatewayServer {
 			if (!targetVersion) throw new HttpError(400, "product_update_version_required", "目标版本不能为空");
 			const check = object(await client.request<JsonValue>({ command: "check_for_updates" }));
 			const latestVersion = stringValue(check?.latestVersion);
-			if (check?.status !== "available" || !latestVersion) {
+			const repairingServices =
+				job?.status === "failed" &&
+				job.targetVersion === targetVersion &&
+				currentVersion === targetVersion &&
+				check?.status === "current";
+			if (!repairingServices && (check?.status !== "available" || !latestVersion)) {
 				throw new HttpError(409, "product_update_not_available", "当前没有可安装的新版本");
 			}
-			if (targetVersion !== latestVersion) {
+			if (!repairingServices && targetVersion !== latestVersion) {
 				throw new HttpError(409, "product_update_version_changed", `最新版本已变为 v${latestVersion}，请重新确认`);
 			}
 			const availability = await this.productUpdate.availability(stringValue(check?.repository));

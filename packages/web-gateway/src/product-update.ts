@@ -40,6 +40,13 @@ export interface ProductUpdateJob {
 	pid?: number;
 }
 
+interface UpdateWorker {
+	id: string;
+	pid: number;
+	logName: string;
+	exitCode?: number;
+}
+
 interface SpawnedUpdater {
 	pid: number;
 	completion: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
@@ -244,11 +251,41 @@ export class ProductUpdateController {
 		}
 	}
 
-	private async readLog(): Promise<string> {
+	private async readLog(job: ProductUpdateJob): Promise<string> {
+		const worker = await this.readWorker(job);
 		try {
-			return (await readFile(this.logPath, "utf8")).slice(-64 * 1024);
+			const path = worker ? join(this.agentDir, "web", "update-handoff", worker.logName) : this.logPath;
+			return (await readFile(path, "utf8")).slice(-64 * 1024);
 		} catch {
 			return "";
+		}
+	}
+
+	private async readWorker(job: ProductUpdateJob): Promise<UpdateWorker | undefined> {
+		try {
+			const value: unknown = JSON.parse(
+				await readFile(join(this.agentDir, "web", "product-update-worker.json"), "utf8"),
+			);
+			if (!value || typeof value !== "object") return undefined;
+			const worker = value as Partial<UpdateWorker>;
+			if (
+				worker.id !== job.id ||
+				typeof worker.pid !== "number" ||
+				!Number.isInteger(worker.pid) ||
+				worker.pid <= 0 ||
+				typeof worker.logName !== "string" ||
+				!/^update-[0-9a-f-]+\.log$/u.test(worker.logName) ||
+				(worker.exitCode !== undefined && !Number.isInteger(worker.exitCode))
+			)
+				return undefined;
+			return {
+				id: job.id,
+				pid: worker.pid,
+				logName: worker.logName,
+				...(worker.exitCode !== undefined ? { exitCode: worker.exitCode } : {}),
+			};
+		} catch {
+			return undefined;
 		}
 	}
 
@@ -287,11 +324,7 @@ export class ProductUpdateController {
 	async status(currentVersion: string): Promise<ProductUpdateJob | undefined> {
 		const job = await this.readJob();
 		if (!job || job.status === "completed") return job;
-		const installedVersion =
-			currentVersion === job.targetVersion ||
-			(PRODUCT_VERSION_PATTERN.test(currentVersion) && currentVersion !== job.currentVersion)
-				? currentVersion
-				: undefined;
+		const installedVersion = currentVersion === job.targetVersion ? currentVersion : undefined;
 		if (installedVersion && (!this.serviceVersion || this.serviceVersion === installedVersion)) {
 			const completed: ProductUpdateJob = {
 				...job,
@@ -307,13 +340,19 @@ export class ProductUpdateController {
 		}
 		if (job.status !== "running") return job;
 
-		const log = await this.readLog();
-		if (job.pid && !this.isProcessAlive(job.pid)) {
+		const log = await this.readLog(job);
+		const worker = await this.readWorker(job);
+		const pid = worker?.pid ?? job.pid;
+		if (worker?.exitCode !== undefined || (pid && !this.isProcessAlive(pid))) {
 			const failed: ProductUpdateJob = {
 				...job,
 				status: "failed",
 				stage: "failed",
-				message: latestLogMessage(log) ?? "更新进程已结束，版本没有切换",
+				message:
+					worker?.exitCode === 0
+						? `更新任务已结束，但 Web 服务没有运行目标版本 v${job.targetVersion}`
+						: (latestLogMessage(log) ??
+							(installedVersion ? "应用已更新，Web 服务没有完成版本切换" : "更新进程已结束，版本没有切换")),
 				updatedAt: this.now(),
 			};
 			await this.writeJob(failed);
@@ -371,6 +410,7 @@ export class ProductUpdateController {
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
 			PI_CODING_AGENT_DIR: this.agentDir,
+			LYSTAR_WEB_UPDATE_ID: initial.id,
 			LYSTAR_WEB_SERVICE_TARGET_VERSION: targetVersion,
 			LYSTAR_WEB_PREVIOUS_SERVICE_VERSION: currentVersion,
 		};
@@ -399,7 +439,9 @@ export class ProductUpdateController {
 			if (code === 0) return;
 			const current = await this.readJob();
 			if (!current || current.id !== running.id || current.status !== "running") return;
-			const log = await this.readLog();
+			const worker = await this.readWorker(current);
+			if (worker && worker.exitCode === undefined && this.isProcessAlive(worker.pid)) return;
+			const log = await this.readLog(current);
 			await this.writeJob({
 				...current,
 				status: "failed",

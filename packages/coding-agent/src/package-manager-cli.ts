@@ -1093,6 +1093,11 @@ export async function handlePackageCommand(
 						return true;
 					}
 
+					const requestedWebVersion = process.env.LYSTAR_WEB_SERVICE_TARGET_VERSION?.trim();
+					if (RELEASE_REPOSITORY && requestedWebVersion && !managedInstallRoot) {
+						await runLystarInstaller(RELEASE_REPOSITORY, ["--version", requestedWebVersion]);
+						return true;
+					}
 					const plan = await getSelfUpdatePlan(options.force);
 					if (!plan.shouldRun) {
 						if (process.env.LYSTAR_WEB_SERVICE_TARGET_VERSION?.trim()) {

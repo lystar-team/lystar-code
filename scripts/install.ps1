@@ -13,6 +13,7 @@
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $ActivatedVersion = ""
 Remove-Item Env:LYSTAR_WEB_SERVICE_VERSION -ErrorAction SilentlyContinue
 $Repository = "__LYSTAR_RELEASE_REPOSITORY__"
@@ -343,9 +344,11 @@ function Start-WebUpdateHandoffIfNeeded {
     $HandoffId = "$PID-$([Guid]::NewGuid().ToString('N'))"
     $HelperPath = Join-Path $HandoffDir "update-$HandoffId.ps1"
     $ResultPath = Join-Path $HandoffDir "update-$HandoffId.result"
-    $LogPath = Join-Path $WebAgentDir "web\product-update.log"
+    $LogPath = Join-Path $HandoffDir "update-$HandoffId.log"
+    $WorkerPath = Join-Path $WebAgentDir "web\product-update-worker.json"
     $PowerShellPath = Join-Path $PSHOME "powershell.exe"
-    $InstallerPath = [IO.Path]::GetFullPath($PSCommandPath)
+    $InstallerPath = Join-Path $HandoffDir "installer-$HandoffId.ps1"
+    Copy-Item -LiteralPath $PSCommandPath -Destination $InstallerPath
     $ForwardedArguments = New-Object System.Collections.Generic.List[string]
     if ($Version) { $ForwardedArguments.Add("-Version"); $ForwardedArguments.Add($Version) }
     $ForwardedArguments.Add("-Mirror"); $ForwardedArguments.Add($Mirror)
@@ -364,32 +367,49 @@ function Start-WebUpdateHandoffIfNeeded {
     $HelperLines.Add('$env:LYSTAR_WEB_SERVICE_TARGET_VERSION = ' + (ConvertTo-PowerShellLiteral $env:LYSTAR_WEB_SERVICE_TARGET_VERSION))
     $HelperLines.Add('$env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION = ' + (ConvertTo-PowerShellLiteral ([string]$env:LYSTAR_WEB_PREVIOUS_SERVICE_VERSION)))
     $HelperLines.Add('$env:LYSTAR_WEB_UPDATE_DETACHED = "1"')
+    $HelperLines.Add('$env:LYSTAR_WEB_UPDATE_ID = ' + (ConvertTo-PowerShellLiteral ([string]$env:LYSTAR_WEB_UPDATE_ID)))
     $HelperLines.Add('Remove-Item Env:LYSTAR_WEB_SERVICE_CHILD, Env:LYSTAR_WEB_SERVICE_VERSION -ErrorAction SilentlyContinue')
     $HelperLines.Add('$PowerShellPath = ' + (ConvertTo-PowerShellLiteral $PowerShellPath))
     $HelperLines.Add('$InstallerPath = ' + (ConvertTo-PowerShellLiteral $InstallerPath))
     $HelperLines.Add('$InstallerArguments = @(' + $ArgumentLiterals + ')')
     $HelperLines.Add('$LogPath = ' + (ConvertTo-PowerShellLiteral $LogPath))
     $HelperLines.Add('$ResultPath = ' + (ConvertTo-PowerShellLiteral $ResultPath))
+    $HelperLines.Add('$WorkerPath = ' + (ConvertTo-PowerShellLiteral $WorkerPath))
+    $HelperLines.Add('$Worker = @{ id = $env:LYSTAR_WEB_UPDATE_ID; pid = $PID; logName = [IO.Path]::GetFileName($LogPath) }')
+    $HelperLines.Add('function Write-UpdateWorker {')
+    $HelperLines.Add('    if (!$Worker.id) { return }')
+    $HelperLines.Add('    [IO.File]::WriteAllText("$WorkerPath.next", ($Worker | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))')
+    $HelperLines.Add('    Move-Item -Force "$WorkerPath.next" $WorkerPath -ErrorAction Stop')
+    $HelperLines.Add('}')
     $HelperLines.Add('$Status = 1')
+    $HelperLines.Add('$LogWriter = $null')
     $HelperLines.Add('try {')
+    $HelperLines.Add('    Write-UpdateWorker')
+    $HelperLines.Add('    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)')
+    $HelperLines.Add('    $LogStream = [IO.File]::Open($LogPath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)')
+    $HelperLines.Add('    $LogWriter = [IO.StreamWriter]::new($LogStream, [Text.UTF8Encoding]::new($false))')
+    $HelperLines.Add('    $LogWriter.AutoFlush = $true')
     $HelperLines.Add('    $ChildArguments = @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $InstallerPath) + $InstallerArguments')
-    $HelperLines.Add('    & $PowerShellPath @ChildArguments *>> $LogPath')
+    $HelperLines.Add('    & $PowerShellPath @ChildArguments 2>&1 | ForEach-Object { $LogWriter.WriteLine([string]$_) }')
     $HelperLines.Add('    $Status = $LASTEXITCODE')
     $HelperLines.Add('}')
     $HelperLines.Add('catch {')
-    $HelperLines.Add('    ($_ | Out-String) | Add-Content -Path $LogPath -Encoding UTF8')
+    $HelperLines.Add('    if ($LogWriter) { $LogWriter.WriteLine(($_ | Out-String)) }')
     $HelperLines.Add('    $Status = 1')
     $HelperLines.Add('}')
+    $HelperLines.Add('finally { if ($LogWriter) { $LogWriter.Dispose() } }')
+    $HelperLines.Add('$Worker.exitCode = $Status')
+    $HelperLines.Add('Write-UpdateWorker')
     $HelperLines.Add('[IO.File]::WriteAllText("$ResultPath.next", [string]$Status, [Text.UTF8Encoding]::new($false))')
     $HelperLines.Add('Move-Item -Force "$ResultPath.next" $ResultPath')
-    $HelperLines.Add('Remove-Item -Force $PSCommandPath')
+    $HelperLines.Add('Remove-Item -Force $InstallerPath, $PSCommandPath')
     $HelperLines.Add('exit $Status')
-    [IO.File]::WriteAllLines($HelperPath, $HelperLines, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllLines($HelperPath, $HelperLines, [Text.UTF8Encoding]::new($true))
 
     $CommandLine = '"{0}" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "{1}"' -f $PowerShellPath, $HelperPath
     $Created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $CommandLine }
     if (!$Created -or $Created.ReturnValue -ne 0) {
-        Remove-Item -Force -ErrorAction SilentlyContinue $HelperPath
+        Remove-Item -Force -ErrorAction SilentlyContinue $HelperPath, $InstallerPath
         throw "无法创建独立的 Web 更新任务，现有服务未修改。"
     }
     Write-InstallerInfo "更新已交给独立后台任务；Web 服务会在版本切换后自动重启。"

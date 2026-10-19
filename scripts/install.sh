@@ -124,47 +124,74 @@ maybe_handoff_web_update() {
     [[ "$ACTION" == "install" ]] || return 0
     [[ "${LYSTAR_WEB_UPDATE_DETACHED:-}" != "1" ]] || return 0
     [[ -n "${LYSTAR_WEB_SERVICE_TARGET_VERSION:-}" ]] || return 0
-    [[ "$(uname -s)" == "Linux" ]] || return 0
-    if ! systemctl --user is-active --quiet lystar-web-gateway.service 2>/dev/null; then
-        return 0
-    fi
-    command -v systemd-run >/dev/null 2>&1 || die 'Web Gateway 正在运行，但当前系统缺少 systemd-run，无法安全接管更新。'
-    local gateway_pid
-    gateway_pid="$(systemctl --user show --property MainPID --value lystar-web-gateway.service 2>/dev/null || true)"
-    [[ "$gateway_pid" =~ ^[1-9][0-9]*$ ]] || die '无法读取 Web Gateway 主进程，未启动后台更新。'
+    local use_systemd=false gateway_pid=""
+    case "$(uname -s)" in
+        Linux)
+            if systemctl --user is-active --quiet lystar-web-gateway.service 2>/dev/null; then
+                use_systemd=true
+                command -v systemd-run >/dev/null 2>&1 || die 'Web Gateway 正在运行，但当前系统缺少 systemd-run，无法安全接管更新。'
+                gateway_pid="$(systemctl --user show --property MainPID --value lystar-web-gateway.service 2>/dev/null || true)"
+                [[ "$gateway_pid" =~ ^[1-9][0-9]*$ ]] || die '无法读取 Web Gateway 主进程，未启动后台更新。'
+            elif [[ -z "${LYSTAR_WEB_UPDATE_ID:-}" ]]; then
+                return 0
+            fi
+            ;;
+        Darwin) [[ -n "${LYSTAR_WEB_UPDATE_ID:-}" ]] || return 0 ;;
+        *) return 0 ;;
+    esac
 
     local handoff_dir="$web_agent_dir/web/update-handoff"
     local handoff_id="${$}-$(date +%s)"
     local helper_path="$handoff_dir/update-$handoff_id.sh"
     local result_path="$handoff_dir/update-$handoff_id.result"
-    local log_path="$web_agent_dir/web/product-update.log"
+    local log_path="$handoff_dir/update-$handoff_id.log"
+    local copied_installer="$handoff_dir/installer-$handoff_id.sh"
+    local worker_path="$web_agent_dir/web/product-update-worker.json"
     local unit_name="lystar-web-update-$handoff_id"
     mkdir -p "$handoff_dir"
+    cp "$installer_path" "$copied_installer"
     {
         printf '#!/usr/bin/env bash\nset +e\n'
         printf 'export HOME=%q\n' "$HOME"
         printf 'export PATH=%q\n' "${PATH:-}"
+        local name
+        for name in USER LOGNAME SHELL XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS LYSTAR_GITHUB_MIRROR HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do
+            if [[ -n "${!name:-}" ]]; then printf 'export %s=%q\n' "$name" "${!name}"; fi
+        done
         printf 'export PI_CODING_AGENT_DIR=%q\n' "$web_agent_dir"
         printf 'export LYSTAR_WEB_SERVICE_TARGET_VERSION=%q\n' "${LYSTAR_WEB_SERVICE_TARGET_VERSION:-}"
         printf 'export LYSTAR_WEB_PREVIOUS_SERVICE_VERSION=%q\n' "${LYSTAR_WEB_PREVIOUS_SERVICE_VERSION:-}"
         printf 'export LYSTAR_WEB_UPDATE_DETACHED=1\n'
         printf 'unset LYSTAR_WEB_SERVICE_CHILD LYSTAR_WEB_SERVICE_VERSION\n'
         printf 'exec >> %q 2>&1\n' "$log_path"
-        printf '/bin/bash %q' "$installer_path"
+        printf 'worker_path=%q\n' "$worker_path"
+        printf 'update_id=%q\n' "${LYSTAR_WEB_UPDATE_ID:-}"
+        printf 'log_name=%q\n' "${log_path##*/}"
+        printf 'write_worker() {\n'
+        printf '    [[ -n "$update_id" ]] || return 0\n'
+        printf '    printf '\''{"id":"%%s","pid":%%s,"logName":"%%s"%%s}\\n'\'' "$update_id" "$$" "$log_name" "$1" > "$worker_path.next"\n'
+        printf '    mv -f "$worker_path.next" "$worker_path"\n}\n'
+        printf 'write_worker ""\n'
+        printf '/bin/bash %q' "$copied_installer"
         local argument
         for argument in "${original_args[@]}"; do
             printf ' %q' "$argument"
         done
         printf '\nstatus=$?\n'
+        printf 'write_worker ",\\"exitCode\\":$status"\n'
         printf 'printf '\''%%s\\n'\'' "$status" > %q\n' "${result_path}.next"
         printf 'mv -f %q %q\n' "${result_path}.next" "$result_path"
-        printf 'rm -f %q\n' "$helper_path"
+        printf 'rm -f %q %q\n' "$helper_path" "$copied_installer"
         printf 'exit "$status"\n'
     } > "$helper_path"
     chmod 0700 "$helper_path"
-    if ! systemd-run --user --quiet --collect --unit "$unit_name" /bin/bash "$helper_path"; then
-        rm -f "$helper_path"
-        die '无法创建独立的 Web 更新任务，现有服务未修改。'
+    if [[ "$use_systemd" == true ]]; then
+        if ! systemd-run --user --quiet --collect --unit "$unit_name" /bin/bash "$helper_path"; then
+            rm -f "$helper_path" "$copied_installer"
+            die '无法创建独立的 Web 更新任务，现有服务未修改。'
+        fi
+    else
+        nohup /bin/bash "$helper_path" </dev/null >> "$log_path" 2>&1 &
     fi
     print_info '更新已交给独立后台任务；Web 服务会在版本切换后自动重启。'
 
@@ -178,10 +205,10 @@ maybe_handoff_web_update() {
             [[ "$status" == "0" ]] && exit 0
             die "后台更新失败（退出码 ${status:-未知}），请查看 $log_path 后重试。"
         fi
-        local current_pid
-        current_pid="$(systemctl --user show --property MainPID --value lystar-web-gateway.service 2>/dev/null || true)"
-        if [[ "$current_pid" != "$gateway_pid" ]]; then
-            exit 0
+        if [[ "$use_systemd" == true ]]; then
+            local current_pid
+            current_pid="$(systemctl --user show --property MainPID --value lystar-web-gateway.service 2>/dev/null || true)"
+            if [[ "$current_pid" != "$gateway_pid" ]]; then exit 0; fi
         fi
         sleep 1
     done
@@ -406,7 +433,9 @@ if [[ "$(uname -s)" == "Darwin" ]] && web_usage_exists; then
     if [[ -t 0 && -t 1 ]]; then
         sudo -v || die '管理员授权失败，未修改安装和 Web 服务。'
     else
-        sudo -n true || die 'Web 服务需要管理员授权。请在终端执行 sudo -v，再运行安装器或 lc update。'
+        if ! /usr/bin/sudo -n "/Library/PrivilegedHelperTools/com.lystar.web-service-admin.$(id -u)" status 2>/dev/null; then
+            sudo -n true || die 'Web 服务需要管理员授权。请在本机终端运行 lc web service install，再重试更新。'
+        fi
     fi
 fi
 

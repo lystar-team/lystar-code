@@ -20,11 +20,15 @@ export function ProductUpdateControl() {
 	const [checking, setChecking] = useState(true);
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [starting, setStarting] = useState(false);
+	const [recoveringStart, setRecoveringStart] = useState(false);
 	const [checkError, setCheckError] = useState<string>();
 	const [updateError, setUpdateError] = useState<string>();
 	const job = snapshot?.job;
 	const currentVersion = snapshot?.currentVersion ?? check?.currentVersion;
-	const targetVersion = job?.targetVersion ?? check?.latestVersion ?? undefined;
+	const targetVersion =
+		job?.status === "running" || job?.status === "completed"
+			? job.targetVersion
+			: (check?.latestVersion ?? job?.targetVersion);
 	const updateAvailable = check?.status === "available" && check.installEnabled && Boolean(check.latestVersion);
 	const retryable = updateAvailable || job?.status === "failed";
 	const busy = starting || job?.status === "running";
@@ -55,31 +59,41 @@ export function ProductUpdateControl() {
 	}, [load]);
 
 	useEffect(() => {
-		if (job?.status !== "running" && job?.status !== "failed") return;
+		if (job?.status !== "running" && job?.status !== "failed" && !recoveringStart) return;
 		let active = true;
-		let remainingFailedPolls = FAILED_RECOVERY_POLL_LIMIT;
+		let remainingRecoveryPolls = FAILED_RECOVERY_POLL_LIMIT;
 		let timer: number | undefined;
 		const poll = async () => {
+			let keepPolling = true;
 			try {
 				const result = await webApi.productUpdateStatus();
 				if (!active) return;
 				setSnapshot(result);
-				setUpdateError(result.job?.status === "failed" ? result.job.message : undefined);
-				if (result.job?.status === "failed") {
-					remainingFailedPolls--;
-					if (remainingFailedPolls <= 0 && timer !== undefined) window.clearInterval(timer);
+				if (result.job) setUpdateError(result.job.status === "failed" ? result.job.message : undefined);
+				if (result.job?.status === "running" || result.job?.status === "completed") {
+					setRecoveringStart(false);
+					keepPolling = result.job.status === "running";
+				} else {
+					remainingRecoveryPolls--;
+					keepPolling = remainingRecoveryPolls > 0;
 				}
 			} catch {
 				// Gateway 更新期间会短暂离线，保留进度并继续等待新服务。
+				if (job?.status !== "running") {
+					remainingRecoveryPolls--;
+					keepPolling = remainingRecoveryPolls > 0;
+				}
 			}
+			if (!active) return;
+			if (keepPolling) timer = window.setTimeout(() => void poll(), UPDATE_POLL_MS);
+			else setRecoveringStart(false);
 		};
-		timer = window.setInterval(() => void poll(), UPDATE_POLL_MS);
 		void poll();
 		return () => {
 			active = false;
-			if (timer !== undefined) window.clearInterval(timer);
+			if (timer !== undefined) window.clearTimeout(timer);
 		};
-	}, [job?.id, job?.status]);
+	}, [job?.id, job?.status, recoveringStart]);
 
 	useEffect(() => {
 		if (!dialogOpen || job?.status !== "completed") return;
@@ -109,14 +123,15 @@ export function ProductUpdateControl() {
 	};
 
 	const startUpdate = async () => {
-		const requestedVersion = check?.latestVersion ?? job?.targetVersion;
-		if (!requestedVersion || !retryable) return;
+		if (!targetVersion || !retryable) return;
 		setStarting(true);
 		setUpdateError(undefined);
 		try {
-			const result = await webApi.startProductUpdate(requestedVersion);
+			const result = await webApi.startProductUpdate(targetVersion);
+			setRecoveringStart(false);
 			setSnapshot(result);
 		} catch (value) {
+			setRecoveringStart(true);
 			setUpdateError(value instanceof Error ? value.message : String(value));
 		} finally {
 			setStarting(false);
