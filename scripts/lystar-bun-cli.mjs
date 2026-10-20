@@ -60,6 +60,15 @@ if (args[0] === "web") {
 			await runWebPermissionsCommand(["setup"], { runMacosPermissionsCommand });
 		}
 	}
+} else if (args[0] === "uninstall") {
+	// `lc uninstall <source>` still belongs to the Package command. runUninstallCommand
+	// returns false for those arguments so main() keeps handling them.
+	const { runUninstallCommand } = await import("../packages/coding-agent/dist/cli/uninstall-command.js");
+	const handled = await runUninstallCommand(args, { gatewayModule: { runWebServiceAction } });
+	if (!handled) {
+		const { main } = await import("../packages/coding-agent/dist/main.js");
+		await main(args);
+	}
 } else if (args[0] === "web-runtime") {
 	const { runWebRuntimeCli } = await import("../packages/web-runtime/dist/cli-runner.js");
 	await runWebRuntimeCli(args.slice(1));

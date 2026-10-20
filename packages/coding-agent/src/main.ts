@@ -36,6 +36,7 @@ import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
+import { runUninstallCommand } from "./cli/uninstall-command.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -679,6 +680,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
+	if (await runUninstallCommand(args)) return;
 	if (await runDoctorCommand(args, { cwd, agentDir })) return;
 	try {
 		getToolRecoveryMode();
@@ -731,7 +733,8 @@ export async function main(args: string[], options?: MainOptions) {
 		args.some((arg) => arg === "--version" || arg === "-v" || arg === "--help" || arg === "-h") ||
 		args[0] === "list" ||
 		args[0] === "lessons" ||
-		args[0] === "doctor";
+		args[0] === "doctor" ||
+		args[0] === "uninstall";
 	if (process.platform === "win32" && !skipsWindowsShellBootstrap) {
 		const bashPath = await ensureManagedWindowsBash(true);
 		if (!bashPath) {

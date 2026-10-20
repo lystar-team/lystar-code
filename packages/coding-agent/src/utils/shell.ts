@@ -8,6 +8,7 @@ import {
 	getManagedWindowsEnv,
 	getManagedWindowsGitPath,
 } from "./tools-manager.ts";
+import { findExecutableOnWindowsPath } from "./windows-executable-path.ts";
 
 export interface ShellConfig {
 	shell: string;
@@ -39,23 +40,9 @@ function getBashShellConfig(shell: string): ShellConfig {
 
 function findExecutableOnPath(executable: string): string | null {
 	if (process.platform === "win32") {
-		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
-		try {
-			const result = spawnSync("where", [executable], {
-				encoding: "utf-8",
-				timeout: 5000,
-				windowsHide: true,
-			});
-			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && existsSync(firstMatch)) {
-					return firstMatch;
-				}
-			}
-		} catch {
-			// Ignore errors
-		}
-		return null;
+		// Do not parse `where` output: it uses the console code page, so non-ASCII
+		// paths such as a Chinese user profile decode to unusable text.
+		return findExecutableOnWindowsPath(executable) ?? null;
 	}
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)

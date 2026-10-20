@@ -88,10 +88,16 @@ $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lys
 install.cmd /?
 ```
 
-需要离线安装、指定版本、回退或卸载时，使用 PowerShell 主脚本的 `-Help`：
+需要离线安装、指定版本或回退时，使用 PowerShell 主脚本的 `-Help`：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Help
+```
+
+已安装后可以直接卸载。命令会移除程序文件和命令入口，用户数据保留在 `~/.pi/agent`：
+
+```powershell
+lc uninstall
 ```
 
 安装器还会：

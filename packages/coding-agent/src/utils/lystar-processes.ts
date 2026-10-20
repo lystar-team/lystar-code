@@ -207,8 +207,11 @@ function listMacProcesses(): SystemProcessRecord[] {
 }
 
 function listWindowsProcesses(): SystemProcessRecord[] {
+	// Windows PowerShell writes pipes in the console code page, which corrupts
+	// non-ASCII install paths (for example a Chinese user profile). Force UTF-8
+	// for the JSON stream so the parsed paths stay comparable.
 	const script =
-		"$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress";
+		"[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress";
 	const result = spawnProcessSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],

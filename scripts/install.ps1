@@ -581,7 +581,7 @@ try {
     Ensure-WebView2Runtime $TerminalHost $Temp
     $CandidateVersion = (& $Executable --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $CandidateVersion -ne $Version) {
-        throw "候选 lc.exe 版本校验失败：预期 $Version，实际 $CandidateVersion。"
+        throw "候选 lc.exe 版本校验失败：预期 $Version，实际 $CandidateVersion。程序路径：$Executable"
     }
     Write-InstallerSuccess "桌面终端组件检查通过，候选版本为 $CandidateVersion。"
     Write-InstallerStep 4 6 "准备 LYStar 托管的 MinGit Bash"
@@ -601,7 +601,9 @@ try {
         if ($null -eq $SavedMirror) { Remove-Item Env:LYSTAR_GITHUB_MIRROR -ErrorAction SilentlyContinue }
         else { $env:LYSTAR_GITHUB_MIRROR = $SavedMirror }
     }
-    if ($LASTEXITCODE -ne 0) { throw "MinGit Bash 自动安装失败，LYStar 版本未切换。" }
+    if ($LASTEXITCODE -ne 0) {
+        throw "MinGit Bash 自动安装失败，LYStar 版本未切换。可运行 `"$Executable`" --ensure-windows-bash 查看完整原因。"
+    }
     Write-InstallerSuccess "MinGit Bash 已准备好。"
 
     Write-InstallerStep 5 6 "写入版本、命令和开始菜单快捷方式"
@@ -661,7 +663,7 @@ exit /b %errorlevel%
     Write-InstallerStep 6 6 "检查安装结果"
     $InstalledVersion = (& (Join-Path $BinDir "lc.cmd") --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $InstalledVersion -ne $Version) {
-        throw "安装后的 lc 版本校验失败：预期 $Version，实际 $InstalledVersion。"
+        throw "安装后的 lc 版本校验失败：预期 $Version，实际 $InstalledVersion。命令：$(Join-Path $BinDir 'lc.cmd')"
     }
     $AliasVersion = (& (Join-Path $BinDir "lystar.cmd") --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $AliasVersion -ne $Version) {

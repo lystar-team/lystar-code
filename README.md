@@ -103,6 +103,7 @@ lc web
 | 启动终端界面 | `lc` |
 | 在终端继续最近会话 / 选择历史会话 | `lc -c` / `lc -r` |
 | 更新应用 / 回退上一版本 | `lc update` / `lc update --rollback` |
+| 卸载应用（保留用户数据） | `lc uninstall` |
 
 单独管理 Gateway、Runtime 和停止指定会话的命令见 [WebUI 使用指南](docs/usage/webui.md#分别管理-gateway-与-runtime)。卸载应用和数据保留规则见[更新、回退与卸载](docs/usage/update-rollback-uninstall.md)。
 

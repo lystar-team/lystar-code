@@ -27,6 +27,7 @@ import type { ReadableStream as NodeReadableStream } from "stream/web";
 import { setTimeout as delay } from "timers/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
+import { findExecutableOnWindowsPath } from "./windows-executable-path.ts";
 
 const TOOLS_DIR = getBinDir();
 const MANAGED_MINGIT_DIR = join(TOOLS_DIR, "mingit");
@@ -429,12 +430,15 @@ export function getManagedWindowsBashPath(): string | null {
 
 function validateManagedWindowsBash(bashPath: string, rootDir: string): void {
 	const env = getManagedMinGitEnv(rootDir);
-	const whereGit = spawnSync("where.exe", ["git.exe"], { encoding: "utf8", env, stdio: "pipe", windowsHide: true });
-	const firstGit = whereGit.stdout?.trim().split(/\r?\n/)[0];
+	// Resolve PATH in-process instead of reading `where.exe` output. `where.exe`
+	// writes the console code page, so the pipe text is unusable for non-ASCII
+	// paths such as a Chinese user profile, and the comparison below would fail
+	// even though the managed Git is first on PATH.
+	const firstGit = findExecutableOnWindowsPath("git.exe", env);
 	const expectedGit = join(rootDir, "cmd", "git.exe");
 	const resolvedFirstGit = firstGit && existsSync(firstGit) ? realpathSync.native(firstGit).toLowerCase() : "";
 	const resolvedExpectedGit = existsSync(expectedGit) ? realpathSync.native(expectedGit).toLowerCase() : "";
-	if (whereGit.error || whereGit.status !== 0 || resolvedFirstGit !== resolvedExpectedGit) {
+	if (!firstGit || resolvedFirstGit !== resolvedExpectedGit) {
 		throw new Error(`Managed MinGit validation failed: expected ${expectedGit}, resolved ${firstGit ?? "nothing"}`);
 	}
 

@@ -22,7 +22,7 @@ type WebCommandSettings = {
 	defaultPort: number;
 	defaultRuntimePort: number;
 };
-interface WebGatewayModule {
+export interface WebGatewayModule {
 	runWebSessionStop(options: {
 		sessionId: string;
 		agentDir: string;

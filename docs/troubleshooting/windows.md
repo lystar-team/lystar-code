@@ -93,6 +93,18 @@ Windows 发行包尚未配置 Authenticode，SmartScreen 可能提示未知发�
 
 当前没有 Windows ARM64 独立发行包。安装器会明确停止，不会安装 x64 包冒充原生支持。
 
+## 用户名或安装路径包含中文
+
+安装目录 `%LOCALAPPDATA%\LYStarAgent` 和用户数据目录 `~/.pi/agent` 可以包含中文或其他非 ASCII 字符。安装器、托管 MinGit Bash、独立终端和 Web 后台服务都按 Windows Unicode 路径处理，不经过系统代码页。
+
+安装失败时先记录完整错误信息（含失败步骤、预期版本和实际输出）。托管 Bash 检查失败且 `lc` 已经可以运行时，先执行：
+
+```powershell
+lc --ensure-windows-bash
+```
+
+命令会输出具体原因。已有 MinGit 离线包时按[托管 MinGit Bash](#托管-mingit-bash)一节离线初始化。卸载使用 `lc uninstall`。
+
 ## 字体、中文输入和快捷键
 
 独立窗口自带 Noto Sans Mono CJK 字体面，不读取 PowerShell 或 Windows Terminal 的字体设置。中文候选框异常时，先确认系统输入法能在普通 WebView2 应用中输入，再使用 `lc --attached` 对比；只有独立窗口异常时重新安装 WebView2 Runtime。

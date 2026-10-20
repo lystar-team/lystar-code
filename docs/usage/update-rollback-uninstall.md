@@ -49,7 +49,25 @@ lc update --rollback
 
 回退会交换 `current` 和 `previous`，不修改 `~/.pi/agent`。没有 previous 版本时命令会停止并说明原因。
 
+## 卸载
+
+官方安装器安装的 LYStar Code 可以直接卸载：
+
+```bash
+lc uninstall
+```
+
+命令会先停止并移除 Web 后台服务，再删除版本目录、命令入口和开始菜单快捷方式。用户数据目录不会删除。无交互终端需要显式确认：
+
+```bash
+lc uninstall --yes
+```
+
+`lc uninstall <source>` 仍然卸载已安装的 Package，与产品卸载互不影响。使用 npm、pnpm、yarn 或 bun 安装的副本不在此命令范围内，输出会说明对应的包管理器卸载命令。
+
 ## 卸载 macOS / Linux
+
+也可以重新运行安装器卸载：
 
 ```bash
 curl -fsSL https://github.com/lystar-team/lystar-code/releases/latest/download/install.sh -o install.sh
@@ -66,6 +84,8 @@ export PATH="$HOME/.local/bin:$PATH"
 确认不再需要 `~/.local/bin` 后，可从 `~/.zprofile`、`~/.bashrc`、`~/.bash_profile` 或 `~/.profile` 人工删除。
 
 ## 卸载 Windows
+
+可以先运行 `lc uninstall` 移除程序文件和命令入口。也可以重新运行安装器卸载：
 
 ```powershell
 irm https://github.com/lystar-team/lystar-code/releases/latest/download/install.ps1 -OutFile install.ps1

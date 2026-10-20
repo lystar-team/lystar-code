@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 `lc uninstall`：停止并移除 Web 后台服务，删除版本目录、命令入口和开始菜单快捷方式，保留 `~/.pi/agent` 用户数据；`lc uninstall <source>` 仍卸载 Package。
+
+### Fixed
+
+- 修复 Windows 用户名或安装路径包含中文时安装失败的问题：托管 MinGit Bash 校验不再解析 `where.exe` 输出，改为直接按 PATH 解析并与托管 `git.exe` 的真实路径比较。
+- 修复 Windows 上查找 `bash.exe`、`pwsh.exe` 和进程列表时的非 ASCII 路径解析；进程列表 JSON 强制使用 UTF-8 输出。
+
 ## [1.3.0-lystar.15] - 2026-10-20
 
 ### Fixed
