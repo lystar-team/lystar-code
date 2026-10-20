@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.16] - 2026-10-20
+
 ### Added
 
 - 新增 `lc uninstall`：停止并移除 Web 后台服务，删除版本目录、命令入口和开始菜单快捷方式，保留 `~/.pi/agent` 用户数据；`lc uninstall <source>` 仍卸载 Package。
