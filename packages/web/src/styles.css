@@ -519,6 +519,11 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 [data-radix-popper-content-wrapper]:has(> [data-slot="popover-content"][data-state="closed"] [role="group"][aria-label="选择发送方式"]) {
 	pointer-events: none;
 }
+/* 会话行右侧给状态图标预留位置；按钮默认尺寸的 has-[>svg]:px-3 在 utilities 层，会压过行内 pr-8。 */
+button.mobile-session-button {
+	padding-right: 2rem;
+}
+
 /* 移动项目栏保持桌面行高，状态和操作占用独立区域。 */
 .mobile-project-rail .mobile-session-button {
 	padding-right: 4.5rem;

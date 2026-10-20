@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { webApi } from "../adapters/host-protocol/api.ts";
 import { clearUncommittedUserPrompts } from "./chat-lifecycle.ts";
 import type { WebProject } from "../types.ts";
-import { errorMessage } from "./workbench-state.ts";
+import { errorMessage, mergeProjectSessions } from "./workbench-state.ts";
 import type { ShowToast, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
@@ -211,13 +211,19 @@ export function useWorkbenchProjectActions({
 				if ((changed[key] ?? false) === (previous[key] ?? false)) delete changed[key];
 			}
 			const result = await webApi.updateProject(projectId, changed, previous);
-			updateWorkspaceState(revision, (current) => ({
-				...current,
-				projects: current.projects.map((project) => (project.id === projectId ? result.project : project)),
-			}));
-			await refreshBootstrap();
+			// PATCH 已返回更新后的项目，直接合并本地状态，不再跑一次全量 bootstrap。
+			updateWorkspaceState(revision, (current) => {
+				const project = current.projects.find((candidate) => candidate.id === projectId);
+				if (!project) return current;
+				const merged = mergeProjectSessions([project], [result.project])[0];
+				if (merged === project) return current;
+				return {
+					...current,
+					projects: current.projects.map((candidate) => (candidate.id === projectId ? merged : candidate)),
+				};
+			});
 		},
-		[updateWorkspaceState, refreshBootstrap],
+		[updateWorkspaceState],
 	);
 
 	const reorderProjects = useCallback(

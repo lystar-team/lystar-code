@@ -258,7 +258,7 @@ export function useWorkbench() {
 			state.projects
 				.filter((project) => !project.archived)
 				.slice()
-				.sort((left, right) => Number(right.pinned) - Number(left.pinned)),
+				.sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned))),
 		[state.projects],
 	);
 
@@ -838,7 +838,7 @@ export function useWorkbench() {
 				const firstProject = requestedProject ??
 					data.projects.find((project) => project.id === stateRef.current.currentProjectId && !project.archived) ??
 					lastSessionProject ?? data.projects.filter((project) => !project.archived).slice()
-						.sort((left, right) => Number(right.pinned) - Number(left.pinned))[0];
+						.sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)))[0];
 				if (!firstProject) return;
 				updateState((current) => ({ ...current, currentProjectId: firstProject.id }));
 				const socket = socketRef.current;

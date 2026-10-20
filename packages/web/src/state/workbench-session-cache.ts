@@ -14,6 +14,7 @@ export type SessionDetailCache = Pick<
 	| "agentSteps"
 	| "settledTurns"
 	| "transcriptPageLoaded"
+	| "displayedResultRevision"
 	| "transcriptGeneration"
 	| "transcriptRevision"
 	| "transcriptLeafId"
@@ -48,6 +49,7 @@ export function sessionDetailCacheFromState(state: WorkbenchState): SessionDetai
 		agentSteps: state.agentSteps,
 		settledTurns: state.settledTurns,
 		transcriptPageLoaded: state.transcriptPageLoaded,
+		displayedResultRevision: state.displayedResultRevision,
 		transcriptGeneration: state.transcriptGeneration,
 		transcriptRevision: state.transcriptRevision,
 		transcriptLeafId: state.transcriptLeafId,

@@ -2432,6 +2432,7 @@ export class WebGatewayServer {
 				path: listing.path,
 				...(listing.parent ? { parent: listing.parent } : {}),
 				home: listing.home,
+				...(listing.drives?.length ? { drives: listing.drives } : {}),
 				entries: listing.entries,
 			});
 			return;

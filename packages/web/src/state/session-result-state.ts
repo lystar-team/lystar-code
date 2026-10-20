@@ -13,6 +13,15 @@ export function sessionUnreadIndex(projects: readonly WebProject[], previous: Re
 	return ids.length === Object.keys(previous).length && ids.every((id) => previous[id]) ? previous : unread;
 }
 
+/** 会话当前的结果版本；没有结果时返回 undefined。 */
+export function sessionResultRevision(projects: readonly WebProject[], sessionId: string): number | undefined {
+	for (const project of projects) {
+		const session = project.sessions.find((candidate) => candidate.id === sessionId);
+		if (session) return session.result?.revision;
+	}
+	return undefined;
+}
+
 export function applySessionResult(current: WorkbenchState, result: SessionResultState): WorkbenchState {
 	let changed = false;
 	const projects = current.projects.map((project) => {

@@ -69,7 +69,7 @@ import type {
 	ShowToast,
 	WorkbenchState,
 } from "./workbench-types.ts";
-import { applySessionResult } from "./session-result-state.ts";
+import { applySessionResult, sessionResultRevision } from "./session-result-state.ts";
 
 import { applyWorkspaceSnapshot } from "./workspace-state.ts";
 type StateRef = { current: WorkbenchState };
@@ -942,9 +942,12 @@ export function useWorkbenchStreamActions({
 			return false;
 		sessionDetailSeqRef.current.set(sessionId, subscription.seq);
 		updateState((value) => ({ ...value, sessionReady: true }));
+		// 缓存窗口落后于当前结果版本时补读尾页；确认已读靠本次读取返回的结果版本，不能只依赖事件回放。
+		if (sessionResultRevision(restored.projects, sessionId) !== cached.detail.displayedResultRevision)
+			scheduleTranscriptRefresh(sessionId);
 		recordBrowserDiagnostic("session.selection.cached", { sessionId, selection: selectionRef.current, events: events.length, seq: subscription.seq });
 		return true;
-	}, [flushPendingTextProgress, handleEvent, updateState]);
+	}, [flushPendingTextProgress, handleEvent, scheduleTranscriptRefresh, updateState]);
 	return {
 		scheduleTranscriptRefresh,
 		cancelScheduledTranscriptRefresh,

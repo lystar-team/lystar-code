@@ -43,6 +43,7 @@ import {
 	withPromptSendTimes,
 } from "./workbench-live-state.ts";
 import { isOlderSessionSnapshot } from "./session-sync.ts";
+import { sessionResultRevision } from "./session-result-state.ts";
 import type { ShowToast, ComposerMode, WorkbenchState } from "./workbench-types.ts";
 
 type StateRef = { current: WorkbenchState };
@@ -344,6 +345,13 @@ export function useWorkbenchSessionActions({
 					sessionTree: sessionChanged ? [] : current.sessionTree,
 					sessionTreeLoading: sessionChanged ? false : current.sessionTreeLoading,
 				}));
+				// 切换会话会清空已展示结果版本；缓存窗口仍对应当前结果时恢复，落后时交给补读更新。
+				const cachedResultRevision = cached?.displayedResultRevision;
+				if (cached?.transcriptPageLoaded && cachedResultRevision !== undefined &&
+					sessionResultRevision(stateRef.current.projects, sessionId) === cachedResultRevision)
+					updateState((current) => current.sessionId === sessionId
+						? { ...current, displayedResultRevision: cachedResultRevision }
+						: current);
 				if (socket && previous.sessionId && sessionChanged && !previousSubscription)
 					webApi.unsubscribeSession(socket, previous.sessionId);
 				if (previous.sessionId && sessionChanged && !hasActiveSessionWork(previous))
@@ -451,7 +459,9 @@ export function useWorkbenchSessionActions({
 						cached.transcriptGeneration === snapshot.transcriptGeneration &&
 						cached.transcriptRevision === snapshot.transcriptRevision &&
 						cached.session.leafId === snapshot.leafId;
-					if (!historyUnchanged) transcriptPromise = loadTranscript(sessionId, undefined, true);
+					// 确认已读依赖本次读取返回的结果版本，缓存窗口落后于当前结果时必须重新读取。
+					const resultUnchanged = sessionResultRevision(stateRef.current.projects, sessionId) === cached?.displayedResultRevision;
+					if (!historyUnchanged || !resultUnchanged) transcriptPromise = loadTranscript(sessionId, undefined, true);
 				}
 				try {
 					await transcriptPromise;

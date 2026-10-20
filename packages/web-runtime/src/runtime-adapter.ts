@@ -273,6 +273,11 @@ function canonicalDirectory(path: string): string {
 	return resolved;
 }
 
+function expandWindowsDrive(path: string): string {
+	// "D:" resolves against the process working directory on Windows; a bare drive means the drive root.
+	return process.platform === "win32" && /^[a-zA-Z]:$/.test(path) ? `${path}\\` : path;
+}
+
 function isInside(root: string, path: string): boolean {
 	const value = relative(root, path);
 	return value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
@@ -3610,7 +3615,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	listDirectories(path?: string): HostDirectoryListing {
 		const home = canonicalDirectory(homedir());
-		const current = canonicalDirectory(path ?? home);
+		const current = canonicalDirectory(path ? expandWindowsDrive(path) : home);
 		const entries = readdirSync(current, { withFileTypes: true }).flatMap((entry) => {
 			const candidate = join(current, entry.name);
 			try {
