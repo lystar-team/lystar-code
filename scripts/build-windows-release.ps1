@@ -63,7 +63,7 @@ try {
     Copy-Item -Recurse (Join-Path $PackageDir "dist\core\export-html") $BundleDir
     Copy-Item -Recurse (Join-Path $PackageDir "dist\skills") $BundleDir
     Copy-Item (Join-Path $PackageDir "assets\lystar-windows-icon.png"), (Join-Path $PackageDir "assets\lystar-windows-icon.ico") (Join-Path $BundleDir "assets")
-    Copy-Item (Join-Path $Root "packages\web\dist\*") (Join-Path $BundleDir "web")
+    Copy-Item -Recurse (Join-Path $Root "packages\web\dist\*") (Join-Path $BundleDir "web")
 
     $TerminalSource = Join-Path $PackageDir "src\windows-terminal-host\terminal"
     Copy-Item (Join-Path $TerminalSource "index.html"), (Join-Path $TerminalSource "terminal.css"), (Join-Path $TerminalSource "terminal.js"), (Join-Path $TerminalSource "NotoSansCJK-Regular.ttc"), (Join-Path $TerminalSource "NotoSansCJK-LICENSE.txt") (Join-Path $BundleDir "terminal")
@@ -77,8 +77,13 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $BundleDir "native\session-index") | Out-Null
     Copy-Item -Recurse (Join-Path $PackageDir "dist\native\session-index\win32-x64") (Join-Path $BundleDir "native\session-index")
 
-    foreach ($RequiredFile in @("lc.exe", "lystar-web-service.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "skills\imagegen\SKILL.md", "native\session-index\win32-x64\lystar-session-index.exe")) {
+    foreach ($RequiredFile in @("lc.exe", "lystar-web-service.exe", "package.json", "photon_rs_bg.wasm", "web\index.html", "web\version.json", "web\brand\lystar-mark-dark.webp", "web\brand\models\openai.svg", "web\brand\providers\openai.svg", "skills\imagegen\SKILL.md", "native\session-index\win32-x64\lystar-session-index.exe")) {
         if (!(Test-Path (Join-Path $BundleDir $RequiredFile))) { throw "Windows release bundle is missing $RequiredFile." }
+    }
+    foreach ($RequiredDirectory in @("web\assets", "web\brand", "web\brand\models", "web\brand\providers")) {
+        $DirectoryPath = Join-Path $BundleDir $RequiredDirectory
+        if (!(Test-Path -LiteralPath $DirectoryPath -PathType Container)) { throw "Windows release bundle is missing directory $RequiredDirectory." }
+        if (!(Get-ChildItem -LiteralPath $DirectoryPath -File -Recurse | Select-Object -First 1)) { throw "Windows release bundle directory is empty: $RequiredDirectory." }
     }
 
     Write-Host ("CI_TIMING copy-assets {0:N2}s" -f $StageTimer.Elapsed.TotalSeconds)

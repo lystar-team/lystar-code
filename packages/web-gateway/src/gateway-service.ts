@@ -348,17 +348,6 @@ async function waitForGatewayReady(config: WebGatewayConfig, timeoutMs = 10_000)
 	throw new Error(`Web Gateway服务启动超时${lastError ? `：${lastError}` : ""}`);
 }
 
-async function stopDetachedGateway(agentDir: string, profile: string): Promise<void> {
-	const pid = readGatewayPid(agentDir, profile);
-	if (!pid) return;
-	try {
-		process.kill(pid, "SIGTERM");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-	}
-	await waitForGatewayExit(agentDir, profile);
-}
-
 async function waitForServiceStopped(spec: WebServiceSpec, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
@@ -536,8 +525,13 @@ async function applyWebServices(
 	} else if (!runtimeStatus.responsive) {
 		throw new Error(`Web Runtime 未运行或无响应：${config.runtimeEndpoint}`);
 	}
-	if (!gatewayStatus.installed && gatewayStatus.manager === "detached")
-		await stopDetachedGateway(config.agentDir, profile);
+	if (!gatewayStatus.installed && gatewayStatus.manager === "detached") {
+		stopWebService(gateway, false, {
+			detachedPid: readGatewayPid(config.agentDir, profile),
+			interactiveAdmin: options.interactiveAdmin ?? false,
+		});
+		await waitForGatewayExit(config.agentDir, profile);
+	}
 	if (reinstall || !gatewayStatus.installed) {
 		installWebService(gateway, { interactiveAdmin: options.interactiveAdmin ?? false });
 	} else {

@@ -1024,6 +1024,26 @@ export function ensureWebService(spec: WebServiceSpec, options: { interactiveAdm
 	return started;
 }
 
+function stopDetachedProcess(pid: number, force: boolean): void {
+	if (process.platform === "win32") {
+		const result = run("taskkill.exe", ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])]);
+		if (
+			!result.ok &&
+			!/not found|no running instance|does not exist|找不到|不存在|没有运行/iu.test(
+				`${result.stdout}\n${result.stderr}`,
+			)
+		) {
+			throw new Error(`无法停止 detached Web 服务：${result.stderr || result.stdout}`);
+		}
+		return;
+	}
+	try {
+		process.kill(pid, force ? "SIGKILL" : "SIGTERM");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+	}
+}
+
 export function stopWebService(
 	spec: WebServiceSpec,
 	force = false,
@@ -1050,13 +1070,7 @@ export function stopWebService(
 		return stopped;
 	};
 	if (!status.installed || status.manager === "detached") {
-		if (options.detachedPid) {
-			try {
-				process.kill(options.detachedPid, force ? "SIGKILL" : "SIGTERM");
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-			}
-		}
+		if (options.detachedPid) stopDetachedProcess(options.detachedPid, force);
 		return finished();
 	}
 	if (status.manager === "scheduled-task") {

@@ -74,6 +74,7 @@ const env = {
 	PI_WEB_TOKEN: "windows-web-smoke-password",
 };
 let gateway;
+let gatewayStopFailure;
 
 try {
 	gateway = spawn(executable, ["web"], {
@@ -99,7 +100,20 @@ try {
 	if (stopRuntime.status !== 0 && stopRuntime.status !== null) {
 		output.push(stopRuntime.stdout ?? "", stopRuntime.stderr ?? "");
 	}
+	const stopGateway = spawnSync(executable, ["web", "gateway", "stop"], {
+		cwd: bundleDir,
+		env,
+		encoding: "utf8",
+		windowsHide: true,
+	});
+	if (stopGateway.status !== 0) {
+		gatewayStopFailure = new Error(
+			`lc web gateway stop exited with ${stopGateway.status}: ${stopGateway.stdout ?? ""}${stopGateway.stderr ?? ""}`,
+		);
+		output.push(stopGateway.stdout ?? "", stopGateway.stderr ?? "");
+	}
 	stopProcessTree(gateway?.pid);
-	if (gateway) await new Promise((resolvePromise) => gateway.once("close", resolvePromise));
+	if (gateway && gateway.exitCode === null) await new Promise((resolvePromise) => gateway.once("close", resolvePromise));
 	rmSync(agentDir, { recursive: true, force: true });
+	if (gatewayStopFailure) throw gatewayStopFailure;
 }

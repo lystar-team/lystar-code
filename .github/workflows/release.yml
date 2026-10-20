@@ -174,10 +174,23 @@ jobs:
           $Archives = @(Get-ChildItem packages/coding-agent/binaries -Filter "lystar-agent-*-windows-x64.zip")
           if ($Archives.Count -ne 1) { throw "Expected exactly one Windows release archive" }
           if ((& "$Bundle/lc.exe" --version | Out-String).Trim() -ne $Version) { throw "lc.exe version mismatch" }
-          foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json", "native/session-index/win32-x64/lystar-session-index.exe")) {
+          foreach ($RequiredFile in @("lystar.cmd", "lystar-web-service.exe", "skills/imagegen/SKILL.md", "web/index.html", "web/version.json", "web/brand/lystar-mark-dark.webp", "web/brand/models/openai.svg", "web/brand/providers/openai.svg", "native/session-index/win32-x64/lystar-session-index.exe")) {
             if (!(Test-Path "$Bundle/$RequiredFile")) { throw "Windows release bundle is missing $RequiredFile" }
           }
+          foreach ($RequiredDirectory in @("web/assets", "web/brand", "web/brand/models", "web/brand/providers")) {
+            $DirectoryPath = Join-Path $Bundle $RequiredDirectory
+            if (!(Test-Path -LiteralPath $DirectoryPath -PathType Container)) { throw "Windows release bundle is missing directory $RequiredDirectory" }
+            if (!(Get-ChildItem -LiteralPath $DirectoryPath -File -Recurse | Select-Object -First 1)) { throw "Windows release bundle directory is empty: $RequiredDirectory" }
+          }
           if (Test-Path "$Bundle/la.exe") { throw "legacy la.exe must not be shipped" }
+
+      - name: Smoke test Windows Web
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
+          node scripts/test-windows-web.mjs --bundle-dir $Bundle
+          if ($LASTEXITCODE -ne 0) { throw "Windows Web smoke test failed." }
 
       - name: Upload platform release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
