@@ -13,7 +13,6 @@ test("WebConfigStore 将完整配置写入 agentDir 根目录", async () => {
 		assert.deepEqual(saved, {
 			version: 1,
 			host: "0.0.0.0",
-			allowedHosts: ["*"],
 			port: 1420,
 			runtimePort: 1422,
 			password: "web-password",
@@ -50,7 +49,6 @@ test("WebConfigStore 将旧 Gateway 配置迁移到 web-config.json", async () =
 		assert.deepEqual(migrated, {
 			version: 1,
 			host: "0.0.0.0",
-			allowedHosts: ["*"],
 			port: 1422,
 			runtimePort: 1422,
 			password: "legacy-password",
@@ -63,17 +61,16 @@ test("WebConfigStore 将旧 Gateway 配置迁移到 web-config.json", async () =
 	}
 });
 
-test("WebConfigStore 保存独立 Runtime 端口和白名单", async () => {
+test("WebConfigStore 保存独立 Runtime 端口", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "lystar-web-config-runtime-"));
 	try {
 		const saved = await new WebConfigStore(agentDir).save({
 			host: "0.0.0.0",
-			allowedHosts: ["127.0.0.1", "192.168.1.20"],
 			port: 1420,
 			runtimePort: 15422,
 			password: "web-password",
 		});
-		assert.deepEqual(saved.allowedHosts, ["127.0.0.1", "192.168.1.20"]);
+		assert.equal("allowedHosts" in saved, false);
 		assert.equal(saved.runtimePort, 15422);
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });

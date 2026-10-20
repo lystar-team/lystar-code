@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Removed
+
+- 移除 Web Host 白名单及其首次配置、环境变量、设置项和 HTTP/WebSocket 拦截；旧配置中的 `allowedHosts` 不再参与读取和保存，访问仍使用连接密码验证。
+
+### Fixed
+
+- Web Gateway 与开发前端的健康检查改为直连本机，避免环境代理干扰；Windows Gateway 启动等待增加到 30 秒，超时信息包含探测地址、响应内容和日志位置。
+- Windows 原生 Web 服务按大小写不敏感的变量名合并、排序环境变量，避免系统 `Path` 与用户 `PATH` 重复导致后台命令找不到程序。
+
 ## [1.3.0-lystar.18] - 2026-10-20
 
 ### Changed

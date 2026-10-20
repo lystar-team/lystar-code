@@ -204,7 +204,7 @@ export function SettingsDialog({ state, actions }: { state: WorkbenchState; acti
 												: state.settingsTab === "permissions"
 											? "检查并完成 macOS Web 后台任务需要的系统授权。"
 										: state.settingsTab === "security"
-													? "查看可访问地址，配置白名单、Web/Runtime 端口和密码。"
+													? "查看访问地址，设置 Web/Runtime 端口和密码。"
 													: state.settingsTab === "about"
 														? `查看 ${state.branding.name} 的版本信息。`
 													: state.settingsTab === "appearance"

@@ -433,7 +433,7 @@ export function useWorkbenchSettingsActions({
 	}, [updateState]);
 
 	const saveSecuritySettings = useCallback(
-		async (input: { host: string; allowedHosts: string[]; port: number; runtimePort: number; password?: string }) => {
+		async (input: { host: string; port: number; runtimePort: number; password?: string }) => {
 			updateState((current) => ({ ...current, securitySettingsSaving: true, securitySettingsError: undefined }));
 			try {
 				const result = await webApi.saveSecuritySettings(input);

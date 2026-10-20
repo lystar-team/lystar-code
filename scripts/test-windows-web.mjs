@@ -69,7 +69,6 @@ const env = {
 	PI_CODING_AGENT_DIR: agentDir,
 	PI_OFFLINE: "1",
 	PI_TELEMETRY: "0",
-	PI_WEB_ALLOWED_HOSTS: "127.0.0.1,localhost",
 	PI_WEB_HOST: "127.0.0.1",
 	PI_WEB_PORT: String(webPort),
 	PI_WEB_RUNTIME_PORT: String(runtimePort),

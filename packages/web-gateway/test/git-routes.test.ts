@@ -59,7 +59,6 @@ test("Git 路由转发受限读取和幂等写操作", async (t) => {
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "test-token",
 		tokenPath: join(agentDir, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

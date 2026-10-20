@@ -4,7 +4,6 @@ import { createInterface } from "node:readline/promises";
 import { StringDecoder } from "node:string_decoder";
 import { closeServiceEventLog, configureServiceEventLog, getRuntimeServiceStatus } from "@lystar/code-web-runtime";
 import {
-	DEFAULT_ALLOWED_HOSTS,
 	DEFAULT_RUNTIME_PORT,
 	DEFAULT_WEB_GATEWAY_PORT,
 	DEFAULT_WEB_HOST,
@@ -13,7 +12,6 @@ import {
 	loadWebGatewayConfig,
 	parseGatewayPort,
 	type RuntimeInvocation,
-	validateAllowedHosts,
 	validateWebPassword,
 	type WebConfig,
 	WebConfigStore,
@@ -47,7 +45,6 @@ function environmentValue(name: string): string | undefined {
 
 function clearWebEnvironment(): void {
 	delete process.env.PI_WEB_HOST;
-	delete process.env.PI_WEB_ALLOWED_HOSTS;
 	delete process.env.PI_WEB_PORT;
 	delete process.env.PI_WEB_RUNTIME_PORT;
 	delete process.env.PI_WEB_TOKEN;
@@ -120,7 +117,7 @@ async function askValidated<T>(
 
 async function promptForWebConfig(
 	store: WebConfigStore,
-	initial: { allowedHosts: string[]; port: number; runtimePort: number; password?: string },
+	initial: { port: number; runtimePort: number; password?: string },
 	commandName: "lc" | "lcd" = "lc",
 ): Promise<WebConfig> {
 	if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -129,17 +126,9 @@ async function promptForWebConfig(
 	const readline = createInterface({ input: process.stdin, output: process.stdout });
 	try {
 		console.log("\n欢迎使用 LYStar Code Web 工作台。请完成以下配置，按回车使用默认值。\n");
-		const allowedHosts = await askValidated(
-			readline,
-			"[1/4]",
-			"白名单 IP 地址",
-			"填入 * 表示不限制访问来源；多个地址使用英文逗号分隔。",
-			initial.allowedHosts.join(","),
-			validateAllowedHosts,
-		);
 		const port = await askValidated(
 			readline,
-			"[2/4]",
+			"[1/3]",
 			"Web 监听端口",
 			"浏览器访问 Web UI 使用此端口。",
 			String(initial.port),
@@ -147,7 +136,7 @@ async function promptForWebConfig(
 		);
 		const runtimePort = await askValidated(
 			readline,
-			"[3/4]",
+			"[2/3]",
 			"Runtime 监听端口",
 			"Runtime 默认只监听本机，用于 Gateway 连接和会话运行。",
 			String(initial.runtimePort),
@@ -159,7 +148,7 @@ async function promptForWebConfig(
 		);
 		let password = initial.password;
 		while (!password) {
-			console.log("\n[4/4] 连接密码");
+			console.log("\n[3/3] 连接密码");
 			console.log("  用于进入 Web 工作台，长度需要在 8 到 256 个字符之间。");
 			const answer = await askHidden(readline, "请输入连接密码：");
 			try {
@@ -169,7 +158,7 @@ async function promptForWebConfig(
 			}
 		}
 		console.log("\n配置已完成，正在保存……");
-		return store.save({ allowedHosts, port, runtimePort, password });
+		return store.save({ port, runtimePort, password });
 	} finally {
 		readline.close();
 	}
@@ -186,15 +175,10 @@ async function ensureWebConfig(
 	const store = new WebConfigStore(agentDir, configPath);
 	const current = await store.loadOrMigrate();
 	const legacy = current === undefined && configFileName === undefined ? await store.loadLegacy() : {};
-	const environmentAllowedHosts = environmentValue("PI_WEB_ALLOWED_HOSTS");
 	const environmentPort = environmentValue("PI_WEB_PORT");
 	const environmentRuntimePort = environmentValue("PI_WEB_RUNTIME_PORT");
 	const environmentPassword = environmentValue("PI_WEB_TOKEN");
 	const host = DEFAULT_WEB_HOST;
-	const allowedHosts =
-		environmentAllowedHosts !== undefined
-			? validateAllowedHosts(environmentAllowedHosts)
-			: (current?.allowedHosts ?? legacy.allowedHosts ?? [...DEFAULT_ALLOWED_HOSTS]);
 	const port = environmentPort ? parseGatewayPort(environmentPort) : (current?.port ?? legacy.port ?? defaultPort);
 	const runtimePort = environmentRuntimePort
 		? parseGatewayPort(environmentRuntimePort)
@@ -202,12 +186,11 @@ async function ensureWebConfig(
 	const password = environmentPassword ?? current?.password ?? legacy.password;
 	try {
 		if (password) {
-			return await store.save({ host, allowedHosts, port, runtimePort, password });
+			return await store.save({ host, port, runtimePort, password });
 		}
 		return await promptForWebConfig(
 			store,
 			{
-				allowedHosts: current?.allowedHosts ?? legacy.allowedHosts ?? [...DEFAULT_ALLOWED_HOSTS],
 				port,
 				runtimePort,
 			},
@@ -238,8 +221,8 @@ async function verifyWebAssets(staticDir: string, expectedProductVersion?: strin
 		throw new Error(`Web 与 LYStar Code 版本不一致：${String(version)} != ${expectedProductVersion}`);
 }
 
-function webAccessUrls(allowedHosts: readonly string[], port: number): string[] {
-	return webAccessAddresses(allowedHosts).map((address) => `http://${address}:${port}`);
+function webAccessUrls(port: number): string[] {
+	return webAccessAddresses().map((address) => `http://${address}:${port}`);
 }
 
 function printBackgroundStartup(
@@ -258,7 +241,7 @@ function printBackgroundStartup(
 		`Runtime：服务已启动（127.0.0.1:${config.runtimePort ?? DEFAULT_RUNTIME_PORT}${status.runtime.pid ? `，PID ${status.runtime.pid}` : ""}）`,
 	);
 	console.log("\nWeb UI 访问地址：");
-	for (const url of webAccessUrls(config.allowedHosts, frontendPort ?? config.port)) console.log(`  ${url}`);
+	for (const url of webAccessUrls(frontendPort ?? config.port)) console.log(`  ${url}`);
 	if (status.frontend) console.log(`\nGateway API：http://127.0.0.1:${config.port}`);
 	console.log(`\n日志目录：${config.agentDir}/web`);
 }
@@ -277,7 +260,7 @@ function printStartupSummary(
 		);
 	}
 	console.log("\nWeb UI 访问地址：");
-	for (const url of webAccessUrls(config.allowedHosts, config.port)) console.log(`  ${url}`);
+	for (const url of webAccessUrls(config.port)) console.log(`  ${url}`);
 	console.log(`\n配置文件：${config.configPath ?? new WebConfigStore(config.agentDir).path}`);
 	console.log("\n服务重启命令：");
 	console.log(`  ${commandName} web gateway restart`);

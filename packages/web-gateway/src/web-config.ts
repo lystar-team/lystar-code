@@ -8,16 +8,12 @@ export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 1420;
 export const DEFAULT_RUNTIME_PORT = 1422;
 export const DEFAULT_RUNTIME_HOST = "127.0.0.1";
-export const DEFAULT_ALLOWED_HOSTS = ["*"] as const;
 const WEB_PASSWORD_MIN_LENGTH = 8;
 const WEB_PASSWORD_MAX_LENGTH = 256;
-const HOSTNAME_PATTERN =
-	/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
 export interface WebConfig {
 	version: typeof WEB_CONFIG_VERSION;
 	host: string;
-	allowedHosts: string[];
 	port: number;
 	runtimePort: number;
 	password: string;
@@ -27,13 +23,11 @@ export interface WebConfigInput {
 	host?: string;
 	port: number;
 	password: string;
-	allowedHosts?: readonly string[];
 	runtimePort?: number;
 }
 
 export interface LegacyWebConfig {
 	host?: string;
-	allowedHosts?: string[];
 	port?: number;
 	runtimePort?: number;
 	password?: string;
@@ -69,40 +63,6 @@ export function validateGatewayHost(value: unknown): string {
 	return host;
 }
 
-export function defaultAllowedHosts(host: string): string[] {
-	const normalizedHost = host.trim().toLowerCase();
-	if (normalizedHost === "0.0.0.0" || normalizedHost === "::") return [...DEFAULT_ALLOWED_HOSTS];
-	return [...new Set(["localhost", "127.0.0.1", "::1", normalizedHost])];
-}
-
-function normalizeAllowedHost(value: string): string {
-	const host = value
-		.trim()
-		.replace(/^\[|\]$/gu, "")
-		.toLowerCase();
-	if (host === "*") return host;
-	if (host.startsWith("*.")) {
-		const suffix = host.slice(2);
-		if (!HOSTNAME_PATTERN.test(suffix)) throw new Error(`白名单地址无效：${value}`);
-		return host;
-	}
-	if (host !== "localhost" && isIP(host) === 0 && !HOSTNAME_PATTERN.test(host))
-		throw new Error(`白名单地址无效：${value}`);
-	return host;
-}
-
-export function validateAllowedHosts(value: unknown): string[] {
-	const values =
-		typeof value === "string"
-			? value.split(",")
-			: Array.isArray(value)
-				? value.filter((item): item is string => typeof item === "string")
-				: [];
-	const normalized = [...new Set(values.map(normalizeAllowedHost).filter(Boolean))];
-	if (normalized.length === 0) throw new Error("白名单 IP 地址不能为空；填入 * 表示不限制访问来源");
-	return normalized;
-}
-
 export function validateWebPassword(value: unknown): string {
 	if (typeof value !== "string") throw new Error("连接密钥必须是文本");
 	const password = value.trim();
@@ -124,8 +84,6 @@ function parseWebConfig(value: unknown): WebConfig {
 		return {
 			version: WEB_CONFIG_VERSION,
 			host,
-			allowedHosts:
-				record.allowedHosts === undefined ? defaultAllowedHosts(host) : validateAllowedHosts(record.allowedHosts),
 			port: parseGatewayPort(record.port),
 			runtimePort: parseGatewayPort(record.runtimePort ?? DEFAULT_RUNTIME_PORT),
 			password: validateWebPassword(record.password),
@@ -190,8 +148,6 @@ export class WebConfigStore {
 			const record = recordValue(value);
 			try {
 				result.host = DEFAULT_WEB_HOST;
-				result.allowedHosts =
-					record.allowedHosts === undefined ? undefined : validateAllowedHosts(record.allowedHosts);
 				result.port = parseGatewayPort(record.port);
 				result.runtimePort = record.runtimePort === undefined ? undefined : parseGatewayPort(record.runtimePort);
 			} catch (error) {
@@ -212,7 +168,6 @@ export class WebConfigStore {
 		if (!legacy.host || legacy.port === undefined || !legacy.password) return undefined;
 		const migrated = await this.save({
 			host: legacy.host,
-			allowedHosts: legacy.allowedHosts ?? defaultAllowedHosts(legacy.host),
 			port: legacy.port,
 			runtimePort: legacy.runtimePort ?? DEFAULT_RUNTIME_PORT,
 			password: legacy.password,
@@ -229,7 +184,6 @@ export class WebConfigStore {
 		const config: WebConfig = {
 			version: WEB_CONFIG_VERSION,
 			host,
-			allowedHosts: validateAllowedHosts(input.allowedHosts ?? defaultAllowedHosts(host)),
 			port: parseGatewayPort(input.port),
 			runtimePort: parseGatewayPort(input.runtimePort ?? DEFAULT_RUNTIME_PORT),
 			password: validateWebPassword(input.password),
@@ -243,7 +197,6 @@ export class WebConfigStore {
 		if (!current) throw new Error(`Web 配置尚未初始化：${this.path}`);
 		return this.save({
 			host: patch.host ?? current.host,
-			allowedHosts: patch.allowedHosts ?? current.allowedHosts,
 			port: patch.port ?? current.port,
 			runtimePort: patch.runtimePort ?? current.runtimePort,
 			password: patch.password ?? current.password,

@@ -29,7 +29,6 @@ import {
 	DEFAULT_RUNTIME_PORT,
 	DEFAULT_WEB_GATEWAY_PORT,
 	DEFAULT_WEB_HOST,
-	defaultAllowedHosts,
 	defaultWebStaticDir,
 	loadWebConfig,
 	loadWebGatewayConfig,
@@ -43,6 +42,7 @@ import {
 	removeMacosWebAdminAuthorization,
 	runMacosPermissionsSetup,
 } from "./macos-permissions.ts";
+import { requestServiceHealth } from "./service-health.ts";
 import { requiresServiceVersionReconcile, runServiceVersionTransaction } from "./service-version-transaction.ts";
 
 const SERVICE_STATE_VERSION = 1 as const;
@@ -163,7 +163,6 @@ function fallbackGatewayConfig(options: WebServiceLaunchOptions): WebGatewayConf
 			: defaultRuntimeEndpoint(options.agentDir),
 		runtimePort,
 		token: "",
-		allowedHosts: defaultAllowedHosts(DEFAULT_WEB_HOST),
 		staticDir: options.staticDir ?? defaultWebStaticDir(),
 		manageRuntime: true,
 	};
@@ -288,7 +287,6 @@ function stateConfig(state: WebServiceState, options: WebServiceLaunchOptions): 
 		runtimePort: state.runtimePort,
 		token: "",
 		configPath: join(options.agentDir, options.configFileName ?? "web-config.json"),
-		allowedHosts: defaultAllowedHosts(state.host),
 		staticDir: options.staticDir ?? defaultWebStaticDir(),
 		manageRuntime: true,
 	};
@@ -323,29 +321,35 @@ async function waitForGatewayExit(agentDir: string, profile: string, timeoutMs =
 	throw new Error("Web Gateway服务停止超时");
 }
 
-async function waitForGatewayReady(config: WebGatewayConfig, timeoutMs = 10_000): Promise<void> {
+async function waitForGatewayReady(
+	config: WebGatewayConfig,
+	timeoutMs = process.platform === "win32" ? 30_000 : 10_000,
+): Promise<void> {
 	const address = config.host === "0.0.0.0" ? "127.0.0.1" : config.host === "::" ? "::1" : config.host;
 	const host = address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
+	const url = `http://${host}:${config.port}/healthz`;
 	const deadline = Date.now() + timeoutMs;
 	let lastError = "";
 	while (Date.now() < deadline) {
 		try {
-			const response = await fetch(`http://${host}:${config.port}/healthz`, {
-				signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+			const response = await requestServiceHealth(url, {
+				signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))),
 			});
 			if (response.ok) {
 				const health = (await response.json()) as { ok?: boolean; host?: string };
 				if (health.ok === true && health.host === "connected") return;
 				lastError = "Gateway 尚未连接 Runtime";
 			} else {
-				lastError = `HTTP ${response.status}`;
+				lastError = `HTTP ${response.status}：${(await response.text()).trim().slice(0, 512)}`;
 			}
 		} catch (error) {
 			lastError = error instanceof Error ? error.message : String(error);
 		}
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	throw new Error(`Web Gateway服务启动超时${lastError ? `：${lastError}` : ""}`);
+	throw new Error(
+		`Web Gateway 服务启动超时（${url}）${lastError ? `：${lastError}` : ""}。日志：${serviceLogPath(config.agentDir, "gateway", config.serviceProfile ?? DEFAULT_PROFILE)}`,
+	);
 }
 
 async function waitForServiceStopped(spec: WebServiceSpec, timeoutMs = 10_000): Promise<void> {
@@ -372,11 +376,11 @@ async function waitForFrontendReady(port: number, timeoutMs = 20_000): Promise<v
 	let lastError = "";
 	while (Date.now() < deadline) {
 		try {
-			const response = await fetch(`http://127.0.0.1:${port}/healthz`, {
-				signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+			const response = await requestServiceHealth(`http://127.0.0.1:${port}/healthz`, {
+				signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))),
 			});
 			if (response.ok) return;
-			lastError = `HTTP ${response.status}`;
+			lastError = `HTTP ${response.status}：${(await response.text()).trim().slice(0, 512)}`;
 		} catch (error) {
 			lastError = error instanceof Error ? error.message : String(error);
 		}

@@ -43,7 +43,6 @@ test("Room 任务编辑和评论路由校验归属并转发结构化命令", asy
 		runtimeEndpoint: join(root, "host.sock"),
 		token: "test-token",
 		tokenPath: join(root, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: root,
 		manageRuntime: false,
 	});

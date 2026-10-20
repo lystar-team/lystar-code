@@ -32,7 +32,6 @@ async function startGateway() {
 		agentDir,
 		runtimeEndpoint: join(agentDir, "runtime.sock"),
 		token: TEST_TOKEN,
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

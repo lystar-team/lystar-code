@@ -83,13 +83,19 @@ bool read_utf8_file(const std::wstring& path, std::wstring& output) {
     return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), byte_count, output.data(), wide_count) == wide_count;
 }
 
+struct EnvironmentKeyLess {
+    bool operator()(const std::wstring& left, const std::wstring& right) const {
+        return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_LESS_THAN;
+    }
+};
+
 struct ServiceConfig {
     std::wstring program;
     std::wstring working_directory;
     std::wstring arguments;
     std::wstring log_path;
     bool allow_child_breakaway = false;
-    std::map<std::wstring, std::wstring> environment;
+    std::map<std::wstring, std::wstring, EnvironmentKeyLess> environment;
 };
 
 bool read_config(const std::wstring& path, ServiceConfig& config) {
@@ -157,7 +163,7 @@ bool has_extension(const std::wstring& path, const wchar_t* extension) {
 }
 
 std::vector<wchar_t> make_environment_block(const ServiceConfig& config) {
-    std::map<std::wstring, std::wstring> values;
+    std::map<std::wstring, std::wstring, EnvironmentKeyLess> values;
     LPWCH current = GetEnvironmentStringsW();
     if (current != nullptr) {
         for (LPWCH entry = current; *entry != L'\0'; entry += wcslen(entry) + 1) {

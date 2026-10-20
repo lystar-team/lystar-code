@@ -19,7 +19,6 @@ test(
 			agentDir,
 			runtimeEndpoint: join(agentDir, "runtime.sock"),
 			token: "test-password",
-			allowedHosts: ["127.0.0.1"],
 			staticDir: agentDir,
 			manageRuntime: false,
 		};

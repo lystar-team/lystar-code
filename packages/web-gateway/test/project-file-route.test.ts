@@ -122,7 +122,6 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "test-token",
 		tokenPath: join(agentDir, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

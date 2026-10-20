@@ -17,7 +17,6 @@ test("多浏览器读取会话时复用 Room 成员关系，成员变化及 Runt
 		agentDir,
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "room-membership-test",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);
@@ -100,7 +99,6 @@ test("并发浏览器复用在途 Room 成员，保留各自的会话写入权�
 		agentDir,
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "concurrent-rooms-test",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);
@@ -184,7 +182,6 @@ test("共享查询的连接失败后，其他浏览器独立读取 Room 成员",
 		agentDir,
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "failed-rooms-test",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);
@@ -269,7 +266,6 @@ test("成员变化会撤销在途结果，旧查询完成不能覆盖新缓存",
 		agentDir,
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "inflight-rooms-test",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);
@@ -352,7 +348,6 @@ test("空会话项目仅请求一次，出现会话后从缓存标记 Room 成�
 		agentDir,
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "empty-project-test",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);

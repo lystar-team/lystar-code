@@ -48,7 +48,6 @@ test("Prompt 模型接口缓存轻量结果并在目录变更后刷新", async (
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "test-token",
 		tokenPath: join(agentDir, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

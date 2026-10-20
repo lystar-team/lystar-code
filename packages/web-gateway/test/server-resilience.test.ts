@@ -79,7 +79,6 @@ function createConfig(): WebGatewayConfig {
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "resilience-test-token",
 		tokenPath: join(agentDir, "web", "token"),
-		allowedHosts: ["127.0.0.1", "localhost"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	};

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as gatewayConfig from "../src/config.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,6 @@ import {
 	DEFAULT_RUNTIME_HOST,
 	DEFAULT_RUNTIME_PORT,
 	DEFAULT_WEB_GATEWAY_PORT,
-	hostMatches,
 	loadWebGatewayConfig,
 	WebConfigStore,
 } from "../src/config.ts";
@@ -65,10 +65,10 @@ test("源码 Gateway 使用独立 development Runtime", async () => {
 	}
 });
 
-test("Web Gateway Host 白名单支持通配符 *", () => {
-	assert.equal(hostMatches("127.0.0.1", ["*"]), true);
-	assert.equal(hostMatches("192.168.2.35", ["*"]), true);
-	assert.equal(hostMatches("yean-debian-pc", ["*"]), true);
+test("Web Gateway 不再导出 Host 白名单配置与匹配器", () => {
+	assert.equal("hostMatches" in gatewayConfig, false);
+	assert.equal("validateAllowedHosts" in gatewayConfig, false);
+	assert.equal("DEFAULT_ALLOWED_HOSTS" in gatewayConfig, false);
 });
 
 test("bundled Gateway 忽略 Socket 覆盖并使用配置中的 Runtime TCP 端口", async () => {
@@ -78,7 +78,6 @@ test("bundled Gateway 忽略 Socket 覆盖并使用配置中的 Runtime TCP 端�
 	try {
 		await new WebConfigStore(agentDir).save({
 			host: "0.0.0.0",
-			allowedHosts: ["*"],
 			port: 15420,
 			runtimePort: 15422,
 			password: "web-password",

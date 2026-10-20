@@ -90,7 +90,6 @@ test("Gateway 保存浏览器订阅，重启后恢复推送监听，退订后移
 		agentDir,
 		runtimeEndpoint: join(agentDir, "runtime.sock"),
 		token: "push-test-token",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	};
@@ -173,7 +172,6 @@ test("Gateway 无页面连接时仍发送包含项目、会话、回复摘录的
 		agentDir,
 		runtimeEndpoint: join(agentDir, "runtime.sock"),
 		token: "push-test-token",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

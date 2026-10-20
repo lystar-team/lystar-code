@@ -29,7 +29,6 @@ test("Web 停止路由按 session.id 调用 stop_session 并返回最新快照",
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "test-token",
 		tokenPath: join(agentDir, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

@@ -12,7 +12,6 @@ test("Assistant 全文路由按字节偏移读取当前会话内容", async (t) 
 		runtimeEndpoint: "/tmp/conversation-content-route/host.sock",
 		token: "test-token",
 		tokenPath: "/tmp/conversation-content-route/token",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: "/tmp/conversation-content-route",
 		manageRuntime: false,
 	});

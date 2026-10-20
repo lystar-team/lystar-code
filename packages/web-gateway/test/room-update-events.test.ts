@@ -18,7 +18,6 @@ test("Room 变更只推送轻量通知，不把消息和任务改动变成工作
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "room-update-test-token",
 		tokenPath: join(agentDir, "web", "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);

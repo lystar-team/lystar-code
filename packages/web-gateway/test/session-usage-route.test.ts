@@ -13,7 +13,6 @@ test("session usage route returns token totals for the controlled session", asyn
 		runtimeEndpoint: "/tmp/lystar-session-usage-route/host.sock",
 		token: "test-token",
 		tokenPath: "/tmp/lystar-session-usage-route/token",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: "/tmp/lystar-session-usage-route",
 		manageRuntime: false,
 	} satisfies WebGatewayConfig);

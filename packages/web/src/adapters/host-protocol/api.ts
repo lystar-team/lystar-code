@@ -1101,7 +1101,6 @@ export class WebApi {
 
 	async saveSecuritySettings(input: {
 		host: string;
-		allowedHosts: string[];
 		port: number;
 		runtimePort: number;
 		password?: string;

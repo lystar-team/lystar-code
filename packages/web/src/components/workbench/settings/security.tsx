@@ -11,14 +11,12 @@ import type { WorkbenchActions } from "../types";
 
 export function SecuritySettings({ state, actions }: { state: WorkbenchState; actions: WorkbenchActions }) {
 	const settings = state.securitySettings;
-	const [allowedHosts, setAllowedHosts] = useState("");
 	const [port, setPort] = useState("");
 	const [runtimePort, setRuntimePort] = useState("");
 	const [password, setPassword] = useState("");
 
 	useEffect(() => {
 		if (!settings) return;
-		setAllowedHosts(settings.allowedHosts.join(","));
 		setPort(String(settings.port));
 		setRuntimePort(String(settings.runtimePort));
 		setPassword("");
@@ -28,22 +26,15 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 	const runtimePortNumber = Number(runtimePort);
 	const portValid = Number.isInteger(portNumber) && portNumber >= 1 && portNumber <= 65535;
 	const runtimePortValid = Number.isInteger(runtimePortNumber) && runtimePortNumber >= 1 && runtimePortNumber <= 65535;
-	const allowedHostValues = allowedHosts
-		.split(",")
-		.map((value) => value.trim())
-		.filter(Boolean);
-	const allowedHostsValid = allowedHostValues.length > 0;
 	const passwordValid = !password || password.trim().length >= 8;
 	const dirty = Boolean(
 		settings &&
-		(allowedHosts !== settings.allowedHosts.join(",") ||
-			port !== String(settings.port) ||
+		(port !== String(settings.port) ||
 			runtimePort !== String(settings.runtimePort) ||
 			password.trim()),
 	);
 	const canSave = Boolean(
 		settings &&
-		(allowedHostsValid || !settings.editable.allowedHosts) &&
 		(port || !settings.editable.port) &&
 		(runtimePort || !settings.editable.runtimePort) &&
 		portValid &&
@@ -58,7 +49,6 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 		if (!settings || !canSave) return;
 		void actions.saveSecuritySettings({
 			host: settings.host,
-			allowedHosts: settings.editable.allowedHosts ? allowedHostValues : settings.allowedHosts,
 			port: settings.editable.port ? portNumber : settings.port,
 			runtimePort: settings.editable.runtimePort ? runtimePortNumber : settings.runtimePort,
 			...(password.trim() ? { password: password.trim() } : {}),
@@ -74,7 +64,7 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 							<div className="min-w-0">
 								<CardTitle className="text-base">Gateway 访问配置</CardTitle>
 								<CardDescription>
-									保存到 web-config.json 后按新配置重启 Gateway，Web Runtime 与运行中的会话保持运行。
+									保存后重新连接工作台，运行中的会话会继续执行。
 								</CardDescription>
 							</div>
 							<Badge variant={settings?.passwordConfigured ? "secondary" : "outline"}>
@@ -97,24 +87,6 @@ export function SecuritySettings({ state, actions }: { state: WorkbenchState; ac
 												http://{address}:{settings.accessPort}
 											</a>
 										))}
-									</div>
-									<div className="grid gap-2">
-										<div className="flex items-center justify-between gap-2">
-											<label className="text-sm font-medium" htmlFor="gateway-allowed-hosts">
-												白名单 IP
-											</label>
-											{settings && !settings.editable.allowedHosts ? <span className="text-xs text-muted-foreground">启动参数管理</span> : null}
-										</div>
-										<Input
-											id="gateway-allowed-hosts"
-											value={allowedHosts}
-											onChange={(event) => setAllowedHosts(event.target.value)}
-											placeholder="* 或 127.0.0.1,192.168.1.20"
-											aria-invalid={Boolean(allowedHosts) && !allowedHostsValid}
-											disabled={!settings?.editable.allowedHosts || state.securitySettingsSaving}
-											autoComplete="off"
-										/>
-										<p className="text-xs leading-5 text-muted-foreground">填入 * 表示不限制来源，多个地址使用英文逗号分隔。</p>
 									</div>
 								</div>
 

@@ -44,7 +44,7 @@ function waitForSnapshot(socket: WebSocket, predicate: (snapshot: Snapshot) => b
 
 async function gateway(root: string, profile: string, sessionListDelay = 0) {
 	const config: WebGatewayConfig = {
-		host: "127.0.0.1", port: 0, token: "workspace-test", allowedHosts: ["127.0.0.1"],
+		host: "127.0.0.1", port: 0, token: "workspace-test",
 		staticDir: root, runtimeEndpoint: join(root, "unused.sock"), runtimePort: 0,
 		agentDir: root, serviceProfile: profile, manageRuntime: false,
 	};

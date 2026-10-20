@@ -81,7 +81,6 @@ test("Settings 智能体路由转发并清理标签", async (t) => {
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "test-token",
 		tokenPath: join(agentDir, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});
@@ -158,7 +157,6 @@ test("Subagent 会话路由复用父会话归属和控制 Lease", async (t) => {
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "test-token",
 		tokenPath: join(agentDir, "token"),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	});

@@ -64,7 +64,7 @@ $cmd="$env:TEMP\lystar-install.cmd"; iwr -UseBasicParsing https://github.com/lys
 lc web
 ```
 
-1. 按提示设置访问白名单、Web 端口、Runtime 端口和连接密码。默认 Web 端口为 `1420`，Runtime 端口为 `1422`。
+1. 按提示设置 Web 端口、Runtime 端口和连接密码。默认 Web 端口为 `1420`，Runtime 端口为 `1422`。
 2. 在本机浏览器打开 `http://127.0.0.1:1420`，输入刚才设置的连接密码。如果改过端口，以终端输出的访问地址为准。
 3. 打开“模型与认证”，配置模型供应商的 API Key；使用订阅登录的用户可先在终端运行 `lc`，执行 `/login`。
 4. 点击“添加项目”，选择运行 LYStar 的电脑上的项目目录，再新建对话、选择模型并输入任务。
@@ -79,7 +79,7 @@ lc web
 
 ### 手机也能连接
 
-在手机浏览器打开 `http://<运行 LYStar 的电脑 IP>:1420`，输入连接密码即可进入。两台设备需要网络互通，访问地址须在白名单内；项目文件和任务都在运行 LYStar 的电脑上处理。
+在手机浏览器打开 `http://<运行 LYStar 的电脑 IP>:1420`，输入连接密码即可进入。两台设备需要网络互通；项目文件和任务都在运行 LYStar 的电脑上处理。
 
 <p align="center">
   <img src="docs/assets/lystar-web-mobile.png" alt="LYStar Code 手机端 WebUI：查看示例对话、选择模型和输入任务" width="320">

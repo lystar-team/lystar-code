@@ -71,13 +71,9 @@ import {
 	DEFAULT_RUNTIME_HOST,
 	DEFAULT_RUNTIME_PORT,
 	DEFAULT_WEB_HOST,
-	hostMatches,
 	isValidClientId,
 	loadWebGatewayConfig,
-	originHostname,
 	parseGatewayPort,
-	requestHostname,
-	validateAllowedHosts,
 	validateWebPassword,
 	WebConfigStore,
 	type WebGatewayConfig,
@@ -355,13 +351,11 @@ interface GatewaySecuritySettingsResponse {
 	host: string;
 	ipAddresses: string[];
 	accessPort: number;
-	allowedHosts: string[];
 	port: number;
 	runtimePort: number;
 	passwordConfigured: boolean;
 	editable: {
 		host: boolean;
-		allowedHosts: boolean;
 		port: boolean;
 		runtimePort: boolean;
 		password: boolean;
@@ -1329,24 +1323,6 @@ export class WebGatewayServer {
 		return context;
 	}
 
-	private assertRequestBoundary(request: IncomingMessage, requireOrigin = false): void {
-		const hostname = requestHostname(
-			Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host,
-		);
-		if (!hostname || !hostMatches(hostname, this.config.allowedHosts)) {
-			throw new HttpError(400, "host_not_allowed", "当前访问地址不在 Web Host 白名单中");
-		}
-		const origin = Array.isArray(request.headers.origin) ? request.headers.origin[0] : request.headers.origin;
-		if (origin) {
-			const originHost = originHostname(origin);
-			if (!originHost || !hostMatches(originHost, this.config.allowedHosts)) {
-				throw new HttpError(403, "origin_not_allowed", "当前页面来源不在 Web Host 白名单中");
-			}
-		} else if (requireOrigin) {
-			throw new HttpError(403, "origin_required", "WebSocket 连接缺少来源信息");
-		}
-	}
-
 	private assertToken(request: IncomingMessage, websocket = false, url?: URL): void {
 		const header = Array.isArray(request.headers.authorization)
 			? request.headers.authorization[0]
@@ -2011,7 +1987,6 @@ export class WebGatewayServer {
 			setSecurityHeaders(response);
 			response.setHeader("Vary", "Origin");
 			try {
-				this.assertRequestBoundary(request, false);
 				const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
 				if (request.method === "OPTIONS") {
 					response.writeHead(204, {
@@ -2110,7 +2085,7 @@ export class WebGatewayServer {
 			generatedAt: Date.now(),
 			web: {
 				port: this.config.frontendPort ?? this.config.port,
-				ipAddresses: webAccessAddresses(this.config.allowedHosts),
+				ipAddresses: webAccessAddresses(),
 			},
 			gateway: {
 				status: "running",
@@ -4560,7 +4535,6 @@ export class WebGatewayServer {
 	private gatewaySecuritySettingsEditable(): GatewaySecuritySettingsResponse["editable"] {
 		return {
 			host: false,
-			allowedHosts: !process.env.PI_WEB_ALLOWED_HOSTS?.trim(),
 			port: !process.env.PI_WEB_PORT?.trim(),
 			runtimePort: this.config.manageRuntime && !process.env.PI_WEB_RUNTIME_PORT?.trim(),
 			password: !process.env.PI_WEB_TOKEN?.trim(),
@@ -4571,9 +4545,8 @@ export class WebGatewayServer {
 		const persisted = await new WebConfigStore(this.config.agentDir, this.config.configPath).loadOrMigrate();
 		return {
 			host: DEFAULT_WEB_HOST,
-			ipAddresses: webAccessAddresses(this.config.allowedHosts),
+			ipAddresses: webAccessAddresses(),
 			accessPort: this.config.frontendPort ?? this.config.port,
-			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
 			port: persisted?.port ?? this.config.port,
 			runtimePort: this.config.manageRuntime
 				? (persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT)
@@ -4597,7 +4570,6 @@ export class WebGatewayServer {
 		const persisted = await store.loadOrMigrate();
 		const current = {
 			host: persisted?.host ?? this.config.host,
-			allowedHosts: persisted?.allowedHosts ?? this.config.allowedHosts,
 			port: persisted?.port ?? this.config.port,
 			runtimePort: this.config.manageRuntime
 				? (persisted?.runtimePort ?? this.config.runtimePort ?? DEFAULT_RUNTIME_PORT)
@@ -4607,30 +4579,15 @@ export class WebGatewayServer {
 		const editable = this.gatewaySecuritySettingsEditable();
 		if (body.host !== undefined && body.host !== DEFAULT_WEB_HOST)
 			throw new HttpError(409, "gateway_host_fixed", "监听地址不可修改");
-		if (!editable.allowedHosts && body.allowedHosts !== undefined) {
-			try {
-				if (JSON.stringify(validateAllowedHosts(body.allowedHosts)) !== JSON.stringify(current.allowedHosts))
-					throw new HttpError(409, "gateway_allowed_hosts_managed_by_environment", "白名单由启动环境变量管理");
-			} catch (error) {
-				if (error instanceof HttpError) throw error;
-				throw new HttpError(
-					400,
-					"gateway_allowed_hosts_invalid",
-					error instanceof Error ? error.message : String(error),
-				);
-			}
-		}
 		if (!editable.port && body.port !== undefined && Number(body.port) !== current.port)
 			throw new HttpError(409, "gateway_port_managed_by_environment", "服务端口由启动环境变量管理");
 		if (!editable.runtimePort && body.runtimePort !== undefined && Number(body.runtimePort) !== current.runtimePort)
 			throw new HttpError(409, "gateway_runtime_port_managed_by_environment", "Runtime 端口由启动环境变量管理");
 		if (!editable.password && body.password !== undefined && body.password !== "")
 			throw new HttpError(409, "gateway_password_managed_by_environment", "访问密码由启动环境变量管理");
-		let allowedHosts: string[];
 		let port: number;
 		let runtimePort: number;
 		try {
-			allowedHosts = validateAllowedHosts(body.allowedHosts ?? current.allowedHosts);
 			port = parseGatewayPort(body.port ?? current.port);
 			runtimePort = parseGatewayPort(body.runtimePort ?? current.runtimePort);
 		} catch (error) {
@@ -4676,12 +4633,11 @@ export class WebGatewayServer {
 			}
 		}
 
-		const saved = await store.save({ allowedHosts, port, runtimePort, password });
+		const saved = await store.save({ port, runtimePort, password });
 		const result: GatewaySecuritySettingsSaveResponse = {
 			host: saved.host,
-			ipAddresses: webAccessAddresses(saved.allowedHosts),
+			ipAddresses: webAccessAddresses(),
 			accessPort: this.config.frontendPort ?? saved.port,
-			allowedHosts: saved.allowedHosts,
 			port: saved.port,
 			runtimePort: saved.runtimePort,
 			passwordConfigured: true,
@@ -5556,7 +5512,6 @@ export class WebGatewayServer {
 	private handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
 		let context: BrowserContext | undefined;
 		try {
-			this.assertRequestBoundary(request, true);
 			const url = new URL(request.url ?? "/ws", `http://${request.headers.host ?? "localhost"}`);
 			if (url.pathname !== "/ws") throw new HttpError(404, "not_found", "未找到 WebSocket 接口");
 			this.assertToken(request, true, url);

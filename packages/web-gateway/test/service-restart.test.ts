@@ -6,6 +6,9 @@ import * as webRuntime from "@lystar/code-web-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebConfigStore } from "../src/config.ts";
 import { runWebServiceAction, runWebSessionStop } from "../src/gateway-service.ts";
+import { requestServiceHealth } from "../src/service-health.ts";
+
+vi.mock("../src/service-health.ts", () => ({ requestServiceHealth: vi.fn() }));
 
 const state = vi.hoisted(() => ({ gatewayRunning: true, runtimeRunning: true, busy: true }));
 vi.mock("@lystar/code-web-runtime", async (importOriginal) => {
@@ -98,10 +101,7 @@ describe("Web service restart", () => {
 		state.busy = true;
 		const options = await serviceOptions("web-dev-config.json");
 		const frontendInvocation = { command: "npm", args: ["run", "dev"], cwd: options.agentDir };
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => Response.json({ ok: true, host: "connected" })),
-		);
+		vi.mocked(requestServiceHealth).mockImplementation(async () => Response.json({ ok: true, host: "connected" }));
 
 		await runWebServiceAction({
 			...options,
@@ -149,10 +149,7 @@ describe("Web service restart", () => {
 		state.runtimeRunning = true;
 		state.busy = false;
 		const options = await serviceOptions("web-dev-config.json");
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => Response.json({ ok: true, host: "connected" })),
-		);
+		vi.mocked(requestServiceHealth).mockImplementation(async () => Response.json({ ok: true, host: "connected" }));
 		vi.mocked(webRuntime.stopWebService).mockImplementationOnce((spec) => {
 			state.gatewayRunning = false;
 			webRuntime.logWebServiceEvent("service", "service_stop_requested", {
@@ -191,10 +188,7 @@ describe("Web service restart", () => {
 			state.runtimeRunning = true;
 			state.busy = true;
 			const options = await serviceOptions(configFileName);
-			vi.stubGlobal(
-				"fetch",
-				vi.fn(async () => Response.json({ ok: true, host: "connected" })),
-			);
+			vi.mocked(requestServiceHealth).mockImplementation(async () => Response.json({ ok: true, host: "connected" }));
 			await expect(runWebServiceAction({ ...options, action: "stop" })).rejects.toMatchObject({ code: "host_busy" });
 			expect(webRuntime.stopWebService).not.toHaveBeenCalled();
 			const status = await runWebServiceAction({ ...options, action: "restart" });
@@ -224,10 +218,7 @@ describe("Web service restart", () => {
 		state.runtimeRunning = true;
 		state.busy = true;
 		const options = await serviceOptions();
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => Response.json({ ok: true, host: "connected" })),
-		);
+		vi.mocked(requestServiceHealth).mockImplementation(async () => Response.json({ ok: true, host: "connected" }));
 
 		const status = await runWebServiceAction({
 			...options,

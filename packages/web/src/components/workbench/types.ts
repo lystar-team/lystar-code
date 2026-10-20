@@ -111,7 +111,6 @@ export interface WorkbenchActions {
 	refreshSecuritySettings: () => Promise<void>;
 	saveSecuritySettings: (input: {
 		host: string;
-		allowedHosts: string[];
 		port: number;
 		runtimePort: number;
 		password?: string;

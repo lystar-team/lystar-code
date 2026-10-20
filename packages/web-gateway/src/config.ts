@@ -8,26 +8,21 @@ import {
 	DEFAULT_RUNTIME_HOST,
 	DEFAULT_RUNTIME_PORT,
 	DEFAULT_WEB_HOST,
-	defaultAllowedHosts,
 	loadWebConfig,
 	parseGatewayPort,
-	validateAllowedHosts,
 	validateWebPassword,
 	WebConfigStore,
 } from "./web-config.ts";
 
 export {
-	DEFAULT_ALLOWED_HOSTS,
 	DEFAULT_RUNTIME_HOST,
 	DEFAULT_RUNTIME_PORT,
 	DEFAULT_WEB_HOST,
 	DEFAULT_WEB_PORT,
-	defaultAllowedHosts,
 	type LegacyWebConfig,
 	loadWebConfig,
 	parseGatewayPort,
 	saveWebConfig,
-	validateAllowedHosts,
 	validateGatewayHost,
 	validateWebPassword,
 	WEB_CONFIG_VERSION,
@@ -64,7 +59,6 @@ export interface WebGatewayConfig {
 	/** 兼容旧调用方，实际配置文件为 configPath。 */
 	tokenPath?: string;
 	configPath?: string;
-	allowedHosts: string[];
 	staticDir: string;
 	manageRuntime: boolean;
 	runtimeInvocation?: RuntimeInvocation;
@@ -116,7 +110,6 @@ export async function saveWebGatewaySettings(
 	const port = parseGatewayPort(settings.port);
 	await store.save({
 		host,
-		allowedHosts: current?.allowedHosts ?? legacy?.allowedHosts ?? defaultAllowedHosts(host),
 		port,
 		runtimePort: current?.runtimePort ?? legacy?.runtimePort ?? DEFAULT_RUNTIME_PORT,
 		password: current?.password ?? legacy?.password ?? randomBytes(32).toString("hex"),
@@ -132,10 +125,6 @@ export async function saveWebGatewayToken(agentDir: string, password: string): P
 	return (
 		await store.save({
 			host: current?.host ?? legacy?.host ?? DEFAULT_WEB_HOST,
-			allowedHosts:
-				current?.allowedHosts ??
-				legacy?.allowedHosts ??
-				defaultAllowedHosts(current?.host ?? legacy?.host ?? DEFAULT_WEB_HOST),
 			port: current?.port ?? legacy?.port ?? DEFAULT_WEB_GATEWAY_PORT,
 			runtimePort: current?.runtimePort ?? legacy?.runtimePort ?? DEFAULT_RUNTIME_PORT,
 			password: validateWebPassword(password),
@@ -149,7 +138,6 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 	const configPath = options.configFileName ? join(agentDir, options.configFileName) : undefined;
 	const store = new WebConfigStore(agentDir, configPath);
 	let persisted = await store.loadOrMigrate();
-	const environmentAllowedHosts = envString("PI_WEB_ALLOWED_HOSTS");
 	const environmentPort = envString("PI_WEB_PORT");
 	const environmentRuntimePort = envString("PI_WEB_RUNTIME_PORT");
 	const environmentPassword = envString("PI_WEB_TOKEN");
@@ -158,10 +146,6 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 		const host = DEFAULT_WEB_HOST;
 		persisted = await store.save({
 			host,
-			allowedHosts:
-				environmentAllowedHosts !== undefined
-					? validateAllowedHosts(environmentAllowedHosts)
-					: (legacy.allowedHosts ?? defaultAllowedHosts(host)),
 			port: parsePort(environmentPort ?? legacy.port?.toString(), options.defaultPort ?? DEFAULT_WEB_GATEWAY_PORT),
 			runtimePort: parsePort(
 				environmentRuntimePort ?? legacy.runtimePort?.toString(),
@@ -169,13 +153,9 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 			),
 			password: environmentPassword ?? legacy.password ?? randomBytes(32).toString("hex"),
 		});
-	} else if (environmentAllowedHosts || environmentPort || environmentRuntimePort || environmentPassword) {
+	} else if (environmentPort || environmentRuntimePort || environmentPassword) {
 		persisted = await store.save({
 			host: DEFAULT_WEB_HOST,
-			allowedHosts:
-				environmentAllowedHosts !== undefined
-					? validateAllowedHosts(environmentAllowedHosts)
-					: persisted.allowedHosts,
 			port: parsePort(environmentPort, persisted.port),
 			runtimePort: parsePort(environmentRuntimePort, persisted.runtimePort),
 			password: environmentPassword ?? persisted.password,
@@ -200,51 +180,18 @@ export async function loadWebGatewayConfig(options: LoadWebGatewayConfigOptions 
 		token: persisted.password,
 		tokenPath: store.path,
 		configPath: store.path,
-		allowedHosts: persisted.allowedHosts,
 		staticDir,
 		manageRuntime: process.env.PI_WEB_MANAGE_RUNTIME !== "0",
 		...(options.runtimeInvocation ? { runtimeInvocation: options.runtimeInvocation } : {}),
 	};
 }
 
-export function hostMatches(hostname: string, allowedHosts: readonly string[]): boolean {
-	const normalized = hostname
-		.trim()
-		.toLowerCase()
-		.replace(/^\[|\]$/g, "");
-	return allowedHosts.some((allowed) => {
-		if (allowed === "*") return true;
-		if (allowed.startsWith("*.")) return normalized.endsWith(allowed.slice(1));
-		return normalized === allowed.replace(/^\[|\]$/g, "");
-	});
-}
-
-export function webAccessAddresses(allowedHosts: readonly string[]): string[] {
+export function webAccessAddresses(): string[] {
 	const addresses = Object.values(networkInterfaces())
 		.flatMap((entries) => entries ?? [])
 		.filter((entry) => entry.family === "IPv4" && !entry.internal)
 		.map((entry) => entry.address);
-	return [...new Set(["127.0.0.1", ...addresses])].filter((address) => hostMatches(address, allowedHosts));
-}
-
-export function requestHostname(hostHeader: string | undefined): string | undefined {
-	if (!hostHeader) return undefined;
-	try {
-		return new URL(`http://${hostHeader}`).hostname.toLowerCase();
-	} catch {
-		return undefined;
-	}
-}
-
-export function originHostname(origin: string | undefined): string | undefined {
-	if (!origin) return undefined;
-	try {
-		const url = new URL(origin);
-		if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-		return url.hostname.toLowerCase();
-	} catch {
-		return undefined;
-	}
+	return [...new Set(["127.0.0.1", ...addresses])];
 }
 
 export function bearerToken(value: string | undefined): string | undefined {

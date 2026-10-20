@@ -28,7 +28,6 @@ test("工作区同步失败时在 Runtime 仍连接的情况下重试并恢复�
 		agentDir,
 		runtimeEndpoint: join(agentDir, "runtime.sock"),
 		token: "test-token",
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: false,
 	};

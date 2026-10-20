@@ -493,13 +493,11 @@ export interface SecuritySettingsResponse {
 	host: string;
 	ipAddresses: string[];
 	accessPort: number;
-	allowedHosts: string[];
 	port: number;
 	runtimePort: number;
 	passwordConfigured: boolean;
 	editable: {
 		host: boolean;
-		allowedHosts: boolean;
 		port: boolean;
 		runtimePort: boolean;
 		password: boolean;

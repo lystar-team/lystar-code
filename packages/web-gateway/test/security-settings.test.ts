@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { loadWebGatewaySettings, WebGatewayServer, webConfigPath, webGatewayTokenPath } from "../src/index.ts";
+import { loadWebGatewaySettings, WebGatewayServer, webAccessAddresses, webConfigPath, webGatewayTokenPath } from "../src/index.ts";
 
 interface RouteInternals {
 	handleApi(request: IncomingMessage, response: ServerResponse, url: URL, context: never): Promise<void>;
@@ -44,7 +44,6 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		runtimeEndpoint: join(agentDir, "host.sock"),
 		token: "current-web-token",
 		tokenPath: webGatewayTokenPath(agentDir),
-		allowedHosts: ["127.0.0.1"],
 		staticDir: agentDir,
 		manageRuntime: true,
 	});
@@ -59,7 +58,6 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 			Buffer.from(
 				JSON.stringify({
 					host: "0.0.0.0",
-					allowedHosts: ["127.0.0.1", "192.168.2.35"],
 					port: 15432,
 					runtimePort: 15433,
 					password: "new-web-password",
@@ -80,13 +78,12 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		assert.equal(capture.getStatus(), 202);
 		assert.deepEqual(JSON.parse(capture.getBody()), {
 			host: "0.0.0.0",
-			ipAddresses: ["127.0.0.1", "192.168.2.35"],
+			ipAddresses: webAccessAddresses(),
 			accessPort: 15432,
-			allowedHosts: ["127.0.0.1", "192.168.2.35"],
 			port: 15432,
 			runtimePort: 15433,
 			passwordConfigured: true,
-			editable: { host: false, allowedHosts: true, port: true, runtimePort: true, password: true },
+			editable: { host: false, port: true, runtimePort: true, password: true },
 			accepted: true,
 			passwordChanged: true,
 			restartPending: true,
@@ -98,7 +95,6 @@ test("Web 安全设置保存后重启 Gateway，Runtime 会话保持运行", asy
 		assert.deepEqual(JSON.parse(await readFile(webConfigPath(agentDir), "utf8")), {
 			version: 1,
 			host: "0.0.0.0",
-			allowedHosts: ["127.0.0.1", "192.168.2.35"],
 			port: 15432,
 			runtimePort: 15433,
 			password: "new-web-password",
