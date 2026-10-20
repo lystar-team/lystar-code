@@ -114,6 +114,12 @@ try {
 	}
 	stopProcessTree(gateway?.pid);
 	if (gateway && gateway.exitCode === null) await new Promise((resolvePromise) => gateway.once("close", resolvePromise));
-	rmSync(agentDir, { recursive: true, force: true });
+	// Windows 上停止后的 Gateway/Runtime 仍可能短暂占用日志和状态文件。
+	// 服务停止已在上面校验，清理失败不改变 smoke 结论，也不应阻断发行构建。
+	try {
+		rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	} catch (error) {
+		output.push(`未能清理临时目录 ${agentDir}：${error instanceof Error ? error.message : String(error)}`);
+	}
 	if (gatewayStopFailure) throw gatewayStopFailure;
 }
