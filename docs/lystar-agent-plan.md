@@ -2,7 +2,7 @@
 
 > 状态：开发基线。按本文连续实施，不设阶段审批。
 >
-> 当前上游基线：2026-10-16；Pi `v1.3.0`，commit `71023aec1546d6d677a65669c5665c0927ce0dd0`；产品版本 `1.3.0-lystar.17`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
+> 当前上游基线：2026-10-16；Pi `v1.3.0`，commit `71023aec1546d6d677a65669c5665c0927ce0dd0`；产品版本 `1.3.0-lystar.18`；Grok Build commit `6e386420825bd44ae648c63e7c8cba12fcec9401`。
 
 ## 1. 产品定义
 
@@ -523,6 +523,7 @@ LYStar 不增加 MCP 配置文件、内置管理器或代理 Tool。TUI 负责�
 
 | LYStar | Pi 基线 | Pi commit | MCP Adapter | Session | Extension API |
 |---|---|---|---|---|---|
+| `1.3.0-lystar.18` | `1.3.0` | `71023aec15...` | 见本版 CHANGELOG | 见本版 CHANGELOG | 见本版 CHANGELOG |
 | `1.3.0-lystar.17` | `1.3.0` | `71023aec15...` | 见本版 CHANGELOG | 见本版 CHANGELOG | 见本版 CHANGELOG |
 | `1.3.0-lystar.16` | `1.3.0` | `71023aec15...` | 见本版 CHANGELOG | 见本版 CHANGELOG | 见本版 CHANGELOG |
 | `1.3.0-lystar.15` | `1.3.0` | `71023aec15...` | 见本版 CHANGELOG | 见本版 CHANGELOG | 见本版 CHANGELOG |
