@@ -32,8 +32,10 @@ async function reservePort() {
 
 async function waitForHealth(url, child, output) {
 	let lastError = "unknown error";
-	for (let attempt = 0; attempt < 120; attempt += 1) {
-		if (child.exitCode !== null) {
+	// `lc web` without `--foreground` installs the Windows services and exits 0.
+	// Keep polling after that exit; only an abnormal exit is a smoke failure.
+	for (let attempt = 0; attempt < 240; attempt += 1) {
+		if (child.exitCode !== null && child.exitCode !== 0) {
 			throw new Error(`lc web exited with ${child.exitCode}: ${output.join("")}`);
 		}
 		try {
