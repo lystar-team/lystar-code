@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.19] - 2026-10-20
+
 ### Removed
 
 - 移除 Web Host 白名单及其首次配置、环境变量、设置项和 HTTP/WebSocket 拦截；旧配置中的 `allowedHosts` 不再参与读取和保存，访问仍使用连接密码验证。
