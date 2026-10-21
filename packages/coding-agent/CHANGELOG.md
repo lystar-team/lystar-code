@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.21] - 2026-10-22
+
 ### Fixed
 
 - 修复 Windows 上停止 Web Gateway 超时：Web 服务改为直接运行版本目录中的 `lc.exe`，Gateway 进程不再因 `cmd.exe` 启动器脱离服务 Job；强制停止会按 Gateway 锁文件 PID 结束 Job 之外的 Gateway 进程，同时保留它启动的 Runtime 和更新任务。
