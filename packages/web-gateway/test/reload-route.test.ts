@@ -11,7 +11,7 @@ interface RouteInternals {
 	createContext(id: string): { id: string };
 	getClient(context: { id: string }): Promise<{ request(command: Command): Promise<unknown> }>;
 	resolveSession(context: { id: string }, id: string): Promise<{ path: string }>;
-	requireLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
+	ensureSessionLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
 	handleSessions(
 		request: IncomingMessage,
 		response: ServerResponse,
@@ -127,7 +127,7 @@ test("Web reload 路由使用当前会话 lease 调用 reload_resources 并返�
 		assert.equal(id, "session-one");
 		return { path: snapshot.path };
 	};
-	routes.requireLease = async (context, id) => {
+	routes.ensureSessionLease = async (context, id) => {
 		assert.equal(context.id, "browser-one");
 		assert.equal(id, "session-one");
 		return { leaseId: "lease-one" };
@@ -198,7 +198,7 @@ test("Web follow-up 路由转发稳定 queueId", async (t) => {
 		assert.equal(id, "session-one");
 		return { path: snapshot.path };
 	};
-	routes.requireLease = async (_context, id) => {
+	routes.ensureSessionLease = async (_context, id) => {
 		assert.equal(id, "session-one");
 		return { leaseId: "lease-one" };
 	};

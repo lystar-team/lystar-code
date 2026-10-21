@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { createUuid } from "@lystar/code-web-protocol/uuid";
 import { webApi } from "../adapters/host-protocol/api.ts";
 import { recordBrowserDiagnostic } from "../lib/browser-diagnostics.ts";
+import { clearInteractiveUiSession } from "../components/interactive-ui/state";
 import type {
 	PromptAttachment,
 	PromptAttachmentPreview,
@@ -57,6 +58,13 @@ type SessionSubscriptionResult = "ready" | "gap" | "timeout" | "closed";
 const SESSION_CONTROL_RECOVERY_MS = 130_000;
 const SESSION_CONTROL_RETRY_MS = 1_000;
 const SESSION_CONTROL_MAX_RETRY_MS = 5_000;
+/** 临时不可取控制的错误码；其他错误不在当前会话上重试。 */
+const RETRYABLE_SESSION_CONTROL_CODES = new Set([
+	"session_coordination_unavailable",
+	"session_locked",
+	"session_control_locked",
+	"session_handoff_in_progress",
+]);
 function setSessionStopping(current: WorkbenchState, sessionId: string, stopping: boolean): WorkbenchState {
 	if (stopping) {
 		if (current.stoppingSessionIds[sessionId]) return current;
@@ -100,6 +108,7 @@ export interface WorkbenchSessionActionsContext {
 	loadTranscript: (sessionId?: string, cursor?: string, deferCommit?: boolean, completeTurn?: boolean) => Promise<void>;
 	loadSubagents: (sessionId?: string) => Promise<void>;
 	loadSessionOperations: (sessionId: string) => Promise<void>;
+	loadSessionSnapshot: (sessionId: string) => Promise<void>;
 	readSelectedSession: <T>(sessionId: string, read: (signal: AbortSignal) => Promise<T>) => Promise<T | undefined>;
 	subscribeSessionAndWait: (sessionId: string) => Promise<SessionSubscriptionResult>;
 	completeSessionSubscription: (sessionId: string, result: SessionSubscriptionResult) => Promise<boolean>;
@@ -141,6 +150,7 @@ export function useWorkbenchSessionActions({
 	loadTranscript,
 	loadSubagents,
 	loadSessionOperations,
+	loadSessionSnapshot,
 	readSelectedSession,
 	subscribeSessionAndWait,
 	completeSessionSubscription,
@@ -198,7 +208,7 @@ export function useWorkbenchSessionActions({
 						if (stateRef.current.sessionId !== sessionId || selectionRef.current !== selection) return;
 						const code = error instanceof Error && "code" in error ? error.code : undefined;
 						if (
-							(code !== "session_coordination_unavailable" && code !== "session_locked") ||
+							(code !== undefined && !RETRYABLE_SESSION_CONTROL_CODES.has(String(code))) ||
 							!stateRef.current.connected ||
 							Date.now() >= deadline
 						)
@@ -424,7 +434,8 @@ export function useWorkbenchSessionActions({
 								transcriptRevision: current.transcriptRevision,
 								transcriptLeafId: current.transcriptLeafId,
 								sessionError: undefined,
-								readOnly: true,
+								// 取控制失败不直接固定为只读：以快照的写权限为准，后台继续尝试取回控制权。
+								readOnly: snapshot.writeAccess !== "owned",
 								currentOperation: operationForSessionSnapshot(current.operations, snapshot),
 							};
 							return restoreRuntimeActivities(next, snapshot);
@@ -703,11 +714,31 @@ export function useWorkbenchSessionActions({
 			liveCompaction: undefined,
 		}));
 		const subscriptionResult = await subscribeSessionAndWait(result.session.id);
-		await completeSessionSubscription(result.session.id, subscriptionResult).catch((error) =>
-			showToast(errorMessage(error), "error"),
-		);
+		try {
+			const ready = await completeSessionSubscription(result.session.id, subscriptionResult);
+			// 订阅就绪后主动补全快照、任务、记录和子会话，不依赖后续事件触发首次读取。
+			if (ready && subscriptionResult !== "gap") {
+				void Promise.all([
+					loadSessionSnapshot(result.session.id),
+					loadSessionOperations(result.session.id),
+					loadTranscript(result.session.id),
+					loadSubagents(result.session.id),
+				]).catch((error) => showToast(errorMessage(error), "error"));
+			}
+		} catch (error) {
+			showToast(errorMessage(error), "error");
+		}
 		return result.session.id;
-	}, [completeSessionSubscription, showToast, subscribeSessionAndWait, updateState]);
+	}, [
+		completeSessionSubscription,
+		loadSessionOperations,
+		loadSessionSnapshot,
+		loadSubagents,
+		loadTranscript,
+		showToast,
+		subscribeSessionAndWait,
+		updateState,
+	]);
 
 	const sendMessage = useCallback(
 		async (
@@ -1031,6 +1062,8 @@ export function useWorkbenchSessionActions({
 					for (const sessionId of deleted) {
 						sessionDetailCacheRef.current.delete(sessionId);
 						sessionDetailSeqRef.current.delete(sessionId);
+						try { clearInteractiveUiSession(sessionId); }
+						catch (error) { showToast(`会话已删除，但本浏览器交互状态未清除：${errorMessage(error)}`, "warning"); }
 					}
 					updateState((next) => {
 						const projects = next.projects.map((project) => ({
@@ -1164,8 +1197,8 @@ export function useWorkbenchSessionActions({
 	);
 
 	const reloadResources = useCallback(async () => {
-		const { sessionId, currentProjectId, readOnly } = stateRef.current;
-		if (!sessionId || readOnly) throw new Error("当前会话不可写");
+		const { sessionId, currentProjectId } = stateRef.current;
+		if (!sessionId) throw new Error("请先选择一个会话");
 		showToast("正在重新加载会话资源…", "info");
 		const result = await webApi.reloadResources(sessionId);
 		if (stateRef.current.sessionId !== sessionId) return;
@@ -1210,7 +1243,7 @@ export function useWorkbenchSessionActions({
 	}, [showToast]);
 
 	const ensureSessionControl = useCallback(
-		async (sessionId: string): Promise<boolean> => {
+		async (sessionId: string, options: { silent?: boolean } = {}): Promise<boolean> => {
 			const current = stateRef.current;
 			if (current.sessionId !== sessionId) return false;
 			if (!current.readOnly && current.lease) return true;
@@ -1227,10 +1260,10 @@ export function useWorkbenchSessionActions({
 				});
 				if (!controlled || stateRef.current.sessionId !== sessionId || selectionRef.current !== selection) return false;
 				if (controlled.owned) return true;
-				showToast("当前会话暂时无法修改", "warning");
+				if (!options.silent) showToast("当前会话暂时无法修改", "warning");
 				return false;
 			} catch (error) {
-				showToast(errorMessage(error), "error");
+				if (!options.silent) showToast(errorMessage(error), "error");
 				return false;
 			}
 		},

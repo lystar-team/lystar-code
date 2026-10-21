@@ -4,6 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { cn } from "../lib/utils";
 import { connectionPresentation } from "../state/connection-recovery";
 import { StabilityBoundary, StabilityFallbackPanel } from "./stability-boundary";
+import { InteractiveUiActionProvider } from "./interactive-ui/actions";
 import type { WorkbenchState } from "../state/use-workbench";
 import { sessionTitle } from "../state/use-workbench";
 import type { WebProject, WebSessionSummary } from "../types";
@@ -430,6 +431,7 @@ export function Workbench({
 	);
 
 	return (
+		<InteractiveUiActionProvider state={state} sendMessage={actions.sendMessage}>
 		<div ref={layoutRef} className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
 			{desktopLayout ? (
 				<div className="relative flex h-full shrink-0">
@@ -879,6 +881,7 @@ export function Workbench({
 			<GitCredentialAuthorizationDialog state={state} actions={actions} />
 			<UiRequestDialog state={state} actions={actions} />
 		</div>
+		</InteractiveUiActionProvider>
 	);
 }
 

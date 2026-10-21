@@ -1,7 +1,7 @@
 "use client";
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
-import type { ToolDiff, WebSearchProgress } from "@lystar/code-web-protocol";
+import { INTERACTIVE_UI_TOOL_NAMES, type ToolDiff, type WebSearchProgress } from "@lystar/code-web-protocol";
 import {
 	BotIcon,
 	CheckCircleIcon,
@@ -31,6 +31,7 @@ import { toCodemodeToolViewModel } from "../../adapters/codemode-tool-view-model
 import { readSourcePresentation } from "../../adapters/read-source-presentation.ts";
 import type { ToolBatchState, ToolBatchTool } from "../../types.ts";
 import { StabilityBoundary } from "../stability-boundary";
+import { InteractiveUiToolResult } from "../interactive-ui/host";
 import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { GsapCollapsibleContent } from "../ui/gsap-collapsible-content";
 import { CodeBlock, CodeBlockActions, CodeBlockCopyButton, CodeBlockHeader, CodeBlockTitle } from "./code-block";
@@ -1257,6 +1258,8 @@ function ToolBatchRow({
 			setOpen(false);
 		previousActive.current = active;
 	}, [active, autoCollapseWhenComplete, tool.name]);
+
+	if (INTERACTIVE_UI_TOOL_NAMES.has(tool.name)) return <InteractiveUiToolResult key={`${sessionId}:${tool.id}`} tool={tool} sessionId={sessionId} />;
 
 	return (
 		<Collapsible collapseOnContentClick open={open} onOpenChange={setOpen} className={cn("min-w-0", className)}>

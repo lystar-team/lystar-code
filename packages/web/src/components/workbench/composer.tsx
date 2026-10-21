@@ -278,6 +278,7 @@ export const Composer = memo(function Composer({
 		setQueueActionId(undefined);
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
 	const disabled = externallyDisabled || (roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state));
+	const acquiringSessionControl = Boolean(state.sessionId && (state.pendingSessionControls?.[state.sessionId] ?? 0) > 0);
 	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
 	const aborting = !roomMode && Boolean(state.sessionId && state.stoppingSessionIds?.[state.sessionId]);
 	const getPromptCompletions = useCallback(
@@ -572,13 +573,19 @@ export const Composer = memo(function Composer({
 												? roomSending
 													? "正在等待智能体协作回复…"
 											: "发送消息给智能体协作中的智能体…"
-												: state.sessionId && !state.sessionReady
+											: !state.sessionId
+												? "选择或新建一个会话后开始"
+												: !state.sessionReady
 													? state.sessionError || state.transcriptError || state.subagentsError ? "会话同步失败，请重试" : "正在同步会话"
-											: externallyDisabled
-												? "请先完成当前 Prompt 编辑"
-												: disabled
-													? "当前会话不可写"
-													: inline ? "输入 Prompt…" : "描述你想完成的工作…"
+													: !state.connected
+														? "连接已断开，正在重连"
+														: acquiringSessionControl
+															? "正在获取会话控制权…"
+															: externallyDisabled
+																? "请先完成当前 Prompt 编辑"
+																: disabled
+																	? "当前会话不可写"
+																	: inline ? "输入 Prompt…" : "描述你想完成的工作…"
 										}
 										disabled={disabled}
 									/>

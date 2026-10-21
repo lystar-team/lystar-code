@@ -74,9 +74,11 @@ React 19 + TypeScript、Vite 8、Tailwind CSS 4、CSS 语义变量、shadcn/ui�
 ### 3.4 字体与排版
 
 - 界面字体：`Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei"`，不下载 Web Font。
-- 界面字号常用层级：`text-xs` 12px（辅助、状态、计数）、`text-sm` 14px（控件、次级说明）、`text-base` 16px（顶栏标题、对话框标题）、`text-lg` 18px（顶栏标题 sm 以上）。设置页头使用 `text-2xl sm:text-4xl`；诊断页使用 28px / 36px，资源数值使用 28px / 34px。
+- 普通界面文字、按钮、输入框、选择器与菜单统一使用 `text-sm`，基线为 13px / 20px，不包含对话正文。界面字号来源是 `src/styles/tokens.css` 的 `--font-size-ui`，`src/styles.css` 将它映射到 `text-sm` 并设为页面默认字号；不要逐页改写同类控件的字号。
+- 字号层级：`text-xs` 12px（辅助、状态、计数）、`text-sm` 13px（普通文字与控件）、`text-base` 16px（顶栏标题、对话框标题）、`text-lg` 18px（顶栏标题 sm 以上）。16px 不用于普通按钮或输入框，包括窄屏。设置页头使用 `text-2xl sm:text-4xl`；诊断页使用 28px / 36px，资源数值使用 28px / 34px。
+- `html` 根字号保持浏览器默认值，不通过改小根字号缩放整个界面。控件的 `font: inherit` 置于 `@layer base`，字号和行高由组件控制；`font-weight: inherit` 在基础层外保留既有优先级，普通按钮、输入框、选择器继承父级字重，不因默认 `font-medium` 变粗。标题与明确强调保留原有字重；Prompt 输入框与文字叠层共用同一字号。
 - 代码、路径、命令、模型 ID 使用等宽字体。
-- 正文：会话正文与协作气泡消息继承 `text-sm`（14px / 20px），与 Markdown 组件的默认段落间距一致，智能体与真人消息字号相同。`.sd-prose` 只用于文件预览和任务详情等文档型内容，为 `0.9375rem / 1.78`，行内代码、表格和引用块沿用 `src/styles/prose.css`。
+- 正文：会话正文与协作气泡消息独立保持 14px / 20px，不随控件的 `text-sm` 基线缩小；智能体与真人消息字号相同，历史消息与流式回复使用同一规格。Markdown 组件的默认段落间距不变。`.sd-prose` 只用于文件预览和任务详情等文档型内容，为 `0.9375rem / 1.78`，行内代码、表格和引用块沿用 `src/styles/prose.css`。
 - 项目栏列表项固定 `13px`；工作区导航栏按钮文字 `10px`（`src/styles.css` 的 `.workspace-navigation-rail` 覆盖）。
 - 会话标题与工具标题保持单行；长内容截断，完整内容通过展开或可访问名称提供。
 

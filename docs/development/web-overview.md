@@ -48,6 +48,19 @@ packages/coding-agent
 - **智能体协作**：`packages/web/src/state/use-room-workspace.ts` → Gateway 项目的 `/rooms` 路由 → `packages/web-runtime/src/session-room-coordinator.ts`、`session-room-store.ts` 与 `session-room-router.ts`。消息存储、目标选择、幂等和 Agent 投递归 Runtime 管理。
 - **设置和模型**：`packages/web/src/state/workbench-settings-actions.ts` → Gateway 设置或模型路由 → Runtime Workspace 命令及 `RuntimeAdapter`。Gateway 自身的访问配置由 Gateway 处理，不等同于 Runtime 会话设置。
 
+### 会话内交互回答
+
+Web Runtime 在创建与恢复会话时装配 `get_ui_spec` 和 `present_ui`，使用当前会话选择的模型。Agent 按需读取组件规格，再发布完整快照；普通问答仍用文字，不需要安装项目扩展。
+
+- 同源组件定义、生成规则与程序校验：`packages/web-protocol/src/interactive-ui-library.ts`。
+- 快照契约与 12,288 字符上限：`packages/web-protocol/src/interactive-ui.ts`；沿用工具事件与 Transcript，不新增 Runtime 消息类型。
+- 发布工具：`packages/web-runtime/src/interactive-ui-tool.ts`；数据先由已有工具或用户提供，界面不直接调用 Query / Mutation。
+- Web 宿主、数值计算、表格搜索及选择：`packages/web/src/components/interactive-ui/`。交互结果保持可见，其他工作过程仍可折叠。
+- 控件状态保存在本浏览器，按会话与工具调用隔离；刷新恢复，重置回初始值，删除会话时清理。不跨设备同步。
+- “继续讨论”通过已有 `sendMessage` 把程序、参数、筛选、选中数据及来源送回原会话；运行中沿用 follow-up，不直接执行项目操作。
+
+开发回放入口是 `scripts/preview-interactive-ui.ts`；`.pi/extensions/interactive-ui.ts` 只提供项目检查示例，不是正式展示工具的安装入口。实测记录见[接入研究与验证](../research/open-intelligent-ui-integration-2026-10-21.md#十四正式接入与验证)。
+
 ## 4. 契约与事实源
 
 | 边界 | 主要核对位置 |

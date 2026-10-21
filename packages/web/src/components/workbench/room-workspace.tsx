@@ -70,7 +70,7 @@ function ActivityRow({ message }: { message: WebRoomMessage }) {
 }
 
 const MESSAGE_COLUMN = "flex min-w-0 max-w-[min(calc(100%_-_2.75rem),680px)] flex-col";
-const MESSAGE_BUBBLE = "min-w-0 max-w-full rounded-xl px-3.5 py-2.5 text-sm";
+const MESSAGE_BUBBLE = "min-w-0 max-w-full rounded-xl px-3.5 py-2.5 text-[14px] leading-5";
 
 function MessageBubble({
 	message,
@@ -107,7 +107,7 @@ function MessageBubble({
 				>
 					{message.senderType === "agent" ? (
 						<MessageResponse
-							className="min-w-0 max-w-full break-words text-sm"
+							className="min-w-0 max-w-full break-words"
 							controls={{ code: { copy: true, download: true }, table: { copy: true, download: true } }}
 							linkSafety={{ enabled: true }}
 							onOpenPath={(path) => void openResource(path)}

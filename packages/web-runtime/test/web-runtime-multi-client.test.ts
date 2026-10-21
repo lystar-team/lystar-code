@@ -253,7 +253,8 @@ describe("Web Runtime 多端会话协作", () => {
 			rmSync(workspace.root, { recursive: true, force: true });
 		});
 
-		expect(follower.ownsSessionWriter?.()).toBe(false);
+		// Web Runtime 默认接管会话：其他 Runtime 仍存活时也会通过交接取得控制权。
+		expect(follower.ownsSessionWriter?.()).toBe(true);
 		await owner.connection.close();
 		await follower.rename("跟随端继续使用");
 		expect(follower.getSnapshot("owned").name).toBe("跟随端继续使用");

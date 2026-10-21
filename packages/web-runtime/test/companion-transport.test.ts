@@ -38,12 +38,30 @@ it("大历史工具结果不重复广播，连续文本增量保持完整", asyn
 		updatedAt: 1,
 	});
 	const prefix = "x".repeat(2 * 1024 * 1024);
-	const streamingMessage = { role: "assistant", content: [{ type: "text", text: prefix }] };
+	const usage = {
+		input: 12,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 12,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const streamingMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: prefix }],
+		api: "openai-responses",
+		provider: "faux",
+		model: "faux-model",
+		usage,
+		stopReason: "stop",
+		timestamp: 1,
+	};
 	const session = {
 		agent: { state: { streamingMessage } },
 		sessionFile: sessionPath,
 		sessionManager: {
 			getEntries: () => [],
+			getEntryCount: () => 0,
 			getHeader: () => ({ timestamp: new Date(0).toISOString() }),
 			getCwd: () => root,
 			getSessionId: () => "session",

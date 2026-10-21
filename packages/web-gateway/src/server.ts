@@ -36,6 +36,7 @@ import {
 	type ProjectResourcePreview,
 	type ProjectTrust,
 	type ReadImageContentResult,
+	type RequestOptions,
 	type RuntimeProtocolClient,
 	type ServerEvent,
 	type SessionActivity,
@@ -273,6 +274,8 @@ type ContextLease = {
 	updatedAt: number;
 };
 
+type SessionLease = ContextLease & { clientInstanceId: string };
+
 interface RuntimeConnectionStatus {
 	pid?: number;
 	processMemory?: {
@@ -496,6 +499,11 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+	const code = object(error)?.code;
+	return typeof code === "string" ? code : undefined;
 }
 
 function jsonValue(value: unknown): JsonValue {
@@ -1946,20 +1954,56 @@ export class WebGatewayServer {
 		return { deletedIds, failures };
 	}
 
-	private async requireLease(
+	/**
+	 * 返回该浏览器上下文可用的会话租约；本地没有租约时向 Runtime 获取一个。
+	 * Runtime 允许同一会话存在多个客户端租约，命令由 Runtime 串行执行。
+	 */
+	private async ensureSessionLease(
 		context: BrowserContext,
 		sessionId: string,
-	): Promise<{
-		leaseId: string;
-		sessionPath: string;
-		clientInstanceId: string;
-		leaseGeneration: number;
-		createdAt: number;
-		updatedAt: number;
-	}> {
-		const lease = context.leases.get(sessionId);
-		if (!lease) throw new HttpError(409, "session_control_required", "请先取得当前会话的控制权");
-		return { ...lease, clientInstanceId: context.id };
+		options: { refresh?: boolean } = {},
+	): Promise<SessionLease> {
+		if (!options.refresh) {
+			const cached = context.leases.get(sessionId);
+			if (cached) return { ...cached, clientInstanceId: context.id };
+		}
+		const session = await this.resolveSession(context, sessionId);
+		const client = await this.getClient(context);
+		const result = await client.request<{ lease: ContextLease }>({
+			command: "acquire_session",
+			sessionPath: session.path,
+			clientInstanceId: context.id,
+		});
+		context.leases.set(sessionId, result.lease);
+		context.leasesToRestore.delete(sessionId);
+		context.bootstrapCache = undefined;
+		const payload = JSON.stringify({ type: "session_lease", sessionId, lease: publicLease(result.lease) });
+		for (const socket of context.sockets) {
+			if (this.subscriptionsFor(socket).has(sessionId)) this.sendWebSocket(socket, payload);
+		}
+		return { ...result.lease, clientInstanceId: context.id };
+	}
+
+	/**
+	 * 会话命令统一入口：先取得租约，租约失效时重新获取并重试一次，
+	 * 避免 Runtime 重启或租约回收把控制权状态暴露给页面。
+	 */
+	private async requestSession<T>(
+		context: BrowserContext,
+		sessionId: string,
+		build: (lease: SessionLease) => Command,
+		options?: RequestOptions,
+	): Promise<T> {
+		const client = await this.getClient(context);
+		const lease = await this.ensureSessionLease(context, sessionId);
+		try {
+			return await client.request<T>(build(lease), options);
+		} catch (error) {
+			if (errorCodeOf(error) !== "invalid_session_lease") throw error;
+			context.leases.delete(sessionId);
+			const refreshed = await this.ensureSessionLease(context, sessionId, { refresh: true });
+			return await client.request<T>(build(refreshed), options);
+		}
 	}
 
 	private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -3407,7 +3451,7 @@ export class WebGatewayServer {
 				if (session && session.projectId !== project.id) {
 					throw new HttpError(400, "file_project_mismatch", "会话不属于当前文件所在项目");
 				}
-				const lease = sessionId ? await this.requireLease(context, sessionId) : undefined;
+				const lease = sessionId ? await this.ensureSessionLease(context, sessionId) : undefined;
 				const saved = await client.request<ProjectFileSaveResult>({
 					command: "save_project_file",
 					...(session && lease ? { sessionPath: session.path, leaseId: lease.leaseId } : {}),
@@ -3577,22 +3621,21 @@ export class WebGatewayServer {
 				if (body.inheritCollaboration !== undefined && typeof body.inheritCollaboration !== "boolean")
 					throw new HttpError(400, "project_trust_inheritance_invalid", "协作信任继承值无效");
 				const session = await this.resolveSession(context, body.sessionId);
-				const lease = await this.requireLease(context, body.sessionId);
+				const trusted = body.trusted;
+				const inheritCollaboration = body.inheritCollaboration;
 				sendJson(
 					response,
 					200,
-					await client.request<ProjectTrust>({
+					await this.requestSession<ProjectTrust>(context, body.sessionId, (lease) => ({
 						command: "set_project_trust",
 						cwd: project.cwd,
-						trusted: body.trusted,
-						...(typeof body.inheritCollaboration === "boolean"
-							? { inheritCollaboration: body.inheritCollaboration }
-							: {}),
+						trusted,
+						...(typeof inheritCollaboration === "boolean" ? { inheritCollaboration } : {}),
 						sessionPath: session.path,
 						leaseId: lease.leaseId,
 						clientInstanceId: context.id,
 						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-					}),
+					})),
 				);
 				return;
 			}
@@ -3714,12 +3757,11 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "usage" && request.method === "GET") {
-			const lease = await this.requireLease(context, sessionId);
-			const info = await client.request<SessionInfoResult>({
+			const info = await this.requestSession<SessionInfoResult>(context, sessionId, (lease) => ({
 				command: "get_session_info",
 				sessionPath: session.path,
 				leaseId: lease.leaseId,
-			});
+			}));
 			sendJson(response, 200, { tokens: info.tokens });
 			return;
 		}
@@ -3776,7 +3818,16 @@ export class WebGatewayServer {
 				context.leasesToRestore.delete(sessionId);
 				const lease = context.leases.get(sessionId);
 				if (lease) {
-					await client.request({ command: "release_session", sessionPath: session.path, leaseId: lease.leaseId });
+					try {
+						await client.request({
+							command: "release_session",
+							sessionPath: session.path,
+							leaseId: lease.leaseId,
+						});
+					} catch (error) {
+						// 租约在 Runtime 侧已失效时，本地记录同样不再可用，按已释放处理。
+						if (errorCodeOf(error) !== "invalid_session_lease") throw error;
+					}
 					context.leases.delete(sessionId);
 					context.bootstrapCache = undefined;
 				}
@@ -3870,15 +3921,14 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 6 && parts[3] === "subagents" && parts[5] === "abort" && request.method === "POST") {
-			const lease = await this.requireLease(context, sessionId);
-			const result = await client.request<JsonValue>({
+			const result = await this.requestSession<JsonValue>(context, sessionId, (lease) => ({
 				command: "abort_subagent",
 				sessionPath: session.path,
 				agentId: parts[4],
 				leaseId: lease.leaseId,
 				clientInstanceId: context.id,
 				clientRequestId: randomUUID(),
-			});
+			}));
 			sendJson(response, 200, result);
 			return;
 		}
@@ -3886,8 +3936,7 @@ export class WebGatewayServer {
 			const body = await parseJsonBody(request);
 			const text = stringValue(body.text);
 			if (!text) throw new HttpError(400, "subagent_text_required", "继续 Subagent 需要输入内容");
-			const lease = await this.requireLease(context, sessionId);
-			const result = await client.request<JsonValue>({
+			const result = await this.requestSession<JsonValue>(context, sessionId, (lease) => ({
 				command: "continue_subagent",
 				sessionPath: session.path,
 				agentId: parts[4],
@@ -3895,7 +3944,7 @@ export class WebGatewayServer {
 				leaseId: lease.leaseId,
 				clientInstanceId: context.id,
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-			});
+			}));
 			sendJson(response, 200, result);
 			return;
 		}
@@ -3938,11 +3987,10 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 5 && parts[3] === "tree" && parts[4] === "navigate" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
 			sendJson(
 				response,
 				200,
-				await client.request<JsonValue>({
+				await this.requestSession<JsonValue>(context, sessionId, (lease) => ({
 					command: "navigate_session_tree",
 					sessionPath: session.path,
 					leaseId: lease.leaseId,
@@ -3950,7 +3998,7 @@ export class WebGatewayServer {
 					summarize: body.summarize === true,
 					clientInstanceId: context.id,
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-				}),
+				})),
 			);
 			return;
 		}
@@ -3971,7 +4019,7 @@ export class WebGatewayServer {
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "abort" && request.method === "POST") {
-			await this.requireLease(context, sessionId);
+			await this.ensureSessionLease(context, sessionId);
 			const result = await client.request<{ stopped: boolean }>({ command: "stop_session", sessionId });
 			const snapshot = await client.request<SessionStateSnapshot>({
 				command: "inspect_session",
@@ -3982,15 +4030,16 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 4 && parts[3] === "reload" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
-			const snapshot = await client.request<SessionStateSnapshot>(
-				{
+			const snapshot = await this.requestSession<SessionStateSnapshot>(
+				context,
+				sessionId,
+				(lease) => ({
 					command: "reload_resources",
 					sessionPath: session.path,
 					leaseId: lease.leaseId,
 					clientInstanceId: context.id,
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-				},
+				}),
 				{ timeoutMs: 0 },
 			);
 			sendJson(response, 200, { session: publicSessionSnapshot(snapshot) });
@@ -3998,22 +4047,20 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 4 && parts[3] === "compact" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
-			const result = await client.request<{ operation: OperationSnapshot }>({
+			const result = await this.requestSession<{ operation: OperationSnapshot }>(context, sessionId, (lease) => ({
 				command: "compact",
 				sessionPath: session.path,
 				leaseId: lease.leaseId,
 				clientInstanceId: context.id,
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 				...(stringValue(body.customInstructions) ? { customInstructions: body.customInstructions as string } : {}),
-			});
+			}));
 			sendJson(response, 202, { operation: publicOperation(result.operation, sessionId) });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "fork" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
-			const result = await client.request<{
+			const result = await this.requestSession<{
 				lease: {
 					leaseId: string;
 					leaseGeneration: number;
@@ -4024,7 +4071,7 @@ export class WebGatewayServer {
 				};
 				snapshot: SessionStateSnapshot;
 				selectedText?: string;
-			}>({
+			}>(context, sessionId, (lease) => ({
 				command: "fork_session",
 				sessionPath: session.path,
 				leaseId: lease.leaseId,
@@ -4032,7 +4079,7 @@ export class WebGatewayServer {
 				...(body.position === "before" || body.position === "at" ? { position: body.position } : {}),
 				clientInstanceId: context.id,
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-			});
+			}));
 			context.leases.delete(sessionId);
 			const newSessionId = result.snapshot.id;
 			this.sessions.set(newSessionId, {
@@ -4053,41 +4100,38 @@ export class WebGatewayServer {
 		}
 		if (parts.length === 4 && parts[3] === "rename" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
-			const snapshot = await client.request<SessionStateSnapshot>({
+			const snapshot = await this.requestSession<SessionStateSnapshot>(context, sessionId, (lease) => ({
 				command: "rename_session",
 				sessionPath: session.path,
 				leaseId: lease.leaseId,
 				name: String(body.name ?? "").trim(),
 				clientInstanceId: context.id,
 				clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-			});
+			}));
 			sendJson(response, 200, { session: publicSessionSnapshot(snapshot) });
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "export" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
 			sendJson(
 				response,
 				200,
-				await client.request<JsonValue>({
+				await this.requestSession<JsonValue>(context, sessionId, (lease) => ({
 					command: "export_session",
 					sessionPath: session.path,
 					leaseId: lease.leaseId,
 					clientInstanceId: context.id,
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 					...(stringValue(body.outputPath) ? { outputPath: body.outputPath as string } : {}),
-				}),
+				})),
 			);
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "model" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
 			sendJson(response, 200, {
 				session: publicSessionSnapshot(
-					await client.request<SessionStateSnapshot>({
+					await this.requestSession<SessionStateSnapshot>(context, sessionId, (lease) => ({
 						command: "set_session_model",
 						sessionPath: session.path,
 						leaseId: lease.leaseId,
@@ -4097,28 +4141,27 @@ export class WebGatewayServer {
 						},
 						clientInstanceId: context.id,
 						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-					}),
+					})),
 				),
 			});
 			return;
 		}
 		if (parts.length === 4 && parts[3] === "thinking" && request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
 			const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 			const level = stringValue(body.level);
 			if (!level || !levels.has(level))
 				throw new HttpError(400, "invalid_thinking_level", "不支持的 Thinking Level");
 			sendJson(response, 200, {
 				session: publicSessionSnapshot(
-					await client.request<SessionStateSnapshot>({
+					await this.requestSession<SessionStateSnapshot>(context, sessionId, (lease) => ({
 						command: "set_session_thinking",
 						sessionPath: session.path,
 						leaseId: lease.leaseId,
 						level: level as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra",
 						clientInstanceId: context.id,
 						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-					}),
+					})),
 				),
 			});
 			return;
@@ -4126,17 +4169,17 @@ export class WebGatewayServer {
 		if (parts.length === 4 && parts[3] === "fast-mode" && request.method === "POST") {
 			const body = await parseJsonBody(request);
 			if (typeof body.enabled !== "boolean") throw new HttpError(400, "invalid_fast_mode", "快速模式参数无效");
-			const lease = await this.requireLease(context, sessionId);
+			const enabled = body.enabled;
 			sendJson(response, 200, {
 				session: publicSessionSnapshot(
-					await client.request<SessionStateSnapshot>({
+					await this.requestSession<SessionStateSnapshot>(context, sessionId, (lease) => ({
 						command: "set_session_fast_mode",
 						sessionPath: session.path,
 						leaseId: lease.leaseId,
-						enabled: body.enabled,
+						enabled,
 						clientInstanceId: context.id,
 						clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
-					}),
+					})),
 				),
 			});
 			return;
@@ -4286,8 +4329,7 @@ export class WebGatewayServer {
 		const action = body.action === "remove" || body.action === "steer" ? body.action : undefined;
 		if (!queueId) throw new HttpError(400, "queue_message_required", "排队消息标识不能为空");
 		if (!action) throw new HttpError(400, "queue_action_invalid", "排队消息操作无效");
-		const lease = await this.requireLease(context, sessionId);
-		const result = await (await this.getClient(context)).request<{ operation?: OperationSnapshot }>({
+		const result = await this.requestSession<{ operation?: OperationSnapshot }>(context, sessionId, (lease) => ({
 			command: "queue_action",
 			sessionPath: session.path,
 			leaseId: lease.leaseId,
@@ -4295,7 +4337,7 @@ export class WebGatewayServer {
 			clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			queueId,
 			action,
-		});
+		}));
 		sendJson(
 			response,
 			result.operation ? 202 : 200,
@@ -4315,7 +4357,6 @@ export class WebGatewayServer {
 		const body = await parseJsonBody(request);
 		const text = typeof body.text === "string" ? body.text : "";
 		if (!text.trim()) throw new HttpError(400, "prompt_required", "消息内容不能为空");
-		const lease = await this.requireLease(context, sessionId);
 		if (Array.isArray(body.images) && body.images.length > 0) {
 			throw new HttpError(400, "inline_images_unsupported", "图片必须先通过文件上传接口提交");
 		}
@@ -4327,7 +4368,7 @@ export class WebGatewayServer {
 		}
 		const command = kind === "prompt" ? "prompt" : kind === "steer" ? "steer" : "follow_up";
 		const queueId = kind === "prompt" ? undefined : stringValue(body.queueId);
-		const result = await (await this.getClient(context)).request<{ operation?: OperationSnapshot }>({
+		const result = await this.requestSession<{ operation?: OperationSnapshot }>(context, sessionId, (lease) => ({
 			command,
 			sessionPath: session.path,
 			leaseId: lease.leaseId,
@@ -4335,7 +4376,7 @@ export class WebGatewayServer {
 			clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 			text: persistedText,
 			...(queueId ? { queueId } : {}),
-		});
+		}));
 		sendJson(
 			response,
 			result.operation ? 202 : 200,
@@ -4363,11 +4404,14 @@ export class WebGatewayServer {
 			const operation = await client.request<OperationSnapshot>({ command: "get_operation", operationId });
 			const sessionId = this.sessionIdsByPath.get(operation.sessionPath);
 			if (!sessionId) throw new HttpError(404, "session_not_found", "未找到任务所属会话");
-			const lease = await this.requireLease(context, sessionId);
 			sendJson(
 				response,
 				200,
-				await client.request<JsonValue>({ command: "abort_operation", operationId, leaseId: lease.leaseId }),
+				await this.requestSession<JsonValue>(context, sessionId, (lease) => ({
+					command: "abort_operation",
+					operationId,
+					leaseId: lease.leaseId,
+				})),
 			);
 			return;
 		}
@@ -4848,11 +4892,10 @@ export class WebGatewayServer {
 		}
 		if (request.method === "POST") {
 			const body = await parseJsonBody(request);
-			const lease = await this.requireLease(context, sessionId);
 			sendJson(
 				response,
 				200,
-				await client.request<JsonValue>({
+				await this.requestSession<JsonValue>(context, sessionId, (lease) => ({
 					command: "set_setting",
 					sessionPath: session.path,
 					leaseId: lease.leaseId,
@@ -4860,7 +4903,7 @@ export class WebGatewayServer {
 					clientRequestId: stringValue(body.clientRequestId) ?? randomUUID(),
 					id: stringValue(body.id) ?? "",
 					value: jsonValue(body.value) as boolean | number | string,
-				}),
+				})),
 			);
 			return;
 		}

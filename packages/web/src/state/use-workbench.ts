@@ -58,6 +58,9 @@ import { useWorkbenchConnection } from "./workbench-connection.ts";
 import type { ShowToast, SubagentConversationState, WorkbenchState } from "./workbench-types.ts";
 import { applySessionResult, sessionUnreadIndex } from "./session-result-state.ts";
 
+/** 取回会话控制权失败后的重试间隔。 */
+const SESSION_CONTROL_RETRY_DELAY_MS = 15_000;
+
 export {
 	applySubagentProgress,
 	createSubagentConversationState,
@@ -143,7 +146,7 @@ export function useWorkbench() {
 	const sessionSubscriptionWaitersRef = useRef(new Map<string, Set<SessionSubscriptionWaiter>>());
 	const initializePromiseRef = useRef<Promise<void> | undefined>(undefined);
 	const initializeRef = useRef<() => Promise<void>>(async () => {});
-	const runtimeRecoverySessionRef = useRef<string | undefined>(undefined);
+	const sessionControlAttemptRef = useRef<{ sessionId: string; promise: Promise<boolean> } | undefined>(undefined);
 	const selectSessionRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
 	const loadSessionTreeRef = useRef<() => Promise<void>>(async () => {});
 	const loadProjectTrustRef = useRef<() => Promise<void>>(async () => {});
@@ -969,6 +972,7 @@ export function useWorkbench() {
 		loadTranscript,
 		loadSubagents,
 		loadSessionOperations,
+		loadSessionSnapshot,
 		readSelectedSession,
 		subscribeSessionAndWait,
 		completeSessionSubscription,
@@ -1382,20 +1386,36 @@ export function useWorkbench() {
 
 
 	useEffect(() => {
-		if (!state.connected || !state.sessionId) {
-			runtimeRecoverySessionRef.current = undefined;
-			return;
-		}
-		if (!state.sessionReady) return;
-		if (!state.readOnly) {
-			runtimeRecoverySessionRef.current = undefined;
-			return;
-		}
-		if (selectionInFlightRef.current === state.sessionId || runtimeRecoverySessionRef.current === state.sessionId)
-			return;
+		if (!state.connected || !state.sessionId || !state.sessionReady || !state.readOnly) return;
 		const sessionId = state.sessionId;
-		runtimeRecoverySessionRef.current = sessionId;
-		void ensureSessionControl(sessionId).catch(() => {});
+		if (selectionInFlightRef.current === sessionId) return;
+		let cancelled = false;
+		let timer: number | undefined;
+		// 只读只是暂时状态：只要连接正常就持续尝试取回控制权，不把一次失败固定下来。
+		let attempts = 0;
+		const attempt = async () => {
+			const current = sessionControlAttemptRef.current;
+			let pending = current && current.sessionId === sessionId ? current : undefined;
+			if (!pending) {
+				const entry: { sessionId: string; promise: Promise<boolean> } = { sessionId, promise: Promise.resolve(false) };
+				sessionControlAttemptRef.current = entry;
+				entry.promise = ensureSessionControl(sessionId, { silent: attempts > 0 })
+					.catch(() => false)
+					.finally(() => {
+						if (sessionControlAttemptRef.current === entry) sessionControlAttemptRef.current = undefined;
+					});
+				pending = entry;
+			}
+			const controlled = await pending.promise;
+			if (cancelled || controlled) return;
+			attempts++;
+			timer = window.setTimeout(() => void attempt(), SESSION_CONTROL_RETRY_DELAY_MS);
+		};
+		void attempt();
+		return () => {
+			cancelled = true;
+			if (timer !== undefined) window.clearTimeout(timer);
+		};
 	}, [ensureSessionControl, state.connected, state.readOnly, state.sessionId, state.sessionReady]);
 
 	useEffect(() => {

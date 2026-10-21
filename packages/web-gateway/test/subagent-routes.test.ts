@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -49,15 +50,24 @@ function responseCapture(): {
 } {
 	let status = 0;
 	let body = "";
+	const emitter = new EventEmitter();
+	const response = {
+		writableFinished: false,
+		destroyed: false,
+		writeHead(code: number) {
+			status = code;
+		},
+		end(value: string) {
+			body = value;
+			response.writableFinished = true;
+		},
+		// 历史读取会在响应上监听 close 取消只读请求，假响应需要事件接口。
+		once: emitter.once.bind(emitter),
+		off: emitter.off.bind(emitter),
+		emit: emitter.emit.bind(emitter),
+	} as unknown as ServerResponse;
 	return {
-		response: {
-			writeHead(code: number) {
-				status = code;
-			},
-			end(value: string) {
-				body = value;
-			},
-		} as unknown as ServerResponse,
+		response,
 		result: () => ({ status, body: JSON.parse(body) as Record<string, unknown> }),
 	};
 }

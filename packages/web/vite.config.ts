@@ -12,7 +12,7 @@ const runtimeProtocolSource = fileURLToPath(new URL("../web-protocol/src/index.t
 // 浏览器只用到协议包里的少量运行时函数；按子路径导入可以避免整份 schema 与 TypeBox 进入模块图。
 const runtimeProtocolDir = fileURLToPath(new URL("../web-protocol/src", import.meta.url));
 const runtimeProtocolAliases = Object.fromEntries(
-	["limits", "room-agent-alias", "schemas", "session-results", "uuid", "web-search"].map((name) => [
+	["interactive-ui-library", "limits", "room-agent-alias", "schemas", "session-results", "uuid", "web-search"].map((name) => [
 		`@lystar/code-web-protocol/${name}`,
 		join(runtimeProtocolDir, `${name}.ts`),
 	]),

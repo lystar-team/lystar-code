@@ -283,8 +283,12 @@ export function applyPromptAccepted(
 ): WorkbenchState {
 	if (current.sessionId !== sessionId) return current;
 	if (operation && operation.sessionId !== sessionId) return current;
-	// WebSocket 可以先于 HTTP 响应到达，不能用 Accepted 覆盖运行中或终态。
+	// Transcript 刷新可能清空 currentOperation；仍须从操作记录中保留先到达的 WebSocket 终态。
+	const observed = operation
+		? current.operations.find((entry) => entry.operationId === operation.operationId)
+		: undefined;
+	const incoming = observed && operation && observed.updatedAt >= operation.updatedAt ? observed : operation;
 	const latest = current.currentOperation;
-	if (latest && (!operation || latest.updatedAt >= operation.updatedAt)) return current;
-	return { ...current, currentOperation: operation ?? latest };
+	if (latest && (!incoming || latest.updatedAt >= incoming.updatedAt)) return current;
+	return { ...current, currentOperation: incoming ?? latest };
 }

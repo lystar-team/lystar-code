@@ -172,6 +172,7 @@ import {
 	parseExtensionActivityRecord,
 } from "./extension-activity.ts";
 import { assertGitOperationActive, git, gitWrite, withGitOperation } from "./git-execution.ts";
+import { createInteractiveUiPresentationTools } from "./interactive-ui-tool.ts";
 import { plainTextSummary } from "./plain-text-summary.ts";
 import {
 	migrateLegacyWebAttachments,
@@ -3143,6 +3144,10 @@ export interface CodingAgentRuntimeAdapterOptions {
 	agentDir?: string;
 	initialRuntime?: AgentSessionRuntime;
 	createRuntime?: CreateAgentSessionRuntimeFactory;
+	/**
+	 * Web 默认接管被其他进程占用的会话：先请求对方交接，再打开会话；
+	 * 只有交接不可用时才退回只读协作通道。
+	 */
 	preferSessionOwnership?: boolean;
 	sessionCoordinator?: SessionCoordinator;
 }
@@ -3165,13 +3170,13 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 	constructor(options: string | CodingAgentRuntimeAdapterOptions = getAgentDir()) {
 		if (typeof options === "string") {
 			this.agentDir = options;
-			this.preferSessionOwnership = false;
+			this.preferSessionOwnership = true;
 			return;
 		}
 		this.agentDir = options.agentDir ?? getAgentDir();
 		this.initialRuntime = options.initialRuntime;
 		this.createRuntimeFactory = options.createRuntime;
-		this.preferSessionOwnership = options.preferSessionOwnership === true;
+		this.preferSessionOwnership = options.preferSessionOwnership !== false;
 		this.sessionCoordinator = options.sessionCoordinator;
 	}
 	getSessionReadIndex(): SessionReadIndex {
@@ -3281,9 +3286,14 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			try {
 				return await WebCompanionRuntime.open(this.agentDir, sessionPath);
 			} catch (companionError) {
-				if (companionError instanceof WebCompanionProtocolError) throw companionError;
 				const cause = handoffError ?? (companionError instanceof Error ? companionError : error);
-				throw Object.assign(new Error("会话协作通道暂不可用，请稍后重试", { cause }), {
+				// 会话文件被其他进程占用且协作通道不可用属于对方进程的临时状态：
+				// 保留可重试语义，等对方退出或升级后自动接管，不把会话固定为只读。
+				const message =
+					companionError instanceof WebCompanionProtocolError
+						? "会话正在其他进程中打开，且协作通道协议不兼容；关闭或升级该进程后 Web 会自动接管"
+						: "会话协作通道暂不可用，请稍后重试";
+				throw Object.assign(new Error(message, { cause }), {
 					code: "session_coordination_unavailable",
 					retryable: true,
 				});
@@ -4207,6 +4217,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 			services,
 			sessionManager,
 			customTools: [
+				...createInteractiveUiPresentationTools(),
 				...createAgentStepTools(stepController),
 				...createCollaborationTools(() => this.sessionCoordinator),
 				createAgentCreationTool({
@@ -5414,6 +5425,7 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 				...(effectiveProfile?.tools ? { tools: effectiveProfile.tools } : {}),
 				...(effectiveProfile?.excludeTools ? { excludeTools: effectiveProfile.excludeTools } : {}),
 				customTools: [
+					...createInteractiveUiPresentationTools(),
 					...createAgentStepTools(stepController),
 					...createCollaborationTools(() => this.sessionCoordinator),
 					createAgentCreationTool({

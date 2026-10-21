@@ -1,4 +1,4 @@
-import type { AgentStep } from "@lystar/code-web-protocol";
+import { type AgentStep, INTERACTIVE_UI_TOOL_NAMES } from "@lystar/code-web-protocol";
 import { toLiveToolViewModel } from "../../adapters/live-tool-view-model.ts";
 import { toSessionItemViewModel } from "../../adapters/session-view-model";
 import { formatElapsedDuration } from "./conversation-format";
@@ -773,7 +773,33 @@ function markCompletedTurnResult(
 		: content;
 	const processStartIndex = userMessage ? 1 : 0;
 	if (finalMessageIndex <= processStartIndex && !hookGroup) return completedTurn;
-	const processItems = completedTurn.slice(processStartIndex, finalMessageIndex);
+	const interactiveResults: TranscriptToolStackRenderItem[] = [];
+	const keepProcess = (entry: ConversationContentRenderItem): ConversationContentRenderItem[] => {
+		if (entry.kind === "tool-stack") {
+			const interactiveBatches = entry.batches.flatMap((batch) => {
+				const tools = batch.tools.filter((tool) => INTERACTIVE_UI_TOOL_NAMES.has(tool.name));
+				return tools.length ? [{ ...batch, tools }] : [];
+			});
+			if (!interactiveBatches.length) return [entry];
+			const remaining = entry.batches.flatMap((batch) => {
+				const tools = batch.tools.filter((tool) => !INTERACTIVE_UI_TOOL_NAMES.has(tool.name));
+				return tools.length ? [{ ...batch, tools }] : [];
+			});
+			interactiveResults.push({
+				...entry,
+				key: remaining.length ? entry.key + ":interactive" : entry.key,
+				batches: interactiveBatches,
+				collapseForResult: false,
+			});
+			return remaining.length ? [{ ...entry, batches: remaining }] : [];
+		}
+		if (entry.kind === "agent-step") {
+			const items = entry.items.flatMap((item) => keepProcess(item) as AgentStepChildRenderItem[]);
+			return [{ ...entry, items }];
+		}
+		return [entry];
+	};
+	const processItems = completedTurn.slice(processStartIndex, finalMessageIndex).flatMap(keepProcess);
 	if (completedTurn.slice(finalMessageIndex + 1).some((entry) => entry.kind === "tool-stack"))
 		return hookGroup ? [...completedTurn, hookGroup] : completedTurn;
 	const completedFinalMessage = completedTurn[finalMessageIndex];
@@ -792,7 +818,7 @@ function markCompletedTurnResult(
 	}
 	if (hookGroup) completedItems.push(hookGroup);
 	if (processItems.length) completedItems.push({ kind: "result-boundary", key: `result-boundary:${completedFinalMessage.key}` });
-	completedItems.push(completedFinalMessage, ...completedTurn.slice(finalMessageIndex + 1));
+	completedItems.push(...interactiveResults, completedFinalMessage, ...completedTurn.slice(finalMessageIndex + 1));
 	return completedItems;
 }
 

@@ -330,10 +330,10 @@ function normalizeSnapshot(value: WebCompanionSnapshotWire): WebCompanionSnapsho
 	if (value.capabilities !== undefined && !Array.isArray(value.capabilities)) {
 		throw new WebCompanionProtocolError("TUI 共享通道能力清单格式无效", { protocolVersion });
 	}
-	const capabilities = value.capabilities ?? [...WEB_COMPANION_LEGACY_CAPABILITIES];
-	if (!capabilities.every((capability) => WEB_COMPANION_CAPABILITIES.includes(capability))) {
-		throw new WebCompanionProtocolError("TUI 共享通道返回了未知能力", { protocolVersion });
-	}
+	// 能力清单是开放集合：对方新增能力时旧 Web 仍要能挂上，未识别项按“不支持”处理。
+	const capabilities = (value.capabilities ?? [...WEB_COMPANION_LEGACY_CAPABILITIES]).filter((capability) =>
+		(WEB_COMPANION_CAPABILITIES as readonly string[]).includes(capability),
+	);
 	return {
 		...value,
 		protocolVersion,

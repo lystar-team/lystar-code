@@ -36,6 +36,7 @@ const user: WebTranscriptItem = { ...assistant, entryId: "user-2", view: { type:
 function liveState(): WorkbenchState {
 	return {
 		sessionId: "session-1",
+		operations: [],
 		transcript: [],
 		liveTurnId: 1,
 		liveTurnStartRevision: 10,

@@ -15,7 +15,7 @@ interface RouteInternals {
 	registry: ProjectRegistry;
 	getClient(context: { id: string }): Promise<{ request<T>(command: Command): Promise<T> }>;
 	resolveSession(context: { id: string }, id: string): Promise<{ id: string; path: string; projectId: string }>;
-	requireLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
+	ensureSessionLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
 	handleProjects(
 		request: IncomingMessage,
 		response: ServerResponse,
@@ -177,7 +177,7 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 		},
 	});
 	routes.resolveSession = async (_context, id) => ({ id, path: "/tmp/session.jsonl", projectId: project.id });
-	routes.requireLease = async () => ({ leaseId: "lease-one" });
+	routes.ensureSessionLease = async () => ({ leaseId: "lease-one" });
 	const parts = ["api", "projects", project.id, "file"];
 
 	const metadata = responseCapture();

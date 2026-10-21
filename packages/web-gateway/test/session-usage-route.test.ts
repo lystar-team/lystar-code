@@ -55,6 +55,17 @@ test("session usage route returns token totals for the controlled session", asyn
 		},
 		request<T>(request: unknown): Promise<T> {
 			requests.push(request);
+			if ((request as { command?: string }).command === "acquire_session") {
+				return Promise.resolve({
+					lease: {
+						leaseId: "lease-2",
+						leaseGeneration: 2,
+						sessionPath: "/tmp/session-1.jsonl",
+						createdAt: 2,
+						updatedAt: 2,
+					},
+				} as T);
+			}
 			return Promise.resolve({
 				tokens: { input: 20, cacheRead: 80, cacheWrite: 0, output: 12, total: 112 },
 				sessionFile: "/tmp/session-1.jsonl",
@@ -83,9 +94,13 @@ test("session usage route returns token totals for the controlled session", asyn
 	]);
 
 	context.leases.delete("session-1");
-	await assert.rejects(
-		internal.handleSessions(request, response, url, context, ["api", "sessions", "session-1", "usage"]),
-		/请先取得当前会话的控制权/u,
-	);
-	assert.equal(requests.length, 1);
+	await internal.handleSessions(request, response, url, context, ["api", "sessions", "session-1", "usage"]);
+	assert.equal(status, 200);
+	assert.deepEqual(JSON.parse(body), { tokens: { input: 20, cacheRead: 80, cacheWrite: 0, output: 12, total: 112 } });
+	assert.deepEqual(requests, [
+		{ command: "get_session_info", sessionPath: "/tmp/session-1.jsonl", leaseId: "lease-1" },
+		{ command: "acquire_session", sessionPath: "/tmp/session-1.jsonl", clientInstanceId: "session-usage-browser" },
+		{ command: "get_session_info", sessionPath: "/tmp/session-1.jsonl", leaseId: "lease-2" },
+	]);
+	assert.equal(context.leases.get("session-1")?.leaseId, "lease-2");
 });

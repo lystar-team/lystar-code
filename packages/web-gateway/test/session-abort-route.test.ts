@@ -10,7 +10,7 @@ import { WebGatewayServer } from "../src/server.ts";
 interface RouteInternals {
 	getClient(context: { id: string }): Promise<{ request(command: Command): Promise<unknown> }>;
 	resolveSession(context: { id: string }, id: string): Promise<{ path: string }>;
-	requireLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
+	ensureSessionLease(context: { id: string }, id: string): Promise<{ leaseId: string }>;
 	handleSessions(
 		request: IncomingMessage,
 		response: ServerResponse,
@@ -55,7 +55,7 @@ test("Web 停止路由按 session.id 调用 stop_session 并返回最新快照",
 		return { path: snapshot.path };
 	};
 	let leaseChecked = false;
-	routes.requireLease = async (context, id) => {
+	routes.ensureSessionLease = async (context, id) => {
 		assert.equal(context.id, "browser-one");
 		assert.equal(id, "session-one");
 		leaseChecked = true;
