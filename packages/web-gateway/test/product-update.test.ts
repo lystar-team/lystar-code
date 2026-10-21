@@ -2,8 +2,20 @@ import assert from "node:assert/strict";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import { ProductUpdateController, productUpdateProgressFromLog } from "../src/product-update.ts";
+
+const originalServiceVersion = process.env.LYSTAR_WEB_SERVICE_VERSION;
+
+// 控制器在未指定 serviceVersion 时读取该环境变量，测试必须自己决定它的值。
+beforeEach(() => {
+	delete process.env.LYSTAR_WEB_SERVICE_VERSION;
+});
+
+afterEach(() => {
+	if (originalServiceVersion === undefined) delete process.env.LYSTAR_WEB_SERVICE_VERSION;
+	else process.env.LYSTAR_WEB_SERVICE_VERSION = originalServiceVersion;
+});
 
 async function createInstalledLayout(root: string): Promise<void> {
 	const executable = join(root, "current", "lc");

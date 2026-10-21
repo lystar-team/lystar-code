@@ -250,7 +250,7 @@ describe("platform service lifecycle", () => {
 		expect(files.get(getWebServiceStatus(spec).servicePath!)).toContain("allowChildBreakaway=true");
 	});
 
-	it("force-stops a Windows service process tree instead of waiting for graceful shutdown", () => {
+	it("force-stops the Windows Gateway host without terminating its detached children", () => {
 		Object.defineProperty(process, "platform", { value: "win32" });
 		let killed = false;
 		vi.mocked(spawnSync).mockImplementation((command, args) => {
@@ -263,7 +263,7 @@ describe("platform service lifecycle", () => {
 
 		stopWebService(spec, true);
 
-		expect(spawnSync).toHaveBeenCalledWith("taskkill", ["/PID", "4321", "/T", "/F"], expect.anything());
+		expect(spawnSync).toHaveBeenCalledWith("taskkill", ["/PID", "4321", "/F"], expect.anything());
 		expect(killed).toBe(true);
 	});
 

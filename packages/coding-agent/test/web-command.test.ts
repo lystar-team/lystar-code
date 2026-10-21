@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import {
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const originalCliMode = process.env.LYSTAR_CLI_MODE;
+const originalPackageDir = process.env.PI_PACKAGE_DIR;
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -22,6 +23,8 @@ afterEach(() => {
 	else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 	if (originalCliMode === undefined) delete process.env.LYSTAR_CLI_MODE;
 	else process.env.LYSTAR_CLI_MODE = originalCliMode;
+	if (originalPackageDir === undefined) delete process.env.PI_PACKAGE_DIR;
+	else process.env.PI_PACKAGE_DIR = originalPackageDir;
 });
 
 describe("Web control commands", () => {
@@ -29,20 +32,32 @@ describe("Web control commands", () => {
 		process.env.PI_CODING_AGENT_DIR = "/tmp/lystar-web-command-test";
 		if (mode) process.env.LYSTAR_CLI_MODE = mode;
 		else delete process.env.LYSTAR_CLI_MODE;
+		// 停止会话只需要 Runtime 入口文件存在，用临时包目录，不依赖本机的构建产物和 lc 启动器。
+		const installRoot = mkdtempSync(join(tmpdir(), "lystar-web-command-package-"));
+		const packageRoot = join(installRoot, "coding-agent");
+		mkdirSync(join(packageRoot, "dist", "bundle", "chunks"), { recursive: true });
+		writeFileSync(join(packageRoot, "dist", "bundle", "chunks", "web-runtime.js"), "");
+		mkdirSync(join(installRoot, "web-runtime", "dist"), { recursive: true });
+		writeFileSync(join(installRoot, "web-runtime", "dist", "cli.js"), "");
+		process.env.PI_PACKAGE_DIR = packageRoot;
 		const runWebSessionStop = vi.fn(async () => true);
 		const output = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await runWebSessionCommand(["stop", "session-123"], { runWebSessionStop });
+		try {
+			await runWebSessionCommand(["stop", "session-123"], { runWebSessionStop });
 
-		expect(runWebSessionStop).toHaveBeenCalledWith(
-			expect.objectContaining({
-				sessionId: "session-123",
-				agentDir: "/tmp/lystar-web-command-test",
-				configFileName: mode ? "web-dev-config.json" : undefined,
-				defaultRuntimePort: mode ? 2423 : 1422,
-			}),
-		);
-		expect(output).toHaveBeenCalledWith("会话 session-123 已停止。");
+			expect(runWebSessionStop).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionId: "session-123",
+					agentDir: "/tmp/lystar-web-command-test",
+					configFileName: mode ? "web-dev-config.json" : undefined,
+					defaultRuntimePort: mode ? 2423 : 1422,
+				}),
+			);
+			expect(output).toHaveBeenCalledWith("会话 session-123 已停止。");
+		} finally {
+			rmSync(installRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("reports idle sessions and rejects invalid session commands", async () => {

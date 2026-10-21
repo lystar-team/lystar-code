@@ -55,6 +55,38 @@
             "authHeader": {
               "type": "boolean"
             },
+            "nativeSteering": {
+              "enum": [
+                "auto",
+                "off",
+                "on"
+              ]
+            },
+            "nativeSteeringFailures": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "modelId",
+                  "baseUrl",
+                  "api"
+                ],
+                "properties": {
+                  "modelId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "baseUrl": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "api": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
             "models": {
               "type": "array",
               "items": {
@@ -84,6 +116,21 @@
                   },
                   "fastModeSupported": {
                     "type": "boolean"
+                  },
+                  "nativeSteering": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "auto",
+                          "off",
+                          "on"
+                        ]
+                      },
+                      {
+                        "type": "string",
+                        "const": "inherit"
+                      }
+                    ]
                   },
                   "thinkingLevelMap": {
                     "$ref": "#/$defs/ThinkingLevelMap"
@@ -198,6 +245,21 @@
                     },
                     "fastModeSupported": {
                       "type": "boolean"
+                    },
+                    "nativeSteering": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "auto",
+                            "off",
+                            "on"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "const": "inherit"
+                        }
+                      ]
                     },
                     "thinkingLevelMap": {
                       "$ref": "#/$defs/ThinkingLevelMap"

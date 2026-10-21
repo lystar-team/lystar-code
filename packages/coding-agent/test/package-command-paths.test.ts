@@ -24,6 +24,9 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";
 import * as lystarUpdater from "../src/utils/lystar-updater.ts";
 import { allowNetwork } from "./test-network-env.ts";
+import { isolateUserHome } from "./test-home-env.ts";
+
+isolateUserHome("package-command-paths");
 
 describe("package commands", () => {
 	let tempDir: string;

@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
+import { isolateUserHome } from "../../test-home-env.ts";
 import { createHarness, createTestUiContext } from "../harness.ts";
+
+isolateUserHome("session-start-notify");
 
 type LoadedResourcesResult<T> = { [K in keyof T]: T[K] } & { diagnostics: [] };
 

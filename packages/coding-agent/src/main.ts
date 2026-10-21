@@ -735,7 +735,9 @@ export async function main(args: string[], options?: MainOptions) {
 		args[0] === "lessons" ||
 		args[0] === "doctor" ||
 		args[0] === "uninstall";
-	if (process.platform === "win32" && !skipsWindowsShellBootstrap) {
+	// 原生终端宿主的交互子进程在 TUI 启动后检查 Bash，避免预检查失败导致窗口立即关闭。
+	const isWindowsTerminalHostChild = process.env.LYSTAR_TERMINAL_HOST === "1";
+	if (process.platform === "win32" && !skipsWindowsShellBootstrap && !isWindowsTerminalHostChild) {
 		const bashPath = await ensureManagedWindowsBash(true);
 		if (!bashPath) {
 			console.error(

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复 Windows 上停止 Web Gateway 超时：Web 服务改为直接运行版本目录中的 `lc.exe`，Gateway 进程不再因 `cmd.exe` 启动器脱离服务 Job；强制停止会按 Gateway 锁文件 PID 结束 Job 之外的 Gateway 进程，同时保留它启动的 Runtime 和更新任务。
+- 修复 Windows 原生终端在托管 Bash 未就绪时启动后立即关闭：交互子进程改为在 TUI 启动后检查 Bash，其他 CLI 入口保留启动前检查。
+- 补全 `schemas/models.schema.json` 缺失的 `nativeSteering` 与 `nativeSteeringFailures` 字段，`models.json` 编辑校验与当前配置模型一致。
+- 隔离会话、Package 和 Web 更新测试使用的用户目录、包布局与服务版本环境变量，避免本机配置和构建产物改变测试结果。
+
 ## [1.3.0-lystar.20] - 2026-10-21
 
 ### Added

@@ -613,13 +613,38 @@ function makeLaunchDaemon(spec: WebServiceSpec): string {
 	].join("\n");
 }
 
+const WINDOWS_LAUNCHER_SCRIPTS = new Set(["lc.cmd", "lystar.cmd"]);
+
+function launcherCurrentVersion(launcherDirectory: string): string | undefined {
+	try {
+		return readFileSync(join(launcherDirectory, "..", "current"), "utf8").trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// 直接启动 Gateway，使它留在服务 Job 内；通过 cmd.exe 启动时，它会作为孙进程脱离 Job。
+// 版本选择与 lc.cmd 一致，无法解析安装布局时保留传入的启动程序。
+function windowsServiceProgram(spec: WebServiceSpec): string {
+	const program = spec.invocation.program;
+	if (!WINDOWS_LAUNCHER_SCRIPTS.has(basename(program).toLowerCase())) return program;
+	const launcherDirectory = dirname(program);
+	const version = spec.environment?.LYSTAR_WEB_SERVICE_VERSION?.trim() || launcherCurrentVersion(launcherDirectory);
+	if (!version || !/^[A-Za-z0-9._-]+$/u.test(version)) return program;
+	for (const name of ["lc.exe", "la.exe"]) {
+		const candidate = join(dirname(launcherDirectory), "versions", version, name);
+		if (existsSync(candidate)) return candidate;
+	}
+	return program;
+}
+
 function makeWindowsServiceConfig(spec: WebServiceSpec): string {
 	const environment = Object.entries(serviceEnvironment(spec))
 		.map(([key, value]) => `${key}=${value}`)
 		.join("\n");
 	return [
 		"[service]",
-		`program=${spec.invocation.program}`,
+		`program=${windowsServiceProgram(spec)}`,
 		`workingDirectory=${spec.invocation.cwd}`,
 		`arguments=${spec.invocation.args.map(commandLineArgument).join(" ")}`,
 		`logPath=${defaultLogPath(spec)}`,
@@ -634,10 +659,7 @@ function makeWindowsServiceConfig(spec: WebServiceSpec): string {
 function windowsServiceHostPath(spec: WebServiceSpec): string {
 	const configuredVersion = spec.environment?.LYSTAR_WEB_SERVICE_VERSION;
 	const launcherDirectory = dirname(spec.invocation.program);
-	let currentVersion: string | undefined;
-	try {
-		currentVersion = readFileSync(join(launcherDirectory, "..", "current"), "utf8").trim() || undefined;
-	} catch {}
+	const currentVersion = launcherCurrentVersion(launcherDirectory);
 	const versionedCandidates = [
 		...new Set([currentVersion, configuredVersion].filter((value): value is string => Boolean(value))),
 	].map((version) => ({
@@ -1044,6 +1066,21 @@ function stopDetachedProcess(pid: number, force: boolean): void {
 	}
 }
 
+function windowsProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function killWindowsProcess(pid: number, tree: boolean): CommandResult {
+	const args = ["/PID", String(pid), ...(tree ? ["/T"] : []), "/F"];
+	const direct = run("taskkill", args);
+	return direct.ok || !isAccessDenied(direct) ? direct : runElevatedWindows("taskkill", args);
+}
+
 export function stopWebService(
 	spec: WebServiceSpec,
 	force = false,
@@ -1111,17 +1148,30 @@ export function stopWebService(
 				`无法停止 macOS ${spec.macosSession === "gui" ? "LaunchAgent" : "LaunchDaemon"}：${result.stderr || result.stdout}`,
 			);
 	} else {
-		const result = runWindowsServiceCommand(["stop", webServiceWindowsName(spec.kind, spec.profile)]);
+		const name = webServiceWindowsName(spec.kind, spec.profile);
+		const result = runWindowsServiceCommand(["stop", name]);
 		if (!result.ok && status.running && !/1062|not started|未启动/iu.test(`${result.stdout}\n${result.stderr}`))
 			throw new Error(`无法停止 Windows Service：${result.stderr || result.stdout}`);
 		if (force && status.pid) {
-			let killed = run("taskkill", ["/PID", String(status.pid), "/T", "/F"]);
-			if (!killed.ok && isAccessDenied(killed))
-				killed = runElevatedWindows("taskkill", ["/PID", String(status.pid), "/T", "/F"]);
+			// Gateway 子进程可脱离 Job，不能用 /T 连同 Runtime 和更新助手一起结束。
+			const killed = killWindowsProcess(status.pid, spec.kind !== "gateway");
 			if (!killed.ok && getWebServiceStatus(spec).running)
 				throw new Error(`无法强制停止 Windows Service：${killed.stderr || killed.stdout}`);
 		}
-		waitForWindowsServiceStopped(webServiceWindowsName(spec.kind, spec.profile));
+		// 服务停止只覆盖 Job 内进程。Gateway 真正进程可能已脱离 Job，按 Gateway 锁文件 PID 结束它。
+		if (
+			force &&
+			spec.kind === "gateway" &&
+			options.detachedPid !== undefined &&
+			options.detachedPid !== status.pid &&
+			windowsProcessAlive(options.detachedPid)
+		) {
+			const killed = killWindowsProcess(options.detachedPid, false);
+			if (!killed.ok && windowsProcessAlive(options.detachedPid)) {
+				throw new Error(`无法强制停止 Web Gateway 进程 ${options.detachedPid}：${killed.stderr || killed.stdout}`);
+			}
+		}
+		waitForWindowsServiceStopped(name);
 	}
 	return finished();
 }

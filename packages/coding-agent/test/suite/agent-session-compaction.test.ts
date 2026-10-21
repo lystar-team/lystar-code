@@ -14,7 +14,10 @@ import {
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
+import { isolateUserHome } from "../test-home-env.ts";
 import { createHarness, getUserTexts, type Harness } from "./harness.ts";
+
+isolateUserHome("agent-session-compaction");
 
 type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<boolean>;

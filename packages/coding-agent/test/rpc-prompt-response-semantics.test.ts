@@ -18,7 +18,10 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { isolateUserHome } from "./test-home-env.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
+
+isolateUserHome("rpc-prompt-semantics");
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],

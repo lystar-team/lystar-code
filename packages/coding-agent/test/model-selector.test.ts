@@ -61,6 +61,11 @@ describe("model selector", () => {
 		setKeybindings(new KeybindingsManager({ "app.models.save": "ctrl+r" }));
 		harness = await createHarness();
 		const currentModel = harness.getModel()!;
+		// 选择器保存的是 Model Runtime 组合后的模型；fixture 注册的模型对象与它相比少了几个 undefined 字段。
+		const runtimeModel = harness.session.modelRuntime
+			.getAvailableSnapshot()
+			.find((model) => model.id === currentModel.id);
+		expect(runtimeModel).toBeDefined();
 		const saveDefault = vi.fn();
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
@@ -77,7 +82,7 @@ describe("model selector", () => {
 		selector.handleInput("\x13");
 		expect(saveDefault).not.toHaveBeenCalled();
 		selector.handleInput("\x12");
-		expect(saveDefault).toHaveBeenCalledWith(currentModel);
+		expect(saveDefault).toHaveBeenCalledWith(runtimeModel);
 	});
 
 	it("lists every catalog that failed to refresh", async () => {
