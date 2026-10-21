@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.20] - 2026-10-21
+
 ### Added
 
 - Web 会话支持交互式回答：Runtime 默认提供 `get_ui_spec` 与 `present_ui`，Agent 可在回答中生成可改参数、可搜索和勾选的表格与推演控件；控件复用既有组件和 token，规格来自 `web-protocol` 的交互组件库，发布前校验组件、参数和数据引用，渲染错误可回传会话；交互状态按会话隔离并支持刷新恢复。新增依赖 `@openuidev/react-lang@1.0.0`、`@openuidev/lang-core@1.0.1`、`zod@3.25.76`，安装与锁文件更新均使用 `--ignore-scripts`。
