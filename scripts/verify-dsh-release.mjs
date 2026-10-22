@@ -96,10 +96,11 @@ function request(type, extra = {}) {
   child.stdin.write(`${JSON.stringify({ id, type, ...extra })}\n`);
  });
 }
-async function command(message) { await request("prompt", { message }); }
+let commandStartedAt = 0;
+async function command(message) { commandStartedAt = Date.now(); await request("prompt", { message }); }
 async function lastMessage(customType) {
  const response = await request("get_messages");
- return response.data.messages.findLast(message => message.role === "custom" && message.customType === customType);
+ return response.data.messages.findLast(message => message.role === "custom" && message.customType === customType && message.timestamp >= commandStartedAt);
 }
 function finished() {
  return new Promise((resolveEnd, reject) => {

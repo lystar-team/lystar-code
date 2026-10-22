@@ -126,7 +126,15 @@ export async function mountNativeProfile(
 		"@deepseek-ai/dsh-app-boot",
 		pathToFileURL(bootstrapAnchor).href,
 	)) as typeof AppBoot;
-	importer.modules["@deepseek-ai/dsh-app-boot"] = boot;
+	importer.modules["@deepseek-ai/dsh-app-boot"] = {
+		...boot,
+		getDshRuntimeVersion: () => DSH_VERSION,
+		evaluatePluginCompatibility: (
+			manifest: object,
+			exemptions?: Readonly<Record<string, readonly string[]>>,
+			runtimeVersion = DSH_VERSION,
+		) => boot.evaluatePluginCompatibility(manifest, exemptions, runtimeVersion),
+	};
 	const profile = boot.loadProfileDirectory("LYStar DSH", directory, installAnchor);
 	if (profile.skippedBundles.length)
 		throw new Error(`DSH profile bundles could not load: ${JSON.stringify(profile.skippedBundles)}`);
