@@ -99,7 +99,7 @@ export class EmbeddedHarness {
 			const importer = createPluginImporter(options.directory);
 			await host.context.plugin(importer.Loader, { baseUrl: host.context.baseUrl }).await();
 			host.context.on("tools/change", () => {
-				if (host.notify) options.onToolsChanged?.();
+				if (host.notify && host.context.get("tools")) options.onToolsChanged?.();
 			});
 			if (config.profile) {
 				host.nativeProfile = await mountNativeProfile(host.context, importer, options, config.profile);

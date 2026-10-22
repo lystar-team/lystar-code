@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
@@ -19,7 +19,8 @@ const bundles: Record<NativeProfileName, readonly string[]> = {
 };
 
 export function nativeProfileDirectory(directory: string, name: NativeProfileName): string {
-	return join(directory, "profiles", name);
+	const profile = join(directory, "profiles", name);
+	return existsSync(profile) ? realpathSync.native(profile) : profile;
 }
 
 function nativePackageManagerCommand(npmCommand: readonly string[]) {
@@ -48,8 +49,9 @@ export async function installNativeProfile(
 	name: NativeProfileName,
 	npmCommand: readonly string[] = ["npm"],
 ): Promise<void> {
-	const profile = nativeProfileDirectory(directory, name);
-	mkdirSync(profile, { recursive: true });
+	const target = nativeProfileDirectory(directory, name);
+	mkdirSync(target, { recursive: true });
+	const profile = realpathSync.native(target);
 	const filename = join(profile, "package.json");
 	if (!existsSync(filename)) writeFileSync(filename, '{"private":true,"type":"module","dependencies":{}}\n');
 	const manager = nativePackageManagerCommand(npmCommand);
@@ -57,14 +59,12 @@ export async function installNativeProfile(
 		manager.command,
 		[
 			...manager.args,
-			"--dir",
-			profile,
 			"add",
 			"--save-exact",
 			"--ignore-scripts",
 			...[...bundles[name], "@deepseek-ai/dsh-app-boot"].map((bundle) => `${bundle}@${DSH_VERSION}`),
 		],
-		{ maxBuffer: 16 * 1024 * 1024 },
+		{ cwd: profile, maxBuffer: 16 * 1024 * 1024 },
 	);
 	const bootstrap = (await createPluginImporter(directory).import(
 		"@deepseek-ai/dsh-app-boot",

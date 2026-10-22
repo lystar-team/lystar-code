@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
@@ -165,7 +165,14 @@ try {
  assert(typeof final === "string" && !/(?:^|\n)(?:failed|pending)\s/.test(final), final);
  report.passed = true;
  console.log(JSON.stringify(report));
-} catch (error) { report.error = String(error); report.stderr = stderr; throw error; }
+} catch (error) {
+ report.error = String(error); report.stderr = stderr;
+ report.profileDiagnostics = await Promise.all(["headless", "web"].map(async name => {
+  const directory = join(agent, "deepseek-harness", "profiles", name);
+  return { name, directory, realDirectory: await realpath(directory).catch(() => null), manifest: await readFile(join(directory, "package.json"), "utf8").catch(() => null), workspace: await readFile(join(directory, "pnpm-workspace.yaml"), "utf8").catch(() => null), modules: (await readFile(join(directory, "node_modules", ".modules.yaml"), "utf8").catch(() => "")).slice(0, 3000), appBootExists: await stat(join(directory, "node_modules", "@deepseek-ai", "dsh-app-boot", "package.json")).then(() => true, () => false) };
+ }));
+ throw error;
+}
 finally {
  clearTimeout(deadline); child.stdin.end(); child.kill(); lines.close(); server.closeAllConnections();
  await new Promise(resolveClose => server.close(resolveClose));
