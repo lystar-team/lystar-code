@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { dirname, join } from "node:path";
+import { createJiti } from "jiti/static";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { restoreSandboxEnv } from "../packages/coding-agent/dist/bun/restore-sandbox-env.js";
 import { APP_NAME, VERSION } from "../packages/coding-agent/dist/config.js";
@@ -11,6 +12,13 @@ import {
 
 // 原版 DSH 私有 Runner 以当前可执行文件运行 JS；独立程序需进入 Bun 运行时模式。
 if (process.env.DSH_SUBPROCESS_RUNNER) {
+	if (process.platform === "win32") {
+		const [entry, ...args] = process.argv.slice(2);
+		const runner = await createJiti(entry, { tryNative: false }).import(entry);
+		process.argv = [process.execPath, entry, ...args];
+		await runner.runSelectedSubprocessRunner(process.env.DSH_SUBPROCESS_RUNNER);
+		process.exit(process.exitCode ?? 0);
+	}
 	const environment = Object.fromEntries(
 		Object.entries(process.env).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
 	);
