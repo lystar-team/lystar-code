@@ -86,13 +86,26 @@ export function createModuleLoader(
 			if (!loadCache.has(pathToFileURL(filename).href)) delete cache[filename];
 		}
 		const filename = fileURLToPath(target.url);
-		if (!cache[filename])
-			importer(baseUrl).evalModule(readFileSync(filename, "utf8"), {
+		if (!cache[filename]) {
+			let source = readFileSync(filename, "utf8");
+			if (
+				process.versions.bun &&
+				/[\\/]@deepseek-ai[\\/]dsh-hmr[\\/]lib[\\/]index\.js$/.test(filename) &&
+				/(?:\$bunfs|~BUN)/.test(process.argv[1] ?? "")
+			) {
+				// 内嵌宿主入口不属于插件模块图，也不能按真实磁盘路径解析。
+				const lookup = "const entry = process.argv[1];";
+				if (!source.includes(lookup))
+					throw new Error("DSH HMR host entry lookup changed; review the embedded loader");
+				source = source.replace(lookup, "const entry = undefined;");
+			}
+			importer(baseUrl).evalModule(source, {
 				filename,
 				cache,
 				async: false,
 				forceTranspile: true,
 			});
+		}
 		for (const [path, record] of Object.entries(cache)) remember(pathToFileURL(path).href, record.exports, record);
 		return cache[filename].exports;
 	}
