@@ -22,7 +22,9 @@ const report = { passed: false, platform: process.platform, architecture: proces
 let profileName = "";
 let callSequence = 0;
 const workerMarker = "DSH_RELEASE_SECOND";
-const bashMarker = "DSH_RELEASE_BASH";
+const shellMarker = "DSH_RELEASE_SHELL";
+const shellTool = process.platform === "win32" ? "dsh__pwsh" : "dsh__bash";
+const shellCommand = process.platform === "win32" ? `Write-Output ${shellMarker}` : `printf ${shellMarker}`;
 const loopMarker = "DSH_RELEASE_LOOP";
 const successMarker = "DSH_RELEASE_FINISHED";
 const code = [
@@ -30,7 +32,7 @@ const code = [
  "const initial = await tools.dsh__read({file_path: \"receipt.txt\"}); if (initial.isError) throw new Error(JSON.stringify(initial));",
  "const edited = await tools.dsh__edit({file_path: \"receipt.txt\", old_string: \"FIRST\", new_string: \"SECOND\"}); if (edited.isError) throw new Error(JSON.stringify(edited));",
  "const result = await tools.dsh__read({file_path: \"receipt.txt\"}); if (result.isError) throw new Error(JSON.stringify(result)); text(result);",
- "const bash = await tools.dsh__bash({command: \"printf DSH_RELEASE_BASH\", description: \"Verify the original Bash runner\"}); if (bash.isError) throw new Error(JSON.stringify(bash)); text(bash);",
+ `const shell = await tools.${shellTool}(${JSON.stringify({ command: shellCommand, description: "Verify the original platform shell runner" })}); if (shell.isError) throw new Error(JSON.stringify(shell)); text(shell);`,
 ].join("\n");
 
 const server = createServer(async (request, response) => {
@@ -122,10 +124,10 @@ try {
   const status = (await lastMessage("dsh-plugins"))?.content;
   assert(typeof status === "string" && status.includes("active") && !/(?:^|\n)(?:failed|pending)\s/.test(status), status);
   const end = finished();
-  await Promise.all([command("Verify the original DSH file tools and Bash through Codemode."), end]);
+  await Promise.all([command("Verify the original DSH file tools and platform shell through Codemode."), end]);
   assert.equal(await readFile(join(cwd, `receipt-${profile}.txt`), "utf8"), workerMarker);
   const messages = (await request("get_messages")).data.messages;
-  assert(messages.some(message => message.role === "toolResult" && !message.isError && JSON.stringify(message.content).includes(bashMarker)));
+  assert(messages.some(message => message.role === "toolResult" && !message.isError && JSON.stringify(message.content).includes(shellMarker)));
   assert(messages.some(message => message.role === "assistant" && JSON.stringify(message.content).includes(successMarker)));
   report.checks[`${profile}Tools`] = true;
   if (profile === "headless") {
