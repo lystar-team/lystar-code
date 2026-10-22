@@ -130,30 +130,45 @@ const extensionFactories = [
 | 原行为 | 7 | 4,464 | 13,056 | 74.52% | 0.000708768 |
 | 兼容更新路径 | 6 | 1,293 | 13,440 | 91.22% | 0.000234270 |
 
-该阶段的输入费用合计下降约 66.95%；包含预热和所有任务请求时下降约 26.81%。两组模型调用次数不同，不能据此推断每次请求或生产任务的平均收益。样本包含约 7000 字符固定参考资料；本轮额外增加的工具排序尚未单独测量收益。
+该阶段的输入费用合计下降约 66.95%；包含预热和所有任务请求时下降约 26.81%。两组模型调用次数不同，不能据此推断每次请求或生产任务的平均收益。样本包含约 7000 字符固定参考资料；工具排序的独立收益尚未测量。
+
+[场景补充记录](validation/cache-scenarios.json)增加一组顺序对照，两条路径均完成 read、Workflow 计算、edit、分支历史替换、会话恢复、原版压缩和压缩后的文件任务。10 项场景均通过，共执行 28 次真实 API 请求；含工具声明的请求保持一致的声明顺序。
+
+| 路径 | 请求数 | 未缓存输入 token | 缓存读取 token | 命中率 | SDK 输入费用，美元 | 模型请求耗时合计，秒 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 原行为 | 13 | 47,728 | 114,048 | 70.50% | 0.007501344 | 16.712 |
+| 兼容更新路径 | 15 | 37,852 | 165,760 | 81.41% | 0.006175080 | 22.195 |
+
+该组先执行原行为，再执行兼容更新路径。两条路径的模型轨迹、请求数和压缩内容不同，费用为 SDK 估算，不能据此推断生产平均收益或延迟改善。
 
 ## 兼容清单与验证
 
-当前尚未完成整套插件的功能验收和四个平台的原生验收，不能据此判断已达到完整兼容的上线条件。以下记录本轮已完成的检查。
+插件中枢与内嵌 DSH 已通过本次上线验收。五个平台的 Node 包与独立程序全部通过，正式版本尚未发布。
 
-[完整清单](validation/plugin-inventory.json)记录指定源码下的 343 个公开发布包，包括 20 个 Bundle、79 个含客户端资源的包，列出入口、资源声明、peer 依赖、服务注入声明位置、加载状态和已执行检查。清单覆盖发布包，包含库、CLI 和客户端模块；功能结论按各项实际检查范围判断。
+[公开包清单](validation/plugin-inventory.json)记录指定源码下的 343 个发布包，包括 20 个 Bundle、79 个含客户端资源的包，列出入口、资源声明、peer 依赖、服务注入声明位置和加载状态。[功能验收记录](validation/functional-acceptance.json)补充原版工具、子智能体、外部协议、真实搜索和浏览器交互的执行证据。Loader 数量取本机 Linux 清单，跨平台结论取 CI 原生执行。
 
 | 验证对象 | 结果 |
 | --- | --- |
 | 中枢分发 | 正式测试 13 项通过：多来源分发、参数保留、校验、错误隔离、等待空闲和 reload 上下文 |
 | 原版 Web Profile | 根 Loader 共 193 项，166 active、27 disabled，pending/failed 均为 0；Agent 作用域可见 31 个工具 |
 | 原版 Headless Profile | 根 Loader 共 99 项，90 active、9 disabled，pending/failed 均为 0；可见 25 个工具 |
-| 文件与 Bash | 原版 read/write/edit、Bash 执行和取消通过；Node 取消样本为 125 毫秒 |
-| 原版主循环 | 模拟模型工具流程通过；[原版 Messages 真实 API](validation/native-messages.json)完成两轮 write/read 文件任务，未调用 Pi 模型流桥接 |
+| 默认工具 | 31 个 Web 工具均有实际执行：文件与内容搜索、工作目录、Todo、目标、后台任务、调度、Workflow、图片和交付物等 |
+| 文件与平台 Shell | read/write/edit、Linux/macOS Bash、Windows PowerShell 通过；本机 Node 取消样本为 125 毫秒 |
+| 原版主循环 | CI 模拟模型流程通过；[原版 Messages 真实 API](validation/native-messages.json)完成两轮 write/read 文件任务，未调用 Pi 模型流桥接 |
 | 原版 Bundle 管理 | 可选 Claude Code Bundle 安装、更新、移除及禁用状态保留通过；外部 Claude Code 执行未覆盖 |
-| 原版 Skill | 四份原版 Skill 经文件系统插件加载到 Pi，诊断为空 |
-| 历史与生命周期 | V4 历史恢复、工具名和元数据映射、会话隔离、停用重启和释放通过 |
-| Node 打包 SDK | 中枢命令、Codemode 调用和绑定 reload 后启停通过；CLI 无顶层 await，保留同步加载前启用 Node 编译缓存的启动方式 |
-| Linux x64 独立程序 | Bun 1.4.2 编译；Web Profile 加载、切换 Headless、中枢命令、Codemode 调用原版 read/Bash 通过 |
-| Linux ARM64、macOS x64/ARM64 | 交叉构建成功，产物架构已核对；原生安装、启动、插件执行与更新尚未验证 |
-| 现有相关测试 | 最近一批 6 个文件、147 项通过 |
-| 项目检查 | `npm run check` 通过 |
+| 原版 Skill | 四份原版 Skill 接入 Pi；原版工具的技能发现与加载通过 |
+| 子智能体 | 创建、fork、注册表查询、消息续接和中断通过 |
+| 外部协议 | MCP stdio、Streamable HTTP 和 LSP stdio 通过本地协议夹具验收；LSP 覆盖 hover、definition、references、implementation |
+| Web 搜索与抓取 | 原版 web_search 已真实请求官方 DeepSeek API 并返回来源；认证、服务端工具声明、结构化结果和引用通过协议检查，web_fetch 实际抓取通过 |
+| 历史与生命周期 | V4 历史导入、分支恢复、会话隔离、重启与释放通过；真实 API 完成会话恢复、原版压缩及压缩后的文件任务 |
+| 浏览器交互 | 14 项通过，覆盖消息与工具结果、文件 diff/预览、设置保存、问答、计划审批、分支、刷新恢复、终端、只读拒写和图片上传；运行错误为空 |
+| Node 打包 SDK | 中枢命令、Codemode 调用和绑定 reload 后启停通过；CLI 保留同步加载前启用 Node 编译缓存的启动方式 |
+| Linux x64/ARM64、macOS x64/ARM64、Windows x64 | 每个平台的 Node 包与独立程序均通过原生安装、Headless/Web 工具、原版主循环、Web 页面和 Bundle 禁用后更新 |
+| 现有相关测试 | 6 个文件、147 项通过 |
+| 项目检查 | npm run check 通过 |
 
-[运行与构建记录](validation/runtime-checks.json)包含四个平台产物的 SHA-256、实际执行范围和未完成项。Node 包和 Bun 二进制共用 `bundle-plugin.mjs` 保留 DSH 包身份。独立程序为 DSH 私有 Runner 复用内置 Bun，并保留其参数协议。Linux ARM64、macOS x64/ARM64 的原生运行结果需要相应 runner 验证。插件 active 表示依赖与初始化完成，完整功能兼容以实际执行记录为准。
+[五平台 CI 记录](validation/native-ci.json)对应提交 `89d901db112d549c21d33c73db2312c7be16b2c1`、运行 `39758746551`，十份运行报告的全部检查项通过。[运行与构建记录](validation/runtime-checks.json)保留早期产物的 SHA-256，并记录当前候选的上线结论。此流程只上传候选产物，创建版本 Tag 和发布 GitHub Release 的步骤均已跳过。
 
-`scripts/verify-dsh-release.mjs` 已接入 Release workflow 的四平台验收，包含隔离目录安装、Headless/Web 工具执行、原版主循环、Web 登录重定向和 Bundle 禁用后更新。Linux x64 的 Node 包和独立程序已通过本机执行；其他平台等待 CI 结果。模型循环使用本地模拟服务，验收进程配置 pnpm 跳过依赖脚本。
+Node 包和 Bun 二进制共用 bundle-plugin.mjs 保留 DSH 包身份。Windows 独立程序包含 Koffi 原生模块，并分发原版 Job Runner 与沙箱 Runner 的 JS 入口。HMR 跳过 Bun 内嵌宿主入口，使用插件加载器的模块图处理插件代码和配置。
+
+scripts/verify-dsh-release.mjs 已接入五平台 CI，包含隔离目录安装、Headless/Web 工具、原版主循环、Web 登录重定向和 Bundle 禁用后更新。CI 模型循环使用本地模拟服务；真实模型、搜索、缓存与浏览器结果分别归档。MCP/LSP 的协议夹具验证客户端行为，第三方生产服务可用性不在该结果范围内。可选外部 Claude Code 的实际执行按已确认范围不作为本次上线门槛。

@@ -1,0 +1,323 @@
+{
+  "generatedAt": "2026-10-22T09:33:04.535Z",
+  "dshVersion": "0.2.1-rc.2",
+  "dshSourceCommit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "platform": "linux-x64",
+  "scope": "Scoped functional checks of embedded original Web and Headless profiles; external protocol fixtures are identified separately from live provider requests.",
+  "passed": true,
+  "groups": [
+    {
+      "name": "functional-acceptance",
+      "generatedAt": "2026-10-22T07:27:44.651Z",
+      "profile": "web",
+      "passed": true,
+      "checks": [
+        {
+          "name": "glob-and-grep",
+          "passed": true,
+          "evidence": {
+            "matchingFile": "sample.txt",
+            "matchingContent": "DSH_SEARCH_ACCEPTANCE"
+          }
+        },
+        {
+          "name": "working-directory",
+          "passed": true,
+          "evidence": {
+            "before": "/home/yean/.cache/lystar-dsh-validation/lystar-dsh-release-pNxYHY/workspace",
+            "changeAndRelativeRead": true
+          }
+        },
+        {
+          "name": "todo-state",
+          "passed": true,
+          "evidence": {
+            "content": "Updated todo list: 0 pending, 0 in progress, 1 completed."
+          }
+        },
+        {
+          "name": "image-attachment",
+          "passed": true,
+          "evidence": {
+            "blockTypes": [
+              "text",
+              "image"
+            ],
+            "imageAttachment": true
+          }
+        },
+        {
+          "name": "deliverable-presentation",
+          "passed": true,
+          "evidence": {
+            "file": "sample.txt",
+            "originalDriver": true
+          }
+        },
+        {
+          "name": "background-job-output",
+          "passed": true,
+          "evidence": {
+            "jobId": "bash-f0723107d5eb4ac6",
+            "completed": true
+          }
+        },
+        {
+          "name": "background-job-cancel",
+          "passed": true,
+          "evidence": {
+            "jobId": "bash-ca86f00f7fd34c3d",
+            "cancelled": true
+          }
+        },
+        {
+          "name": "schedule-create-update-delete",
+          "passed": true,
+          "evidence": {
+            "create": true,
+            "update": true,
+            "delete": true
+          }
+        },
+        {
+          "name": "workflow-isolated-runtime",
+          "passed": true,
+          "evidence": {
+            "isolatedExecution": true,
+            "sum": 10
+          }
+        },
+        {
+          "name": "goal-lifecycle-through-original-loop",
+          "passed": true,
+          "evidence": {
+            "create": true,
+            "read": true,
+            "complete": true
+          }
+        },
+        {
+          "name": "agent-registry",
+          "passed": true,
+          "evidence": {
+            "query": true
+          }
+        },
+        {
+          "name": "web-fetch",
+          "passed": true,
+          "evidence": {
+            "fetched": true,
+            "publicIpTarget": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "additional-acceptance",
+      "generatedAt": "2026-10-22T08:06:19.275Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "skill-discovery-and-load",
+          "passed": true
+        },
+        {
+          "name": "subagent",
+          "passed": true,
+          "childCreated": true,
+          "registry": true,
+          "continuation": true,
+          "interrupt": true
+        },
+        {
+          "name": "subagent_fork",
+          "passed": true,
+          "childCreated": true,
+          "registry": true,
+          "continuation": true,
+          "interrupt": true
+        }
+      ]
+    },
+    {
+      "name": "integration-acceptance",
+      "generatedAt": "2026-10-22T07:42:23.898Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "mcp-stdio",
+          "passed": true,
+          "initialize": true,
+          "toolDiscovery": true,
+          "toolCall": true,
+          "disposal": true
+        },
+        {
+          "name": "lsp-stdio",
+          "passed": true,
+          "initialize": true,
+          "hover": true,
+          "definition": true,
+          "references": true,
+          "implementation": true,
+          "disposal": true
+        }
+      ]
+    },
+    {
+      "name": "http-acceptance",
+      "generatedAt": "2026-10-22T08:10:51.846Z",
+      "passed": true,
+      "checks": [
+        {
+          "name": "deepseek-web-search-protocol",
+          "passed": true,
+          "requestAuth": true,
+          "serverToolDeclaration": true,
+          "structuredResults": true,
+          "citation": true,
+          "upstreamLiveRequest": false
+        },
+        {
+          "name": "mcp-streamable-http",
+          "passed": true,
+          "initialize": true,
+          "toolDiscovery": true,
+          "toolCall": true,
+          "disposal": true
+        }
+      ]
+    }
+  ],
+  "liveSearch": {
+    "generatedAt": "2026-10-22T09:24:46.814Z",
+    "passed": true,
+    "upstreamLiveRequest": true,
+    "model": "deepseek-flash",
+    "provider": "deepseek-official",
+    "sourceCount": 8,
+    "sources": [
+      {
+        "url": "https://api-docs.deepseek.com/zh-cn/",
+        "title": "首次调用 API | DeepSeek API Docs"
+      },
+      {
+        "url": "https://api-docs.deepseek.com/zh-cn/api/create-response/",
+        "title": "Responses API | DeepSeek API Docs"
+      },
+      {
+        "url": "https://api-docs.deepseek.com/zh-cn/api/create-response/#1",
+        "title": "Responses API | DeepSeek API Docs - Search / Fetch API 已上线，使用自研搜索引擎，支持网页搜索与抓取，点此查看使用指南"
+      },
+      {
+        "url": "https://cloud.tencent.cn/developer/article/2492395?policyId=1004#1",
+        "title": "快速入门 DeepSeek-R1 大模型"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/thevibeworks/deepseek-docs/main/content/zh-cn/api/deepseek-api.md"
+      },
+      {
+        "url": "https://developer.cloud.tencent.cn/article/2512742",
+        "title": "Semantic Kernel调用DeepSeek实现聊天功能"
+      },
+      {
+        "url": "https://github.com/thevibeworks/deepseek-docs/blob/main/content/en/api/deepseek-api.md",
+        "title": "deepseek-docs/content/en/api/deepseek-api.md at main · thevibeworks/deepseek-docs"
+      },
+      {
+        "url": "https://developer.unity.cn/projects/679a12dbedbc2adb85659390#1#1#1",
+        "title": "【菜菜丸的菜鸟教程】Unity接入DeepSeek实现AI对话功能"
+      }
+    ]
+  },
+  "browser": {
+    "driver": "agent-browser",
+    "profile": "web",
+    "model": "local-faux",
+    "passed": true,
+    "checks": [
+      {
+        "name": "workspace-and-model-selection",
+        "passed": true
+      },
+      {
+        "name": "message-and-tool-result-display",
+        "passed": true,
+        "file": "browser-acceptance.txt",
+        "content": "DSH_BROWSER_FILE_OK"
+      },
+      {
+        "name": "file-diff-display",
+        "passed": true
+      },
+      {
+        "name": "plugin-settings-persistence",
+        "passed": true,
+        "setting": "subagent maximum depth",
+        "original": 1,
+        "saved": 2,
+        "restored": 1,
+        "persistedAfterReload": true
+      },
+      {
+        "name": "schedule-navigation",
+        "passed": true
+      },
+      {
+        "name": "question-answer-continuation",
+        "passed": true,
+        "answered": "1/1"
+      },
+      {
+        "name": "plan-approval-continuation",
+        "passed": true,
+        "plan": "插件验收计划"
+      },
+      {
+        "name": "session-branch",
+        "passed": true,
+        "marker": "BRANCH_ACCEPTANCE_20261022"
+      },
+      {
+        "name": "session-page-refresh",
+        "passed": true,
+        "branchAndMessagesRetained": true
+      },
+      {
+        "name": "terminal-command",
+        "passed": true,
+        "output": "DSH_TERMINAL_ACCEPTANCE"
+      },
+      {
+        "name": "workspace-file-preview",
+        "passed": true,
+        "content": "DSH_BROWSER_FILE_OK"
+      },
+      {
+        "name": "readonly-write-denial",
+        "passed": true,
+        "error": "sandbox: file access denied under read-only mode",
+        "targetFileNotCreated": true,
+        "restoredMode": "workspace-write"
+      },
+      {
+        "name": "image-upload-and-send",
+        "passed": true,
+        "file": "sample.png",
+        "message": "IMAGE_UPLOAD_ACCEPTANCE_20261022",
+        "thumbnailLoaded": true
+      },
+      {
+        "name": "browser-runtime-errors",
+        "passed": true,
+        "errors": []
+      }
+    ]
+  },
+  "limitations": [
+    "MCP and LSP protocol checks use local fixture servers, not third-party production services.",
+    "Browser checks use a deterministic local model; real model calls are recorded separately.",
+    "The optional Claude Code bundle was managed, but the external Claude Code process was not exercised."
+  ]
+}

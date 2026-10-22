@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-22T04:48:52.520Z",
+  "generatedAt": "2026-10-22T10:03:17.316Z",
   "version": "1.3.0-lystar.21",
   "dshVersion": "0.2.1-rc.2",
   "compiler": "Bun 1.4.2",
@@ -84,7 +84,7 @@
     "tests": 147,
     "result": "passed"
   },
-  "currentSourceVerification": {
+  "earlierSourceVerification": {
     "verifiedAt": "2026-10-22T06:45:59.231Z",
     "projectCheck": "passed",
     "nodeCliVersion": "1.3.0-lystar.21",
@@ -114,7 +114,7 @@
     },
     "nativeMessages": "native-messages.json",
     "cacheFileTasks": "cache-file-tasks.json",
-    "nativeCi": "pending",
+    "nativeCi": "native-ci.json",
     "formalPluginHubTests": {
       "file": "packages/coding-agent/test/plugin-hub-extension.test.ts",
       "tests": 13,
@@ -149,18 +149,42 @@
       }
     }
   },
-  "releaseReadiness": {
-    "status": "incomplete",
-    "remaining": [
-      "Native clean installation, startup, plugin execution and update checks on Linux ARM64, macOS x64 and macOS ARM64.",
-      "Functional acceptance for plugin entries with no scoped functional result in plugin-inventory.json, including external integrations and client interactions.",
-      "Execution of the four-platform native CI verification workflow."
+  "currentSourceVerification": {
+    "verifiedAt": "2026-10-22T10:03:17.316Z",
+    "sourceCommit": "89d901db112d549c21d33c73db2312c7be16b2c1",
+    "projectCheck": {
+      "command": "npm run check",
+      "result": "passed"
+    },
+    "formalPluginHubTests": {
+      "file": "packages/coding-agent/test/plugin-hub-extension.test.ts",
+      "tests": 13,
+      "result": "passed"
+    },
+    "nativeCi": "native-ci.json",
+    "nativePlatforms": 5,
+    "nativeRuntimeReports": 10,
+    "functionalAcceptance": "functional-acceptance.json",
+    "defaultWebToolsExercised": 31,
+    "browserChecks": 14,
+    "nativeMessages": "native-messages.json",
+    "cacheEvidence": [
+      "cache-comparison.json",
+      "cache-file-tasks.json",
+      "cache-scenarios.json"
     ]
+  },
+  "releaseReadiness": {
+    "status": "ready",
+    "scope": "Plugin Hub, embedded default DSH Web/Headless profiles and native candidate packages on five supported platforms.",
+    "remaining": [],
+    "publish": false
   },
   "notes": [
     "Compilation does not establish native runtime compatibility.",
     "Active loader entries do not establish functional compatibility.",
     "Earlier binary main-loop checks used a simulated model. The current source also completed two native file-task turns through the original DeepSeek Messages transport against the official API.",
-    "The platforms array describes the earlier four-platform build. The later source build and its narrower Linux x64 execution result are recorded in currentSourceVerification."
+    "The platforms array and earlierSourceVerification preserve earlier build evidence. Current five-platform native CI acceptance is recorded in native-ci.json at source commit 89d901db112d549c21d33c73db2312c7be16b2c1.",
+    "The public package inventory includes libraries, CLI packages and optional modules. Functional conclusions describe the scoped paths in functional-acceptance.json; optional external Claude Code execution is outside this release gate."
   ]
 }

@@ -1,0 +1,183 @@
+{
+  "verifiedAt": "2026-10-22T10:03:17.316Z",
+  "dshVersion": "0.2.1-rc.2",
+  "sourceCommit": "89d901db112d549c21d33c73db2312c7be16b2c1",
+  "branch": "release-ci/dsh-acceptance-20261022",
+  "workflow": "release.yml",
+  "workflowRun": 39758746551,
+  "workflowAttempt": 1,
+  "conclusion": "success",
+  "publish": false,
+  "versionTagCreated": false,
+  "githubReleasePublished": false,
+  "model": "local-faux",
+  "dependencyLifecycleScripts": false,
+  "pluginHubTests": {
+    "tests": 13,
+    "result": "passed"
+  },
+  "platforms": [
+    {
+      "platform": "linux-x64",
+      "artifact": "dsh-runtime-linux-x64-1",
+      "node": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      },
+      "standalone": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      }
+    },
+    {
+      "platform": "linux-arm64",
+      "artifact": "dsh-runtime-linux-arm64-1",
+      "node": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      },
+      "standalone": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      }
+    },
+    {
+      "platform": "darwin-x64",
+      "artifact": "dsh-runtime-darwin-x64-1",
+      "node": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      },
+      "standalone": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      }
+    },
+    {
+      "platform": "darwin-arm64",
+      "artifact": "dsh-runtime-darwin-arm64-1",
+      "node": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      },
+      "standalone": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      }
+    },
+    {
+      "platform": "windows-x64",
+      "artifact": "dsh-runtime-windows-x64-1",
+      "node": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      },
+      "standalone": {
+        "passed": true,
+        "checks": {
+          "hub": true,
+          "headlessTools": true,
+          "originalLoop": true,
+          "webTools": true,
+          "webPage": true,
+          "bundleInstallDisableUpdate": true
+        },
+        "modelRequests": 6,
+        "nativeModelRequests": 2
+      }
+    }
+  ],
+  "functionalEvidence": "functional-acceptance.json",
+  "liveModelEvidence": "native-messages.json",
+  "cacheEvidence": [
+    "cache-comparison.json",
+    "cache-file-tasks.json",
+    "cache-scenarios.json"
+  ],
+  "limitations": [
+    "CI model loops use a local simulated model; live API evidence is recorded separately.",
+    "The optional external Claude Code process was not exercised; its Bundle management was verified.",
+    "MCP and LSP protocol fixtures verify client functionality, not third-party production availability."
+  ]
+}

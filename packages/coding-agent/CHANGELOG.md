@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增按 Harness 来源注册的插件中枢，CLI 与 Web Runtime 共用 `/plugins` 命令，支持来源状态、安装、启停、更新和重载。
+- 内嵌 DeepSeek Harness `0.2.1-rc.2`，接入原版 Profile、Web 界面、工具、技能、Agent 主循环和会话恢复，并保留 `/dsh` 入口；提供 DeepSeek 缓存兼容更新与前缀诊断。
+
 ## [1.3.0-lystar.21] - 2026-10-22
 
 ### Fixed
