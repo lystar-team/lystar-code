@@ -175,16 +175,6 @@ jobs:
           node scripts/verify-dsh-release.mjs packages/coding-agent/dist/bundle/cli.js "${RUNNER_TEMP}/dsh-node.json"
           node scripts/verify-dsh-release.mjs "$validation_dir/lystar-agent/lc" "${RUNNER_TEMP}/dsh-standalone.json"
 
-      - name: Upload DSH runtime verification
-        if: always() && runner.os != 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: dsh-runtime-${{ matrix.platform }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/dsh-node.json
-            ${{ runner.temp }}/dsh-standalone.json
-          if-no-files-found: ignore
-
       - name: Build Windows standalone release
         if: runner.os == 'Windows'
         shell: powershell
@@ -216,6 +206,26 @@ jobs:
           $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
           node scripts/test-windows-web.mjs --bundle-dir $Bundle
           if ($LASTEXITCODE -ne 0) { throw "Windows Web smoke test failed." }
+
+      - name: Verify Windows DSH Node and standalone runtimes
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $Bundle = "packages/coding-agent/binaries/windows-x64/lystar-agent"
+          node scripts/verify-dsh-release.mjs packages/coding-agent/dist/bundle/cli.js "${env:RUNNER_TEMP}/dsh-node.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows DSH Node verification failed." }
+          node scripts/verify-dsh-release.mjs "$Bundle/lc.exe" "${env:RUNNER_TEMP}/dsh-standalone.json"
+          if ($LASTEXITCODE -ne 0) { throw "Windows DSH standalone verification failed." }
+
+      - name: Upload DSH runtime verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dsh-runtime-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dsh-node.json
+            ${{ runner.temp }}/dsh-standalone.json
+          if-no-files-found: ignore
 
       - name: Upload platform release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
