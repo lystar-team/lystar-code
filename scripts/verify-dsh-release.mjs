@@ -18,7 +18,7 @@ await mkdir(agent);
 await mkdir(cwd);
 const manifest = JSON.parse(await readFile(new URL("../packages/deepseek-harness/package.json", import.meta.url), "utf8"));
 const version = manifest.dependencies["@deepseek-ai/dsh-agent"];
-const report = { passed: false, platform: process.platform, architecture: process.arch, runtime: binary, directory: root, checks: {}, modelRequests: [], toolEvents: [] };
+const report = { passed: false, platform: process.platform, architecture: process.arch, runtime: binary, directory: root, checks: {}, modelRequests: [], toolEvents: [], notifications: [] };
 let profileName = "";
 let callSequence = 0;
 const workerMarker = "DSH_RELEASE_SECOND";
@@ -77,6 +77,10 @@ lines.on("line", line => {
  let event; try { event = JSON.parse(line); } catch { return; }
  if (event.type === "response" && waiting.has(event.id)) { const pending = waiting.get(event.id); waiting.delete(event.id); pending.resolve(event); }
  if (event.type === "tool_execution_start" || event.type === "tool_execution_end") report.toolEvents.push({ type: event.type, toolName: event.toolName, isError: event.isError, result: event.result });
+ if (event.type === "extension_ui_request" && event.method === "notify") {
+  report.notifications.push({ message: event.message, notifyType: event.notifyType });
+  if (event.notifyType === "error") console.error(event.message);
+ }
  emitter.emit(event.type, event);
 });
 const fail = error => { for (const pending of waiting.values()) pending.reject(error); waiting.clear(); };

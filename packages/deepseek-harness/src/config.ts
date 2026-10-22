@@ -1,18 +1,16 @@
-import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { applyEntryPatches, entryListSchema, type PatchOptions } from "@deepseek-ai/cordis-plugin-include";
 import type { EntryOptions } from "@deepseek-ai/cordis-plugin-loader";
 import type { DshPackageManifest } from "@deepseek-ai/dsh-package-manifest";
+import { execa } from "execa";
 import { load } from "js-yaml";
 import { satisfies, validRange } from "semver";
 import type { NativeProfileName } from "./native-profile.ts";
 
 export const DSH_VERSION = "0.2.1-rc.2";
-const execute = promisify(execFile);
 
 export interface PluginSelection {
 	name: string;
@@ -138,7 +136,7 @@ export async function installHarnessPlugin(
 	const before = JSON.parse(readFileSync(packageFile, "utf8")) as { dependencies?: Record<string, string> };
 	const command = npmCommand[0];
 	if (!command) throw new Error("npmCommand 不能为空");
-	await execute(
+	await execa(
 		command,
 		[
 			...npmCommand.slice(1),

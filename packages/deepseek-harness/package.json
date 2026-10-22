@@ -43,6 +43,7 @@
 		"@deepseek-ai/dsh-working-directory": "0.2.1-rc.2",
 		"@deepseek-ai/schemastery": "3.18.5",
 		"@earendil-works/pi-ai": "1.3.0-lystar.21",
+		"execa": "10.2.0",
 		"jiti": "2.7.0",
 		"js-yaml": "4.3.2",
 		"semver": "7.8.5",

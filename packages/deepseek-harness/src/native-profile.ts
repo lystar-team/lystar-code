@@ -1,13 +1,12 @@
-import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import type { Context } from "@deepseek-ai/cordis";
 import type * as AppBoot from "@deepseek-ai/dsh-app-boot";
 import { createLaunchEnvironmentSnapshot } from "@deepseek-ai/dsh-launch-environment";
 import type { PluginManager } from "@deepseek-ai/dsh-plugin-manager";
 import type { SessionId } from "@deepseek-ai/dsh-session";
+import { execa } from "execa";
 import { DSH_VERSION } from "./config.ts";
 import { createPluginImporter } from "./importer.ts";
 import type { HarnessOptions } from "./index.ts";
@@ -18,7 +17,6 @@ const bundles: Record<NativeProfileName, readonly string[]> = {
 	web: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"],
 	headless: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"],
 };
-const execute = promisify(execFile);
 
 export function nativeProfileDirectory(directory: string, name: NativeProfileName): string {
 	return join(directory, "profiles", name);
@@ -55,7 +53,7 @@ export async function installNativeProfile(
 	const filename = join(profile, "package.json");
 	if (!existsSync(filename)) writeFileSync(filename, '{"private":true,"type":"module","dependencies":{}}\n');
 	const manager = nativePackageManagerCommand(npmCommand);
-	await execute(
+	await execa(
 		manager.command,
 		[
 			...manager.args,
