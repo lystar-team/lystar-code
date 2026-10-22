@@ -7,6 +7,7 @@ const [target, outfile] = process.argv.slice(2);
 if (!target || !outfile) throw new Error("Usage: bun scripts/build-coding-agent-binary.mjs <target|current> <outfile>");
 
 const outputFile = resolve(outfile);
+const windows = target.startsWith("bun-windows-") || (target === "current" && process.platform === "win32");
 // Worker 入口沿用运行时使用的包内相对路径，与调用构建脚本的目录无关。
 process.chdir(join(root, "packages/coding-agent"));
 
@@ -20,13 +21,11 @@ const result = await Bun.build({
 	tsconfig: join(root, "tsconfig.base.json"),
 	compile: {
 		...(target === "current" ? {} : { target }),
-		...(target.startsWith("bun-windows-") || (target === "current" && process.platform === "win32")
-			? { windows: { icon: join(root, "packages/coding-agent/assets/lystar-windows-icon.ico") } }
-			: {}),
+		...(windows ? { windows: { icon: join(root, "packages/coding-agent/assets/lystar-windows-icon.ico") } } : {}),
 		outfile: outputFile,
 		autoloadBunfig: false,
 		autoloadDotenv: false,
 	},
-	plugins: [deepSeekHarnessBundlePlugin()],
+	plugins: [deepSeekHarnessBundlePlugin({ nativeAddons: windows })],
 });
 if (!result.success) throw new AggregateError(result.logs, "LYStar binary build failed");

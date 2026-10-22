@@ -1,11 +1,19 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** Preserve DSH's published identity when the original module loses its package directory. */
-export function deepSeekHarnessBundlePlugin({ resolveDir = false } = {}) {
+/** Preserve DSH package identity and native dependencies in bundled hosts. */
+export function deepSeekHarnessBundlePlugin({ resolveDir = false, nativeAddons = false } = {}) {
 	return {
 		name: "deepseek-harness-package-identity",
 		setup(build) {
+			if (nativeAddons) {
+				build.onLoad({ filter: /[\\/]koffi[\\/]src[\\/]koffi[\\/]src[\\/]static\.js$/ }, (args) => {
+					const source = readFileSync(args.path, "utf8");
+					const binding = 'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\n';
+					if (!source.includes(binding)) throw new Error("Koffi native module loading changed; review the binary adapter");
+					return { contents: source.replace(binding, ""), loader: "js" };
+				});
+			}
 			build.onLoad({ filter: /[\\/]@deepseek-ai[\\/]dsh-llm[\\/]lib[\\/]index\.js$/ }, (args) => {
 				const source = readFileSync(args.path, "utf8");
 				const lookup = 'createRequire(import.meta.url)("../package.json")';

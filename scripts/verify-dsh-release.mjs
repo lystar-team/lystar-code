@@ -44,15 +44,16 @@ const server = createServer(async (request, response) => {
   const lastUser = payload.messages.findLastIndex(message => message.role === "user");
   const results = payload.messages.slice(lastUser + 1).filter(message => message.role === "tool");
   const native = tools.includes("write") && !tools.includes("codemode");
-  const done = native
+  const failed = results.some(message => JSON.stringify(message.content).includes("Script error:"));
+  const done = failed || (native
    ? results.length > 0
-   : results.some(message => JSON.stringify(message.content).includes(workerMarker));
+   : results.some(message => JSON.stringify(message.content).includes(workerMarker)));
   report.modelRequests.push({ native, tools, toolResults: results.length });
   const call = native
    ? { name: "write", arguments: JSON.stringify({ file_path: "native-loop.txt", content: loopMarker }) }
    : { name: "codemode", arguments: JSON.stringify({ code: code.replaceAll("receipt.txt", `receipt-${profileName}.txt`) }) };
   const delta = done
-   ? { role: "assistant", content: successMarker }
+   ? { role: "assistant", content: failed ? "DSH_RELEASE_FAILED" : successMarker }
    : { role: "assistant", tool_calls: [{ index: 0, id: `release-${++callSequence}`, type: "function", function: call }] };
   response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
   for (const choice of [{ delta, finish_reason: null }, { delta: {}, finish_reason: done ? "stop" : "tool_calls" }]) {
@@ -153,6 +154,7 @@ try {
  }
  const bundle = "@deepseek-ai/dsh-subagent-claude-code";
  for (const action of [`install ${bundle}@${version}`, `disable ${bundle}`, `update ${bundle}@${version}`]) {
+  console.log(`Managing bundle: ${action}`);
   await command(`/plugins dsh ${action}`);
   const result = JSON.parse((await lastMessage("dsh-management"))?.content ?? "null");
   assert(result && !["failed", "cancelled"].includes(result.application), JSON.stringify(result));
