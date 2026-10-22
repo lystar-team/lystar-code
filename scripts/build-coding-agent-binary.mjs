@@ -18,7 +18,15 @@ const result = await Bun.build({
 		"./src/bun/workspace-database-worker.mjs",
 	],
 	tsconfig: join(root, "tsconfig.base.json"),
-	compile: { ...(target === "current" ? {} : { target }), outfile: outputFile, autoloadBunfig: false, autoloadDotenv: false },
+	compile: {
+		...(target === "current" ? {} : { target }),
+		...(target.startsWith("bun-windows-") || (target === "current" && process.platform === "win32")
+			? { windows: { icon: join(root, "packages/coding-agent/assets/lystar-windows-icon.ico") } }
+			: {}),
+		outfile: outputFile,
+		autoloadBunfig: false,
+		autoloadDotenv: false,
+	},
 	plugins: [deepSeekHarnessBundlePlugin()],
 });
 if (!result.success) throw new AggregateError(result.logs, "LYStar binary build failed");
