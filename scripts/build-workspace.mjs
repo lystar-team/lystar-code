@@ -12,7 +12,7 @@ const shared = args.has("--shared");
 const offline = shared || args.has("--offline");
 const packages = [
 	"chord", "tui", "telemetry", "codemode", "mcp", "ai", "durable", "env", "agent", "protocol",
-	"coding-agent", "web-protocol", "web-runtime", "web", "web-gateway",
+	"deepseek-harness", "coding-agent", "web-protocol", "web-runtime", "web", "web-gateway",
 ];
 for (const name of packages) {
 	const script = name === "ai" && offline ? "build:offline" : name === "web-runtime" && shared ? "build:js" : "build";

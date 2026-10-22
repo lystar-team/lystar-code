@@ -33,6 +33,7 @@
 | 使用自己的模型服务 | 配置 Provider、API Key 和自定义模型，在输入区切换模型与思考强度 |
 | 从另一台设备查看和继续 | 服务运行在安装 LYStar 的电脑上，电脑或手机浏览器连接 WebUI |
 | 沿用 Pi 生态 | 使用兼容的 Skill、Extension、Package、Theme、Prompt Template 和 MCP 工具 |
+| 管理 Harness 插件 | 插件中枢统一管理来源；当前可在进程内运行 DeepSeek Harness 插件 |
 
 ## 安装
 
@@ -106,6 +107,18 @@ lc web
 | 卸载应用（保留用户数据） | `lc uninstall` |
 
 单独管理 Gateway、Runtime 和停止指定会话的命令见 [WebUI 使用指南](docs/usage/webui.md#分别管理-gateway-与-runtime)。卸载应用和数据保留规则见[更新、回退与卸载](docs/usage/update-rollback-uninstall.md)。
+
+## 插件中枢
+
+CLI 和 Web 会话共用插件中枢，按 Harness 来源安装、启停和更新插件。当前提供 DeepSeek Harness 适配器，后续来源通过独立适配器接入。
+
+```text
+/plugins
+/plugins dsh profile headless
+/plugins dsh list
+```
+
+插件安装沿用 LYStar 的 `npmCommand` 设置。原版 Profile、Web 界面、SDK 接入、缓存对照和兼容记录见 [DSH 适配器说明](packages/deepseek-harness/README.md)。
 
 ## 习惯终端，也可以继续用
 

@@ -10,8 +10,9 @@ const codingAgentDir = join(repoRoot, "packages/coding-agent");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
 const internalPackagePrefix = "@earendil-works/pi-";
-const internalPackageNames = new Set(["@earendil-works/chord"]);
+const internalPackageNames = new Set(["@earendil-works/chord", "@lystar/deepseek-harness"]);
 const allowedInstallScriptPackages = new Map([
+	["koffi@3.1.1", "DSH fs-local Windows backend; install checks its shipped prebuild then falls back to CMake; hydration and installer use --ignore-scripts"],
 	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);

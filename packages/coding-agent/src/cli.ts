@@ -7,14 +7,19 @@ import { main } from "./main.ts";
 
 setupCli();
 
-const args = process.argv.slice(2);
-try {
-	if (args[0] === "close-old") await runCloseOldCommand(args.slice(1));
-	else if (args[0] === "session") await runWebSessionCommand(args.slice(1));
-	else if (args[0] === "web") await runWebCommand(args.slice(1));
-	else if (args[0] === "web-runtime") await runWebRuntimeCommand(args.slice(1));
-	else await main(args);
-} catch (error) {
-	console.error(`${APP_NAME}：${error instanceof Error ? error.message : String(error)}`);
-	process.exitCode = 1;
+// Node 打包启动器在同步加载入口前启用编译缓存；入口依赖图需保持无顶层 await。
+async function runCli(): Promise<void> {
+	const args = process.argv.slice(2);
+	try {
+		if (args[0] === "close-old") await runCloseOldCommand(args.slice(1));
+		else if (args[0] === "session") await runWebSessionCommand(args.slice(1));
+		else if (args[0] === "web") await runWebCommand(args.slice(1));
+		else if (args[0] === "web-runtime") await runWebRuntimeCommand(args.slice(1));
+		else await main(args);
+	} catch (error) {
+		console.error(`${APP_NAME}：${error instanceof Error ? error.message : String(error)}`);
+		process.exitCode = 1;
+	}
 }
+
+void runCli();

@@ -52,6 +52,10 @@ jobs:
       - name: Install shared build dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund --workspace packages/coding-agent --workspace packages/web-gateway --workspace packages/web --include-workspace-root
 
+      - name: Test plugin hub contracts
+        working-directory: packages/coding-agent
+        run: node ../../node_modules/vitest/dist/cli.js --run test/plugin-hub-extension.test.ts
+
       - name: Verify release source
         run: npm run check:release
 
@@ -159,6 +163,27 @@ jobs:
           grep -Fxq "lystar-agent/native/session-index/${{ matrix.platform }}/lystar-session-index" archive-contents.txt
           ! grep -Fxq 'lystar-agent/la' archive-contents.txt
           rm archive-contents.txt
+
+      - name: Verify DSH Node and standalone runtimes
+        if: runner.os != 'Windows'
+        run: |
+          version="$(node -p "require('./packages/coding-agent/package.json').piConfig.productVersion")"
+          archive="packages/coding-agent/binaries/lystar-agent-v${version}-${{ matrix.platform }}.tar.gz"
+          validation_dir="${RUNNER_TEMP}/dsh-release"
+          mkdir -p "$validation_dir"
+          tar -xzf "$archive" -C "$validation_dir"
+          node scripts/verify-dsh-release.mjs packages/coding-agent/dist/bundle/cli.js "${RUNNER_TEMP}/dsh-node.json"
+          node scripts/verify-dsh-release.mjs "$validation_dir/lystar-agent/lc" "${RUNNER_TEMP}/dsh-standalone.json"
+
+      - name: Upload DSH runtime verification
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dsh-runtime-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dsh-node.json
+            ${{ runner.temp }}/dsh-standalone.json
+          if-no-files-found: ignore
 
       - name: Build Windows standalone release
         if: runner.os == 'Windows'

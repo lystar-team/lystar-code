@@ -116,8 +116,7 @@ for platform in "${PLATFORMS[@]}"; do
     bun_output="$ROOT_DIR/packages/coding-agent/dist/.lystar-lc-${platform}-$$"
     BUN_STAGING_FILES+=("$bun_output")
     rm -f "$bun_output"
-    run_bun build --compile --no-compile-autoload-bunfig --no-compile-autoload-dotenv --tsconfig-override="$ROOT_DIR/tsconfig.base.json" --target="$bun_target" ../../scripts/lystar-bun-cli.mjs ./src/utils/image-resize-worker.ts ./src/extensions/codemode/worker.ts ./src/bun/workspace-database-worker.mjs \
-        --outfile "$bun_output"
+    run_bun ../../scripts/build-coding-agent-binary.mjs "$bun_target" "$bun_output"
     cp "$bun_output" "$OUTPUT_DIR/$platform/lc"
     rm -f "$bun_output"
     ln -s lc "$OUTPUT_DIR/$platform/lystar"

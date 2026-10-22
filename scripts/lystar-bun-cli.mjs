@@ -9,6 +9,18 @@ import {
 	runWebServiceAction,
 } from "../packages/web-gateway/dist/gateway-service.js";
 
+// 原版 DSH 私有 Runner 以当前可执行文件运行 JS；独立程序需进入 Bun 运行时模式。
+if (process.env.DSH_SUBPROCESS_RUNNER) {
+	const environment = Object.fromEntries(
+		Object.entries(process.env).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
+	);
+	const runnerArgs = process.argv.slice(2);
+	// Bun 消耗第一个 --；原版 Runner 仍需自己的参数分隔符。
+	const delimiter = runnerArgs.indexOf("--");
+	if (delimiter >= 0) runnerArgs.splice(delimiter, 0, "--");
+	process.execve(process.execPath, [process.execPath, ...runnerArgs], { ...environment, BUN_BE_BUN: "1" });
+}
+
 process.title = APP_NAME;
 process.emitWarning = () => {};
 

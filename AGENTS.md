@@ -119,6 +119,15 @@ Attribution:
 - Internal (from issues): `Fixed foo bar ([#123](https://github.com/earendil-works/pi/issues/123))`
 - External contributions: `Added feature X ([#456](https://github.com/earendil-works/pi/pull/456) by [@username](https://github.com/username))`
 
+## 插件中枢与 Harness 适配
+
+- LYStar Code 的目标是插件中枢。DeepSeek Harness 是首个适配来源，后续 Harness 通过独立 `PluginAdapter` 注册到 `packages/coding-agent/src/extensions/plugin-hub/`。
+- 中枢负责来源注册、状态汇总和管理操作分发。各 Harness 的包格式、版本判断、配置、服务、提示词、工具和会话生命周期由适配器及其运行时维护；不把 DSH 类型和机制放入中枢接口。
+- 兼容层采用内嵌运行时。用户只安装和启动 LYStar，由 LYStar 在进程内加载、调用和管理 Harness 插件。
+- CLI 与 Web Runtime 共用内置扩展注册。适配优先沿用 Pi Extension API，公共文件只保留必要的注册、导出和打包改动，减少合并 Pi 上游时的改动范围。
+- DSH 适配持续跟进官方最新版本。维护或升级适配时，先核对官方发布和源码，再更新固定版本、锁文件、兼容清单与 README 验证记录；不使用浮动 `latest` 依赖。其他 Harness 接入后沿用各自独立的版本与验证记录。
+- 兼容结论以实际功能执行为准。区分源码、Node 包、独立二进制和各平台的验证结果；插件 `active` 状态只能说明加载状态，未验证项必须注明。
+
 ## LYStar Code 发布仓库
 
 - `origin`（`lystar-team/lystar-code`）是 LYStar Code 的提交、推送、tag 和 Release 仓库。

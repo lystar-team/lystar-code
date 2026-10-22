@@ -1,0 +1,767 @@
+{
+  "date": "2026-10-22T03:17:31.803Z",
+  "model": "deepseek-flash",
+  "pairs": 4,
+  "records": [
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "phase": "initial",
+      "milliseconds": 855,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1592,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1594,
+        "cost": {
+          "input": 0.00023879999999999998,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00023999999999999998
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "phase": "initial",
+      "milliseconds": 783,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1599,
+        "output": 34,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 32,
+        "totalTokens": 1633,
+        "cost": {
+          "input": 0.00023985,
+          "output": 0.000020399999999999998,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00026025
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 521,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1610,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1612,
+        "cost": {
+          "input": 0.0002415,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.0002427
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 972,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 225,
+        "output": 41,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 39,
+        "totalTokens": 1674,
+        "cost": {
+          "input": 0.00003375,
+          "output": 0.000024599999999999998,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000062574
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 5,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 968,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 225,
+        "output": 48,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 46,
+        "totalTokens": 1681,
+        "cost": {
+          "input": 0.00003375,
+          "output": 0.0000288,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.00006677400000000001
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 5,
+        "unchangedMessages": 5,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 819,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 202,
+        "output": 14,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 12,
+        "totalTokens": 1624,
+        "cost": {
+          "input": 0.000030299999999999998,
+          "output": 0.0000084,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000042924
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 4,
+        "unchangedMessages": 4,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "phase": "initial",
+      "milliseconds": 790,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1601,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1603,
+        "cost": {
+          "input": 0.00024014999999999998,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00024134999999999998
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "phase": "initial",
+      "milliseconds": 836,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1594,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1596,
+        "cost": {
+          "input": 0.00023909999999999998,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00024029999999999999
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 650,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 227,
+        "output": 22,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 20,
+        "totalTokens": 1657,
+        "cost": {
+          "input": 0.00003405,
+          "output": 0.000013199999999999999,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000051473999999999995
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 5,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 491,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1612,
+        "output": 23,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 21,
+        "totalTokens": 1635,
+        "cost": {
+          "input": 0.0002418,
+          "output": 0.0000138,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.0002556
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 858,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 204,
+        "output": 2,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1614,
+        "cost": {
+          "input": 0.0000306,
+          "output": 0.0000012,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000036024
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 4,
+        "unchangedMessages": 4,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 760,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 227,
+        "output": 2,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1637,
+        "cost": {
+          "input": 0.00003405,
+          "output": 0.0000012,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000039474
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 5,
+        "unchangedMessages": 5,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "phase": "initial",
+      "milliseconds": 779,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1598,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1600,
+        "cost": {
+          "input": 0.0002397,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.0002409
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "phase": "initial",
+      "milliseconds": 904,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1605,
+        "output": 46,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 44,
+        "totalTokens": 1651,
+        "cost": {
+          "input": 0.00024075,
+          "output": 0.0000276,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00026835
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 607,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1616,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1618,
+        "cost": {
+          "input": 0.00024239999999999998,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00024359999999999999
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 696,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 231,
+        "output": 2,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1641,
+        "cost": {
+          "input": 0.000034649999999999995,
+          "output": 0.0000012,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000040073999999999996
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 5,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 859,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 231,
+        "output": 28,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 26,
+        "totalTokens": 1667,
+        "cost": {
+          "input": 0.000034649999999999995,
+          "output": 0.0000168,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.00005567399999999999
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 5,
+        "unchangedMessages": 5,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 885,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 208,
+        "output": 24,
+        "cacheRead": 1408,
+        "cacheWrite": 0,
+        "reasoning": 22,
+        "totalTokens": 1640,
+        "cost": {
+          "input": 0.0000312,
+          "output": 0.0000144,
+          "cacheRead": 0.000004224,
+          "cacheWrite": 0,
+          "total": 0.000049823999999999996
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 4,
+        "unchangedMessages": 4,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 4,
+      "mode": "optimized",
+      "phase": "initial",
+      "milliseconds": 975,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1607,
+        "output": 68,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 66,
+        "totalTokens": 1675,
+        "cost": {
+          "input": 0.00024104999999999998,
+          "output": 0.000040799999999999996,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00028185
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 4,
+      "mode": "baseline",
+      "phase": "initial",
+      "milliseconds": 1356,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1600,
+        "output": 91,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 89,
+        "totalTokens": 1691,
+        "cost": {
+          "input": 0.00023999999999999998,
+          "output": 0.0000546,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.0002946
+        }
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 4,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 870,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 194,
+        "output": 2,
+        "cacheRead": 1536,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1732,
+        "cost": {
+          "input": 0.0000291,
+          "output": 0.0000012,
+          "cacheRead": 0.000004608,
+          "cacheWrite": 0,
+          "total": 0.000034908
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 5,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 4,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 1,
+      "milliseconds": 782,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 1707,
+        "output": 2,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1709,
+        "cost": {
+          "input": 0.00025604999999999996,
+          "output": 0.0000012,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00025724999999999994
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "cache": "cold"
+    },
+    {
+      "pair": 4,
+      "mode": "baseline",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 573,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 171,
+        "output": 2,
+        "cacheRead": 1536,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1709,
+        "cost": {
+          "input": 0.00002565,
+          "output": 0.0000012,
+          "cacheRead": 0.000004608,
+          "cacheWrite": 0,
+          "total": 0.000031457999999999996
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 4,
+        "unchangedMessages": 4,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    },
+    {
+      "pair": 4,
+      "mode": "optimized",
+      "phase": "updated",
+      "repetition": 2,
+      "milliseconds": 588,
+      "stopReason": "stop",
+      "reply": "OK",
+      "toolCalled": false,
+      "usage": {
+        "input": 194,
+        "output": 2,
+        "cacheRead": 1536,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 1732,
+        "cost": {
+          "input": 0.0000291,
+          "output": 0.0000012,
+          "cacheRead": 0.000004608,
+          "cacheWrite": 0,
+          "total": 0.000034908
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 5,
+        "unchangedMessages": 5,
+        "change": "unchanged"
+      },
+      "cache": "hit"
+    }
+  ],
+  "completed": true,
+  "origin": "https://api.deepseek.com",
+  "summary": [
+    {
+      "mode": "baseline",
+      "repetition": 1,
+      "samples": 4,
+      "uncached": 6545,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "inputCostEstimate": 0.00098175,
+      "cacheHitRate": 0,
+      "medianMilliseconds": 564
+    },
+    {
+      "mode": "baseline",
+      "repetition": 2,
+      "samples": 4,
+      "uncached": 785,
+      "cacheRead": 5760,
+      "cacheWrite": 0,
+      "inputCostEstimate": 0.00013502999999999999,
+      "cacheHitRate": 0.880061115355233,
+      "medianMilliseconds": 838.5
+    },
+    {
+      "mode": "optimized",
+      "repetition": 1,
+      "samples": 4,
+      "uncached": 877,
+      "cacheRead": 5760,
+      "cacheWrite": 0,
+      "inputCostEstimate": 0.00014883,
+      "cacheHitRate": 0.8678619858369745,
+      "medianMilliseconds": 783
+    },
+    {
+      "mode": "optimized",
+      "repetition": 2,
+      "samples": 4,
+      "uncached": 877,
+      "cacheRead": 5760,
+      "cacheWrite": 0,
+      "inputCostEstimate": 0.00014883,
+      "cacheHitRate": 0.8678619858369745,
+      "medianMilliseconds": 809.5
+    }
+  ]
+}

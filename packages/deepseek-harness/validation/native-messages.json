@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-22T05:58:17.544Z",
+  "passed": true,
+  "model": "deepseek/deepseek-flash",
+  "transport": "原版 DeepSeek Messages",
+  "usageAggregation": "每个步骤完成后的会话累计用量",
+  "endpoint": "https://api.deepseek.com/anthropic",
+  "checks": {
+    "write": true,
+    "read": true,
+    "separateTurns": 2,
+    "piStreamBridgeCalls": 0
+  },
+  "steps": [
+    {
+      "operation": "write",
+      "usage": {
+        "input": 10580,
+        "output": 73,
+        "cacheRead": 10368,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "operation": "read",
+      "usage": {
+        "input": 10934,
+        "output": 120,
+        "cacheRead": 31232,
+        "cacheWrite": 0
+      }
+    }
+  ],
+  "scope": "真实 API 两轮文件任务，断言文件内容、read 工具调用与回复内容；未执行完整开发任务。"
+}

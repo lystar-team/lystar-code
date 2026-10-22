@@ -40,6 +40,8 @@
 			"@earendil-works/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@earendil-works/pi-protocol": ["./packages/protocol/src/index.ts"],
 			"@earendil-works/pi-protocol/*": ["./packages/protocol/src/*"],
+			"@lystar/deepseek-harness": ["./packages/deepseek-harness/src/index.ts"],
+			"@lystar/deepseek-harness/cache": ["./packages/deepseek-harness/src/cache.ts"],
 			"@lystar/code-web-protocol": ["./packages/web-protocol/src/index.ts"],
 			"@lystar/code-web-protocol/interactive-ui-library": ["./packages/web-protocol/src/interactive-ui-library.ts"],
 			"@lystar/code-web-runtime": ["./packages/web-runtime/src/index.ts"],
