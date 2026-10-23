@@ -78,7 +78,7 @@ export function ComposerSessionStats({
 	align = "start",
 }: {
 	usage?: SessionUsage;
-	align?: "start" | "end";
+	align?: "start" | "center" | "end";
 }) {
 	const tokens = usage?.tokens;
 	const speedSample = usage?.outputSpeed;
@@ -152,7 +152,7 @@ export function ComposerSessionStats({
 	};
 
 	return (
-		<div ref={containerRef} aria-label="会话统计" className={`relative flex w-full min-w-12 items-center gap-0.5 ${align === "end" ? "justify-end" : "justify-start"}`} role="group">
+		<div ref={containerRef} aria-label="会话统计" className={`relative flex w-full min-w-12 items-center gap-0.5 ${align === "end" ? "justify-end" : align === "center" ? "justify-center" : "justify-start"}`} role="group">
 			<Popover open={statsOpen} onOpenChange={setStatsOpen}>
 				<PopoverTrigger asChild>
 					<button

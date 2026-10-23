@@ -289,6 +289,20 @@ div:has(> .prompt-input-shell [data-slot="input-group-control"]:focus-visible) >
 	border-color: var(--ring) !important;
 }
 
+/* 会话统计与输入框属于同一个编辑面板：共边，底角与输入框顶部圆角一致。 */
+div:has(> .prompt-input-shell ~ [data-slot="composer-session-stats"]) .prompt-input-shell [data-slot="input-group"] {
+	border-bottom-left-radius: 0 !important;
+	border-bottom-right-radius: 0 !important;
+}
+
+@supports (corner-shape: squircle) {
+	[data-slot="composer-session-stats"] {
+		border-bottom-left-radius: 48px;
+		border-bottom-right-radius: 48px;
+		corner-shape: squircle;
+	}
+}
+
 .command-output-toggle {
 	font-size: 0.8125rem;
 	line-height: 1.25rem;

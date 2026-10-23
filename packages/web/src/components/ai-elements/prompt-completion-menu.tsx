@@ -150,7 +150,7 @@ function deletePromptToken(
 }
 
 const PROMPT_TEXT_GEOMETRY_CLASS =
-	"box-border whitespace-pre-wrap break-words text-left !text-sm";
+	"box-border whitespace-pre-wrap break-words text-left !text-[0.875rem] !leading-5";
 const PROMPT_TEXT_PADDING_CLASS = "!px-5 !pt-4 !pb-2";
 
 function mobilePromptEnterInsertsNewline(): boolean {

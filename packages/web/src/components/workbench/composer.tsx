@@ -1,4 +1,4 @@
-import { ArrowUp, ArrowUpToLine, Check, ChevronDown, Clock3, LoaderCircle, Pencil, Plus, Square, Trash2, Zap } from "lucide-react";
+import { ArrowUp, ArrowUpToLine, Clock3, LoaderCircle, Pencil, Plus, Square, Trash2, Zap } from "lucide-react";
 import { gsap } from "gsap";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { webApi } from "../../adapters/host-protocol/api";
@@ -8,13 +8,13 @@ import { canSendPrompt, hasActiveSessionWork } from "../../state/chat-lifecycle"
 import { CommandDialog } from "./command-dialog";
 import type { WorkbenchState } from "../../state/use-workbench";
 import { Attachment, AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments } from "../ai-elements/attachments";
-import { ModelSelector, ModelSelectorContent, ModelSelectorEmpty, ModelSelectorGroup, ModelSelectorInput, ModelSelectorItem, ModelSelectorList, ModelSelectorName, ModelSelectorTrigger } from "../ai-elements/model-selector";
 import { ResourceImageViewer } from "../ai-elements/resource-preview";
 import { PromptCompletionMenu, PromptCompletionProvider, PromptCompletionTextarea } from "../ai-elements/prompt-completion-menu";
-import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputProvider, PromptInputSelect, PromptInputSelectContent, PromptInputSelectItem, PromptInputSelectTrigger, PromptInputSelectValue, PromptInputSubmit, PromptInputTools, usePromptInputAttachments, usePromptInputController } from "../ai-elements/prompt-input";
+import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputProvider, PromptInputSubmit, PromptInputTools, usePromptInputAttachments, usePromptInputController } from "../ai-elements/prompt-input";
 import { ContextRing } from "./context-ring";
 import { ComposerSessionStats } from "./composer-session-stats";
 import { ComposerExecutionStatus } from "./composer-execution-status";
+import { ComposerRuntimeSettings, type ComposerSettingsView } from "./composer-runtime-settings";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -179,17 +179,8 @@ export const Composer = memo(function Composer({
 	onEditComplete,
 }: ComposerProps) {
 	const [executionStatusVisible, setExecutionStatusVisible] = useState(false);
-	const [statsInFooter, setStatsInFooter] = useState(() =>
-		typeof window !== "undefined" && window.matchMedia("(min-width: 768px), (horizontal-viewport-segments: 2)").matches,
-	);
-	useEffect(() => {
-		const media = window.matchMedia("(min-width: 768px), (horizontal-viewport-segments: 2)");
-		const update = () => setStatsInFooter(media.matches);
-		update();
-		media.addEventListener("change", update);
-		return () => media.removeEventListener("change", update);
-	}, []);
-	const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settingsView, setSettingsView] = useState<ComposerSettingsView>("entries");
 	const [modelSearch, setModelSearch] = useState("");
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
 	const [queueActionId, setQueueActionId] = useState<string>();
@@ -274,9 +265,20 @@ export const Composer = memo(function Composer({
 	useEffect(() => {
 		promptAnimationCleanupRef.current?.();
 		setCommandDialog(undefined);
-		setModelSelectorOpen(false);
+		setSettingsOpen(false);
+		setSettingsView("entries");
 		setQueueActionId(undefined);
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
+	const handleSettingsOpenChange = useCallback((open: boolean) => {
+		setSettingsOpen(open);
+		if (open) return;
+		setSettingsView("entries");
+		setModelSearch("");
+	}, []);
+	const handleSettingsViewChange = useCallback((view: ComposerSettingsView) => {
+		setSettingsView(view);
+		if (view !== "model") setModelSearch("");
+	}, []);
 	const disabled = externallyDisabled || (roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state));
 	const acquiringSessionControl = Boolean(state.sessionId && (state.pendingSessionControls?.[state.sessionId] ?? 0) > 0);
 	const stopping = !roomMode && !disabled && hasActiveSessionWork(state);
@@ -338,12 +340,11 @@ export const Composer = memo(function Composer({
 			return (leftProvider?.name ?? left).localeCompare(rightProvider?.name ?? right, "zh-CN");
 		});
 	}, [state.modelOptionProviders, state.modelOptions]);
+	const modelLabel = formatModelDisplayName(selectedModel ?? (state.session?.model ? { id: state.session.model.id } : undefined));
+	const thinkingLevel = selectedVisibleThinkingLevel(state.session?.thinkingLevel ?? "off", thinkingLevels);
+	const thinkingLabel = selectedModel?.reasoning ? thinkingLevelDisplayLabel(thinkingLevel) : undefined;
 	const sessionStats = !inline && !roomMode && state.sessionId ? (
-		<ComposerSessionStats
-			key={state.sessionId}
-			usage={state.session?.usage}
-			align={statsInFooter ? "start" : "end"}
-		/>
+		<ComposerSessionStats key={state.sessionId} usage={state.session?.usage} align="center" />
 	) : null;
 	return (
 		<div
@@ -473,7 +474,8 @@ export const Composer = memo(function Composer({
 												actions.closeInspector();
 												if (request.kind === "model") {
 													setModelSearch(request.value ?? "");
-													setModelSelectorOpen(true);
+													setSettingsView("model");
+													setSettingsOpen(true);
 												} else setCommandDialog({ ...request, sessionId: submissionSessionId });
 											});
 											return;
@@ -550,22 +552,15 @@ export const Composer = memo(function Composer({
 								) : null}
 								<PromptInputHeader className={`min-w-0 flex-col flex-nowrap items-stretch gap-0 empty:hidden ${!inline && !roomMode ? executionStatusVisible ? "pb-0" : "p-0" : ""}`}>
 									{!inline && !roomMode && state.sessionId ? (
-										<div className={`flex w-full min-w-0 items-center justify-between gap-3 ${statsInFooter && !executionStatusVisible ? "hidden" : ""}`}>
-											<div className={`min-w-0 ${statsInFooter ? "flex-1" : "max-w-[60%] shrink"}`}>
-												<ComposerExecutionStatus key={state.sessionId} state={state} onVisibilityChange={setExecutionStatusVisible} />
-											</div>
-											{!statsInFooter ? (
-												<div className={executionStatusVisible ? "min-w-12 flex-1" : "absolute right-3 top-3 w-12"}>
-													{sessionStats}
-												</div>
-											) : null}
+										<div className="w-full min-w-0">
+											<ComposerExecutionStatus key={state.sessionId} state={state} onVisibilityChange={setExecutionStatusVisible} />
 										</div>
 									) : null}
 									<ComposerAttachments headerHasPadding={inline || roomMode || executionStatusVisible} statusVisible={!inline && !roomMode && executionStatusVisible} />
 								</PromptInputHeader>
 								<PromptInputBody>
 									<PromptCompletionTextarea
-										className={sessionStats ? executionStatusVisible ? "!pt-1.5" : !statsInFooter ? "!pr-16" : undefined : undefined}
+										className={executionStatusVisible ? "!pt-1.5" : undefined}
 										autoFocus={Boolean(activeEditRequest)}
 										aria-label={inline ? "编辑 Prompt" : "输入 Prompt"}
 										placeholder={
@@ -594,7 +589,6 @@ export const Composer = memo(function Composer({
 									<PromptInputTools className="shrink-0">
 										<FileUploadButton disabled={disabled || editAttachmentState === "loading" || Boolean(visibleUploadProgress)} />
 									</PromptInputTools>
-									{statsInFooter && sessionStats ? <div className="min-w-12 flex-1">{sessionStats}</div> : null}
 									<PromptInputTools className="min-w-0 flex-[0_1_auto] flex-nowrap justify-end gap-0.5 md:gap-1">
 									{inline ? (
 										<>
@@ -622,79 +616,25 @@ export const Composer = memo(function Composer({
 											<ContextRing contextWindow={contextWindow} usedTokens={contextTokens} />
 										</div>
 									)}
-									{inline || roomMode ? null : <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
-											<ModelSelectorTrigger asChild>
-												<PromptInputButton
-													className="min-w-7 shrink px-1 has-[>svg]:px-1 data-[state=open]:bg-accent md:px-1.5 md:has-[>svg]:px-1.5"
-													disabled={disabled || !state.sessionId}
-												>
-													<span className="min-w-0 max-w-24 truncate md:max-w-40">
-														{formatModelDisplayName(
-															selectedModel ??
-																(state.session?.model ? { id: state.session.model.id } : undefined),
-														)}
-													</span>
-													<ChevronDown className="size-3" />
-												</PromptInputButton>
-											</ModelSelectorTrigger>
-											<ModelSelectorContent title="选择模型">
-												<ModelSelectorInput placeholder="搜索模型…" value={modelSearch} onValueChange={setModelSearch} />
-												<ModelSelectorList>
-													<ModelSelectorEmpty>没有找到模型</ModelSelectorEmpty>
-													{modelsByProvider.map(([provider, models]) => (
-														<ModelSelectorGroup heading={provider} key={provider}>
-															{models.map((model) => (
-																<ModelSelectorItem
-																	key={`${model.provider}/${model.id}`}
-																	value={`${model.provider} ${model.name} ${model.id}`}
-																	onSelect={() => {
-																		void actions.updateModel(model.provider, model.id);
-																		setModelSelectorOpen(false);
-																	}}
-																>
-																	<ModelSelectorName>
-																		{formatModelDisplayName(model)}
-																	</ModelSelectorName>
-																	{state.session?.model?.provider === model.provider &&
-																	state.session.model.id === model.id ? (
-																		<Check className="size-4" />
-																	) : null}
-																</ModelSelectorItem>
-															))}
-														</ModelSelectorGroup>
-													))}
-												</ModelSelectorList>
-											</ModelSelectorContent>
-										</ModelSelector>}
-										{!inline && !roomMode && selectedModel?.reasoning ? (
-											<PromptInputSelect
-												disabled={disabled}
-												value={selectedVisibleThinkingLevel(
-													state.session?.thinkingLevel ?? "off",
-													thinkingLevels,
-												)}
-												onValueChange={actions.updateThinking}
-											>
-												<PromptInputSelectTrigger
-													className="flex h-8 w-auto shrink-0 border-0 px-1.5 text-xs shadow-none focus-visible:ring-0"
-													aria-label="思考强度"
-												>
-													<PromptInputSelectValue>
-														{thinkingLevelDisplayLabel(state.session?.thinkingLevel ?? "off")}
-													</PromptInputSelectValue>
-												</PromptInputSelectTrigger>
-												<PromptInputSelectContent
-													position="popper"
-													className="!max-h-none !overflow-y-visible"
-												>
-													{thinkingLevels.map((level) => (
-														<PromptInputSelectItem key={level} value={level}>
-															{THINKING_LEVEL_LABELS[level] ?? level}
-														</PromptInputSelectItem>
-													))}
-												</PromptInputSelectContent>
-											</PromptInputSelect>
-										) : null}
+									{inline || roomMode ? null : (
+										<ComposerRuntimeSettings
+											disabled={disabled || !state.sessionId}
+											modelLabel={modelLabel}
+											modelsByProvider={modelsByProvider}
+											open={settingsOpen}
+											selectedModel={state.session?.model}
+											search={modelSearch}
+											thinkingLabel={thinkingLabel}
+											thinkingLevel={thinkingLevel}
+											thinkingLevels={thinkingLevels}
+											view={settingsView}
+											onOpenChange={handleSettingsOpenChange}
+											onSearchChange={setModelSearch}
+											onSelectModel={(provider, id) => void actions.updateModel(provider, id)}
+											onSelectThinking={(level) => void actions.updateThinking(level)}
+											onViewChange={handleSettingsViewChange}
+										/>
+									)}
 										{!inline && !roomMode && fastModeSupported ? (
 											<PromptInputButton
 												className="h-8 shrink-0 gap-1 bg-transparent px-1 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground has-[>svg]:px-1 md:px-1.5 md:has-[>svg]:px-1.5"
@@ -727,6 +667,14 @@ export const Composer = memo(function Composer({
 									</PromptInputTools>
 								</PromptInputFooter>
 							</PromptInput>
+							{sessionStats ? (
+								<div
+									className="mt-[-1px] flex w-full justify-center rounded-b-[var(--radius)] border border-border bg-muted/25 py-2.5 shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
+									data-slot="composer-session-stats"
+								>
+									{sessionStats}
+								</div>
+							) : null}
 						</div>
 					</PromptCompletionProvider>
 				</PromptInputProvider>

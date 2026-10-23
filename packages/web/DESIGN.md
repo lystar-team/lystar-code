@@ -74,7 +74,7 @@ React 19 + TypeScript、Vite 8、Tailwind CSS 4、CSS 语义变量、shadcn/ui�
 ### 3.4 字体与排版
 
 - 界面字体：`Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei"`，不下载 Web Font。
-- 普通界面文字、按钮、输入框、选择器与菜单统一使用 `text-sm`，基线为 13px / 20px，不包含对话正文。界面字号来源是 `src/styles/tokens.css` 的 `--font-size-ui`，`src/styles.css` 将它映射到 `text-sm` 并设为页面默认字号；不要逐页改写同类控件的字号。
+- 普通界面文字、按钮、输入框、选择器与菜单统一使用 `text-sm`，基线为 13px / 20px，不包含对话正文。Prompt 输入框与文字叠层是例外，使用 14px / 20px。界面字号来源是 `src/styles/tokens.css` 的 `--font-size-ui`，`src/styles.css` 将它映射到 `text-sm` 并设为页面默认字号；不要逐页改写同类控件的字号。
 - 字号层级：`text-xs` 12px（辅助、状态、计数）、`text-sm` 13px（普通文字与控件）、`text-base` 16px（顶栏标题、对话框标题）、`text-lg` 18px（顶栏标题 sm 以上）。16px 不用于普通按钮或输入框，包括窄屏。设置页头使用 `text-2xl sm:text-4xl`；诊断页使用 28px / 36px，资源数值使用 28px / 34px。
 - `html` 根字号保持浏览器默认值，不通过改小根字号缩放整个界面。控件的 `font: inherit` 置于 `@layer base`，字号和行高由组件控制；`font-weight: inherit` 在基础层外保留既有优先级，普通按钮、输入框、选择器继承父级字重，不因默认 `font-medium` 变粗。标题与明确强调保留原有字重；Prompt 输入框与文字叠层共用同一字号。
 - 代码、路径、命令、模型 ID 使用等宽字体。
@@ -236,17 +236,17 @@ Toast 用 `fixed` 定位在顶栏下方：`top-[calc(env(safe-area-inset-top)+5r
 
 输入区是常驻底部区域，容器与对话区同宽。
 
-- 结构：排队消息区在上；运行状态位于输入框内部、输入内容上方；附件与输入内容位于其下。桌面会话统计放在底部上传按钮旁并左对齐，窄屏放在输入框右上角。无运行状态时不保留状态区域或其 padding；窄屏空闲时「统计」入口与输入内容顶部同排。
+- 结构：排队消息区在上；运行状态位于输入框内部、输入内容上方；附件与输入内容位于其下。会话统计位于输入框外、输入卡片下方的信息带中，信息带与输入卡片共边并共用底角圆角，内容水平居中；窄屏同样放在输入框下方，不放进输入框，也不占用输入框右上角。无运行状态时不保留状态区域或其 padding。
 - 运行状态文字使用 14px，与底部控件字号一致；默认只显示阶段、耗时与信息图标。工具阶段与工具卡片共用 `tool-presentation.ts` 的动作标题，优先读取运行中工具及脚本内调用的参数；Tooltip 的「当前工具」沿用同一标题。状态 Header 不保留底部 padding，输入内容顶部间距为 6px；加载图标旋转，等待确认和异常图标静止，减少动效时关闭旋转。最后进展、连接确认及重试等明细放在 Tooltip 中。悬停、键盘聚焦或点击图标查看，再次点击、点击外部或按 Escape 关闭；Tooltip 与统计详情一样优先朝输入框外上方展开，按视口避让，不占用右侧分栏。
 - 排队消息与输入框属于同一编辑面板，`src/styles.css` 把两者圆角拼合并共用边框；不要给排队消息单独卡片样式。
 - 发送 / 停止复用同一圆形主按钮；发送方式（立即调整、完成后发送）在 Popover 中选择。
-- 模型选择使用带搜索的 `ModelSelector`；思考强度下拉只展示模型实际支持的档位（`VISIBLE_THINKING_LEVELS`）。
+- 模型与思考强度统一用一个入口（`ComposerRuntimeSettings`）：入口显示模型显示名和当前档位；浮层首屏是 `模型`、`思考强度` 两个入口行，点入后进入对应列表，返回箭头留在浮层内。模型列表保留搜索与按 provider 分组；思考强度列表只展示模型实际支持的档位（`VISIBLE_THINKING_LEVELS`）。
 - 运行中时输入框仍可输入，用于 steer 与 follow-up；草稿只存在浏览器，不写入会话。
 - 编辑历史 Prompt 时输入区内联出现，取消丢弃草稿并把焦点交还原消息。
 - 协作模式在输入区上方显示正在工作的子会话胶囊，支持 `@` 补全成员。
 - 键盘规则（`ai-elements/prompt-input.tsx`）：`Enter` 发送，提交前先检查提交按钮是否 `disabled`；`Shift + Enter` 换行；`Ctrl / Cmd + Enter` 优先提交带 `data-prompt-submit-mode="steer"` 的发送按钮，没有则提交整个表单，即在运行中默认送入 steer；组合输入（`isComposing` / `nativeEvent.isComposing`）期间三种发送都不触发；输入框为空且存在附件时 `Backspace` 删除最后一个附件。设置改变发送键时要在 Tooltip 或帮助中同步说明。
 - 斜杠命令：只展示有执行入口的内置命令，白名单在 `state/composer-commands.ts` 的 `WEB_COMMAND_NAMES`（`/compact`、`/new`、`/export`、`/model`、`/thinking`、`/name`、`/settings`、`/changes`、`/resume`、`/fork`、`/tree`、`/trust`、`/session`、`/hotkeys`、`/reload`）。任务运行中执行部分命令要先提示“请等待当前任务结束或停止任务后执行此命令”；插件、模板与 Skill 命令不受该表限制，不得在前端另行拦截。
-- `ComposerSessionStats` 展示 TPS、缓存命中、输入和输出，沿用原有字号、字重与标签辅助色、数值正文色；详情保留最近输出速度、累计输出等明细。缺失值显示 `—`，不填补假数据。统计依据所在区域的剩余宽度和指标实际宽度逐项收起，优先保留 TPS；未显示的指标仍可通过「统计」入口查看，不按视口断点或固定宽度提前折叠。底部工具区保留模型、思考强度、快速模式、发送方式、发送 / 停止按钮和 `ContextRing` 上下文使用率环（`aria-label="上下文使用率 N%"`）。
+- `ComposerSessionStats` 展示 TPS、缓存命中、输入和输出，沿用原有字号、字重与标签辅助色、数值正文色；详情保留最近输出速度、累计输出等明细。缺失值显示 `—`，不填补假数据。统计依据统计信息带的实际宽度和指标实际宽度逐项收起，优先保留 TPS；未显示的指标仍可通过「统计」入口查看，不按视口断点或固定宽度提前折叠。底部工具区保留模型与思考强度入口、快速模式、发送方式、发送 / 停止按钮和 `ContextRing` 上下文使用率环（`aria-label="上下文使用率 N%"`）。
 - 附件支持拖拽与点击上传，带上传进度（文件名、百分比、阶段）；内联编辑历史 Prompt 时不启用全局拖拽。文件树也支持拖拽文件到目录上传。
 - 图片附件超过 8MB（`MAX_IMAGE_PREVIEW_BYTES`）时不生成内联缩略预览，附件仍可发送。不要把“没缩略图”当成上传失败去修。
 
