@@ -1,0 +1,874 @@
+{
+  "date": "2026-10-22T05:26:45.839Z",
+  "completed": true,
+  "pairs": 3,
+  "requests": [
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "stage": "warm",
+      "milliseconds": 460,
+      "stopReason": "stop",
+      "usage": {
+        "input": 2168,
+        "output": 3,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2171,
+        "cost": {
+          "input": 0.0003252,
+          "output": 0.0000018,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.000327
+        }
+      },
+      "prefix": {
+        "request": 1,
+        "messages": 2,
+        "unchangedMessages": 0,
+        "change": "initial"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "stage": "task",
+      "milliseconds": 982,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 169,
+        "output": 45,
+        "cacheRead": 2048,
+        "cacheWrite": 0,
+        "reasoning": 6,
+        "totalTokens": 2262,
+        "cost": {
+          "input": 0.00002535,
+          "output": 0.000027,
+          "cacheRead": 0.000006144,
+          "cacheWrite": 0,
+          "total": 0.000058494
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 836,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 1204,
+        "output": 100,
+        "cacheRead": 1152,
+        "cacheWrite": 0,
+        "reasoning": 39,
+        "totalTokens": 2456,
+        "cost": {
+          "input": 0.0001806,
+          "output": 0.000059999999999999995,
+          "cacheRead": 0.000003456,
+          "cacheWrite": 0,
+          "total": 0.00024405599999999998
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 6,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "toolNames": [
+        "write"
+      ]
+    },
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 967,
+      "stopReason": "stop",
+      "usage": {
+        "input": 201,
+        "output": 3,
+        "cacheRead": 2304,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2508,
+        "cost": {
+          "input": 0.000030149999999999998,
+          "output": 0.0000018,
+          "cacheRead": 0.000006912,
+          "cacheWrite": 0,
+          "total": 0.000038861999999999995
+        }
+      },
+      "prefix": {
+        "request": 4,
+        "messages": 8,
+        "unchangedMessages": 6,
+        "change": "append"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "stage": "warm",
+      "milliseconds": 820,
+      "stopReason": "stop",
+      "usage": {
+        "input": 2176,
+        "output": 11,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 8,
+        "totalTokens": 2187,
+        "cost": {
+          "input": 0.00032639999999999996,
+          "output": 0.0000065999999999999995,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00033299999999999996
+        }
+      },
+      "prefix": {
+        "request": 1,
+        "messages": 2,
+        "unchangedMessages": 0,
+        "change": "initial"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "stage": "task",
+      "milliseconds": 910,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 185,
+        "output": 46,
+        "cacheRead": 2048,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2279,
+        "cost": {
+          "input": 0.00002775,
+          "output": 0.0000276,
+          "cacheRead": 0.000006144,
+          "cacheWrite": 0,
+          "total": 0.000061494
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "milliseconds": 1071,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 208,
+        "output": 104,
+        "cacheRead": 2176,
+        "cacheWrite": 0,
+        "reasoning": 43,
+        "totalTokens": 2488,
+        "cost": {
+          "input": 0.0000312,
+          "output": 0.0000624,
+          "cacheRead": 0.000006528,
+          "cacheWrite": 0,
+          "total": 0.000100128
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 7,
+        "unchangedMessages": 4,
+        "change": "append"
+      },
+      "toolNames": [
+        "write"
+      ]
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "milliseconds": 800,
+      "stopReason": "stop",
+      "usage": {
+        "input": 232,
+        "output": 61,
+        "cacheRead": 2304,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2597,
+        "cost": {
+          "input": 0.0000348,
+          "output": 0.000036599999999999995,
+          "cacheRead": 0.000006912,
+          "cacheWrite": 0,
+          "total": 0.000078312
+        }
+      },
+      "prefix": {
+        "request": 4,
+        "messages": 9,
+        "unchangedMessages": 7,
+        "change": "append"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "stage": "warm",
+      "milliseconds": 743,
+      "stopReason": "stop",
+      "usage": {
+        "input": 2173,
+        "output": 3,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2176,
+        "cost": {
+          "input": 0.00032595,
+          "output": 0.0000018,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00032774999999999997
+        }
+      },
+      "prefix": {
+        "request": 1,
+        "messages": 2,
+        "unchangedMessages": 0,
+        "change": "initial"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "stage": "task",
+      "milliseconds": 844,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 174,
+        "output": 62,
+        "cacheRead": 2048,
+        "cacheWrite": 0,
+        "reasoning": 23,
+        "totalTokens": 2284,
+        "cost": {
+          "input": 0.000026099999999999997,
+          "output": 0.000037199999999999996,
+          "cacheRead": 0.000006144,
+          "cacheWrite": 0,
+          "total": 0.000069444
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "milliseconds": 929,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 216,
+        "output": 90,
+        "cacheRead": 2176,
+        "cacheWrite": 0,
+        "reasoning": 29,
+        "totalTokens": 2482,
+        "cost": {
+          "input": 0.0000324,
+          "output": 0.000054,
+          "cacheRead": 0.000006528,
+          "cacheWrite": 0,
+          "total": 0.000092928
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 7,
+        "unchangedMessages": 4,
+        "change": "append"
+      },
+      "toolNames": [
+        "write"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "milliseconds": 593,
+      "stopReason": "stop",
+      "usage": {
+        "input": 229,
+        "output": 31,
+        "cacheRead": 2304,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2564,
+        "cost": {
+          "input": 0.00003435,
+          "output": 0.000018599999999999998,
+          "cacheRead": 0.000006912,
+          "cacheWrite": 0,
+          "total": 0.000059862
+        }
+      },
+      "prefix": {
+        "request": 4,
+        "messages": 9,
+        "unchangedMessages": 7,
+        "change": "append"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "stage": "warm",
+      "milliseconds": 598,
+      "stopReason": "stop",
+      "usage": {
+        "input": 2165,
+        "output": 3,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2168,
+        "cost": {
+          "input": 0.00032475,
+          "output": 0.0000018,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00032655
+        }
+      },
+      "prefix": {
+        "request": 1,
+        "messages": 2,
+        "unchangedMessages": 0,
+        "change": "initial"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "stage": "task",
+      "milliseconds": 969,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 166,
+        "output": 46,
+        "cacheRead": 2048,
+        "cacheWrite": 0,
+        "reasoning": 7,
+        "totalTokens": 2260,
+        "cost": {
+          "input": 0.0000249,
+          "output": 0.0000276,
+          "cacheRead": 0.000006144,
+          "cacheWrite": 0,
+          "total": 0.000058644
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 1100,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 1201,
+        "output": 139,
+        "cacheRead": 1152,
+        "cacheWrite": 0,
+        "reasoning": 61,
+        "totalTokens": 2492,
+        "cost": {
+          "input": 0.00018015,
+          "output": 0.0000834,
+          "cacheRead": 0.000003456,
+          "cacheWrite": 0,
+          "total": 0.00026700599999999997
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 6,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "toolNames": [
+        "write"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 849,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 236,
+        "output": 90,
+        "cacheRead": 2304,
+        "cacheWrite": 0,
+        "reasoning": 36,
+        "totalTokens": 2630,
+        "cost": {
+          "input": 0.0000354,
+          "output": 0.000054,
+          "cacheRead": 0.000006912,
+          "cacheWrite": 0,
+          "total": 0.00009631200000000001
+        }
+      },
+      "prefix": {
+        "request": 4,
+        "messages": 8,
+        "unchangedMessages": 6,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 648,
+      "stopReason": "stop",
+      "usage": {
+        "input": 140,
+        "output": 3,
+        "cacheRead": 2560,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2703,
+        "cost": {
+          "input": 0.000021,
+          "output": 0.0000018,
+          "cacheRead": 0.00000768,
+          "cacheWrite": 0,
+          "total": 0.00003048
+        }
+      },
+      "prefix": {
+        "request": 5,
+        "messages": 10,
+        "unchangedMessages": 8,
+        "change": "append"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "stage": "warm",
+      "milliseconds": 1115,
+      "stopReason": "stop",
+      "usage": {
+        "input": 2165,
+        "output": 97,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 94,
+        "totalTokens": 2262,
+        "cost": {
+          "input": 0.00032475,
+          "output": 0.0000582,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00038295
+        }
+      },
+      "prefix": {
+        "request": 1,
+        "messages": 2,
+        "unchangedMessages": 0,
+        "change": "initial"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "stage": "task",
+      "milliseconds": 764,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 260,
+        "output": 45,
+        "cacheRead": 2048,
+        "cacheWrite": 0,
+        "reasoning": 6,
+        "totalTokens": 2353,
+        "cost": {
+          "input": 0.000039,
+          "output": 0.000027,
+          "cacheRead": 0.000006144,
+          "cacheWrite": 0,
+          "total": 0.000072144
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 832,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 1295,
+        "output": 123,
+        "cacheRead": 1152,
+        "cacheWrite": 0,
+        "reasoning": 47,
+        "totalTokens": 2570,
+        "cost": {
+          "input": 0.00019424999999999998,
+          "output": 0.00007379999999999999,
+          "cacheRead": 0.000003456,
+          "cacheWrite": 0,
+          "total": 0.00027150599999999997
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 6,
+        "unchangedMessages": 0,
+        "change": "history"
+      },
+      "toolNames": [
+        "write"
+      ]
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "milliseconds": 664,
+      "stopReason": "stop",
+      "usage": {
+        "input": 187,
+        "output": 3,
+        "cacheRead": 2432,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2622,
+        "cost": {
+          "input": 0.000028049999999999997,
+          "output": 0.0000018,
+          "cacheRead": 0.000007296,
+          "cacheWrite": 0,
+          "total": 0.000037146
+        }
+      },
+      "prefix": {
+        "request": 4,
+        "messages": 8,
+        "unchangedMessages": 6,
+        "change": "append"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "stage": "warm",
+      "milliseconds": 1147,
+      "stopReason": "stop",
+      "usage": {
+        "input": 2173,
+        "output": 3,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2176,
+        "cost": {
+          "input": 0.00032595,
+          "output": 0.0000018,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00032774999999999997
+        }
+      },
+      "prefix": {
+        "request": 1,
+        "messages": 2,
+        "unchangedMessages": 0,
+        "change": "initial"
+      },
+      "toolNames": []
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "stage": "task",
+      "milliseconds": 686,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 174,
+        "output": 39,
+        "cacheRead": 2048,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2261,
+        "cost": {
+          "input": 0.000026099999999999997,
+          "output": 0.0000234,
+          "cacheRead": 0.000006144,
+          "cacheWrite": 0,
+          "total": 0.000055644
+        }
+      },
+      "prefix": {
+        "request": 2,
+        "messages": 4,
+        "unchangedMessages": 2,
+        "change": "append"
+      },
+      "toolNames": [
+        "read"
+      ]
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "milliseconds": 820,
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 191,
+        "output": 105,
+        "cacheRead": 2176,
+        "cacheWrite": 0,
+        "reasoning": 44,
+        "totalTokens": 2472,
+        "cost": {
+          "input": 0.00002865,
+          "output": 0.000063,
+          "cacheRead": 0.000006528,
+          "cacheWrite": 0,
+          "total": 0.00009817800000000001
+        }
+      },
+      "prefix": {
+        "request": 3,
+        "messages": 7,
+        "unchangedMessages": 4,
+        "change": "append"
+      },
+      "toolNames": [
+        "write"
+      ]
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "milliseconds": 1289,
+      "stopReason": "stop",
+      "usage": {
+        "input": 217,
+        "output": 49,
+        "cacheRead": 2304,
+        "cacheWrite": 0,
+        "reasoning": 0,
+        "totalTokens": 2570,
+        "cost": {
+          "input": 0.00003255,
+          "output": 0.0000294,
+          "cacheRead": 0.000006912,
+          "cacheWrite": 0,
+          "total": 0.000068862
+        }
+      },
+      "prefix": {
+        "request": 4,
+        "messages": 9,
+        "unchangedMessages": 7,
+        "change": "append"
+      },
+      "toolNames": []
+    }
+  ],
+  "tasks": [
+    {
+      "pair": 1,
+      "mode": "baseline",
+      "passed": true,
+      "expected": 58,
+      "actual": 58,
+      "executed": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "pair": 1,
+      "mode": "optimized",
+      "passed": true,
+      "expected": 58,
+      "actual": 58,
+      "executed": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "optimized",
+      "passed": true,
+      "expected": 61,
+      "actual": 61,
+      "executed": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "pair": 2,
+      "mode": "baseline",
+      "passed": true,
+      "expected": 61,
+      "actual": 61,
+      "executed": [
+        "read",
+        "write",
+        "read"
+      ]
+    },
+    {
+      "pair": 3,
+      "mode": "baseline",
+      "passed": true,
+      "expected": 64,
+      "actual": 64,
+      "executed": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "pair": 3,
+      "mode": "optimized",
+      "passed": true,
+      "expected": 64,
+      "actual": 64,
+      "executed": [
+        "read",
+        "write"
+      ]
+    }
+  ],
+  "method": {
+    "model": "deepseek/deepseek-flash",
+    "endpoint": "https://api.deepseek.com",
+    "pairedTasks": 3,
+    "ordering": "baseline/optimized, optimized/baseline, baseline/optimized",
+    "context": "约 7000 字符固定参考资料，读取账单后追加 workflow system section，再写入 receipt.json。",
+    "scope": "评估 system 更新兼容路径；工具声明排序的额外收益未单独测量。"
+  },
+  "summary": [
+    {
+      "mode": "baseline",
+      "stage": "all",
+      "requests": 13,
+      "input": 11557,
+      "cached": 19200,
+      "hitRate": 62.42481386351074,
+      "inputCost": 0.0017911499999999998
+    },
+    {
+      "mode": "baseline",
+      "stage": "after-context-update",
+      "requests": 7,
+      "input": 4464,
+      "cached": 13056,
+      "hitRate": 74.52054794520548,
+      "inputCost": 0.0007087679999999998
+    },
+    {
+      "mode": "optimized",
+      "stage": "all",
+      "requests": 12,
+      "input": 8348,
+      "cached": 19584,
+      "hitRate": 70.11313189173707,
+      "inputCost": 0.001310952
+    },
+    {
+      "mode": "optimized",
+      "stage": "after-context-update",
+      "requests": 6,
+      "input": 1293,
+      "cached": 13440,
+      "hitRate": 91.22378334351455,
+      "inputCost": 0.00023427000000000002
+    }
+  ]
+}
+

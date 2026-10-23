@@ -60,6 +60,7 @@ import {
 	resolveGrammarConstrainedSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
+import { isDeepSeekModel, stabilizeDeepSeekTools } from "./deepseek-cache.ts";
 import { adaptDeepSeekToolParameters } from "./deepseek-tool-schema.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
@@ -1487,7 +1488,7 @@ function convertTools(
 	compat: ResolvedOpenAICompletionsCompat,
 	model: Model<"openai-completions">,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
-	return tools.map((tool) => {
+	return stabilizeDeepSeekTools(model, tools).map((tool) => {
 		const grammar = resolveGrammarConstrainedSampling(tool, compat.supportsOpenAIGrammarTools);
 		if (grammar) {
 			return {
@@ -1506,7 +1507,7 @@ function convertTools(
 			};
 		}
 
-		const schemaTool = isDeepSeekToolSchemaModel(model)
+		const schemaTool = isDeepSeekModel(model)
 			? { ...tool, parameters: adaptDeepSeekToolParameters(tool.parameters) }
 			: tool;
 		const strict = resolveJsonSchemaStrictSampling(schemaTool, compat.supportsStrictMode !== false);
@@ -1592,12 +1593,7 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 	}
 }
 
-function isDeepSeekToolSchemaModel(model: Model<"openai-completions">): boolean {
-	const modelMarker = `${model.id} ${model.name}`.toLowerCase();
-	return isDeepSeekModel(model) || modelMarker.includes("deepseek");
-}
-
-function isDeepSeekModel(model: Model<"openai-completions">): boolean {
+function isDeepSeekEndpoint(model: Model<"openai-completions">): boolean {
 	return model.provider === "deepseek" || model.baseUrl.toLowerCase().includes("deepseek.com");
 }
 
@@ -1624,7 +1620,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	const isNvidia = provider === "nvidia" || baseUrl.includes("integrate.api.nvidia.com");
 	const isAntLing = provider === "ant-ling" || baseUrl.includes("api.ant-ling.com");
 	const isCerebras = provider === "cerebras" || baseUrl.includes("cerebras.ai");
-	const isDeepSeek = isDeepSeekModel(model);
+	const isDeepSeek = isDeepSeekEndpoint(model);
 
 	const isNonStandard =
 		isNvidia ||
@@ -1690,7 +1686,8 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		// OpenAI compatibility alone does not imply strict JSON-schema tool support.
 		supportsStrictMode: false,
 		supportsOpenAIGrammarTools: false,
-		supportsMidConvoSystemMessages: false,
+		// 在最终请求层解析默认值，模型目录刷新和第三方供应商共用此规则。
+		supportsMidConvoSystemMessages: isDeepSeekModel(model),
 		supportsMidConvoToolAdditions: false,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: isOpenRouter,

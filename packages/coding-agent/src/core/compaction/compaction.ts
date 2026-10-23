@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
+	Message,
 	Model,
 	SimpleStreamOptions,
 	SystemMessage,
@@ -47,6 +48,20 @@ import {
 function normalizeSummarizationContext(systemPrompt: string, messages: AgentMessage[]): TranscriptContext {
 	return {
 		messages: [{ role: "system", content: systemPrompt, timestamp: 0 }, ...messages],
+	} as TranscriptContext;
+}
+
+/**
+ * Replay a conversation head and append the compaction instruction as the final user message.
+ * The head stays byte-identical to the prefix of the last routed request, so the provider reuses
+ * the tokens it already cached for this conversation.
+ */
+function reuseHeadContext(requestHead: Message[], instruction: string): TranscriptContext {
+	return {
+		messages: [
+			...requestHead,
+			{ role: "user", content: [{ type: "text", text: instruction }], timestamp: Date.now() },
+		],
 	} as TranscriptContext;
 }
 
@@ -583,6 +598,12 @@ const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation mes
 
 ${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
 
+// The replayed-head path carries the earlier checkpoint inside the conversation instead of a
+// separate <previous-summary> block, so this instruction names the checkpoint it can see.
+const REUSED_HEAD_UPDATE_PROMPT = `The messages above are NEW conversation messages that follow the earlier checkpoint of this conversation, which is the summary in <summary> tags.
+
+${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
+
 /**
  * Returns an error message when a summarization response cannot safely be persisted.
  * A length stop contains partial text and must not become a session checkpoint.
@@ -634,6 +655,7 @@ export async function completeSummarization(
 	streamFn?: StreamFn,
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
+	reusePrefixCache = false,
 ): Promise<AssistantMessage> {
 	// Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available.
 	const requestTokens = estimateContextTokensUpperBound(context).tokens;
@@ -650,14 +672,12 @@ export async function completeSummarization(
 				)
 			: options.maxTokens;
 
-	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
-
-	const requestOptions: SimpleStreamOptions = {
-		...options,
-		maxTokens,
-		cacheRetention: "none",
-		sessionId: options.sessionId ?? uuidv7(),
-	};
+	// A standalone summary isolates routing and avoids cache writes that cannot be reused. A
+	// summary that replays the conversation head extends the prefix of the last request, so it
+	// keeps that request's cache entry and routing instead.
+	const requestOptions: SimpleStreamOptions = reusePrefixCache
+		? { ...options, maxTokens }
+		: { ...options, maxTokens, cacheRetention: "none", sessionId: options.sessionId ?? uuidv7() };
 	const produce = async (): Promise<AssistantMessage> =>
 		streamFn
 			? (await streamFn(model, context, requestOptions)).result()
@@ -811,6 +831,7 @@ export async function generateSummaryWithUsage(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	requestHead?: Message[],
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
@@ -819,10 +840,35 @@ export async function generateSummaryWithUsage(
 
 	let initialPrompt = SUMMARIZATION_PROMPT;
 	let updatePrompt = UPDATE_SUMMARIZATION_PROMPT;
+	let headUpdatePrompt = REUSED_HEAD_UPDATE_PROMPT;
 	if (customInstructions) {
 		const focus = `\n\nAdditional focus: ${customInstructions}`;
 		initialPrompt += focus;
 		updatePrompt += focus;
+		headUpdatePrompt += focus;
+	}
+
+	// Replay the conversation head so this call extends the prefix the provider already cached for
+	// the conversation. Split turns recycle the head too, but only the history summary uses it.
+	if (requestHead && requestHead.length > 0) {
+		const context = reuseHeadContext(requestHead, previousSummary ? headUpdatePrompt : initialPrompt);
+		const requestTokens = estimateContextTokensUpperBound(context).tokens;
+		// An oversized head keeps the flattened path below, which splits the conversation into
+		// chunks instead of replaying it in one request.
+		if (!(model.contextWindow > 0 && requestTokens + maxTokens > model.contextWindow)) {
+			const response = await completeSummarization(
+				model,
+				context,
+				createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
+				streamFn,
+				retry,
+				callbacks,
+				true,
+			);
+			const reusedFailure = getSummarizationFailure(response, "Summarization");
+			if (reusedFailure) throw new Error(reusedFailure);
+			return { text: contentText(response.content), usage: response.usage };
+		}
 	}
 
 	const conversationText = serializeConversation(convertToLlm(currentMessages));
@@ -854,6 +900,8 @@ export async function generateSummaryWithUsage(
 export interface CompactionPreparation {
 	/** UUID of first entry to keep */
 	firstKeptEntryId: string;
+	/** Model-visible messages before the summarized region: the head of the last routed request */
+	requestHead: AgentMessage[];
 	/** Messages that will be summarized and discarded */
 	messagesToSummarize: AgentMessage[];
 	/** Messages that will be turned into turn prefix summary (if splitting) */
@@ -993,6 +1041,13 @@ export function prepareCompaction(
 				.flatMap(getMessagesFromProjectedEntryForCompaction)
 		: [];
 
+	// Everything the model saw before the summarized region, including the prompt state and any
+	// earlier checkpoint. Replaying it verbatim lets the summary request reuse the cached prefix.
+	const requestHead = projection.messages.slice(
+		0,
+		projectedEntries.slice(0, historyEnd).reduce((count, entry) => count + entry.messages.length, 0),
+	);
+
 	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
 
 	// Extract file operations from edited model-visible messages and the previous compaction.
@@ -1007,6 +1062,7 @@ export function prepareCompaction(
 
 	return {
 		firstKeptEntryId,
+		requestHead,
 		messagesToSummarize,
 		turnPrefixMessages,
 		isSplitTurn: cutPoint.isSplitTurn,
@@ -1043,6 +1099,8 @@ Only summarize information explicitly present above. Do not infer or recreate la
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
  * @param sessionId - Optional routing session ID forwarded without enabling prompt caching
+ * @param requestHead - Model-visible head of the conversation, replayed so the history summary
+ * reuses the prefix the provider cached for the last request
  */
 export async function compact(
 	preparation: CompactionPreparation,
@@ -1057,6 +1115,7 @@ export async function compact(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	requestHead?: Message[],
 ): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
@@ -1092,6 +1151,7 @@ export async function compact(
 				retry,
 				callbacks,
 				sessionId,
+				requestHead,
 			);
 			historyText = historyResult.text;
 			historyUsage = historyResult.usage;
@@ -1130,6 +1190,7 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
+			requestHead,
 		);
 		summary = result.text;
 		summaryUsage = result.usage;

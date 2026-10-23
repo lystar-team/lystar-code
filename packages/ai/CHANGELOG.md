@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 按模型身份解析 DeepSeek 的提示词缓存能力：官方 Provider、官方地址，以及 `id` 或名称含 `deepseek` 的第三方模型默认启用会话内 system 消息，不再依赖内置模型是否带该兼容项；显式配置优先。
+- DeepSeek 模型的 OpenAI 兼容、Anthropic Messages 和 Bedrock 请求按工具名称固定声明顺序，并递归固定 Schema 对象的字段顺序，避免同一工具集合因加载顺序不同而产生新的请求前缀。
+
 ## [1.3.0] - 2026-10-15
 
 ### Breaking Changes

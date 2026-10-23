@@ -46,6 +46,7 @@ import type {
 	AssistantMessage,
 	AuthResult,
 	ImageContent,
+	Message,
 	Model,
 	ProviderHeaders,
 	SystemMessage,
@@ -3758,6 +3759,22 @@ export class AgentSession {
 	// =========================================================================
 
 	/** Generate Pi's built-in compaction summary for manual and automatic compaction. */
+	/**
+	 * The model-visible head of the conversation, projected exactly as the next request sends it.
+	 * Replaying it lets the history summary reuse the prefix the provider already cached; an
+	 * unavailable head only costs that reuse, so it never blocks compaction.
+	 */
+	private async _summarizationRequestHead(
+		preparation: CompactionPreparation,
+		signal: AbortSignal,
+	): Promise<Message[]> {
+		if (preparation.requestHead.length === 0) return [];
+		const transformed = this.agent.transformContext
+			? await this.agent.transformContext(preparation.requestHead, signal)
+			: preparation.requestHead;
+		return await this.agent.convertToLlm(transformed);
+	}
+
 	private async _runDefaultCompaction(
 		preparation: CompactionPreparation,
 		model: Model<any>,
@@ -3767,6 +3784,7 @@ export class AgentSession {
 	): Promise<CompactionResult> {
 		// Resolve the request only when Pi summarizes itself: routing may call models or fail.
 		const request = await raceWithAbortSignal(this._getSummarizationRequestAuth(model, signal), signal);
+		const requestHead = await raceWithAbortSignal(this._summarizationRequestHead(preparation, signal), signal);
 		return raceWithAbortSignal(
 			compact(
 				preparation,
@@ -3781,6 +3799,7 @@ export class AgentSession {
 				this.settingsManager.getRetrySettings(),
 				this._summarizationRetryCallbacks({ source: "compaction", reason }),
 				undefined, // sessionId
+				requestHead,
 			),
 			signal,
 		);

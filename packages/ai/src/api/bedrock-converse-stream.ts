@@ -66,6 +66,7 @@ import {
 	withoutInitialSystemMessage,
 } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
+import { stabilizeDeepSeekTools } from "./deepseek-cache.ts";
 import {
 	adjustMaxTokensForThinking,
 	buildBaseOptions,
@@ -272,7 +273,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					...(options.temperature !== undefined && { temperature: options.temperature }),
 				},
 				toolConfig: convertToolConfig(
-					getCurrentTools(normalizedContext.messages),
+					stabilizeDeepSeekTools(model, getCurrentTools(normalizedContext.messages)),
 					options.toolChoice,
 					supportsStrictMode,
 				),

@@ -58,6 +58,7 @@ import {
 	resolveJsonSchemaStrictSampling,
 	type UnsupportedStrictSchemaKeywordCheck,
 } from "./constrained-sampling.ts";
+import { stabilizeDeepSeekTools } from "./deepseek-cache.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
 import { splitErrorToolResultImages, transformMessages } from "./transform-messages.ts";
@@ -1191,8 +1192,9 @@ function buildParams(
 	// active tool to anchor the placeholder. Otherwise the current tool list is sent.
 	let hasPreferredStrictTools = false;
 	const convertToolDefinitions = (tools: Tool[], toolCacheControl?: CacheControlEphemeral): BetaTool[] => {
+		const stableTools = stabilizeDeepSeekTools(model, tools);
 		const definitions = convertTools(
-			tools,
+			stableTools,
 			isOAuthToken,
 			compat.supportsEagerToolInputStreaming,
 			compat.supportsStrictTools,
@@ -1201,7 +1203,7 @@ function buildParams(
 		);
 		if (
 			definitions.some((definition, index) => {
-				const config = tools[index].constrainedSampling;
+				const config = stableTools[index].constrainedSampling;
 				return definition.strict === true && config && config.type === "json_schema" && config.strict === "prefer";
 			})
 		) {
