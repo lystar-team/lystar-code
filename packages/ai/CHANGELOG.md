@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.22] - 2026-10-23
+
 ### Changed
 
 - 按模型身份解析 DeepSeek 的提示词缓存能力：官方 Provider、官方地址，以及 `id` 或名称含 `deepseek` 的第三方模型默认启用会话内 system 消息，不再依赖内置模型是否带该兼容项；显式配置优先。
