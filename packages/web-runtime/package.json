@@ -1,6 +1,6 @@
 {
 	"name": "@lystar/code-web-runtime",
-	"version": "1.3.0-lystar.23",
+	"version": "1.3.0-lystar.24",
 	"description": "LYStar Code Web Runtime",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -25,9 +25,9 @@
 		"test:required": "vitest --run --maxWorkers=1"
 	},
 	"dependencies": {
-		"@earendil-works/pi-ai": "1.3.0-lystar.23",
-		"@earendil-works/pi-coding-agent": "1.3.0-lystar.23",
-		"@lystar/code-web-protocol": "1.3.0-lystar.23"
+		"@earendil-works/pi-ai": "1.3.0-lystar.24",
+		"@earendil-works/pi-coding-agent": "1.3.0-lystar.24",
+		"@lystar/code-web-protocol": "1.3.0-lystar.24"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",
