@@ -9,7 +9,13 @@
 - 正式 CLI 入口是 `packages/coding-agent/src/main.ts`，使用 TypeScript Interactive TUI。
 - Web 客户端使用 `packages/web-protocol`、`packages/web-runtime`、Transcript 分页、Session lease、operation journal、content reference 和标准 `ui_request`/`ui_response`。
 - Unix 发行包包含 `lc`/`lystar` 可执行入口和 `web/` 静态资源；Windows 包包含 `lc.exe`、`lystar.cmd` 和承载 standalone TUI 的 `lystar-terminal.exe`。
-- 上游 Pi 基线为 `v1.3.0`（`71023aec1546d6d677a65669c5665c0927ce0dd0`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前产品版本为 `1.3.0-lystar.24`，上一正式 Tag 为 `v1.3.0-lystar.23`。
+- 上游 Pi 基线为 `v1.3.0`（`71023aec1546d6d677a65669c5665c0927ce0dd0`）；LYStar 产品版本事实源为 `packages/coding-agent/package.json` 的 `piConfig.productVersion`。当前正式版本为 `1.3.0-lystar.24`，上一正式 Tag 为 `v1.3.0-lystar.23`。
+
+## 1.3.0-lystar.24 自动发布验证
+
+- 记录时间：2026-10-27T09:54:04.666Z。Annotated Tag `v1.3.0-lystar.24` 指向 `de09bcf1ed59f35c300b593885d8dfcb38dad272`；Release workflow `40483721281` 的全部 job 成功，公开 Release 不是 draft/prerelease。
+- 10 个公开资产清单、五平台 manifest 与 SHA 清单、三个安装器一致性校验通过；linux-x64 归档 SHA 和大小校验通过；linux-x64 来源证明通过。
+- 验证产物：`/tmp/lystar-release-1.3.0-lystar.24-MhjqNL`。
 
 ## 1.3.0-lystar.23 自动发布验证
 
