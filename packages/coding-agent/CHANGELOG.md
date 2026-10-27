@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.3.0-lystar.23] - 2026-10-27
+
+### Changed
+
+- 递增 LYStar Code 发行版本，同步 workspace 包、内部依赖与发行锁文件。
+
 ## [1.3.0-lystar.22] - 2026-10-23
 
 ### Changed
