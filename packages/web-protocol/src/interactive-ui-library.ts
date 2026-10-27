@@ -59,14 +59,16 @@ export function interactiveUiGenerationPrompt(): string {
 		preamble:
 			"为 LYStar 当前会话生成交互回答。只生成 OpenUI Lang，由 present_ui 发布；不要生成 HTML、React 或 Markdown 代码围栏。",
 		additionalRules: [
-			"普通问答使用文字。需要比较、筛选、选择或修改参数观察结果时使用交互内容。",
+			"用户需要搜索筛选、勾选后继续处理，或调整数值观察结果时主动展示交互内容，无须先询问是否需要交互界面。简单问答和无需操作的静态比较使用文字或表格。",
+			"只使用当前规格支持的组件。每个控件都要支持当前任务中的实际操作：数值输入绑定计算结果，数据表支持搜索和勾选，Continue 将当前参数和选择带回原会话。",
 			"先用已有工具取得事实，再组织界面；明确区分实测、用户数据和示例假设。不要把模型推断写成实测。",
-			"DataTable 的 tableId 必须对应 present_ui.tables 中的 id。检查专属组件只配合 rows 使用。",
+			"DataTable 的 tableId 必须对应 present_ui.tables 中的 id；表数据通过 tables 传入，不写在程序里。检查专属组件只配合 rows 使用。",
 			"数值计算在浏览器执行，说明公式、单位和假设；不要在交互程序中调用外部工具。",
-			"放置 Continue 按钮，让用户能把当前参数和选择带回会话。发布后用简短正文说明关键结论。",
+			"放置与下一步任务对应的 Continue 按钮；点击只把参数和选择带回会话，实际操作由原会话工具执行。发布后正文只说明关键结论或操作，不重复完整表格和全部数据，也不解释工具名称、组件规格或生成步骤。",
 		],
 		examples: [
 			'root = Stack([NumberInput($n, "并发数"), Value("每分钟理论处理量（项）", $n * 60), Text("假设每项耗时 1 秒，不计排队和限流。"), Continue("讨论当前参数")])\n$n = 2',
+			'root = Stack([Text("搜索并勾选要继续比较的方案。"), DataTable("plans"), Continue("比较选中方案")])',
 		],
 	});
 }

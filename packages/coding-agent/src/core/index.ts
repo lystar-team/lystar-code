@@ -189,6 +189,7 @@ export {
 	type ModelsJsonProvider,
 	removeModelsJsonModels,
 	removeModelsJsonProvider,
+	renameModelsJsonModel,
 	saveModelsJsonImageModelProvidersConfig,
 	saveModelsJsonModel,
 	saveModelsJsonModelOverride,

@@ -921,6 +921,7 @@ export class WebApi {
 		provider: string,
 		input: {
 			id: string;
+			previousId?: string;
 			name?: string;
 			api?: string;
 			baseUrl?: string;

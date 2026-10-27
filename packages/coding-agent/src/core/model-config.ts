@@ -335,6 +335,22 @@ export async function removeModelsJsonProvider(modelsJsonPath: string, providerI
 	});
 }
 
+function stripModelsFromProvider(provider: ModelsJsonProvider, removing: ReadonlySet<string>): ModelsJsonProvider {
+	const nextProvider = { ...provider };
+	const models = (provider.models ?? []).filter((model) => !removing.has(model.id));
+	if (models.length > 0) nextProvider.models = models;
+	else delete nextProvider.models;
+	const modelOverrides = Object.fromEntries(
+		Object.entries(provider.modelOverrides ?? {}).filter(([modelId]) => !removing.has(modelId)),
+	);
+	if (Object.keys(modelOverrides).length > 0) nextProvider.modelOverrides = modelOverrides;
+	else delete nextProvider.modelOverrides;
+	const disabledModels = (provider.disabledModels ?? []).filter((modelId) => !removing.has(modelId));
+	if (disabledModels.length > 0) nextProvider.disabledModels = disabledModels;
+	else delete nextProvider.disabledModels;
+	return nextProvider;
+}
+
 export async function removeModelsJsonModels(
 	modelsJsonPath: string,
 	providerId: string,
@@ -344,20 +360,25 @@ export async function removeModelsJsonModels(
 	await updateModelsJson(modelsJsonPath, (config) => {
 		const provider = config.providers[providerId];
 		if (!provider) return;
-		const removing = new Set(modelIds);
-		const nextProvider = { ...provider };
-		const models = (provider.models ?? []).filter((model) => !removing.has(model.id));
-		if (models.length > 0) nextProvider.models = models;
-		else delete nextProvider.models;
-		const modelOverrides = Object.fromEntries(
-			Object.entries(provider.modelOverrides ?? {}).filter(([modelId]) => !removing.has(modelId)),
-		);
-		if (Object.keys(modelOverrides).length > 0) nextProvider.modelOverrides = modelOverrides;
-		else delete nextProvider.modelOverrides;
-		const disabledModels = (provider.disabledModels ?? []).filter((modelId) => !removing.has(modelId));
-		if (disabledModels.length > 0) nextProvider.disabledModels = disabledModels;
-		else delete nextProvider.disabledModels;
-		config.providers[providerId] = nextProvider;
+		config.providers[providerId] = stripModelsFromProvider(provider, new Set(modelIds));
+	});
+}
+
+/** 把模型的配置整体迁到新 ID：旧 ID 的定义、覆盖与禁用记录一并清理。 */
+export async function renameModelsJsonModel(
+	modelsJsonPath: string,
+	providerId: string,
+	previousId: string,
+	model: ModelsJsonModel,
+): Promise<void> {
+	await updateModelsJson(modelsJsonPath, (config) => {
+		const provider = stripModelsFromProvider(config.providers[providerId] ?? {}, new Set([previousId, model.id]));
+		clearNativeSteeringFailures(provider, previousId);
+		clearNativeSteeringFailures(provider, model.id);
+		config.providers[providerId] = {
+			...provider,
+			models: [...(provider.models ?? []), structuredClone(model)],
+		};
 	});
 }
 

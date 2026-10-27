@@ -243,6 +243,7 @@ export interface WorkbenchState {
 		id: string;
 		name: string;
 		api: string;
+		baseUrl?: string;
 		reasoning: boolean;
 		fastModeSupported?: boolean;
 		nativeSteering?: "auto" | "off" | "on";

@@ -2067,6 +2067,11 @@
                       "minLength": 1,
                       "maxLength": 4096
                     },
+                    "previousId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
                     "name": {
                       "type": "string",
                       "minLength": 1
@@ -13354,6 +13359,10 @@
             "minLength": 1,
             "maxLength": 4096
           },
+          "baseUrl": {
+            "type": "string",
+            "maxLength": 16384
+          },
           "reasoning": {
             "type": "boolean"
           },
@@ -14041,6 +14050,10 @@
             "minLength": 1,
             "maxLength": 4096
           },
+          "baseUrl": {
+            "type": "string",
+            "maxLength": 16384
+          },
           "reasoning": {
             "type": "boolean"
           },
@@ -14469,6 +14482,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096
+          },
+          "baseUrl": {
+            "type": "string",
+            "maxLength": 16384
           },
           "reasoning": {
             "type": "boolean"
@@ -20979,6 +20996,10 @@
             "minLength": 1,
             "maxLength": 4096
           },
+          "baseUrl": {
+            "type": "string",
+            "maxLength": 16384
+          },
           "reasoning": {
             "type": "boolean"
           },
@@ -21296,6 +21317,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4096
+          },
+          "baseUrl": {
+            "type": "string",
+            "maxLength": 16384
           },
           "reasoning": {
             "type": "boolean"

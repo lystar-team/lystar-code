@@ -14,7 +14,7 @@ import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, Pro
 import { ContextRing } from "./context-ring";
 import { ComposerSessionStats } from "./composer-session-stats";
 import { ComposerExecutionStatus } from "./composer-execution-status";
-import { ComposerRuntimeSettings, type ComposerSettingsView } from "./composer-runtime-settings";
+import { ComposerRuntimeSettings } from "./composer-runtime-settings";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -180,7 +180,6 @@ export const Composer = memo(function Composer({
 }: ComposerProps) {
 	const [executionStatusVisible, setExecutionStatusVisible] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
-	const [settingsView, setSettingsView] = useState<ComposerSettingsView>("entries");
 	const [modelSearch, setModelSearch] = useState("");
 	const [commandDialog, setCommandDialog] = useState<CommandDialogRequest & { sessionId?: string }>();
 	const [queueActionId, setQueueActionId] = useState<string>();
@@ -266,18 +265,11 @@ export const Composer = memo(function Composer({
 		promptAnimationCleanupRef.current?.();
 		setCommandDialog(undefined);
 		setSettingsOpen(false);
-		setSettingsView("entries");
 		setQueueActionId(undefined);
 	}, [editRequestKey, roomId, roomMode, state.sessionId]);
 	const handleSettingsOpenChange = useCallback((open: boolean) => {
 		setSettingsOpen(open);
-		if (open) return;
-		setSettingsView("entries");
-		setModelSearch("");
-	}, []);
-	const handleSettingsViewChange = useCallback((view: ComposerSettingsView) => {
-		setSettingsView(view);
-		if (view !== "model") setModelSearch("");
+		if (!open) setModelSearch("");
 	}, []);
 	const disabled = externallyDisabled || (roomMode ? !canSendPrompt(state) || roomSending : !canSendPrompt(state));
 	const acquiringSessionControl = Boolean(state.sessionId && (state.pendingSessionControls?.[state.sessionId] ?? 0) > 0);
@@ -474,7 +466,6 @@ export const Composer = memo(function Composer({
 												actions.closeInspector();
 												if (request.kind === "model") {
 													setModelSearch(request.value ?? "");
-													setSettingsView("model");
 													setSettingsOpen(true);
 												} else setCommandDialog({ ...request, sessionId: submissionSessionId });
 											});
@@ -627,12 +618,10 @@ export const Composer = memo(function Composer({
 											thinkingLabel={thinkingLabel}
 											thinkingLevel={thinkingLevel}
 											thinkingLevels={thinkingLevels}
-											view={settingsView}
 											onOpenChange={handleSettingsOpenChange}
 											onSearchChange={setModelSearch}
 											onSelectModel={(provider, id) => void actions.updateModel(provider, id)}
 											onSelectThinking={(level) => void actions.updateThinking(level)}
-											onViewChange={handleSettingsViewChange}
 										/>
 									)}
 										{!inline && !roomMode && fastModeSupported ? (
@@ -669,7 +658,7 @@ export const Composer = memo(function Composer({
 							</PromptInput>
 							{sessionStats ? (
 								<div
-									className="mt-[-1px] flex w-full justify-center rounded-b-[var(--radius)] border border-border bg-muted/25 py-2.5 shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
+									className="mt-[-1px] flex w-full justify-center rounded-b-[var(--radius)] border border-border bg-muted/15 py-1 shadow-[0_2px_12px_rgb(0_0_0/0.05)]"
 									data-slot="composer-session-stats"
 								>
 									{sessionStats}

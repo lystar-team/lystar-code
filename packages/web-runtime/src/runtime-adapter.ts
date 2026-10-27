@@ -87,6 +87,7 @@ import {
 	readSessionInspection,
 	removeModelsJsonModels,
 	removeModelsJsonProvider,
+	renameModelsJsonModel,
 	renderTerminalRichText,
 	requestWebSessionHandoff,
 	resolveProjectTrusted,
@@ -1221,6 +1222,7 @@ function modelSummary(
 		id: model.id,
 		name: model.name,
 		api: model.api,
+		baseUrl: model.baseUrl,
 		reasoning: model.reasoning,
 		fastModeSupported: supportsFastMode(model),
 		...(model.api === "openai-responses" || model.api === "openai-codex-responses"
@@ -3974,8 +3976,17 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 
 	async addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]> {
 		const runtime = await this.getModelRuntime();
-		const existing = runtime.getModel(input.provider, input.id);
 		const modelsPath = join(this.agentDir, "models.json");
+		const previousId = input.previousId && input.previousId !== input.id ? input.previousId : undefined;
+		const previous = previousId ? runtime.getModel(input.provider, previousId) : undefined;
+		if (previousId && !previous) throw new Error(`未找到模型：${input.provider}/${previousId}`);
+		const existing = runtime.getModel(input.provider, input.id);
+		if (previousId && existing) {
+			throw Object.assign(new Error(`模型 ID 已存在：${input.provider}/${input.id}`), {
+				code: "model_id_exists",
+				retryable: false,
+			});
+		}
 		const override: ModelsJsonModelOverride = {
 			...(input.name ? { name: input.name } : {}),
 			reasoning: input.reasoning,
@@ -4000,6 +4011,44 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		if (input.resetOverride) await clearModelsJsonModelOverride(modelsPath, input.provider, input.id);
 		if (resetOnly) {
 			await runtime.refresh({ allowNetwork: false, providers: [input.provider] });
+			return this.listModels();
+		}
+		if (previousId && previous) {
+			const api = input.api ?? previous.api;
+			const baseUrl = input.baseUrl ?? previous.baseUrl;
+			if (!api || !baseUrl) throw new Error(`Provider ${input.provider} 的模型缺少 api 或 baseUrl`);
+			await renameModelsJsonModel(modelsPath, input.provider, previousId, {
+				id: input.id,
+				name: input.name ?? previous.name,
+				api,
+				baseUrl,
+				reasoning: input.reasoning,
+				...((input.fastModeSupported ?? previous.fastModeSupported) !== undefined
+					? { fastModeSupported: input.fastModeSupported ?? previous.fastModeSupported }
+					: {}),
+				...(input.nativeSteering !== undefined ? { nativeSteering: input.nativeSteering } : {}),
+				...(input.thinkingLevelMap
+					? { thinkingLevelMap: input.thinkingLevelMap }
+					: previous.thinkingLevelMap
+						? { thinkingLevelMap: previous.thinkingLevelMap }
+						: {}),
+				input: input.input,
+				cost: previous.cost,
+				...(previous.inputLimits ? { inputLimits: previous.inputLimits } : {}),
+				...(previous.promptCache ? { promptCache: previous.promptCache } : {}),
+				...(previous.samplingParams ? { samplingParams: previous.samplingParams } : {}),
+				...(previous.samplingParamsByThinkingLevel
+					? { samplingParamsByThinkingLevel: previous.samplingParamsByThinkingLevel }
+					: {}),
+				...(previous.headers ? { headers: previous.headers } : {}),
+				...(previous.compat ? { compat: previous.compat as ModelsJsonModel["compat"] } : {}),
+				contextWindow: input.contextWindow ?? previous.contextWindow,
+				maxTokens: input.maxTokens ?? previous.maxTokens,
+			});
+			await runtime.refresh({ allowNetwork: false, providers: [input.provider] });
+			// 目录供应商仍会返回旧 ID：改名后禁用旧模型，否则列表里会同时出现两个。
+			if (runtime.getModel(input.provider, previousId))
+				await runtime.setModelEnabled(input.provider, previousId, false);
 			return this.listModels();
 		}
 		if (existing && input.api === undefined && input.baseUrl === undefined) {

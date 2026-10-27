@@ -446,6 +446,7 @@ export interface WebModelProviderTestResult {
 
 export interface WebProviderModelInput {
 	id: string;
+	previousId?: string;
 	name?: string;
 	api?: string;
 	baseUrl?: string;

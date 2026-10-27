@@ -41,7 +41,8 @@ function WorkbenchTabTrigger<Value extends string>({ icon: Icon, label, value, c
 			{Icon ? (
 				<Icon className={cn("shrink-0", variant === "navigation" ? "size-4" : compact ? "size-3" : "size-3.5")} aria-hidden="true" />
 			) : null}
-			<ExpandableActionBarLabel visible={item.labelVisible} gap={compact ? 4 : 8}>{label}</ExpandableActionBarLabel>
+			{/* 无图标时标签前面没有图标，不要再留图标与文字之间的间距，否则文字会整体偏右。 */}
+			<ExpandableActionBarLabel visible={item.labelVisible} gap={Icon ? (compact ? 4 : 8) : 0}>{label}</ExpandableActionBarLabel>
 			{count !== undefined ? (
 				<Badge
 					aria-hidden="true"

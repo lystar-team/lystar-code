@@ -50,10 +50,13 @@ type ProviderDraft = {
 type ModelDraft = {
 	isNew: boolean;
 	provider: string;
+	previousId: string;
 	id: string;
 	name: string;
 	api: string;
 	baseUrl: string;
+	originalApi: string;
+	originalBaseUrl: string;
 	reasoning: boolean;
 	fastModeSupported: boolean;
 	nativeSteering: NativeSteeringSetting;
@@ -188,6 +191,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
 	const [modelDraft, setModelDraft] = useState<ModelDraft | null>(null);
 	const modelSupportsFastApi = modelDraft?.api === "openai-responses" || modelDraft?.api === "openai-codex-responses";
+	const renamingModel = Boolean(modelDraft && !modelDraft.isNew && modelDraft.id.trim() !== modelDraft.previousId);
 	const providerSupportsNativeSteering = providerDraft?.api === "openai-responses" || providerDraft?.api === "openai-codex-responses";
 	const [submitting, setSubmitting] = useState(false);
 	const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
@@ -325,14 +329,19 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 
 	const openModel = (providerId: string, model?: WorkbenchState["models"][number]) => {
 		const provider = state.providers.find((candidate) => candidate.id === providerId);
+		const api = model?.api ?? provider?.api ?? "openai-completions";
+		const baseUrl = model?.baseUrl ?? provider?.baseUrl ?? "";
 		setSelectedProvider(providerId);
 		setModelDraft({
 			isNew: !model,
 			provider: providerId,
+			previousId: model?.id ?? "",
 			id: model?.id ?? "",
 			name: model?.name ?? "",
-			api: model?.api ?? provider?.api ?? "openai-completions",
-			baseUrl: provider?.baseUrl ?? "",
+			api,
+			baseUrl,
+			originalApi: api,
+			originalBaseUrl: baseUrl,
 			reasoning: model?.reasoning ?? false,
 			fastModeSupported: model?.fastModeSupported ?? false,
 			nativeSteering: model?.nativeSteeringOverride ?? "inherit",
@@ -424,17 +433,22 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		if (!modelDraft?.provider.trim() || !modelDraft.id.trim() || modelDraft.input.length === 0) return;
 		setSubmitting(true);
 		try {
+			const id = modelDraft.id.trim();
+			const api = modelDraft.api.trim();
+			const baseUrl = modelDraft.baseUrl.trim();
+			const renamed = !modelDraft.isNew && id !== modelDraft.previousId;
+			const endpointChanged =
+				modelDraft.isNew || api !== modelDraft.originalApi || baseUrl !== modelDraft.originalBaseUrl;
 			const contextWindow = Number(modelDraft.contextWindow);
 			const maxTokens = Number(modelDraft.maxTokens);
 			await actions.saveProviderModel(modelDraft.provider, {
-				id: modelDraft.id.trim(),
+				id,
+				...(renamed ? { previousId: modelDraft.previousId } : {}),
 				name: modelDraft.name.trim() || undefined,
 				reasoning: modelDraft.reasoning,
 				fastModeSupported: modelSupportsFastApi && modelDraft.fastModeSupported,
 				...(modelSupportsFastApi ? { nativeSteering: modelDraft.nativeSteering } : {}),
-				...(modelDraft.isNew
-					? { api: modelDraft.api.trim() || undefined, baseUrl: modelDraft.baseUrl.trim() || undefined }
-					: {}),
+				...(endpointChanged ? { api: api || undefined, baseUrl: baseUrl || undefined } : {}),
 				...(modelDraft.manualThinking ? { thinkingLevelMap: modelDraft.thinkingLevelMap } : {}),
 				input: modelDraft.input,
 				...(Number.isSafeInteger(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
@@ -453,7 +467,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 		setSubmitting(true);
 		try {
 			await actions.saveProviderModel(modelDraft.provider, {
-				id: modelDraft.id,
+				id: modelDraft.previousId,
 				input: modelDraft.input,
 				reasoning: modelDraft.reasoning,
 				resetOverride: true,
@@ -1083,7 +1097,13 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									readOnly={!providerDraft.isNew}
 									onChange={(event) => setProviderDraft({ ...providerDraft, provider: event.target.value })}
 									placeholder="例如 my-proxy"
+									aria-describedby={providerDraft.isNew ? undefined : "provider-id-help"}
 								/>
+								{providerDraft.isNew ? null : (
+									<p id="provider-id-help" className="text-xs leading-5 text-muted-foreground">
+										Provider ID 是模型引用、登录状态和目录来源的键，创建后不能修改。
+									</p>
+								)}
 							</div>
 							<div className="grid gap-2">
 								<label className="text-sm font-medium" htmlFor="provider-name">
@@ -1259,10 +1279,15 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 								<Input
 									id="model-id"
 									value={modelDraft.id}
-									readOnly={!modelDraft.isNew}
 									onChange={(event) => setModelDraft({ ...modelDraft, id: event.target.value })}
 									placeholder="例如 gpt-5"
+									aria-describedby={renamingModel ? "model-id-help" : undefined}
 								/>
+								{renamingModel ? (
+									<p id="model-id-help" className="text-xs leading-5 text-muted-foreground">
+										改名会迁移模型配置，不会更新已使用旧 ID 的会话和设置。
+									</p>
+								) : null}
 							</div>
 							<div className="grid gap-2">
 								<label className="text-sm font-medium" htmlFor="model-name">
@@ -1275,30 +1300,26 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									placeholder="模型名称"
 								/>
 							</div>
-							{modelDraft.isNew ? (
-								<>
-									<div className="grid gap-2">
-										<label className="text-sm font-medium" htmlFor="model-api">
-											API 类型
-										</label>
-										<Input
-											id="model-api"
-											value={modelDraft.api}
-											onChange={(event) => setModelDraft({ ...modelDraft, api: event.target.value })}
-										/>
-									</div>
-									<div className="grid gap-2">
-										<label className="text-sm font-medium" htmlFor="model-base-url">
-											Base URL
-										</label>
-										<Input
-											id="model-base-url"
-											value={modelDraft.baseUrl}
-											onChange={(event) => setModelDraft({ ...modelDraft, baseUrl: event.target.value })}
-										/>
-									</div>
-								</>
-							) : null}
+							<div className="grid gap-2">
+								<label className="text-sm font-medium" htmlFor="model-api">
+									API 类型
+								</label>
+								<Input
+									id="model-api"
+									value={modelDraft.api}
+									onChange={(event) => setModelDraft({ ...modelDraft, api: event.target.value })}
+								/>
+							</div>
+							<div className="grid gap-2">
+								<label className="text-sm font-medium" htmlFor="model-base-url">
+									Base URL
+								</label>
+								<Input
+									id="model-base-url"
+									value={modelDraft.baseUrl}
+									onChange={(event) => setModelDraft({ ...modelDraft, baseUrl: event.target.value })}
+								/>
+							</div>
 							{modelSupportsFastApi ? (
 								<NativeSteeringField
 									id="model-native-steering"

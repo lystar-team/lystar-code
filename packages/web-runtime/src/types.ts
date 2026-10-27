@@ -209,6 +209,7 @@ export interface ModelSummary {
 	id: string;
 	name: string;
 	api: string;
+	baseUrl?: string;
 	reasoning: boolean;
 	fastModeSupported?: boolean;
 	input: ("text" | "image")[];
@@ -270,6 +271,7 @@ export interface ModelProviderTestInput {
 export interface ProviderModelInput {
 	provider: string;
 	id: string;
+	previousId?: string;
 	name?: string;
 	api?: string;
 	baseUrl?: string;

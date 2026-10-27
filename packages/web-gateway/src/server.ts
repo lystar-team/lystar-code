@@ -2763,6 +2763,7 @@ export class WebGatewayServer {
 					command: "add_provider_model",
 					provider,
 					id,
+					...(stringValue(body.previousId) ? { previousId: stringValue(body.previousId) } : {}),
 					name: stringValue(body.name),
 					api: stringValue(body.api),
 					baseUrl: stringValue(body.baseUrl),
