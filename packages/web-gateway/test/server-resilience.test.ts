@@ -909,12 +909,18 @@ test("Gateway 心跳会终止连续未响应的 WebSocket", async (t) => {
 	internal.contexts.set("heartbeat-client", context);
 	const socket = createSocket();
 	context.sockets.add(socket.webSocket);
-	internal.socketLiveness.set(socket.webSocket, true);
+	internal.socketLiveness.set(socket.webSocket, 0);
 
+	// 移动网络偶发丢一次回应不立即断开，连续未回应才终止。
 	internal.checkWebSocketLiveness();
 	assert.equal(socket.pings, 1);
 	assert.equal(socket.terminated, 0);
-	assert.equal(internal.socketLiveness.get(socket.webSocket), false);
+	assert.equal(internal.socketLiveness.get(socket.webSocket), 1);
+
+	internal.checkWebSocketLiveness();
+	assert.equal(socket.pings, 2);
+	assert.equal(socket.terminated, 0);
+	assert.equal(internal.socketLiveness.get(socket.webSocket), 2);
 
 	internal.checkWebSocketLiveness();
 	assert.equal(socket.terminated, 1);

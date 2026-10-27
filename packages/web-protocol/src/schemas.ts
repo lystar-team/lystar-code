@@ -1545,6 +1545,14 @@ export const ListModelOptionsResultSchema = ModelOptionsSchema;
 export const ImageModelSettingsResultSchema = StrictObject({
 	imageModelProviders: Type.Optional(ImageModelSettingsSchema),
 });
+export const TestModelProviderResultSchema = StrictObject({
+	ok: Type.Boolean(),
+	modelCount: Type.Integer({ minimum: 0 }),
+	models: Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 20 }),
+	url: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
+	error: Type.Optional(Type.String({ maxLength: 16 * 1024 })),
+});
+export type TestModelProviderResult = Static<typeof TestModelProviderResultSchema>;
 export const DeleteSessionsResultSchema = StrictObject({
 	deletedPaths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 10_000 }),
 	failures: Type.Array(
@@ -1762,6 +1770,7 @@ export const WorkspaceCommandResultSchemas = {
 	get_image_model_settings: ImageModelSettingsResultSchema,
 	set_image_model_settings: ImageModelSettingsResultSchema,
 	delete_sessions: DeleteSessionsResultSchema,
+	test_model_provider: TestModelProviderResultSchema,
 	sync_model_provider: ListModelsResultSchema,
 	remove_model_provider: ListModelProvidersResultSchema,
 	set_provider_model_enabled: ListModelsResultSchema,
@@ -2145,6 +2154,15 @@ export const CommandSchema = Type.Union([
 		catalogProvider: Type.Optional(Id),
 		clearCatalogProvider: Type.Optional(Type.Boolean()),
 		nativeSteering: Type.Optional(NativeSteeringModeSchema),
+		clientInstanceId: Id,
+		clientRequestId: Id,
+	}),
+	StrictObject({
+		command: Type.Literal("test_model_provider"),
+		provider: Id,
+		baseUrl: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+		api: Type.String({ minLength: 1, maxLength: 4096 }),
+		apiKey: Type.Optional(Type.String({ minLength: 1, maxLength: 16 * 1024 })),
 		clientInstanceId: Id,
 		clientRequestId: Id,
 	}),

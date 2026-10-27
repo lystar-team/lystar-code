@@ -9,6 +9,8 @@ import type {
 	SubagentConfig,
 	UiRequestEvent,
 	WebModelProviderInput,
+	WebModelProviderTestInput,
+	WebModelProviderTestResult,
 	WebProject,
 	WebProviderModelInput,
 	WebThinkingLevel,
@@ -101,6 +103,7 @@ export interface WorkbenchActions {
 	updateFastMode: (enabled: boolean) => Promise<void>;
 	setModelProviderVisibility: (providerId: string, visible: boolean) => void;
 	saveModelProvider: (input: WebModelProviderInput) => Promise<void>;
+	testModelProvider: (input: WebModelProviderTestInput) => Promise<WebModelProviderTestResult>;
 	saveImageModelProviders: (providers: Record<string, string>) => Promise<void>;
 	removeModelProvider: (providerId: string) => Promise<void>;
 	saveProviderModel: (provider: string, input: WebProviderModelInput) => Promise<void>;

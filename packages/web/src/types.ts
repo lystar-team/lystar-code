@@ -429,6 +429,21 @@ export interface WebModelProviderInput {
 	nativeSteering?: "auto" | "off" | "on";
 }
 
+export interface WebModelProviderTestInput {
+	provider: string;
+	baseUrl: string;
+	api: string;
+	apiKey?: string;
+}
+
+export interface WebModelProviderTestResult {
+	ok: boolean;
+	modelCount: number;
+	models: string[];
+	url?: string;
+	error?: string;
+}
+
 export interface WebProviderModelInput {
 	id: string;
 	name?: string;

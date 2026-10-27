@@ -7,6 +7,8 @@ import type {
 	SubagentConfigsResponse,
 	UiRequestEvent,
 	WebModelProviderInput,
+	WebModelProviderTestInput,
+	WebModelProviderTestResult,
 	WebProviderModelInput,
 	WebThinkingLevel,
 } from "../types.ts";
@@ -73,6 +75,12 @@ export function useWorkbenchSettingsActions({
 			showToast("Provider 配置已保存", "success");
 		},
 		[refreshModelOptions, refreshModelSettings, showToast],
+	);
+
+	const testModelProvider = useCallback(
+		async (input: WebModelProviderTestInput): Promise<WebModelProviderTestResult> =>
+			webApi.testModelProvider(input),
+		[],
 	);
 
 	const removeModelProvider = useCallback(
@@ -703,6 +711,7 @@ export function useWorkbenchSettingsActions({
 	return {
 		setModelProviderVisibility,
 		saveModelProvider,
+		testModelProvider,
 		removeModelProvider,
 		saveImageModelProviders,
 		saveProviderModel,

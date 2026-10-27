@@ -25,6 +25,8 @@ import type {
 	FileUploadResponse,
 	ModelOptionsResponse,
 	ModelsResponse,
+	WebModelProviderTestInput,
+	WebModelProviderTestResult,
 	ProjectGroup,
 	ProjectSkillsResponse,
 	ProjectTreeResponse,
@@ -899,6 +901,13 @@ export class WebApi {
 		});
 	}
 
+	async testModelProvider(input: WebModelProviderTestInput): Promise<WebModelProviderTestResult> {
+		return this.request<WebModelProviderTestResult>("/api/model-providers/test", {
+			method: "POST",
+			body: JSON.stringify(input),
+		});
+	}
+
 	async imageModelProviders(
 		providers: Record<string, string>,
 	): Promise<{ imageModelProviders: NonNullable<ModelsResponse["imageModelProviders"]> }> {
@@ -1254,12 +1263,18 @@ export class WebApi {
 		return () => this.roomUpdateListeners.delete(listener);
 	}
 
-	connect(onEvent: (event: GatewayEvent) => void, onClose: (event: CloseEvent) => void): WebSocket {
+	connect(
+		onEvent: (event: GatewayEvent) => void,
+		onClose: (event: CloseEvent) => void,
+		stateRevision?: number,
+	): WebSocket {
 		const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 		const token = encodeURIComponent(localStorage.getItem(TOKEN_KEY)?.trim() ?? "");
 		const browserClientId = clientId();
+		// 带上已持有的工作区版本，服务端只补差量；没有完整状态时不带，由服务端发整包。
+		const revisionParam = stateRevision === undefined ? "" : `&stateRevision=${stateRevision}`;
 		const socket = new WebSocket(
-			`${protocol}//${location.host}/ws?token=${token}&clientId=${encodeURIComponent(browserClientId)}`,
+			`${protocol}//${location.host}/ws?token=${token}&clientId=${encodeURIComponent(browserClientId)}${revisionParam}`,
 		);
 		console.info("Web 连接事件", { event: "websocket_opening", clientId: browserClientId, time: new Date().toISOString() });
 		let closed = false;

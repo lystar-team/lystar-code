@@ -11,6 +11,7 @@ import {
 	reconnectingConnectionState,
 } from "./connection-recovery.ts";
 import { readLastSession, saveLastSession } from "./session-persistence.ts";
+import { clearCachedWorkspace, readCachedWorkspace, scheduleCachedWorkspaceSave } from "./workspace-cache.ts";
 import {
 	bootstrapLeaseForSession,
 	isOlderSessionSnapshot,
@@ -318,9 +319,35 @@ export function useWorkbench() {
 				};
 			});
 			if (next.connected && !next.reconnecting) reconnectAttemptRef.current = 0;
+			if (next.workspaceRevision !== undefined && next.projects.length > 0)
+				scheduleCachedWorkspaceSave({
+					workspaceRevision: next.workspaceRevision,
+					projects: next.projects,
+					projectGroups: next.projectGroups,
+				});
 		},
 		[updateState],
 	);
+
+	/** 先用本地快照渲染项目与会话，再联网校准；不写入版本号，首个整包始终以服务端为准。 */
+	const restoreCachedWorkspace = useCallback(() => {
+		const cached = readCachedWorkspace();
+		if (!cached) return;
+		const lastSession = readLastSession();
+		updateState((current) => {
+			if (current.projects.length > 0) return current;
+			const restoredProjectId =
+				lastSession && cached.projects.some((project) => project.id === lastSession.projectId && !project.archived)
+					? lastSession.projectId
+					: current.currentProjectId;
+			return {
+				...current,
+				projects: cached.projects,
+				projectGroups: cached.projectGroups,
+				currentProjectId: restoredProjectId,
+			};
+		});
+	}, [updateState]);
 
 	const refreshBootstrap = useCallback(async () => {
 		applyBootstrap(await webApi.bootstrap());
@@ -932,6 +959,7 @@ export function useWorkbench() {
 		reconnectAttemptRef.current = 0;
 		disconnectStream();
 		webApi.clearToken();
+		clearCachedWorkspace();
 		viewedResultKeyRef.current = undefined;
 		sessionDetailCacheRef.current.clear();
 		sessionDetailSeqRef.current.clear();
@@ -1085,6 +1113,7 @@ export function useWorkbench() {
 	const {
 		setModelProviderVisibility,
 		saveModelProvider,
+		testModelProvider,
 		saveImageModelProviders,
 		removeModelProvider,
 		saveProviderModel,
@@ -1242,6 +1271,7 @@ export function useWorkbench() {
 			updateThinking,
 			setModelProviderVisibility,
 			saveModelProvider,
+			testModelProvider,
 			saveImageModelProviders,
 			removeModelProvider,
 			saveProviderModel,
@@ -1439,6 +1469,7 @@ export function useWorkbench() {
 
 	useEffect(() => {
 		mountedRef.current = true;
+		restoreCachedWorkspace();
 		void initialize();
 		return () => {
 			mountedRef.current = false;
@@ -1458,7 +1489,7 @@ export function useWorkbench() {
 			if (transcriptTimerRef.current) window.clearTimeout(transcriptTimerRef.current);
 			if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
 		};
-	}, [cancelSessionReads, disconnectStream, initialize]);
+	}, [cancelSessionReads, disconnectStream, initialize, restoreCachedWorkspace]);
 
 	return {
 		state,

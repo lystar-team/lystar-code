@@ -187,6 +187,7 @@ const WORKSPACE_COMMANDS = {
 	list_model_options: true,
 	get_image_model_settings: true,
 	set_image_model_settings: true,
+	test_model_provider: true,
 	remove_model_provider: true,
 	set_provider_model_enabled: true,
 	set_session_model: true,
@@ -2460,6 +2461,8 @@ export class WebRuntimeService {
 				});
 			case "list_model_options":
 				return jsonValue(await this.adapter.listModelOptions({ includeProviders: request.includeProviders }));
+			case "test_model_provider":
+				return jsonValue(await this.adapter.testModelProvider(request));
 			case "add_model_provider":
 			case "remove_model_provider":
 			case "add_provider_model":

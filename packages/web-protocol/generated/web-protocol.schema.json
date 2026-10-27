@@ -1895,6 +1895,54 @@
                   "required": [
                     "command",
                     "provider",
+                    "baseUrl",
+                    "api",
+                    "clientInstanceId",
+                    "clientRequestId"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "const": "test_model_provider"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16384
+                    },
+                    "api": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "apiKey": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16384
+                    },
+                    "clientInstanceId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "clientRequestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command",
+                    "provider",
                     "clientInstanceId",
                     "clientRequestId"
                   ],
@@ -13914,6 +13962,42 @@
             "additionalProperties": false
           },
           "maxItems": 10000
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceTestModelProviderResult": {
+      "type": "object",
+      "required": [
+        "ok",
+        "modelCount",
+        "models"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "modelCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 20
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 16384
         }
       },
       "additionalProperties": false

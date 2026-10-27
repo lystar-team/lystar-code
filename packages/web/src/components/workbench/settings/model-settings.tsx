@@ -1,9 +1,10 @@
-import { Check, Eye, ListChecks, LoaderCircle, Plus, RefreshCw, Settings, SlidersHorizontal, Trash2, Wrench } from "lucide-react";
+import { apiKeyCharacterError } from "@lystar/code-web-protocol";
+import { Check, CircleAlert, Eye, ListChecks, LoaderCircle, Plus, RefreshCw, Settings, SlidersHorizontal, Trash2, Wrench } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../../../lib/utils";
 import type { WorkbenchState } from "../../../state/use-workbench";
-import type { WebThinkingLevel } from "../../../types";
+import type { WebModelProviderTestResult, WebThinkingLevel } from "../../../types";
 import { Alert, AlertDescription, AlertTitle } from "../../ui/alert";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -193,6 +194,12 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const [removingProvider, setRemovingProvider] = useState<string | null>(null);
 	const [removeTarget, setRemoveTarget] = useState<WorkbenchState["providers"][number] | null>(null);
 	const [pendingModelToggles, setPendingModelToggles] = useState<Record<string, boolean>>({});
+	const [providerTest, setProviderTest] = useState<
+		| { state: "idle" }
+		| { state: "running" }
+		| { state: "success"; result: WebModelProviderTestResult }
+		| { state: "error"; message: string }
+	>({ state: "idle" });
 	const [providerTab, setProviderTab] = useState<"custom" | "builtin">("custom");
 	const [modelListProviderId, setModelListProviderId] = useState<string | null>(null);
 	const [imageProviderMode, setImageProviderMode] = useState<"shared" | "per-model">("shared");
@@ -272,6 +279,12 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			setProviderTab("builtin");
 	}, [builtinProviders.length, customProviders.length, providerTab]);
 
+	const providerApiKeyError = providerDraft?.apiKey.trim() ? apiKeyCharacterError(providerDraft.apiKey.trim()) : undefined;
+
+	useEffect(() => {
+		setProviderTest({ state: "idle" });
+	}, [providerDraft?.provider, providerDraft?.baseUrl, providerDraft?.api, providerDraft?.apiKey]);
+
 	useEffect(() => {
 		const configuredProviders = Object.values(state.imageModelProviders ?? {});
 		if (
@@ -336,6 +349,10 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 	const submitProvider = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!providerDraft?.provider.trim() || !providerDraft.baseUrl.trim() || !providerDraft.api.trim()) return;
+		if (providerApiKeyError) {
+			actions.showToast(providerApiKeyError, "error");
+			return;
+		}
 		setSubmitting(true);
 		try {
 			const providerId = providerDraft.provider.trim();
@@ -367,6 +384,38 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 			actions.showToast(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			setSubmitting(false);
+		}
+	};
+
+	const testProviderConnection = async () => {
+		if (!providerDraft) return;
+		if (providerApiKeyError) {
+			setProviderTest({ state: "error", message: providerApiKeyError });
+			return;
+		}
+		const provider = providerDraft.provider.trim();
+		const baseUrl = providerDraft.baseUrl.trim();
+		const api = providerDraft.api.trim();
+		if (!provider || !baseUrl || !api) {
+			setProviderTest({ state: "error", message: "先填写 Provider ID、Base URL 和供应商类型。" });
+			return;
+		}
+		setProviderTest({ state: "running" });
+		try {
+			const apiKey = providerDraft.apiKey.trim();
+			const result = await actions.testModelProvider({
+				provider,
+				baseUrl,
+				api,
+				...(apiKey ? { apiKey } : {}),
+			});
+			setProviderTest(
+				result.ok
+					? { state: "success", result }
+					: { state: "error", message: result.error ?? "连接失败" },
+			);
+		} catch (error) {
+			setProviderTest({ state: "error", message: error instanceof Error ? error.message : String(error) });
 		}
 	};
 
@@ -1100,7 +1149,50 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									value={providerDraft.apiKey}
 									onChange={(event) => setProviderDraft({ ...providerDraft, apiKey: event.target.value })}
 									placeholder={providerDraft.isNew ? "sk-..." : "留空表示不更改"}
+									aria-invalid={Boolean(providerApiKeyError)}
+									aria-describedby={providerApiKeyError ? "provider-key-error" : undefined}
 								/>
+								{providerApiKeyError ? (
+									<p id="provider-key-error" role="alert" className="text-sm leading-5 text-destructive">
+										{providerApiKeyError}
+									</p>
+								) : null}
+							</div>
+							<div className="grid gap-2">
+								<div className="flex flex-wrap items-center gap-2">
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										disabled={providerTest.state === "running" || submitting}
+										onClick={() => void testProviderConnection()}
+									>
+										{providerTest.state === "running" ? (
+											<LoaderCircle className="size-4 animate-spin" />
+										) : null}
+										测试连接
+									</Button>
+									{providerTest.state === "success" ? (
+										<span role="status" className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+											<Check className="size-4 text-emerald-600 dark:text-emerald-500" />
+											连接成功，发现 {providerTest.result.modelCount} 个模型
+										</span>
+									) : providerTest.state === "error" ? (
+										<span role="alert" className="inline-flex items-center gap-1 text-sm text-destructive">
+											<CircleAlert className="size-4" />
+											{providerTest.message}
+										</span>
+									) : null}
+								</div>
+								{providerTest.state === "success" && providerTest.result.models.length > 0 ? (
+									<p className="text-xs leading-5 text-muted-foreground">
+										例如 {providerTest.result.models.slice(0, 5).join("、")}
+									</p>
+								) : (
+									<p className="text-xs leading-5 text-muted-foreground">
+										测试只读取模型目录，不保存配置；也可以直接保存。
+									</p>
+								)}
 							</div>
 							<div className="grid gap-2">
 								<span className="text-sm font-medium">模型目录来源</span>
@@ -1131,6 +1223,7 @@ export function ModelSettings({ state, actions }: { state: WorkbenchState; actio
 									type="submit"
 									disabled={
 										submitting ||
+										Boolean(providerApiKeyError) ||
 										!providerDraft.provider.trim() ||
 										!providerDraft.baseUrl.trim() ||
 										!providerDraft.api.trim()

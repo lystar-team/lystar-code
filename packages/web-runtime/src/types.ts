@@ -47,6 +47,7 @@ import type {
 	SettingSummary,
 	SubagentConfig,
 	SubagentSnapshot,
+	TestModelProviderResult,
 	ThinkingLevel,
 } from "@lystar/code-web-protocol";
 
@@ -259,6 +260,13 @@ export interface ModelProviderInput {
 	nativeSteering?: "auto" | "off" | "on";
 }
 
+export interface ModelProviderTestInput {
+	provider: string;
+	baseUrl: string;
+	api: string;
+	apiKey?: string;
+}
+
 export interface ProviderModelInput {
 	provider: string;
 	id: string;
@@ -326,6 +334,7 @@ export interface RuntimeAdapter {
 	setImageModelSettings(input: ImageModelSettings): Promise<ImageModelSettings>;
 	listModelOptions(options?: { includeProviders?: readonly string[] }): Promise<ModelOptions>;
 	addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]>;
+	testModelProvider(input: ModelProviderTestInput): Promise<TestModelProviderResult>;
 	removeModelProvider(provider: string): Promise<ModelProviderSummary[]>;
 	addProviderModel(input: ProviderModelInput): Promise<ModelSummary[]>;
 	setProviderModelEnabled(provider: string, modelId: string, enabled: boolean): Promise<ModelSummary[]>;

@@ -895,6 +895,8 @@ export const ProjectRail = memo(function ProjectRail({
 						<Collapsible
 							open={expanded}
 							onOpenChange={(open) => {
+								// 未加载过的项目在展开时才拉取会话，避免每次建连都重扫全部项目。
+								if (open && project.sessionsLoaded === false) void onRetryProjectSessions(project.id);
 								if (normalizedQuery) {
 									setSearchExpansion((current) => ({ ...current, projects: { ...current.projects, [project.id]: open } }));
 									return;

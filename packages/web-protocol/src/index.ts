@@ -1,4 +1,5 @@
 export * from "./client.ts";
+export * from "./credentials.ts";
 export * from "./framing.ts";
 export * from "./interactive-ui.ts";
 export * from "./room-agent-alias.ts";

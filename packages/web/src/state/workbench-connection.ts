@@ -82,6 +82,7 @@ export function useWorkbenchConnection({
 			...current, ...reconnectingConnectionState(),
 			...(current.sessionId ? { sessionReady: false } : {}),
 		}));
+		const stateRevision = bootstrapLoadedRef.current ? stateRef.current.workspaceRevision : undefined;
 		const socket = webApi.connect((event) => {
 			if (generationRef.current !== generation || socketRef.current !== socket) return;
 			const recovery = recoveryRef.current;
@@ -107,7 +108,7 @@ export function useWorkbenchConnection({
 				lease: undefined, readOnly: Boolean(current.sessionId), sessionReady: false,
 			}));
 			if (online) scheduleReconnect();
-		});
+		}, stateRevision);
 		socketRef.current = socket;
 		if (recovery && recovery.sessionId === stateRef.current.sessionId)
 			recoveryRef.current = { ...recovery, socket, acknowledged: false };

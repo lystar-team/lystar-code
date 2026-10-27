@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Duplex, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { gzip } from "node:zlib";
+import { gzip, gzipSync } from "node:zlib";
 import {
+	apiKeyCharacterError,
 	type Command,
 	type CompletionResult,
 	type ContentChunk,
@@ -122,7 +123,11 @@ const UPLOAD_TTL_MS = 60 * 60 * 1000;
 const UPLOAD_CLEANUP_MS = 5 * 60 * 1000;
 const PROGRESS_BATCH_MS = 50;
 const PUBLIC_SESSION_FIRST_MESSAGE_LIMIT = 512;
-const BROWSER_CONTEXT_IDLE_MS = 60_000;
+// 手机浏览器切到后台时页面会离线，短时间空闲只释放可重建的缓存，久闲才关闭 Runtime 连接和会话租约。
+const BROWSER_CONTEXT_CACHE_IDLE_MS = 30 * 60_000;
+const BROWSER_CONTEXT_IDLE_MS = 6 * 60 * 60_000;
+// 移动网络挂起时一次心跳可能收不到回应，连续丢失多次才判定连接已死。
+const WEBSOCKET_MAX_MISSED_PONGS = 2;
 const MAX_SESSION_DETAIL_EVENTS = 256;
 const MAX_WEBSOCKET_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_SESSION_DETAIL_BYTES = MAX_WEBSOCKET_BUFFER_BYTES;
@@ -300,6 +305,8 @@ interface BrowserContext {
 	sessionListPromises: Map<string, Promise<GatewaySessionSummary[]>>;
 	sessionListCache: Map<string, SessionListCache>;
 	projectSessionListGenerations: Map<string, number>;
+	/** 浏览器离线期间会话列表发生过变化、需要在下次建连时重扫的项目。 */
+	staleProjects: Set<string>;
 	pendingProjectUpdates: Map<string, { generation: number; project: WebProjectResponse }>;
 	sessionSummaryState: Map<string, { name?: string; activity: SessionActivity; operationUpdatedAt?: number }>;
 	sessionSnapshotState: Map<string, WebSessionSnapshot>;
@@ -315,6 +322,8 @@ interface BrowserContext {
 	resumeSessionIds: Set<string>;
 	activeRequests: number;
 	idleTimer?: ReturnType<typeof setTimeout>;
+	cachesReleased: boolean;
+	deliveredWorkspace?: DeliveredWorkspace;
 	reconnectTimer?: ReturnType<typeof setTimeout>;
 	progressTimer?: ReturnType<typeof setTimeout>;
 	pendingProgress: PendingProgressEvent[];
@@ -348,6 +357,21 @@ interface BootstrapResponse {
 interface BootstrapCache {
 	generation: number;
 	value: BootstrapResponse;
+}
+
+/** 已推送给某个浏览器上下文的工作区状态，重连时以它为基线只补差量。 */
+interface DeliveredWorkspace {
+	revision: number;
+	projects: WebProjectResponse[];
+}
+
+interface WorkspaceUpdatePayload {
+	type: "workspace_updated";
+	workspaceRevision: number;
+	projectIds: string[];
+	projects: WebProjectResponse[];
+	sessionSummaries: Array<{ projectId: string; sessions: WebSessionSummary[] }>;
+	projectGroups: ProjectGroup[];
 }
 
 interface GatewaySecuritySettingsResponse {
@@ -545,6 +569,7 @@ function toError(error: unknown): HttpError {
 		return new HttpError(409, code, "全局 AGENTS.md 已被外部修改，请重新加载后再保存");
 	if (code === "instruction_path_invalid") return new HttpError(400, code, "全局 AGENTS.md 路径无效");
 	if (code === "project_file_conflict") return new HttpError(409, code, message);
+	if (code === "api_key_invalid") return new HttpError(400, code, message);
 	if (code === "invalid_content_chunk") return new HttpError(502, code, message);
 	if (code === "git_credentials_required") return new HttpError(409, code, message);
 	if (code === "project_file_not_editable" || code === "project_file_too_large") {
@@ -613,11 +638,30 @@ function parseJsonBody(request: IncomingMessage): Promise<Record<string, unknown
 	});
 }
 
+// 手机端拉取项目与会话列表时响应可达兆级，大响应统一压缩发送。
+const API_GZIP_MIN_BYTES = 32 * 1024;
+const requestByResponse = new WeakMap<ServerResponse, IncomingMessage>();
+
 function sendJson(response: ServerResponse, status: number, value: unknown, headers?: Record<string, string>): void {
 	const body = JSON.stringify(value);
+	const bytes = Buffer.byteLength(body);
+	const request = requestByResponse.get(response);
+	if (request && bytes >= API_GZIP_MIN_BYTES && acceptsGzip(request.headers["accept-encoding"])) {
+		const compressed = gzipSync(body, { level: 1 });
+		response.writeHead(status, {
+			"Content-Type": "application/json; charset=utf-8",
+			"Content-Length": compressed.byteLength,
+			"Content-Encoding": "gzip",
+			Vary: "Accept-Encoding",
+			"Cache-Control": "no-store",
+			...headers,
+		});
+		response.end(compressed);
+		return;
+	}
 	response.writeHead(status, {
 		"Content-Type": "application/json; charset=utf-8",
-		"Content-Length": Buffer.byteLength(body),
+		"Content-Length": bytes,
 		"Cache-Control": "no-store",
 		...headers,
 	});
@@ -677,6 +721,12 @@ function publicSessionSummary(
 				? `${result.firstMessage.slice(0, PUBLIC_SESSION_FIRST_MESSAGE_LIMIT - 1)}…`
 				: result.firstMessage,
 	};
+}
+
+/** 项目设置（不含会话列表）的比较串，用于判断能否只补会话差量。 */
+function projectSettingsKey(project: WebProjectResponse): string {
+	const { sessions: _sessions, ...settings } = project;
+	return JSON.stringify(settings);
 }
 
 function publicSessionSnapshot(snapshot: SessionStateSnapshot): WebSessionSnapshot {
@@ -826,7 +876,7 @@ export class WebGatewayServer {
 	private modelSettingsCache?: { revision: number; value: ModelSettingsResult };
 	private modelSettingsPromise?: Promise<ModelSettingsResult>;
 	private lastRuntimeModelCatalogEvent?: string;
-	private readonly socketLiveness = new WeakMap<WebSocket, boolean>();
+	private readonly socketLiveness = new WeakMap<WebSocket, number>();
 	private readonly socketIds = new WeakMap<WebSocket, string>();
 	private readonly socketWriters = new WeakMap<WebSocket, WebSocketWriter>();
 	private readonly detailSubscriptions = new WeakMap<WebSocket, Set<string>>();
@@ -976,6 +1026,7 @@ export class WebGatewayServer {
 			sessionListPromises: new Map(),
 			sessionListCache: new Map(),
 			projectSessionListGenerations: new Map(),
+			staleProjects: new Set(),
 			pendingProjectUpdates: new Map(),
 			sessionSummaryState: new Map(),
 			sessionSnapshotState: new Map(),
@@ -988,6 +1039,7 @@ export class WebGatewayServer {
 			reconnectAttempt: 0,
 			bootstrapRetryAttempt: 0,
 			connectionState: "unknown",
+			cachesReleased: false,
 		};
 	}
 
@@ -996,6 +1048,7 @@ export class WebGatewayServer {
 			clearTimeout(context.idleTimer);
 			context.idleTimer = undefined;
 		}
+		context.cachesReleased = false;
 	}
 
 	private clearPendingProgress(context: BrowserContext): void {
@@ -1057,48 +1110,60 @@ export class WebGatewayServer {
 	}
 
 	private scheduleContextCleanup(context: BrowserContext): void {
-		if (
+		if (this.contextCleanupBlocked(context) || context.idleTimer) return;
+		const timer = setTimeout(
+			() => {
+				context.idleTimer = undefined;
+				if (this.contextCleanupBlocked(context)) return;
+				// 先释放可重建的缓存，保留 Runtime 连接和会话租约，让用户回到页面时不必重建会话。
+				if (!context.cachesReleased) {
+					context.cachesReleased = true;
+					this.releaseContextCaches(context);
+					this.scheduleContextCleanup(context);
+					return;
+				}
+				this.destroyContext(context);
+			},
+			context.cachesReleased ? BROWSER_CONTEXT_IDLE_MS : BROWSER_CONTEXT_CACHE_IDLE_MS,
+		);
+		timer.unref?.();
+		context.idleTimer = timer;
+	}
+
+	private contextCleanupBlocked(context: BrowserContext): boolean {
+		return (
 			(this.pushContext === context && this.pushNotifications.hasSubscriptions) ||
 			this.closed ||
 			this.contexts.get(context.id) !== context ||
 			context.sockets.size > 0 ||
 			context.activeRequests > 0 ||
-			context.connectPromise ||
-			context.reconnectTimer ||
-			context.leaseRestoreTimer ||
-			context.bootstrapRetryTimer ||
-			context.idleTimer
-		)
-			return;
-		const timer = setTimeout(() => {
-			context.idleTimer = undefined;
-			if (
-				(this.pushContext === context && this.pushNotifications.hasSubscriptions) ||
-				context.sockets.size > 0 ||
-				context.activeRequests > 0 ||
-				context.connectPromise ||
-				context.reconnectTimer ||
-				context.leaseRestoreTimer ||
-				context.bootstrapRetryTimer ||
-				this.contexts.get(context.id) !== context
-			)
-				return;
-			this.contexts.delete(context.id);
-			if (this.pushContext === context) this.pushContext = undefined;
-			context.leases.clear();
-			context.leasesToRestore.clear();
-			context.sessionListPromises.clear();
-			context.pendingProjectUpdates.clear();
-			this.clearPendingProgress(context);
-			context.sessionListCache.clear();
-			context.bootstrapCache = undefined;
-			const client = context.client;
-			context.client = undefined;
-			context.initial = undefined;
-			void client?.close().catch(() => {});
-		}, BROWSER_CONTEXT_IDLE_MS);
-		timer.unref?.();
-		context.idleTimer = timer;
+			context.connectPromise !== undefined ||
+			context.reconnectTimer !== undefined ||
+			context.leaseRestoreTimer !== undefined ||
+			context.bootstrapRetryTimer !== undefined
+		);
+	}
+
+	private releaseContextCaches(context: BrowserContext): void {
+		this.clearPendingProgress(context);
+		context.sessionListPromises.clear();
+		context.sessionListCache.clear();
+		context.projectSessionListGenerations.clear();
+		context.pendingProjectUpdates.clear();
+		context.bootstrapCache = undefined;
+	}
+
+	private destroyContext(context: BrowserContext): void {
+		this.contexts.delete(context.id);
+		if (this.pushContext === context) this.pushContext = undefined;
+		context.leases.clear();
+		context.leasesToRestore.clear();
+		context.deliveredWorkspace = undefined;
+		this.releaseContextCaches(context);
+		const client = context.client;
+		context.client = undefined;
+		context.initial = undefined;
+		void client?.close().catch(() => {});
 	}
 
 	private invalidateBootstrap(context: BrowserContext, projectId?: string): void {
@@ -1109,6 +1174,8 @@ export class WebGatewayServer {
 			context.sessionListCache.delete(projectId);
 			context.sessionListPromises.delete(projectId);
 			context.pendingProjectUpdates.delete(projectId);
+			// 没有连接时客户端无法通过 HTTP 自行刷新，下次建连补扫这个项目。
+			if (context.sockets.size === 0) context.staleProjects.add(projectId);
 		} else {
 			context.projectSessionListGenerations.clear();
 			context.sessionListCache.clear();
@@ -1166,14 +1233,14 @@ export class WebGatewayServer {
 		}
 		this.workspaceSnapshot = snapshot;
 		const byId = new Map(snapshot.projects.map((project) => [project.id, project]));
-		const payload = JSON.stringify({
+		const update: WorkspaceUpdatePayload = {
 			type: "workspace_updated",
 			workspaceRevision: snapshot.revision,
 			projectIds: snapshot.projects.map((project) => project.id),
 			projects,
 			sessionSummaries,
 			projectGroups: snapshot.groups,
-		});
+		};
 		for (const context of this.contexts.values()) {
 			context.bootstrapCache = undefined;
 			for (const [projectId, cached] of context.sessionListCache) {
@@ -1187,10 +1254,87 @@ export class WebGatewayServer {
 					context,
 					snapshot.projects.filter((project) => !project.sessionsIndexed),
 				);
-			for (const socket of context.sockets) {
-				if (this.workspaceReadySockets.has(socket)) this.sendWebSocket(socket, payload);
-			}
+			this.deliverWorkspaceUpdate(context, update);
 		}
+	}
+
+	/** 只推给已经拿到完整工作区的连接，避免增量事件与整包互相越序。 */
+	private deliverWorkspaceUpdate(context: BrowserContext, update: WorkspaceUpdatePayload): void {
+		const payload = JSON.stringify(update);
+		let delivered = false;
+		for (const socket of context.sockets) {
+			if (!this.workspaceReadySockets.has(socket)) continue;
+			this.sendWebSocket(socket, payload);
+			delivered = true;
+		}
+		if (delivered) this.applyDeliveredWorkspaceUpdate(context, update);
+	}
+
+	/** 记录已送达的工作区变化，重连时以它为基线只补差量。 */
+	private applyDeliveredWorkspaceUpdate(context: BrowserContext, update: WorkspaceUpdatePayload): void {
+		const delivered = context.deliveredWorkspace;
+		if (!delivered) return;
+		const byId = new Map(delivered.projects.map((project) => [project.id, project]));
+		for (const project of update.projects) byId.set(project.id, project);
+		for (const entry of update.sessionSummaries) {
+			const project = byId.get(entry.projectId);
+			if (!project) continue;
+			const incoming = new Map(entry.sessions.map((session) => [session.id, session]));
+			byId.set(entry.projectId, {
+				...project,
+				sessions: project.sessions.map((session) => incoming.get(session.id) ?? session),
+			});
+		}
+		delivered.revision = update.workspaceRevision;
+		delivered.projects = update.projectIds.flatMap((id) => {
+			const project = byId.get(id);
+			return project ? [project] : [];
+		});
+	}
+
+	/** 客户端声明的工作区版本：与已送达基线一致时只补差量，否则回退整包。 */
+	private buildWorkspaceDelta(context: BrowserContext): WorkspaceUpdatePayload | undefined {
+		const delivered = context.deliveredWorkspace;
+		if (!delivered) return undefined;
+		const snapshot = this.workspace.snapshot();
+		const previousById = new Map(delivered.projects.map((project) => [project.id, project]));
+		const projects: WebProjectResponse[] = [];
+		const sessionSummaries: Array<{ projectId: string; sessions: WebSessionSummary[] }> = [];
+		for (const project of snapshot.projects) {
+			const sessions = project.recentSessions ?? [];
+			const next = this.publicProject(
+				project,
+				sessions,
+				project.sessionsIndexed === true,
+				undefined,
+				snapshot.results,
+			);
+			const previous = previousById.get(project.id);
+			if (!previous) {
+				projects.push(next);
+				continue;
+			}
+			const previousSessions = previous.sessions;
+			if (
+				previousSessions.length !== next.sessions.length ||
+				projectSettingsKey(previous) !== projectSettingsKey(next)
+			) {
+				projects.push(next);
+				continue;
+			}
+			const changed = next.sessions.filter(
+				(session, index) => JSON.stringify(session) !== JSON.stringify(previousSessions[index]),
+			);
+			if (changed.length > 0) sessionSummaries.push({ projectId: project.id, sessions: changed });
+		}
+		return {
+			type: "workspace_updated",
+			workspaceRevision: snapshot.revision,
+			projectIds: snapshot.projects.map((project) => project.id),
+			projects,
+			sessionSummaries,
+			projectGroups: snapshot.groups,
+		};
 	}
 	private projectSessionListGeneration(context: BrowserContext, projectId: string): number {
 		let generation = context.projectSessionListGenerations.get(projectId);
@@ -1582,13 +1726,11 @@ export class WebGatewayServer {
 				})),
 			};
 			context.bootstrapCache = { generation, value };
-			const projectsToRefresh = registeredProjects.filter(
-				(project) =>
-					context.sessionListCache.get(project.id)?.dirty ||
-					context.sessionListCache.get(project.id)?.generation !==
-						this.projectSessionListGeneration(context, project.id),
+			// 只补从未索引过和离线期间变化的项目；其余项目由浏览器订阅时按需刷新，避免每次建连都重扫全部项目目录。
+			this.refreshBootstrapProjects(
+				context,
+				registeredProjects.filter((project) => !project.sessionsIndexed || context.staleProjects.has(project.id)),
 			);
-			this.refreshBootstrapProjects(context, projectsToRefresh);
 			return value;
 		})();
 		context.bootstrapPromise = promise;
@@ -1784,6 +1926,7 @@ export class WebGatewayServer {
 					this.emitProjectUpdate(context, context.bootstrapGeneration, response);
 				})
 				.finally(() => {
+					context.staleProjects.delete(job.project.id);
 					state.activeWorkers -= 1;
 					this.pumpBootstrapProjectRefresh(context, state);
 				});
@@ -1845,8 +1988,19 @@ export class WebGatewayServer {
 	private emitProjectUpdate(context: BrowserContext, generation: number, project: WebProjectResponse): void {
 		if (context.bootstrapGeneration !== generation) return;
 		const event = { type: "project_updated", project, workspaceRevision: this.workspace.revision };
-		if (context.sockets.size > 0) this.broadcast(context, event);
-		else context.pendingProjectUpdates.set(project.id, { generation, project });
+		if (context.sockets.size > 0) {
+			this.broadcast(context, event);
+			this.recordDeliveredProject(context, project);
+		} else context.pendingProjectUpdates.set(project.id, { generation, project });
+	}
+
+	/** 记录已广播的项目快照，避免重连差量重复下发同一项目；版本号不变，客户端不因项目事件推进工作区版本。 */
+	private recordDeliveredProject(context: BrowserContext, project: WebProjectResponse): void {
+		const delivered = context.deliveredWorkspace;
+		if (!delivered) return;
+		const index = delivered.projects.findIndex((candidate) => candidate.id === project.id);
+		if (index < 0) return;
+		delivered.projects[index] = project;
 	}
 
 	private async resolveSession(context: BrowserContext, sessionId: string): Promise<SessionRef> {
@@ -2012,6 +2166,7 @@ export class WebGatewayServer {
 		const path = request.url?.split("?")[0] ?? "/";
 		const sessionId = /^\/api\/sessions\/([^/]+)/u.exec(path)?.[1];
 		let recorded = false;
+		requestByResponse.set(response, request);
 		const record = (outcome: "finished" | "connection_closed") => {
 			if (recorded) return;
 			recorded = true;
@@ -2527,6 +2682,28 @@ export class WebGatewayServer {
 		}
 		if (parts[1] === "model-providers") {
 			const client = await this.getClient(context);
+			if (parts.length === 3 && parts[2] === "test" && request.method === "POST") {
+				const body = await parseJsonBody(request);
+				const provider = stringValue(body.provider);
+				const baseUrl = stringValue(body.baseUrl);
+				const api = stringValue(body.api);
+				if (!provider || !baseUrl || !api)
+					throw new HttpError(400, "model_provider_fields_required", "Provider、Base URL 和 API 类型不能为空");
+				const apiKey = stringValue(body.apiKey);
+				const apiKeyError = apiKey ? apiKeyCharacterError(apiKey) : undefined;
+				if (apiKeyError) throw new HttpError(400, "api_key_invalid", apiKeyError);
+				const result = await client.request<JsonValue>({
+					command: "test_model_provider",
+					provider,
+					baseUrl,
+					api,
+					...(apiKey ? { apiKey } : {}),
+					clientInstanceId: context.id,
+					clientRequestId: randomUUID(),
+				});
+				sendJson(response, 200, result);
+				return;
+			}
 			if (parts.length === 3 && request.method === "DELETE") {
 				const provider = stringValue(parts[2]);
 				if (!provider) throw new HttpError(400, "model_provider_required", "Provider 不能为空");
@@ -2551,13 +2728,16 @@ export class WebGatewayServer {
 				const api = stringValue(body.api);
 				if (!provider || !baseUrl || !api)
 					throw new HttpError(400, "model_provider_fields_required", "Provider、Base URL 和 API 类型不能为空");
+				const apiKey = stringValue(body.apiKey);
+				const apiKeyError = apiKey ? apiKeyCharacterError(apiKey) : undefined;
+				if (apiKeyError) throw new HttpError(400, "api_key_invalid", apiKeyError);
 				const result = await client.request<ModelProviderSummary[]>({
 					command: "add_model_provider",
 					provider,
 					name: stringValue(body.name),
 					baseUrl,
 					api,
-					...(stringValue(body.apiKey) ? { apiKey: stringValue(body.apiKey) } : {}),
+					...(apiKey ? { apiKey } : {}),
 					...(stringValue(body.catalogProvider) ? { catalogProvider: stringValue(body.catalogProvider) } : {}),
 					...(body.clearCatalogProvider === true ? { clearCatalogProvider: true } : {}),
 					...(body.nativeSteering === "auto" || body.nativeSteering === "off" || body.nativeSteering === "on"
@@ -4910,6 +5090,34 @@ export class WebGatewayServer {
 		throw new HttpError(405, "method_not_allowed", "该接口不支持当前方法");
 	}
 
+	/** 补齐浏览器离线期间变化的项目会话列表；只重建这一部分，不重扫全部项目。 */
+	private refreshStaleProjects(context: BrowserContext): void {
+		if (context.staleProjects.size === 0) return;
+		this.refreshBootstrapProjects(
+			context,
+			this.registry.list().filter((project) => context.staleProjects.has(project.id)),
+		);
+	}
+
+	private async refreshSubscribedProject(context: BrowserContext, projectId: string): Promise<void> {
+		if (this.closed || context.connectionState === "disconnected") return;
+		if (!context.client?.getSnapshot().connected) return;
+		const project = this.registry.get(projectId);
+		if (!project) return;
+		const cached = context.sessionListCache.get(projectId);
+		if (cached && !cached.dirty && cached.generation === this.projectSessionListGeneration(context, projectId))
+			return;
+		try {
+			await this.listProjectSessions(context, project);
+		} catch (error) {
+			logGatewayConnection("project_sessions_refresh_failed", {
+				clientInstanceId: context.id,
+				projectId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
 	private sendBootstrap(context: BrowserContext, bootstrap: BootstrapResponse, socket?: WebSocket): void {
 		const snapshot = this.workspace.snapshot();
 		// 索引可能在异步初始化期间推进；先发送当前完整基线，再允许该连接接收增量。
@@ -4933,6 +5141,7 @@ export class WebGatewayServer {
 			this.sendWebSocket(target, payload);
 			this.workspaceReadySockets.add(target);
 		}
+		context.deliveredWorkspace = { revision: bootstrap.workspaceRevision, projects: bootstrap.projects };
 	}
 
 	private async pushBootstrap(context: BrowserContext): Promise<void> {
@@ -5538,7 +5747,8 @@ export class WebGatewayServer {
 		for (const context of this.contexts.values()) {
 			for (const socket of context.sockets) {
 				if (socket.readyState !== WebSocket.OPEN) continue;
-				if (this.socketLiveness.get(socket) === false) {
+				const missedPongs = this.socketLiveness.get(socket) ?? 0;
+				if (missedPongs >= WEBSOCKET_MAX_MISSED_PONGS) {
 					logGatewayConnection("websocket_heartbeat_timeout", {
 						socketId: this.socketIds.get(socket),
 						clientInstanceId: context.id,
@@ -5546,7 +5756,7 @@ export class WebGatewayServer {
 					socket.terminate();
 					continue;
 				}
-				this.socketLiveness.set(socket, false);
+				this.socketLiveness.set(socket, missedPongs + 1);
 				socket.ping();
 			}
 		}
@@ -5590,7 +5800,7 @@ export class WebGatewayServer {
 			socketId,
 			...(isValidClientId(browserClientId) ? { browserClientId } : {}),
 		});
-		this.socketLiveness.set(socket, true);
+		this.socketLiveness.set(socket, 0);
 		const subscriptions = this.subscriptionsFor(socket);
 		const projectSubscriptions = this.projectSubscriptionsFor(socket);
 		socket.on("message", (raw) => {
@@ -5602,6 +5812,7 @@ export class WebGatewayServer {
 					if (message.type === "subscribe_project") projectSubscriptions.add(projectId);
 					else projectSubscriptions.delete(projectId);
 					void this.syncProjectWatcher(context, projectId);
+					if (message.type === "subscribe_project") void this.refreshSubscribedProject(context, projectId);
 					return;
 				}
 				const sessionId = stringValue(message?.sessionId);
@@ -5619,7 +5830,7 @@ export class WebGatewayServer {
 			}
 		});
 		socket.on("pong", () => {
-			this.socketLiveness.set(socket, true);
+			this.socketLiveness.set(socket, 0);
 		});
 		let removed = false;
 		const removeSocket = () => {
@@ -5655,6 +5866,24 @@ export class WebGatewayServer {
 					socket,
 					JSON.stringify({ type: "connection_state", connected: cached.value.connection.connected, message: "" }),
 				);
+				this.refreshStaleProjects(context);
+				this.flushPendingProjectUpdates(context, socket);
+				return;
+			}
+			// 客户端声明它已有的工作区版本时只补差量，避免手机每次回到页面都重传整个项目与会话清单。
+			const stateRevision = workspaceRevisionFromUrl(url);
+			if (
+				stateRevision !== undefined &&
+				context.deliveredWorkspace?.revision === stateRevision &&
+				context.connectionState !== "disconnected"
+			) {
+				this.workspaceReadySockets.add(socket);
+				this.sendWebSocket(socket, JSON.stringify({ type: "connection_state", connected: true, message: "" }));
+				if (stateRevision !== this.workspace.revision) {
+					const update = this.buildWorkspaceDelta(context);
+					if (update) this.deliverWorkspaceUpdate(context, update);
+				}
+				this.refreshStaleProjects(context);
 				this.flushPendingProjectUpdates(context, socket);
 				return;
 			}
@@ -5677,6 +5906,13 @@ export class WebGatewayServer {
 			if (socket.readyState === WebSocket.OPEN) socket.close(1011, toError(error).message.slice(0, 120));
 		}
 	}
+}
+
+function workspaceRevisionFromUrl(url: URL): number | undefined {
+	const raw = url.searchParams.get("stateRevision");
+	if (raw === null || !/^\d{1,15}$/u.test(raw)) return undefined;
+	const revision = Number(raw);
+	return Number.isSafeInteger(revision) ? revision : undefined;
 }
 
 export async function createWebGatewayServer(): Promise<WebGatewayServer> {

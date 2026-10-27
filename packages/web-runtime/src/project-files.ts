@@ -21,6 +21,9 @@ import {
 import { ProjectFileWatcher } from "./project-file-watcher.ts";
 
 const UPLOAD_IDLE_MS = 120_000;
+// 切换项目时保留监听树，避免每次订阅变化都重建整棵树。
+const WATCH_IDLE_CLOSE_MS = 60_000;
+const MAX_ACTIVE_WATCHES = 8;
 
 type FileEvent = Extract<ServerEvent, { type: "project_files_changed" }>;
 
@@ -32,6 +35,8 @@ interface WatchSubscription {
 interface ProjectWatch {
 	watcher: ProjectFileWatcher;
 	subscribers: Map<string, WatchSubscription>;
+	lastUsedAt: number;
+	idleTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface UploadState {
@@ -320,22 +325,43 @@ export class ProjectFiles {
 		signal.throwIfAborted();
 		let watched = this.watchers.get(root);
 		if (!watched) {
+			this.evictIdleWatches();
 			const subscribers = new Map<string, WatchSubscription>();
-			const watcher = new ProjectFileWatcher(root, (paths) => {
-				for (const subscriber of subscribers.values()) {
-					for (const path of subscriber.cwds)
-						void subscriber.send({ type: "project_files_changed", cwd: path, paths }).catch(() => {});
-				}
-			});
-			watched = { watcher, subscribers };
+			const startedAt = performance.now();
+			const watcher = new ProjectFileWatcher(
+				root,
+				(paths) => {
+					for (const subscriber of subscribers.values()) {
+						for (const path of subscriber.cwds)
+							void subscriber.send({ type: "project_files_changed", cwd: path, paths }).catch(() => {});
+					}
+				},
+				(event, fields) => logRuntimeConnection(event, { cwd: root, ...fields }),
+			);
+			watched = { watcher, subscribers, lastUsedAt: Date.now() };
 			const current = watched;
 			watcher.on("error", (error: Error) => {
 				logRuntimeConnection("project_watcher_failed", { cwd: root, error: error.message });
+				if (current.idleTimer) clearTimeout(current.idleTimer);
+				current.idleTimer = undefined;
 				if (this.watchers.get(root) === current) this.watchers.delete(root);
 				watcher.close();
 			});
+			void watcher.ready.then(() => {
+				const stats = watcher.stats();
+				logRuntimeConnection("project_watcher_ready", {
+					cwd: root,
+					directories: stats.directories,
+					ignoredDirectories: stats.ignoredDirectories,
+					limited: stats.limited,
+					scanMs: Math.round(performance.now() - startedAt),
+				});
+			});
 			this.watchers.set(root, watched);
 		}
+		if (watched.idleTimer) clearTimeout(watched.idleTimer);
+		watched.idleTimer = undefined;
+		watched.lastUsedAt = Date.now();
 		let subscription = watched.subscribers.get(owner);
 		if (!subscription) {
 			subscription = { cwds: new Set(), send };
@@ -355,12 +381,42 @@ export class ProjectFiles {
 				subscription.cwds.delete(resolve(cwd));
 				if (subscription.cwds.size === 0) watched.subscribers.delete(owner);
 			}
-			if (watched.subscribers.size === 0) {
-				this.watchers.delete(root);
-				watched.watcher.close();
-			}
+			if (watched.subscribers.size === 0) this.scheduleIdleClose(root, watched);
 		}
 		return { watching: false };
+	}
+
+	private scheduleIdleClose(root: string, watched: ProjectWatch): void {
+		if (watched.idleTimer) return;
+		const timer = setTimeout(() => this.closeWatch(root, watched), WATCH_IDLE_CLOSE_MS);
+		timer.unref?.();
+		watched.idleTimer = timer;
+	}
+
+	private closeWatch(root: string, watched: ProjectWatch): void {
+		if (watched.subscribers.size > 0 || this.watchers.get(root) !== watched) return;
+		if (watched.idleTimer) clearTimeout(watched.idleTimer);
+		watched.idleTimer = undefined;
+		this.watchers.delete(root);
+		const stats = watched.watcher.stats();
+		watched.watcher.close();
+		logRuntimeConnection("project_watcher_closed", {
+			cwd: root,
+			directories: stats.directories,
+			ignoredDirectories: stats.ignoredDirectories,
+			limited: stats.limited,
+		});
+	}
+
+	private evictIdleWatches(): void {
+		if (this.watchers.size < MAX_ACTIVE_WATCHES) return;
+		const idle = [...this.watchers]
+			.filter(([, watched]) => watched.subscribers.size === 0)
+			.sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt);
+		while (this.watchers.size >= MAX_ACTIVE_WATCHES && idle.length > 0) {
+			const [root, watched] = idle.shift()!;
+			this.closeWatch(root, watched);
+		}
 	}
 
 	async release(owner: string): Promise<void> {
@@ -371,7 +427,10 @@ export class ProjectFiles {
 	}
 
 	async dispose(): Promise<void> {
-		for (const watched of this.watchers.values()) watched.watcher.close();
+		for (const watched of this.watchers.values()) {
+			if (watched.idleTimer) clearTimeout(watched.idleTimer);
+			watched.watcher.close();
+		}
 		this.watchers.clear();
 		await Promise.all([...this.uploads].map(([id, upload]) => this.cancelUpload(upload.owner, id)));
 		await Promise.allSettled(this.archives);

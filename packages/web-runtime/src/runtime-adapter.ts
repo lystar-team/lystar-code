@@ -153,10 +153,11 @@ import type {
 	SettingSummary,
 	SubagentConfig,
 	SubagentSnapshot,
+	TestModelProviderResult,
 	ThinkingLevel,
 	TranscriptItem,
 } from "@lystar/code-web-protocol";
-import { RUNTIME_MAX_FRAME_LENGTH, RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
+import { apiKeyCharacterError, RUNTIME_MAX_FRAME_LENGTH, RUNTIME_PROTOCOL_VERSION } from "@lystar/code-web-protocol";
 import { createAgentCreationTool } from "./agent-creation-tool.ts";
 import {
 	AGENT_STEP_CUSTOM_TYPE,
@@ -187,6 +188,7 @@ import type {
 	ImageModelSettings,
 	ModelProviderInput,
 	ModelProviderSummary,
+	ModelProviderTestInput,
 	ModelSummary,
 	ProviderModelInput,
 	RichTextRenderRequest,
@@ -1087,7 +1089,8 @@ function sessionGeneration(
 	return {
 		generation: `${sessionId}:${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
 		revision: stat.size,
-		updatedAt: stat.mtimeMs,
+		// 快照字段是协议整数；mtimeMs 是浮点数，保留小数会让 set_session_model 等命令的返回值校验失败。
+		updatedAt: Math.trunc(stat.mtimeMs),
 	};
 }
 
@@ -1262,7 +1265,10 @@ function positiveInteger(value: unknown): number | undefined {
 
 function providerModelsUrls(baseUrl: string): URL[] {
 	const root = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-	const candidates = [new URL("models", root), new URL("v1/models", root)];
+	const pathname = new URL(baseUrl).pathname.replace(/\/$/u, "");
+	const candidates = [new URL("models", root)];
+	// Base URL 已经带版本段时不再拼第二层 /v1。
+	if (!/\/v\d+$/u.test(pathname)) candidates.push(new URL("v1/models", root));
 	const seen = new Set<string>();
 	const urls: URL[] = [];
 	for (const url of candidates) {
@@ -1273,11 +1279,14 @@ function providerModelsUrls(baseUrl: string): URL[] {
 	return urls;
 }
 
-function discoveryHeaders(auth: AuthResult | undefined, api: string | undefined): Record<string, string> {
-	const apiKey = auth?.auth.apiKey;
-	const configured: Record<string, string> = {};
-	for (const [name, value] of Object.entries(auth?.auth.headers ?? {})) {
-		if (typeof value === "string") configured[name] = value;
+function discoveryHeadersFromKey(
+	apiKey: string | undefined,
+	api: string | undefined,
+	configured: Record<string, string> = {},
+): Record<string, string> {
+	if (apiKey) {
+		const error = apiKeyCharacterError(apiKey);
+		if (error) throw Object.assign(new Error(error), { code: "api_key_invalid", retryable: false });
 	}
 	return {
 		accept: "application/json",
@@ -1286,6 +1295,14 @@ function discoveryHeaders(auth: AuthResult | undefined, api: string | undefined)
 		...(api === "anthropic-messages" ? { "anthropic-version": "2023-06-01" } : {}),
 		...configured,
 	};
+}
+
+function discoveryHeaders(auth: AuthResult | undefined, api: string | undefined): Record<string, string> {
+	const configured: Record<string, string> = {};
+	for (const [name, value] of Object.entries(auth?.auth.headers ?? {})) {
+		if (typeof value === "string") configured[name] = value;
+	}
+	return discoveryHeadersFromKey(auth?.auth.apiKey, api, configured);
 }
 
 function parseDiscoveredModels(payload: unknown): DiscoveredProviderModel[] | undefined {
@@ -3899,7 +3916,48 @@ export class CodingAgentRuntimeAdapter implements RuntimeAdapter {
 		return { models, providers };
 	}
 
+	async testModelProvider(input: ModelProviderTestInput): Promise<TestModelProviderResult> {
+		const apiKeyError = input.apiKey ? apiKeyCharacterError(input.apiKey) : undefined;
+		if (apiKeyError) return { ok: false, modelCount: 0, models: [], error: apiKeyError };
+		const auth = input.apiKey ? undefined : await (await this.getModelRuntime()).getAuth(input.provider);
+		const headers = input.apiKey
+			? discoveryHeadersFromKey(input.apiKey, input.api)
+			: discoveryHeaders(auth, input.api);
+		const failures: string[] = [];
+		for (const url of providerModelsUrls(input.baseUrl)) {
+			try {
+				const response = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+				if (!response.ok) {
+					failures.push(`${url.href}：HTTP ${response.status}`);
+					continue;
+				}
+				const discovered = parseDiscoveredModels(await response.json().catch(() => undefined));
+				if (discovered === undefined) {
+					failures.push(`${url.href}：响应缺少 models 或 data 列表`);
+					continue;
+				}
+				if (discovered.length === 0) {
+					failures.push(`${url.href}：未返回任何模型`);
+					continue;
+				}
+				return {
+					ok: true,
+					modelCount: discovered.length,
+					models: discovered.slice(0, 10).map((model) => model.id),
+					url: url.href,
+				};
+			} catch (error) {
+				failures.push(`${url.href}：${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		return { ok: false, modelCount: 0, models: [], error: failures.join("；") };
+	}
+
 	async addModelProvider(input: ModelProviderInput): Promise<ModelProviderSummary[]> {
+		const apiKeyError = input.apiKey ? apiKeyCharacterError(input.apiKey) : undefined;
+		if (apiKeyError) {
+			throw Object.assign(new Error(apiKeyError), { code: "api_key_invalid", retryable: false });
+		}
 		if (input.clearCatalogProvider)
 			await clearModelsJsonProviderCatalogProvider(join(this.agentDir, "models.json"), input.provider);
 		await saveModelsJsonProvider(join(this.agentDir, "models.json"), input.provider, {
