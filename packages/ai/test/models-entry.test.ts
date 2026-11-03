@@ -50,6 +50,7 @@ describe("lightweight models entry", () => {
 				cwd: packageRoot,
 				encoding: "utf8",
 				timeout: 10_000,
+				env: { ...process.env, NODE_OPTIONS: "--conditions=source" },
 			});
 			expect(result.error).toBeUndefined();
 			expect(result.status, result.stderr).toBe(0);

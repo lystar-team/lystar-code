@@ -58,7 +58,7 @@ export function renderTerminalRichText(options: RichTextRenderOptions): RichText
 			preserveBackslashEscapes: options.messageType === "user",
 			transform: createMarkdownTransform(
 				options.messageType === "user" ? "user" : "assistant",
-				options.isStreaming,
+				() => options.isStreaming,
 				[...builtinTransformers, ...extensionTransformers],
 			),
 		},

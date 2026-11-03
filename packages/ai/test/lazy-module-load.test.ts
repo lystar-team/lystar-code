@@ -38,6 +38,7 @@ function runProbe(action: string): ProbeResult {
 	const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
 		cwd: packageRoot,
 		encoding: "utf8",
+		env: { ...process.env, NODE_OPTIONS: "--conditions=source" },
 	});
 
 	if (result.status !== 0) {

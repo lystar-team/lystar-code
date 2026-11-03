@@ -60,7 +60,11 @@ for (const [name, apply] of implementations) {
 			for (const suffix of ["", "\n", "\n\tuntouched  \n"]) {
 				it(`preserves surrounding bytes for a Unicode inline edit ${JSON.stringify([prefix, suffix])}`, () => {
 					const original = `${prefix}\tlog(“x”);${suffix}`;
-					const result = apply(original, [{ oldText: name === "coding-agent" ? "log(“x”);" : 'log("x");', newText: 'log("y");' }], "memory.txt");
+					const result = apply(
+						original,
+						[{ oldText: name === "coding-agent" ? "log(“x”);" : 'log("x");', newText: 'log("y");' }],
+						"memory.txt",
+					);
 					expect(result.newContent).toBe(`${prefix}\tlog("y");${suffix}`);
 				});
 			}
@@ -93,15 +97,22 @@ for (const [name, apply] of implementations) {
 		});
 
 		it("does not remove trailing whitespace outside an inline match", () => {
-			expect(apply("head\n\t“one”   \n", [{ oldText: name === "coding-agent" ? "“one”" : '"one"', newText: "two" }], "memory.txt").newContent).toBe(
-				"head\n\ttwo   \n",
-			);
+			expect(
+				apply(
+					"head\n\t“one”   \n",
+					[{ oldText: name === "coding-agent" ? "“one”" : '"one"', newText: "two" }],
+					"memory.txt",
+				).newContent,
+			).toBe("head\n\ttwo   \n");
 		});
 
 		it("retains blank lines and maps Unicode graphemes as complete units", () => {
 			expect(
-				apply("head\n  \n\tﬀ café 👩‍💻\n", [{ oldText: name === "coding-agent" ? "ﬀ café 👩‍💻" : "ff cafe\u0301 👩‍💻", newText: "done" }], "memory.txt")
-					.newContent,
+				apply(
+					"head\n  \n\tﬀ café 👩‍💻\n",
+					[{ oldText: name === "coding-agent" ? "ﬀ café 👩‍💻" : "ff cafe\u0301 👩‍💻", newText: "done" }],
+					"memory.txt",
+				).newContent,
 			).toBe("head\n  \n\tdone\n");
 			expect(() => apply("ﬀ\n", [{ oldText: "f", newText: "x" }], "memory.txt")).toThrow("Could not find");
 		});
@@ -114,9 +125,9 @@ for (const [name, apply] of implementations) {
 		});
 
 		it("finds overlapping Unicode occurrences without guessing a position", () => {
-			expect(() => apply("ａｂａｂａ", [{ oldText: name === "coding-agent" ? "ａｂａ" : "aba", newText: "X" }], "memory.txt")).toThrow(
-				"Found 2 occurrences",
-			);
+			expect(() =>
+				apply("ａｂａｂａ", [{ oldText: name === "coding-agent" ? "ａｂａ" : "aba", newText: "X" }], "memory.txt"),
+			).toThrow("Found 2 occurrences");
 		});
 
 		it("reports every independently diagnosable issue in one batch", () => {
@@ -200,7 +211,10 @@ describe("edit recovery evidence and write outcomes", () => {
 		const { failure, result, text } = await recover(tool, [{ oldText: "line-4-old", newText: "FOUR" }]);
 		expect(failure).toMatchObject({ code: "MATCH_NOT_FOUND", details: { writeState: "not_written" } });
 		expect(result.type).toBe("ask_model_to_rebuild");
-		expect(result.replacementResult.details.recovery).toMatchObject({ code: "MATCH_NOT_FOUND", sourceRevision: expect.any(String) });
+		expect(result.replacementResult.details.recovery).toMatchObject({
+			code: "MATCH_NOT_FOUND",
+			sourceRevision: expect.any(String),
+		});
 		expect(text).toContain("1| line-1");
 		expect(text).toContain("4| line-4");
 		expect(text).not.toContain("[snapshot");
@@ -210,9 +224,18 @@ describe("edit recovery evidence and write outcomes", () => {
 	it("resubmits the complete corrected batch after a rejection", async () => {
 		const original = "a\nb\nc\n";
 		const { tool, path } = await fixture(original);
-		await recover(tool, [{ oldText: "a", newText: "A" }, { oldText: "missing", newText: "C" }]);
+		await recover(tool, [
+			{ oldText: "a", newText: "A" },
+			{ oldText: "missing", newText: "C" },
+		]);
 		expect(await readFile(path, "utf8")).toBe(original);
-		const result = await tool.execute("repair", { path: "target.txt", edits: [{ oldText: "a", newText: "A" }, { oldText: "c", newText: "C" }] });
+		const result = await tool.execute("repair", {
+			path: "target.txt",
+			edits: [
+				{ oldText: "a", newText: "A" },
+				{ oldText: "c", newText: "C" },
+			],
+		});
 		expect(result.details).toMatchObject({ status: "written", applied: 2 });
 		expect(await readFile(path, "utf8")).toBe("A\nb\nC\n");
 	});
@@ -220,8 +243,20 @@ describe("edit recovery evidence and write outcomes", () => {
 	it("rejects duplicate corrections for the same source interval", async () => {
 		const original = "a\nb\nc\n";
 		const { tool, path } = await fixture(original);
-		await expect(tool.execute("duplicate-correction", { path: "target.txt", edits: [{ oldText: "a", newText: "A" }, { oldText: "a", newText: "other" }] })).rejects.toMatchObject({
-			code: "EDIT_OVERLAP", details: { writeState: "not_written", issues: [expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 })] },
+		await expect(
+			tool.execute("duplicate-correction", {
+				path: "target.txt",
+				edits: [
+					{ oldText: "a", newText: "A" },
+					{ oldText: "a", newText: "other" },
+				],
+			}),
+		).rejects.toMatchObject({
+			code: "EDIT_OVERLAP",
+			details: {
+				writeState: "not_written",
+				issues: [expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 })],
+			},
 		});
 		expect(await readFile(path, "utf8")).toBe(original);
 	});
@@ -239,8 +274,18 @@ describe("edit recovery evidence and write outcomes", () => {
 	it("reports overlapping batch intervals without applying valid items", async () => {
 		const original = "one\ntwo\nthree\nfour\n";
 		const { tool, path } = await fixture(original);
-		const { failure, text } = await recover(tool, [{ oldText: "one\ntwo", newText: "ONE\nTWO" }, { oldText: "two\nthree", newText: "TWO\nTHREE" }, { oldText: "four", newText: "FOUR" }]);
-		expect(failure).toMatchObject({ code: "EDIT_OVERLAP", details: { writeState: "not_written", issues: [expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 })] } });
+		const { failure, text } = await recover(tool, [
+			{ oldText: "one\ntwo", newText: "ONE\nTWO" },
+			{ oldText: "two\nthree", newText: "TWO\nTHREE" },
+			{ oldText: "four", newText: "FOUR" },
+		]);
+		expect(failure).toMatchObject({
+			code: "EDIT_OVERLAP",
+			details: {
+				writeState: "not_written",
+				issues: [expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 })],
+			},
+		});
 		expect(text).toContain("No changes were written");
 		expect(await readFile(path, "utf8")).toBe(original);
 	});
@@ -258,28 +303,61 @@ describe("edit recovery evidence and write outcomes", () => {
 	it("reports a completed write when cancellation arrives during the write", async () => {
 		const { directory, path } = await fixture("before\n");
 		const controller = new AbortController();
-		const tool = createEditTool(directory, { operations: { access: async () => {}, readFile, writeFile: async (target, content) => { await writeFile(target, content); controller.abort(); } } });
-		await expect(tool.execute("cancel", { path, edits: [{ oldText: "before", newText: "after" }] }, controller.signal)).rejects.toMatchObject({ details: { writeState: "written" }, message: expect.stringContaining("File was written") });
+		const tool = createEditTool(directory, {
+			operations: {
+				access: async () => {},
+				readFile,
+				writeFile: async (target, content) => {
+					await writeFile(target, content);
+					controller.abort();
+				},
+			},
+		});
+		await expect(
+			tool.execute("cancel", { path, edits: [{ oldText: "before", newText: "after" }] }, controller.signal),
+		).rejects.toMatchObject({
+			details: { writeState: "written" },
+			message: expect.stringContaining("File was written"),
+		});
 		expect(await readFile(path, "utf8")).toBe("after\n");
 	});
 
 	it("reports an unknown write state when an operation writes and then throws", async () => {
 		const { directory, path } = await fixture("before\n");
-		const tool = createEditTool(directory, { operations: { access: async () => {}, readFile, writeFile: async (target, content) => { await writeFile(target, content); throw new Error("connection lost"); } } });
-		await expect(tool.execute("unknown", { path, edits: [{ oldText: "before", newText: "after" }] })).rejects.toMatchObject({ details: { writeState: "unknown" }, message: expect.stringContaining("Write outcome is unknown") });
+		const tool = createEditTool(directory, {
+			operations: {
+				access: async () => {},
+				readFile,
+				writeFile: async (target, content) => {
+					await writeFile(target, content);
+					throw new Error("connection lost");
+				},
+			},
+		});
+		await expect(
+			tool.execute("unknown", { path, edits: [{ oldText: "before", newText: "after" }] }),
+		).rejects.toMatchObject({
+			details: { writeState: "unknown" },
+			message: expect.stringContaining("Write outcome is unknown"),
+		});
 		expect(await readFile(path, "utf8")).toBe("after\n");
 	});
 
 	it("uses the execution context cwd for the mutation key", async () => {
 		const { directory, path } = await fixture("before\n");
 		const tool = createEditToolDefinition("/");
-		expect(await tool.getExecutionKeys?.({ path: "target.txt" }, { cwd: directory } as ExtensionContext)).toEqual([path]);
+		expect(await tool.getExecutionKeys?.({ path: "target.txt" }, { cwd: directory } as ExtensionContext)).toEqual([
+			path,
+		]);
 	});
 
 	it("returns an applicable patch for a whole-line Unicode replacement", async () => {
 		const current = "head\n\tlog(“x”);\n\tuntouched  \n";
 		const { tool, path } = await fixture(current);
-		const result = await tool.execute("patch", { path, edits: [{ oldText: "\tlog(“x”);\n", newText: '\tlog("y");\n' }] });
+		const result = await tool.execute("patch", {
+			path,
+			edits: [{ oldText: "\tlog(“x”);\n", newText: '\tlog("y");\n' }],
+		});
 		const expected = 'head\n\tlog("y");\n\tuntouched  \n';
 		expect(await readFile(path, "utf8")).toBe(expected);
 		expect(applyPatch(current, result.details?.patch ?? "")).toBe(expected);

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, expect, test, vi } from "vitest";
-import { git, gitWrite, GIT_OPERATION_TIMEOUT_MS, withGitOperation } from "../src/git-execution.ts";
+import { GIT_OPERATION_TIMEOUT_MS, git, gitWrite, withGitOperation } from "../src/git-execution.ts";
 import { CodingAgentRuntimeAdapter } from "../src/runtime-adapter.ts";
 
 const cleanups: Array<() => void> = [];
@@ -25,11 +25,14 @@ function stalledGit(): { cwd: string; args: string[]; heartbeat: string } {
 	const cwd = mkdtempSync(join(tmpdir(), "runtime-git-timeout-"));
 	const script = join(cwd, "stall.mjs");
 	const heartbeat = join(cwd, "heartbeat");
-	writeFileSync(script, `import { writeFileSync } from "node:fs";
+	writeFileSync(
+		script,
+		`import { writeFileSync } from "node:fs";
 process.on("SIGTERM", () => {});
 let ticks = 0;
 setInterval(() => writeFileSync(${JSON.stringify(heartbeat)}, String(++ticks)), 10);
-`);
+`,
+	);
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
 	return { cwd, args: ["-c", `alias.stall=!exec "${process.execPath}" "${script}"`, "stall"], heartbeat };
 }
@@ -103,7 +106,9 @@ test("已取消的写操作在仓库解析前终止，并发读取不继承另�
 	const adapter = new CodingAgentRuntimeAdapter({ agentDir: join(cwd, "agent") });
 	const controller = new AbortController();
 	controller.abort();
-	await expect(adapter.mutateGit(cwd, undefined, { type: "fetch" }, controller.signal)).rejects.toMatchObject({ code: "operation_aborted" });
+	await expect(adapter.mutateGit(cwd, undefined, { type: "fetch" }, controller.signal)).rejects.toMatchObject({
+		code: "operation_aborted",
+	});
 	const failed = withGitOperation(() => git(cwd, ["--version"]), controller.signal);
 	const successful = withGitOperation(() => git(cwd, ["--version"]));
 	const results = await Promise.allSettled([failed, successful]);

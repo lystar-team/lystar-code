@@ -6,7 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { loadWebGatewaySettings, WebGatewayServer, webAccessAddresses, webConfigPath, webGatewayTokenPath } from "../src/index.ts";
+import {
+	loadWebGatewaySettings,
+	WebGatewayServer,
+	webAccessAddresses,
+	webConfigPath,
+	webGatewayTokenPath,
+} from "../src/index.ts";
 
 interface RouteInternals {
 	handleApi(request: IncomingMessage, response: ServerResponse, url: URL, context: never): Promise<void>;

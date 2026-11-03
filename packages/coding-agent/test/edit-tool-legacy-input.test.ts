@@ -23,7 +23,7 @@ describe("edit tool prepareArguments", () => {
 		expect(Object.keys(definition.parameters.properties)).toEqual(["path", "edits"]);
 		expect(definition.parameters.properties.edits.items.properties).toHaveProperty("oldText");
 		expect(definition.parameters.properties.edits.items.properties).toHaveProperty("newText");
-		expect(definition.parameters.additionalProperties).toBe(false);
+		expect(definition.parameters).toHaveProperty("additionalProperties", false);
 	});
 
 	it("does not translate top-level oldText/newText fields", () => {
@@ -35,7 +35,10 @@ describe("edit tool prepareArguments", () => {
 	it("normalizes a single replacement object inside edits", () => {
 		const definition = createEditToolDefinition(process.cwd());
 		const edit = { oldText: "before", newText: "after" };
-		expect(definition.prepareArguments!({ path: "file.txt", edits: edit })).toEqual({ path: "file.txt", edits: [edit] });
+		expect(definition.prepareArguments!({ path: "file.txt", edits: edit })).toEqual({
+			path: "file.txt",
+			edits: [edit],
+		});
 	});
 
 	it("passes valid text input through without changing its shape", () => {
@@ -56,8 +59,12 @@ describe("edit tool prepareArguments", () => {
 		const filePath = join(dir, "legacy.txt");
 		await writeFile(filePath, "before\n", "utf8");
 		const tool = createEditTool(dir);
-		await expect(tool.execute("legacy-input", { path: filePath, oldText: "before", newText: "after" } as never, undefined, undefined, {} as ExtensionToolContext)).rejects.toMatchObject({
-			code: "INVALID_ARGUMENTS", category: "arguments", details: { writeState: "not_written" },
+		await expect(
+			tool.execute("legacy-input", { path: filePath, oldText: "before", newText: "after" } as never, undefined),
+		).rejects.toMatchObject({
+			code: "INVALID_ARGUMENTS",
+			category: "arguments",
+			details: { writeState: "not_written" },
 		});
 		expect(await readFile(filePath, "utf8")).toBe("before\n");
 	});
@@ -67,7 +74,10 @@ describe("edit tool prepareArguments", () => {
 		const filePath = join(dir, "text.txt");
 		await writeFile(filePath, "before\n", "utf8");
 		const definition = createEditToolDefinition(dir);
-		const prepared = definition.prepareArguments!({ path: "text.txt", edits: { oldText: "before", newText: "after" } });
+		const prepared = definition.prepareArguments!({
+			path: "text.txt",
+			edits: { oldText: "before", newText: "after" },
+		});
 		const result = await definition.execute("tool-1", prepared, undefined, undefined, {} as ExtensionToolContext);
 		expect(result.details).toMatchObject({ path: "text.txt", status: "written", applied: 1 });
 		expect(await readFile(filePath, "utf8")).toBe("after\n");
@@ -77,24 +87,39 @@ describe("edit tool prepareArguments", () => {
 describe("edit tool stringified text edits", () => {
 	it("parses an array of replacements from a JSON string", () => {
 		const definition = createEditToolDefinition(process.cwd());
-		const edits = [{ oldText: "second", newText: "SECOND" }, { oldText: "fifth", newText: "inserted\nfifth" }];
-		expect(definition.prepareArguments!({ path: "file.txt", edits: JSON.stringify(edits) })).toEqual({ path: "file.txt", edits });
+		const edits = [
+			{ oldText: "second", newText: "SECOND" },
+			{ oldText: "fifth", newText: "inserted\nfifth" },
+		];
+		expect(definition.prepareArguments!({ path: "file.txt", edits: JSON.stringify(edits) })).toEqual({
+			path: "file.txt",
+			edits,
+		});
 	});
 
 	it("normalizes one replacement object from a JSON string", () => {
 		const definition = createEditToolDefinition(process.cwd());
 		const edit = { oldText: "anchor", newText: "inserted\nanchor" };
-		expect(definition.prepareArguments!({ path: "file.txt", edits: JSON.stringify(edit) })).toEqual({ path: "file.txt", edits: [edit] });
+		expect(definition.prepareArguments!({ path: "file.txt", edits: JSON.stringify(edit) })).toEqual({
+			path: "file.txt",
+			edits: [edit],
+		});
 	});
 
 	it("does not normalize obsolete range edits from JSON", () => {
 		const definition = createEditToolDefinition(process.cwd());
 		const obsolete = JSON.stringify({ startLine: 1, endLine: 1, newText: "after" });
-		expect(definition.prepareArguments!({ path: "file.txt", edits: obsolete })).toEqual({ path: "file.txt", edits: obsolete });
+		expect(definition.prepareArguments!({ path: "file.txt", edits: obsolete })).toEqual({
+			path: "file.txt",
+			edits: obsolete,
+		});
 	});
 
 	it("leaves malformed JSON unchanged for parameter validation", () => {
 		const definition = createEditToolDefinition(process.cwd());
-		expect(definition.prepareArguments!({ path: "file.txt", edits: "not json" })).toEqual({ path: "file.txt", edits: "not json" });
+		expect(definition.prepareArguments!({ path: "file.txt", edits: "not json" })).toEqual({
+			path: "file.txt",
+			edits: "not json",
+		});
 	});
 });

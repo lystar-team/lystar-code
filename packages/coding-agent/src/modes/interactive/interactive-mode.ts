@@ -110,7 +110,7 @@ import {
 } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, ThinkingDisplayMode, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
-import type { SourceInfo } from "../../core/source-info.ts";
+import { getSourcePackageKey, type SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
@@ -144,10 +144,11 @@ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipb
 import { parseGitUrl } from "../../utils/git.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
-import { getCwdRelativePath } from "../../utils/paths.ts";
+import { getCwdRelativePath, shortenHomePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { getGitRuntime, killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
+import { stripBom } from "../../utils/text.ts";
 import { ensureManagedWindowsBash, ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
 import { reportBug } from "./bug-report.ts";
@@ -304,6 +305,7 @@ class ExpandableText extends ThemedText implements Expandable {
 	}
 }
 
+type ExtensionDialogComponent = Component & { dispose?(): void };
 type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
@@ -645,6 +647,12 @@ function getWebCompanionCoordinationState(owner: object): WebCompanionCoordinati
 	return state;
 }
 
+interface ExtensionChangelogUpdate {
+	name: string;
+	version: string;
+	markdown: string;
+}
+
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private webCompanion?: WebCompanionServer;
@@ -692,6 +700,7 @@ export class InteractiveMode {
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
+	private extensionChangelogUpdates: ExtensionChangelogUpdate[] = [];
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
 	private bugReportHintShown = false;
@@ -774,9 +783,9 @@ export class InteractiveMode {
 	private installChangeWarningShown = false;
 
 	// Extension UI state
-	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
-	private extensionInput: ExtensionInputComponent | undefined = undefined;
-	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
+	// Extension dialogs shown in the editor slot (select, confirm, input, editor, inline custom).
+	// The last entry is visible; see pushExtensionDialog().
+	private extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -1169,33 +1178,52 @@ export class InteractiveMode {
 		}
 		this.startupNoticesShown = true;
 
-		if (!this.changelogMarkdown) {
+		if (!this.changelogMarkdown && this.extensionChangelogUpdates.length === 0) {
 			return;
 		}
 
 		if (this.chatContainer.children.length > 0) {
 			this.chatContainer.addChild(new Spacer(1));
 		}
-		const condensedText = `${t("update.productUpdated", { app: APP_TITLE, version: this.version })} ${t(
+		const productSummary = `${t("update.productUpdated", { app: APP_TITLE, version: this.version })} ${t(
 			"update.productChangelog",
 			{ app: APP_TITLE },
 		)}`;
+		const extensionSummary = this.extensionChangelogUpdates
+			.map((update) => `${update.name} 已更新至 v${update.version}`)
+			.join("\n");
+		const condensedText = [this.changelogMarkdown ? productSummary : undefined, extensionSummary || undefined]
+			.filter((line): line is string => line !== undefined)
+			.join("\n");
 		if (this.workspace.isFullscreen()) {
 			this.chatContainer.addChild(new Text(condensedText, 1, 0));
 			return;
 		}
 
 		this.chatContainer.addChild(new DynamicBorder());
-		if (this.settingsManager.getCollapseChangelog()) {
-			this.chatContainer.addChild(new Text(condensedText, 1, 0));
-		} else {
-			this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "更新内容")), 1, 0));
-
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Markdown(this.changelogMarkdown.trim(), 1, 0, this.getMarkdownThemeWithSettings()),
-			);
-			this.chatContainer.addChild(new Spacer(1));
+		if (this.changelogMarkdown) {
+			if (this.settingsManager.getCollapseChangelog()) {
+				this.chatContainer.addChild(new Text(productSummary, 1, 0));
+			} else {
+				this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "更新内容")), 1, 0));
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(
+					new Markdown(this.changelogMarkdown.trim(), 1, 0, this.getMarkdownThemeWithSettings()),
+				);
+				this.chatContainer.addChild(new Spacer(1));
+			}
+		}
+		if (this.extensionChangelogUpdates.length > 0) {
+			if (this.changelogMarkdown) this.chatContainer.addChild(new Spacer(1));
+			if (this.settingsManager.getCollapseChangelog()) {
+				this.chatContainer.addChild(new Text(extensionSummary, 1, 0));
+			} else {
+				this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "扩展更新")), 1, 0));
+				this.chatContainer.addChild(new Spacer(1));
+				const markdown = this.extensionChangelogUpdates.map((update) => update.markdown).join("\n\n");
+				this.chatContainer.addChild(new Markdown(markdown, 1, 0, this.getMarkdownThemeWithSettings()));
+				this.chatContainer.addChild(new Spacer(1));
+			}
 		}
 		this.chatContainer.addChild(new DynamicBorder());
 	}
@@ -1287,22 +1315,14 @@ export class InteractiveMode {
 
 		this.registerSignalHandlers();
 
-		// Load changelog (only show new entries, skip for resumed sessions)
+		// Load changelogs (only show new entries, skip for resumed sessions)
 		this.changelogMarkdown = this.getChangelogForDisplay();
+		this.extensionChangelogUpdates = this.getExtensionChangelogUpdates();
 
-		if (this.session.scopedModels.length > 0 && this.shouldShowStartupDetails()) {
-			const modelList = this.session.scopedModels
-				.map((sm) => {
-					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
-					return `${sm.model.id}${thinkingStr}`;
-				})
-				.join(", ");
-			const cycleKeys = this.keybindings.getKeys("app.model.cycleForward");
-			const cycleHint =
-				cycleKeys.length > 0
-					? theme.fg("muted", `（${formatKeyText(cycleKeys.join("/"), { capitalize: true })} 切换）`)
-					: "";
-			console.log(theme.fg("dim", `模型范围：${modelList}${cycleHint}`));
+		// Fullscreen renders on the alternate screen; show the scope in the workspace header instead of stdout.
+		if (this.renderer.mode !== "fullscreen") {
+			const modelScopeNotice = this.getModelScopeNotice();
+			if (modelScopeNotice) console.log(modelScopeNotice);
 		}
 
 		// The workspace owns the fixed header, scrollback viewport, editor, and footer.
@@ -1352,6 +1372,7 @@ export class InteractiveMode {
 			: new Text("", 0, 0);
 		this.headerContainer.addChild(this.builtInHeader);
 
+		if (this.renderer.mode === "fullscreen") this.showFullscreenModelScopeNotice();
 		this.ui.requestRender();
 
 		const [fdPath] = await Promise.all([
@@ -1609,7 +1630,7 @@ export class InteractiveMode {
 			return undefined;
 		}
 
-		const newEntries = getNewEntries(entries, lastVersion);
+		const newEntries = getNewEntries(entries, lastVersion, VERSION);
 		if (newEntries.length > 0) {
 			this.settingsManager.setLastChangelogVersion(VERSION);
 			this.reportInstallTelemetry(VERSION);
@@ -1617,6 +1638,68 @@ export class InteractiveMode {
 		}
 
 		return undefined;
+	}
+
+	private getExtensionChangelogUpdates(): ExtensionChangelogUpdate[] {
+		// Skip changelog for resumed/continued sessions (already have messages)
+		if (this.session.state.messages.length > 0) {
+			return [];
+		}
+
+		const seenKeys = new Set<string>();
+		const updates: ExtensionChangelogUpdate[] = [];
+		for (const { sourceInfo } of this.session.resourceLoader.getExtensions().extensions) {
+			if (sourceInfo.origin !== "package" || !sourceInfo.baseDir || !sourceInfo.changelogPath) {
+				continue;
+			}
+
+			const key = getSourcePackageKey(sourceInfo);
+			if (seenKeys.has(key)) {
+				continue;
+			}
+			seenKeys.add(key);
+
+			const pkg = this.readPackageJson(sourceInfo.baseDir);
+			if (!pkg?.version) {
+				continue;
+			}
+
+			const lastVersion = this.settingsManager.getExtensionChangelogVersion(key);
+			if (!lastVersion) {
+				// Fresh install - record the version, don't show changelog
+				this.settingsManager.setExtensionChangelogVersion(key, pkg.version);
+				continue;
+			}
+
+			const newEntries = getNewEntries(parseChangelog(sourceInfo.changelogPath), lastVersion);
+			if (newEntries.length > 0) {
+				this.settingsManager.setExtensionChangelogVersion(key, pkg.version);
+				const name = pkg.name || sourceInfo.source;
+				// Prefix each "## [x.y.z]" heading with the package name so entries render like Pi's own.
+				const markdown = newEntries
+					.map((entry) => entry.content.replace(/^##\s+/, `## ${name} `))
+					.join("\n\n")
+					.trim();
+				updates.push({ name, version: pkg.version, markdown });
+			}
+		}
+
+		return updates;
+	}
+
+	private readPackageJson(packageRoot: string): { name?: string; version?: string } | undefined {
+		try {
+			const pkg = JSON.parse(stripBom(fs.readFileSync(path.join(packageRoot, "package.json"), "utf-8"))) as {
+				name?: unknown;
+				version?: unknown;
+			};
+			return {
+				name: typeof pkg.name === "string" ? pkg.name : undefined,
+				version: typeof pkg.version === "string" ? pkg.version : undefined,
+			};
+		} catch {
+			return undefined;
+		}
 	}
 
 	private reportInstallTelemetry(version: string): void {
@@ -1651,15 +1734,7 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private formatDisplayPath(p: string): string {
-		const home = os.homedir();
-		let result = p;
-
-		// Replace home directory with ~
-		if (result.startsWith(home)) {
-			result = `~${result.slice(home.length)}`;
-		}
-
-		return result;
+		return shortenHomePath(p);
 	}
 
 	private formatExtensionDisplayPath(path: string): string {
@@ -1689,6 +1764,28 @@ export class InteractiveMode {
 	}
 
 	/** Startup details (model scope, loaded resources). Hidden by quietStartup: true or "header". */
+	private getModelScopeNotice(): string | undefined {
+		if (this.session.scopedModels.length === 0 || !this.shouldShowStartupDetails()) return undefined;
+		const modelList = this.session.scopedModels
+			.map((sm) => {
+				const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
+				return `${sm.model.id}${thinkingStr}`;
+			})
+			.join(", ");
+		const cycleKeys = this.keybindings.getKeys("app.model.cycleForward");
+		const cycleHint =
+			cycleKeys.length > 0
+				? theme.fg("muted", `（${formatKeyText(cycleKeys.join("/"), { capitalize: true })} 切换）`)
+				: "";
+		return theme.fg("dim", `模型范围：${modelList}${cycleHint}`);
+	}
+
+	private showFullscreenModelScopeNotice(): void {
+		if (!this.getModelScopeNotice()) return;
+		this.headerContainer.addChild(new ThemedText(() => this.getModelScopeNotice() ?? "", 1, 0));
+		this.headerContainer.addChild(new Spacer(1));
+	}
+
 	private shouldShowStartupDetails(): boolean {
 		return this.options.verbose === true || this.settingsManager.getQuietStartup() === false;
 	}
@@ -2841,14 +2938,12 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
-		if (this.extensionSelector) {
-			this.hideExtensionSelector();
-		}
-		if (this.extensionInput) {
-			this.hideExtensionInput();
-		}
-		if (this.extensionEditor) {
-			this.hideExtensionEditor();
+		if (this.extensionDialogs.length > 0) {
+			for (const dialog of this.extensionDialogs) {
+				dialog.component.dispose?.();
+			}
+			this.extensionDialogs = [];
+			this.showTopExtensionDialog();
 		}
 		this.ui.hideOverlay();
 		this.clearExtensionTerminalInputListeners();
@@ -3069,6 +3164,36 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * Show an extension dialog in the editor slot.
+	 * Dialogs form a stack: a new dialog hides the visible one, and closing the visible dialog shows
+	 * the previous one again. Every dialog stays answerable, so no dialog promise is left pending,
+	 * and dialogs opened from inside another dialog (for example a confirm from a custom component) work.
+	 */
+	private pushExtensionDialog(component: ExtensionDialogComponent, blocked?: BlockedStatus): void {
+		this.disposeActiveSelector();
+		this.extensionDialogs.push({ component, blocked });
+		this.showTopExtensionDialog();
+	}
+
+	/** Remove an extension dialog. If it was visible, show the previous dialog or the editor. */
+	private removeExtensionDialog(component: ExtensionDialogComponent): void {
+		const index = this.extensionDialogs.findIndex((dialog) => dialog.component === component);
+		if (index === -1) return;
+		this.extensionDialogs.splice(index, 1);
+		if (index === this.extensionDialogs.length) this.showTopExtensionDialog();
+	}
+
+	private showTopExtensionDialog(): void {
+		const top = this.extensionDialogs.at(-1);
+		const component = top?.component ?? this.editor;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(component);
+		this.ui.setFocus(component);
+		this.programStatus.setBlocked("extension-dialog", top?.blocked);
+		this.ui.requestRender();
+	}
+
+	/**
 	 * Show a selector for extensions.
 	 */
 	private showExtensionSelector(
@@ -3083,49 +3208,24 @@ export class InteractiveMode {
 				return;
 			}
 
-			const onAbort = () => {
-				this.hideExtensionSelector();
-				resolve(undefined);
+			const finish = (option: string | undefined) => {
+				opts?.signal?.removeEventListener("abort", onAbort);
+				selector.dispose();
+				this.removeExtensionDialog(selector);
+				resolve(option);
 			};
+			const onAbort = () => finish(undefined);
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
-			this.extensionSelector = new ExtensionSelectorComponent(
+			const selector = new ExtensionSelectorComponent(
 				title,
 				options,
-				(option) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(option);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(undefined);
-				},
+				(option) => finish(option),
+				() => finish(undefined),
 				{ tui: this.ui, timeout: opts?.timeout, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() },
 			);
-
-			this.disposeActiveSelector();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionSelector);
-			this.ui.setFocus(this.extensionSelector);
-			// Extension dialogs share the editor slot: opening one replaces the status of a displaced one.
-			this.programStatus.setBlocked("extension-dialog", blocked);
-			this.ui.requestRender();
+			this.pushExtensionDialog(selector, blocked);
 		});
-	}
-
-	/**
-	 * Hide the extension selector.
-	 */
-	private hideExtensionSelector(): void {
-		this.extensionSelector?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionSelector = undefined;
-		this.programStatus.setBlocked("extension-dialog", undefined);
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
 	}
 
 	/**
@@ -3165,48 +3265,24 @@ export class InteractiveMode {
 				return;
 			}
 
-			const onAbort = () => {
-				this.hideExtensionInput();
-				resolve(undefined);
+			const finish = (value: string | undefined) => {
+				opts?.signal?.removeEventListener("abort", onAbort);
+				input.dispose();
+				this.removeExtensionDialog(input);
+				resolve(value);
 			};
+			const onAbort = () => finish(undefined);
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
-			this.extensionInput = new ExtensionInputComponent(
+			const input = new ExtensionInputComponent(
 				title,
 				placeholder,
-				(value) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(value);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(undefined);
-				},
+				(value) => finish(value),
+				() => finish(undefined),
 				{ tui: this.ui, timeout: opts?.timeout },
 			);
-
-			this.disposeActiveSelector();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionInput);
-			this.ui.setFocus(this.extensionInput);
-			this.programStatus.setBlocked("extension-dialog", { kind: "question", message: title });
-			this.ui.requestRender();
+			this.pushExtensionDialog(input, { kind: "question", message: title });
 		});
-	}
-
-	/**
-	 * Hide the extension input.
-	 */
-	private hideExtensionInput(): void {
-		this.extensionInput?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionInput = undefined;
-		this.programStatus.setBlocked("extension-dialog", undefined);
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
 	}
 
 	/**
@@ -3214,42 +3290,22 @@ export class InteractiveMode {
 	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
 		return new Promise((resolve) => {
-			this.extensionEditor = new ExtensionEditorComponent(
+			const finish = (value: string | undefined) => {
+				this.removeExtensionDialog(editor);
+				resolve(value);
+			};
+			const editor = new ExtensionEditorComponent(
 				this.ui,
 				this.keybindings,
 				title,
 				prefill,
-				(value) => {
-					this.hideExtensionEditor();
-					resolve(value);
-				},
-				() => {
-					this.hideExtensionEditor();
-					resolve(undefined);
-				},
+				(value) => finish(value),
+				() => finish(undefined),
 				undefined,
 				this.settingsManager.getExternalEditorCommand(),
 			);
-
-			this.disposeActiveSelector();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionEditor);
-			this.ui.setFocus(this.extensionEditor);
-			this.programStatus.setBlocked("extension-dialog", { kind: "question", message: title });
-			this.ui.requestRender();
+			this.pushExtensionDialog(editor, { kind: "question", message: title });
 		});
-	}
-
-	/**
-	 * Hide the extension editor.
-	 */
-	private hideExtensionEditor(): void {
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionEditor = undefined;
-		this.programStatus.setBlocked("extension-dialog", undefined);
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
 	}
 
 	/**
@@ -3262,8 +3318,12 @@ export class InteractiveMode {
 		// Save text from current editor before switching
 		const currentText = this.editor.getText();
 
-		this.disposeActiveSelector();
-		this.editorContainer.clear();
+		// An open extension dialog keeps the editor slot; the new editor is shown when the last dialog closes.
+		const dialogOpen = this.extensionDialogs.length > 0;
+		if (!dialogOpen) {
+			this.disposeActiveSelector();
+			this.editorContainer.clear();
+		}
 
 		if (factory) {
 			// Create the custom editor with tui, theme, and keybindings
@@ -3321,15 +3381,15 @@ export class InteractiveMode {
 			this.editor = this.defaultEditor;
 		}
 
-		this.editorContainer.addChild(this.editor as Component);
-		if (this.activeStatusIndicator instanceof WorkingStatusIndicator) {
+		if (!dialogOpen) this.editorContainer.addChild(this.editor as Component);
+		if (this.activeStatusIndicator) {
 			this.statusContainer.clear();
 			this.activeWorkingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.activeStatusIndicator);
 			if (!this.activeWorkingIndicatorEmbedded) {
 				this.statusContainer.addChild(this.activeStatusIndicator);
 			}
 		}
-		this.ui.setFocus(this.editor as Component);
+		if (!dialogOpen) this.ui.setFocus(this.editor as Component);
 		this.ui.requestRender();
 	}
 
@@ -3358,23 +3418,22 @@ export class InteractiveMode {
 			overlay?: boolean;
 			overlayOptions?: OverlayOptions | (() => OverlayOptions);
 			onHandle?: (handle: OverlayHandle) => void;
+			blocked?: BlockedStatus;
 		},
 	): Promise<T> {
 		const savedText = this.editor.getText();
 		const isOverlay = options?.overlay ?? false;
 
-		const restoreEditor = () => {
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.editor.setText(savedText);
-			this.ui.setFocus(this.editor);
-			this.ui.requestRender();
-		};
-
 		return new Promise((resolve, reject) => {
-			let component: Component & { dispose?(): void };
+			let component: ExtensionDialogComponent | undefined;
 			let overlayHandle: OverlayHandle | undefined;
 			let closed = false;
+
+			const restoreEditor = () => {
+				if (component) this.removeExtensionDialog(component);
+				this.editor.setText(savedText);
+				this.ui.requestRender();
+			};
 
 			const close = (result: T) => {
 				if (closed) return;
@@ -3406,18 +3465,14 @@ export class InteractiveMode {
 								return opts;
 							}
 							// Fallback: use component's width property if available
-							const w = (component as { width?: number }).width;
+							const w = (c as { width?: number }).width;
 							return w ? { width: w } : undefined;
 						};
-						overlayHandle = this.ui.showOverlay(component, resolveOptions());
+						overlayHandle = this.ui.showOverlay(c, resolveOptions());
 						// Expose handle to caller for visibility control
 						options?.onHandle?.(overlayHandle);
 					} else {
-						this.disposeActiveSelector();
-						this.editorContainer.clear();
-						this.editorContainer.addChild(component);
-						this.ui.setFocus(component);
-						this.ui.requestRender();
+						this.pushExtensionDialog(c, options?.blocked);
 					}
 				})
 				.catch((err) => {
@@ -4718,7 +4773,10 @@ export class InteractiveMode {
 		this.chatContainer.addChild(component);
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
+	private addMessageToChat(
+		message: AgentMessage,
+		options?: { populateHistory?: boolean; messageId?: string; timestamp?: string },
+	): void {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(
@@ -4800,6 +4858,8 @@ export class InteractiveMode {
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
 								this.getMarkdownTransformers(),
+								options?.messageId,
+								options?.timestamp,
 							);
 							this.chatContainer.addChild(userComponent);
 						}
@@ -4809,6 +4869,8 @@ export class InteractiveMode {
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
+							options?.messageId,
+							options?.timestamp,
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -4827,6 +4889,8 @@ export class InteractiveMode {
 					this.outputPad,
 					this.getMarkdownTransformers(),
 					this.thinkingDisplayMode === "transcript",
+					options?.messageId,
+					options?.timestamp,
 				);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -4846,8 +4910,14 @@ export class InteractiveMode {
 
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
-		options: { updateFooter?: boolean; populateHistory?: boolean; cwd?: string; includeCacheMisses?: boolean } = {},
+		options: {
+			updateFooter?: boolean;
+			populateHistory?: boolean;
+			cwd?: string;
+			includeCacheMisses?: boolean;
+		} = {},
 		onItemRendered?: (item: RenderSessionItem, components: Component[], index: number) => void,
+		messageMeta?: Map<AgentMessage, { id: string; timestamp: string }>,
 	): void {
 		this.pendingTools.clear();
 		this.streamingToolStack = undefined;
@@ -4875,6 +4945,7 @@ export class InteractiveMode {
 			}
 			if (isCompactionCostNotice(item)) {
 				this.addCompactionCostNotice(item);
+				onItemRendered?.(item, this.chatContainer.children.slice(childStart), index);
 				continue;
 			}
 
@@ -4886,7 +4957,11 @@ export class InteractiveMode {
 			const message = item;
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.addMessageToChat(message);
+				const meta = messageMeta?.get(message);
+				this.addMessageToChat(message, {
+					messageId: meta?.id,
+					timestamp: meta?.timestamp,
+				});
 				fallbackComponent = this.chatContainer.children.at(-1);
 				let toolStack: ToolExecutionStackComponent | undefined;
 				// Render tool call components
@@ -4944,7 +5019,12 @@ export class InteractiveMode {
 				}
 			} else {
 				// All other messages use standard rendering
-				this.addMessageToChat(message, options);
+				const meta = messageMeta?.get(message);
+				this.addMessageToChat(message, {
+					...options,
+					messageId: meta?.id,
+					timestamp: meta?.timestamp,
+				});
 			}
 
 			onItemRendered?.(
@@ -4978,15 +5058,22 @@ export class InteractiveMode {
 	): void {
 		// Selection coordinates refer to the transcript being replaced.
 		if (this.renderer instanceof TuiAltScreen) this.renderer.resetTextSelection();
+		const messageMeta = new Map<AgentMessage, { id: string; timestamp: string }>();
 		const itemEntries = entries.flatMap((entry): Array<{ entryId: string; item: RenderSessionItem }> => {
 			if (entry.type === "custom" || (entry.type === "usage" && entry.kind === "cache_warm")) {
 				return [{ entryId: entry.id, item: entry as RenderSessionItem }];
 			}
 			const messages = sessionEntryToContextMessages(entry);
+			for (const message of messages) {
+				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+			}
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage && messages.length > 0) {
 				return [
 					...messages.map((item) => ({ entryId: entry.id, item })),
-					{ entryId: entry.id, item: { type: "compaction_cost" as const, kind: entry.type, usage: entry.usage } },
+					{
+						entryId: entry.id,
+						item: { type: "compaction_cost" as const, kind: entry.type, usage: entry.usage },
+					},
 				];
 			}
 			return messages.map((item) => ({ entryId: entry.id, item }));
@@ -4998,6 +5085,7 @@ export class InteractiveMode {
 				const entryId = itemEntries[index]?.entryId;
 				if (entryId) onEntryRendered?.(entryId, components);
 			},
+			messageMeta,
 		);
 	}
 
@@ -5734,6 +5822,8 @@ export class InteractiveMode {
 			});
 			if (result.status === "complete") {
 				this.editor.setText(result.content);
+			} else {
+				this.showStatus(result.message);
 			}
 		} finally {
 			this.ui.start();

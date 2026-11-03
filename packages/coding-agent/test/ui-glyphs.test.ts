@@ -34,5 +34,4 @@ describe("UI glyphs", () => {
 		expect(getUiGlyphs("win32", { LYSTAR_TERMINAL_HOST: "1" })).toEqual(getUiGlyphs("linux"));
 		expect(toUiGlyph("🔍", "win32", { LYSTAR_TERMINAL_HOST: "1" })).toBe("🔍");
 	});
-
 });

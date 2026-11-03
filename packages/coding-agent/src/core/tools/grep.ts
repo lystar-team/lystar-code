@@ -1,6 +1,5 @@
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import path from "path";
@@ -13,7 +12,7 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { grepRenderers } from "./renderers/grep.ts";
-import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+import { type TypeBoxAgentTool, wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
 	DEFAULT_MAX_BYTES,
 	formatSize,
@@ -213,7 +212,7 @@ export function createGrepToolDefinition(
 							if (!lines) {
 								try {
 									const content = await ops.readFile(filePath);
-									lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+									lines = content.replace(/\r\n/g, "\n").split("\n");
 								} catch {
 									lines = [];
 								}
@@ -222,7 +221,9 @@ export function createGrepToolDefinition(
 							return lines;
 						};
 
-						const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
+						// --no-config: the tool contract (literal, glob, limit, ...) must not depend on
+						// ambient user config like RIPGREP_CONFIG_PATH. Users can customize via bash or extensions.
+						const args: string[] = ["--no-config", "--json", "--line-number", "--color=never", "--hidden"];
 						if (ignoreCase) args.push("--ignore-case");
 						if (literal) args.push("--fixed-strings");
 						if (glob) args.push("--glob", glob);
@@ -397,6 +398,6 @@ export function createGrepToolDefinition(
 	};
 }
 
-export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentTool<typeof grepSchema> {
+export function createGrepTool(cwd: string, options?: GrepToolOptions): TypeBoxAgentTool<typeof grepSchema> {
 	return wrapToolDefinition(createGrepToolDefinition(cwd, options));
 }

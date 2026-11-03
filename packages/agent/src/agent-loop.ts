@@ -6,10 +6,13 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
+	type ClientIdentity,
 	EventStream,
 	getCurrentTools,
 	getToolStateChanges,
+	mergeClientIdentity,
 	normalizeContext,
+	PI_ATTRIBUTION,
 	type SystemMessage,
 	type ToolResultMessage,
 	type ToolStateChanges,
@@ -50,6 +53,12 @@ async function abortable<T>(signal: AbortSignal | undefined, run: () => T | Prom
 	signal?.throwIfAborted();
 	return result;
 }
+
+/**
+ * Request identity of agent loops: pi-ai's defaults with provider attribution to pi. `AgentLoopConfig.identity`
+ * overrides it field by field.
+ */
+export const DEFAULT_AGENT_IDENTITY: ClientIdentity = { attribution: PI_ATTRIBUTION };
 
 /**
  * Start an agent loop with a new prompt message.
@@ -554,6 +563,7 @@ async function streamAssistantResponse(
 				streamFunction(config.model, llmContext, {
 					...config,
 					apiKey: resolvedApiKey,
+					identity: mergeClientIdentity(DEFAULT_AGENT_IDENTITY, config.identity),
 					signal: requestSignal,
 					steering:
 						config.getSteeringSignal && config.getSteeringMessages && config.restoreSteeringMessages

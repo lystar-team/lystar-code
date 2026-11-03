@@ -22,36 +22,64 @@ describe("structured tool errors", () => {
 			parameters: Type.Object({}),
 			execute: async () => {
 				throw new ToolExecutionError("SOURCE_CHANGED: read current lines", {
-					code: "SOURCE_CHANGED", category: "stale_state", retryable: false, details,
+					code: "SOURCE_CHANGED",
+					category: "stale_state",
+					retryable: false,
+					details,
 				});
 			},
 		};
-		const controller: ToolRecoveryController | undefined = mode === "off" ? undefined : {
-			preflight: () => undefined,
-			observe: () => {},
-			...(mode === "controller-failure" ? { decideAttempt: () => { throw new Error("controller unavailable"); } } : {}),
-		};
+		const controller: ToolRecoveryController | undefined =
+			mode === "off"
+				? undefined
+				: {
+						preflight: () => undefined,
+						observe: () => {},
+						...(mode === "controller-failure"
+							? {
+									decideAttempt: () => {
+										throw new Error("controller unavailable");
+									},
+								}
+							: {}),
+					};
 		const toolCall = fauxToolCall("edit", {});
 		const outcome = await runToolCall(toolCall, {
-			tools: [tool], assistantMessage: fauxAssistantMessage([toolCall], { stopReason: "toolUse" }),
-			context: { messages: [], tools: [tool] }, toolRecoveryController: controller,
+			tools: [tool],
+			assistantMessage: fauxAssistantMessage([toolCall], { stopReason: "toolUse" }),
+			context: { messages: [], tools: [tool] },
+			toolRecoveryController: controller,
 		});
 		expect(outcome.isError).toBe(true);
 		expect(outcome.result.content).toEqual([{ type: "text", text: "SOURCE_CHANGED: read current lines" }]);
-		expect(outcome.result.details).toEqual({ ...details, code: "SOURCE_CHANGED", category: "stale_state", retryable: false });
+		expect(outcome.result.details).toEqual({
+			...details,
+			code: "SOURCE_CHANGED",
+			category: "stale_state",
+			retryable: false,
+		});
 	});
 
 	it("preserves the terminal hint of a structured error without recovery", async () => {
 		const tool: AgentTool = {
-			name: "edit", label: "Edit", description: "test terminal error", parameters: Type.Object({}),
-			execute: async () => { throw new ToolExecutionError("Recovery exhausted", {
-				code: "SOURCE_CHANGED", category: "stale_state", retryable: false, terminate: true,
-				details: { recoveryAllowed: false, attempt: 3 },
-			}); },
+			name: "edit",
+			label: "Edit",
+			description: "test terminal error",
+			parameters: Type.Object({}),
+			execute: async () => {
+				throw new ToolExecutionError("Recovery exhausted", {
+					code: "SOURCE_CHANGED",
+					category: "stale_state",
+					retryable: false,
+					terminate: true,
+					details: { recoveryAllowed: false, attempt: 3 },
+				});
+			},
 		};
 		const toolCall = fauxToolCall("edit", {});
 		const outcome = await runToolCall(toolCall, {
-			tools: [tool], assistantMessage: fauxAssistantMessage([toolCall], { stopReason: "toolUse" }),
+			tools: [tool],
+			assistantMessage: fauxAssistantMessage([toolCall], { stopReason: "toolUse" }),
 			context: { messages: [], tools: [tool] },
 		});
 		expect(outcome.result.terminate).toBe(true);

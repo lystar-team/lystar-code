@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { type AgentTool, ToolExecutionError, type ToolRecoveryObservation } from "@earendil-works/pi-agent-core";
 import { estimateTextTokens } from "@earendil-works/pi-ai";
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
+import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
+import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -48,18 +49,7 @@ import { createHarness, createHarnessWithExtensions } from "./test-harness.ts";
 
 const execFileAsync = promisify(execFile);
 
-class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
-	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => {
-				if (event.type === "done") return event.message;
-				if (event.type === "error") return event.error;
-				throw new Error("Unexpected event type");
-			},
-		);
-	}
-}
+class MockAssistantStream extends AssistantMessageEventStream {}
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -141,7 +131,8 @@ function createTrustedBuiltInTool(name: "read" | "bash" | "edit"): AgentTool {
 }
 
 function getReadSource(details: unknown): { revision: string } {
-	if (!details || typeof details !== "object" || !("source" in details)) throw new Error("missing read source details");
+	if (!details || typeof details !== "object" || !("source" in details))
+		throw new Error("missing read source details");
 	const source = details.source;
 	if (!source || typeof source !== "object") throw new Error("missing read source details");
 	const { revision } = source as { revision?: unknown };
@@ -886,7 +877,14 @@ describe("Tool recovery observe ledger", () => {
 					let message: AssistantMessage;
 					if (request % 3 === 0) {
 						message = assistantMessage(
-							[{ type: "toolCall", id: `read-${request}`, name: "read", arguments: { path: "target.txt", limit: 3 } }],
+							[
+								{
+									type: "toolCall",
+									id: `read-${request}`,
+									name: "read",
+									arguments: { path: "target.txt", limit: 3 },
+								},
+							],
 							"toolUse",
 						);
 					} else if (request % 3 === 1) {
@@ -917,7 +915,16 @@ describe("Tool recovery observe ledger", () => {
 						message = assistantMessage([{ type: "text", text: "attempt complete" }], "stop");
 					}
 					const stream = new MockAssistantStream();
-					queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
+					const assistantResponse = message;
+					if (
+						assistantResponse.stopReason === "aborted" ||
+						assistantResponse.stopReason === "error" ||
+						assistantResponse.stopReason === "pending"
+					) {
+						throw new Error("MockAssistantStream cannot emit this assistant stop reason");
+					}
+					const reason = assistantResponse.stopReason;
+					queueMicrotask(() => stream.push({ type: "done", reason, message: assistantResponse }));
 					return stream;
 				};
 
@@ -930,10 +937,16 @@ describe("Tool recovery observe ledger", () => {
 						message.role === "toolResult" && message.toolName === "edit",
 				);
 				const editDetails = editResults.map((result) => result.details as Record<string, unknown>);
-				expect(editDetails.map((details) => details.writeState)).toEqual(["not_written", "not_written", "not_written"]);
+				expect(editDetails.map((details) => details.writeState)).toEqual([
+					"not_written",
+					"not_written",
+					"not_written",
+				]);
 				expect(
 					editResults
-						.map((result) => result.content.map((content) => (content.type === "text" ? content.text : "")).join("\n"))
+						.map((result) =>
+							result.content.map((content) => (content.type === "text" ? content.text : "")).join("\n"),
+						)
 						.every((text) => text.includes("MATCH_NOT_FOUND")),
 				).toBe(true);
 				expect(
@@ -986,7 +999,10 @@ describe("Tool recovery observe ledger", () => {
 				directError as unknown as {
 					[key: symbol]: (context: { signal?: AbortSignal }) => Promise<{
 						type: string;
-						replacementResult?: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> };
+						replacementResult?: {
+							content: Array<{ type: string; text: string }>;
+							details: Record<string, unknown>;
+						};
 					}>;
 				}
 			)[Symbol.for("pi.toolRecoveryHandler")];
@@ -1041,7 +1057,10 @@ describe("Tool recovery observe ledger", () => {
 				directError as unknown as {
 					[key: symbol]: (context: { signal?: AbortSignal }) => Promise<{
 						type: string;
-						replacementResult?: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> };
+						replacementResult?: {
+							content: Array<{ type: string; text: string }>;
+							details: Record<string, unknown>;
+						};
 					}>;
 				}
 			)[Symbol.for("pi.toolRecoveryHandler")];
@@ -1077,7 +1096,11 @@ describe("Tool recovery observe ledger", () => {
 			for (const scenario of [
 				{
 					name: "expired-snapshot",
-					args: { path: "target.txt", snapshot: "expired-snapshot-reference", edits: [{ startLine: 1, endLine: 1, newText: "ONE" }] },
+					args: {
+						path: "target.txt",
+						snapshot: "expired-snapshot-reference",
+						edits: [{ startLine: 1, endLine: 1, newText: "ONE" }],
+					},
 					code: "INVALID_ARGUMENTS",
 				},
 				{

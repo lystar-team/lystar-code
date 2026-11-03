@@ -39,7 +39,7 @@ describe("ExtensionRunner Hook activity", () => {
 		const activities: ExtensionActivityEvent[] = [];
 		runner.onActivity((activity) => activities.push(activity));
 
-		await runner.emit({ type: "agent_settled", turn: settledTurn });
+		await runner.emit({ type: "agent_settled", turn: settledTurn, aborted: false });
 
 		expect(activities).toHaveLength(2);
 		expect(activities[0]).toMatchObject({ phase: "start", hook: "agent_settled" });
@@ -57,7 +57,7 @@ describe("ExtensionRunner Hook activity", () => {
 		const activities: ExtensionActivityEvent[] = [];
 		runner.onActivity((activity) => activities.push(activity));
 
-		await runner.emit({ type: "agent_settled", turn: settledTurn });
+		await runner.emit({ type: "agent_settled", turn: settledTurn, aborted: false });
 
 		expect(activities).toHaveLength(2);
 		expect(activities[1]).toMatchObject({ phase: "end", status: "failed", error: "hook failed" });

@@ -2,11 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	createRuntimeServiceSpec,
-	installWebService,
-	type WebServiceSpec,
-} from "../src/index.ts";
+import { createRuntimeServiceSpec, installWebService, type WebServiceSpec } from "../src/index.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const originalServiceChild = process.env.LYSTAR_WEB_SERVICE_CHILD;

@@ -61,7 +61,7 @@ interface GatewayInternals {
 	restoreContextLeases(context: TestContext, client: RuntimeProtocolClient): Promise<void>;
 	checkWebSocketLiveness(): void;
 	sendWebSocket(socket: WebSocket, payload: string): void;
-	socketLiveness: WeakMap<WebSocket, boolean>;
+	socketLiveness: WeakMap<WebSocket, number>;
 	sessionIdsByPath: Map<string, string>;
 	contexts: Map<string, TestContext>;
 	subscriptionsFor(socket: WebSocket): Set<string>;
@@ -454,6 +454,7 @@ test("Gateway 项目文件变更只发送给对应项目订阅者", async (t) =>
 	context.bootstrapCache = {
 		generation: 1,
 		value: {
+			workspaceRevision: 0,
 			projects: [],
 			projectGroups: [],
 			capabilities: [],

@@ -18,7 +18,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
@@ -833,9 +832,12 @@ const ChainItem = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 });
 
-const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
-	description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
-	default: "user",
+const AgentScopeSchema = Type.Unsafe<AgentScope>({
+	...Type.String({
+		description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
+		default: "user",
+	}),
+	enum: ["user", "project", "both"],
 });
 
 const SubagentParams = Type.Object({
@@ -872,11 +874,13 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 
 		prepareArguments(args) {
-			if (!args || typeof args !== "object") return {};
+			if (!args || typeof args !== "object") return { agentScope: "user" as const };
 
 			const input = args as Record<string, unknown>;
+			const agentScope: AgentScope =
+				input.agentScope === "project" || input.agentScope === "both" ? input.agentScope : "user";
 			const common = {
-				agentScope: input.agentScope,
+				agentScope,
 				confirmProjectAgents: input.confirmProjectAgents,
 			};
 

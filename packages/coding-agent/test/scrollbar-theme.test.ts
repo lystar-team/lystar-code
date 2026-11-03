@@ -53,5 +53,4 @@ describe("fullscreen theme colors", () => {
 		expect(loadedTheme.getBgAnsi("searchMatchBg")).toBe(loadedTheme.getBgAnsi("selectedBg"));
 		expect(loadedTheme.getFgAnsi("searchMatchText")).toBe(loadedTheme.getFgAnsi("text"));
 	});
-
 });

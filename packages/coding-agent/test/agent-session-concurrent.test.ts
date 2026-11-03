@@ -16,7 +16,6 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isolateUserHome } from "./test-home-env.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -26,6 +25,7 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../src/core/system-prompt.ts";
+import { isolateUserHome } from "./test-home-env.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 isolateUserHome("agent-session-concurrent");

@@ -13,12 +13,14 @@ afterEach(() => {
 
 function createActions() {
 	vi.stubGlobal("localStorage", { getItem: () => null });
-	const stateRef = { current: {
-		...initialState(),
-		currentProjectId: "project-1",
-		gitStatus: { root: "/work", branch: "main", ahead: 0, behind: 0, files: [] },
-		gitDiff: { path: "app.ts", repositoryPath: "nested", staged: true, diff: "old", additions: 1, deletions: 0 },
-	} as WorkbenchState };
+	const stateRef = {
+		current: {
+			...initialState(),
+			currentProjectId: "project-1",
+			gitStatus: { root: "/work", branch: "main", ahead: 0, behind: 0, files: [] },
+			gitDiff: { path: "app.ts", repositoryPath: "nested", staged: true, diff: "old", additions: 1, deletions: 0 },
+		} as WorkbenchState,
+	};
 	const actions = useWorkbenchGitActions({
 		stateRef,
 		updateState: (value) => {
@@ -63,7 +65,11 @@ test("自动刷新进行中关闭 Diff，旧结果不会重新打开预览", asy
 	const { actions, stateRef } = createActions();
 	let finish!: (result: NonNullable<WorkbenchState["gitDiff"]>) => void;
 	const result = { ...stateRef.current.gitDiff!, diff: "stale" };
-	const diff = vi.spyOn(webApi, "gitDiff").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+	const diff = vi.spyOn(webApi, "gitDiff").mockReturnValue(
+		new Promise((resolve) => {
+			finish = resolve;
+		}),
+	);
 	const refreshing = actions.loadGitStatus(true);
 	await vi.waitFor(() => expect(diff).toHaveBeenCalledOnce());
 	actions.closeGitDiff();

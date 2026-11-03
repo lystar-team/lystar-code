@@ -1,21 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useConversationHistory } from "../src/components/workbench/use-conversation-history.ts";
 import type { ConversationListHandle } from "../src/components/workbench/use-conversation-scroll.ts";
 import { useConversationScroll } from "../src/components/workbench/use-conversation-scroll.ts";
-import { useConversationHistory } from "../src/components/workbench/use-conversation-history.ts";
 
 const hooks = vi.hoisted(() => ({
-	refs: [] as Array<{ current: unknown }>, states: [] as unknown[], effects: [] as Array<() => void>, index: 0, changed: false,
+	refs: [] as Array<{ current: unknown }>,
+	states: [] as unknown[],
+	effects: [] as Array<() => void>,
+	index: 0,
+	changed: false,
 }));
 
 vi.mock("react", () => ({
 	useState: <T>(initial: T | (() => T)): [T, (value: T | ((current: T) => T)) => void] => {
 		const index = hooks.index++;
-		if (!(index in hooks.states)) hooks.states[index] = typeof initial === "function" ? (initial as () => T)() : initial;
-		return [hooks.states[index] as T, (value) => {
-			const next = typeof value === "function" ? (value as (current: T) => T)(hooks.states[index] as T) : value;
-			hooks.changed ||= next !== hooks.states[index];
-			hooks.states[index] = next;
-		}];
+		if (!(index in hooks.states))
+			hooks.states[index] = typeof initial === "function" ? (initial as () => T)() : initial;
+		return [
+			hooks.states[index] as T,
+			(value) => {
+				const next = typeof value === "function" ? (value as (current: T) => T)(hooks.states[index] as T) : value;
+				hooks.changed ||= next !== hooks.states[index];
+				hooks.states[index] = next;
+			},
+		];
 	},
 	useRef: <T>(initial: T): { current: T } => {
 		const index = hooks.index++;
@@ -30,14 +38,22 @@ const loadEarlier = vi.fn<() => Promise<void>>();
 const showToast = vi.fn();
 function renderHistory(previousCursor = "cursor-1", sessionKey = "session-1", transcriptError?: string) {
 	hooks.index = 0;
-	return useConversationHistory({ sessionKey, hasMorePrevious: true, previousCursor, loadingEarlier: false,
-		transcriptError, loadEarlier, showToast });
+	return useConversationHistory({
+		sessionKey,
+		hasMorePrevious: true,
+		previousCursor,
+		loadingEarlier: false,
+		transcriptError,
+		loadEarlier,
+		showToast,
+	});
 }
 function renderScroll(sessionKey = "session-1", promptScrollRequest = 0) {
 	for (let render = 0; render < 10; render++) {
 		hooks.index = 0;
 		hooks.effects = [];
 		hooks.changed = false;
+		// biome-ignore lint/correctness/useHookAtTopLevel: This loop simulates effect-driven rerenders in the hook test harness.
 		const result = useConversationScroll({ sessionKey, promptScrollRequest });
 		for (const effect of hooks.effects) effect();
 		if (!hooks.changed) return result;
@@ -46,8 +62,13 @@ function renderScroll(sessionKey = "session-1", promptScrollRequest = 0) {
 }
 
 beforeEach(() => {
-	hooks.refs = []; hooks.states = []; hooks.effects = []; hooks.index = 0; hooks.changed = false;
-	loadEarlier.mockReset().mockResolvedValue(); showToast.mockReset();
+	hooks.refs = [];
+	hooks.states = [];
+	hooks.effects = [];
+	hooks.index = 0;
+	hooks.changed = false;
+	loadEarlier.mockReset().mockResolvedValue();
+	showToast.mockReset();
 });
 
 describe("conversation scroll control", () => {
@@ -116,7 +137,8 @@ describe("conversation history scroll intent", () => {
 	it("失败后显示错误并允许显式重试", async () => {
 		loadEarlier.mockRejectedValueOnce(new Error("读取失败")).mockResolvedValueOnce();
 		const history = renderHistory();
-		history.handleUserScrollUp(); history.handleAtTopStateChange(true);
+		history.handleUserScrollUp();
+		history.handleAtTopStateChange(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(showToast).toHaveBeenCalledWith("读取失败", "error");
 		renderHistory("cursor-1", "session-1", "读取失败").requestEarlierHistory(true);
@@ -125,17 +147,26 @@ describe("conversation history scroll intent", () => {
 
 	it("向下操作取消尚未完成的向上意图", () => {
 		const history = renderHistory();
-		history.handleUserScrollUp(); history.handleUserScrollDown(); history.handleAtTopStateChange(true);
+		history.handleUserScrollUp();
+		history.handleUserScrollDown();
+		history.handleAtTopStateChange(true);
 		expect(loadEarlier).not.toHaveBeenCalled();
 	});
 
 	it("切换会话后相同游标可加载，旧会话请求失败不显示错误", async () => {
 		let rejectRequest: (reason: Error) => void = () => {};
-		loadEarlier.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRequest = reject; }));
+		loadEarlier.mockImplementationOnce(
+			() =>
+				new Promise((_resolve, reject) => {
+					rejectRequest = reject;
+				}),
+		);
 		const first = renderHistory();
-		first.handleAtTopStateChange(true); first.handleUserScrollUp();
+		first.handleAtTopStateChange(true);
+		first.handleUserScrollUp();
 		const second = renderHistory("cursor-1", "session-2");
-		second.handleAtTopStateChange(true); second.handleUserScrollUp();
+		second.handleAtTopStateChange(true);
+		second.handleUserScrollUp();
 		expect(loadEarlier).toHaveBeenCalledTimes(2);
 		rejectRequest(new Error("旧会话读取失败"));
 		await new Promise((resolve) => setTimeout(resolve, 0));

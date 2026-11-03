@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { ToolBatchTool } from "../src/components/ai-elements/tool-batch.tsx";
 import { CompactionCard } from "../src/components/workbench/compaction-card.tsx";
 import {
 	activityRowGap,
@@ -11,10 +12,12 @@ import {
 	initialTranscriptDisplayState,
 	LiveElapsedHeader,
 } from "../src/components/workbench/conversation.tsx";
+import {
+	buildConversationListModel,
+	DEFAULT_TRANSCRIPT_GAP,
+} from "../src/components/workbench/conversation-list-model.ts";
 import { HookActivityGroup } from "../src/components/workbench/hook-activity-group.tsx";
 import { activeThinkingText, ThinkingBlock } from "../src/components/workbench/live-turn.tsx";
-import type { ToolBatchTool } from "../src/components/ai-elements/tool-batch.tsx";
-import { buildConversationListModel, DEFAULT_TRANSCRIPT_GAP } from "../src/components/workbench/conversation-list-model.ts";
 import { TranscriptItemView, TranscriptMessageView } from "../src/components/workbench/transcript.tsx";
 import type { WorkbenchState } from "../src/state/use-workbench";
 
@@ -1474,8 +1477,14 @@ describe("conversation render items", () => {
 		expect(previousFirstKey).toBe("work-process:boundary-final:0");
 		expect(prependedPage.findIndex((item) => item.key === previousFirstKey)).toBe(1);
 		const projected = buildConversationListModel(prependedPage, {
-			expandedAgentSteps: new Map(), expandedWorkProcesses: new Map(), expandedThinking: new Map(), expandedToolBatches: new Map(), retainedGroups: new Set(),
-			toolActivityPresentation: () => ({ repeatedFileReads: false }), toolPresentation: () => "group", gap: activityRowGap,
+			expandedAgentSteps: new Map(),
+			expandedWorkProcesses: new Map(),
+			expandedThinking: new Map(),
+			expandedToolBatches: new Map(),
+			retainedGroups: new Set(),
+			toolActivityPresentation: () => ({ repeatedFileReads: false }),
+			toolPresentation: () => "group",
+			gap: activityRowGap,
 		});
 		expect(projected.rows.some((row) => row.key === previousFirstKey && row.kind === "header")).toBe(true);
 	});

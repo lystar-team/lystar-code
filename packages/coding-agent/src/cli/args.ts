@@ -324,7 +324,7 @@ ${chalk.bold("命令：")}
   ${APP_NAME} close-old [--dry-run]     关闭更新前启动的旧版 lc 会话
   ${APP_NAME} close-old --force         强制关闭旧版 lc 会话
   ${APP_NAME} session stop <sessionId>  停止当前 Web Runtime 中的指定会话
-  ${APP_NAME} <command> --help          查看 install/remove/update/config/auth/lessons/doctor 等命令帮助
+  ${APP_NAME} <command> --help          查看命令帮助
 
 ${chalk.bold("选项：")}
   --provider <name>              模型所属 Provider（须同时指定 --model）
@@ -350,9 +350,9 @@ ${chalk.bold("选项：")}
                                  默认保留 MCP 工具，除非包含 mcp__ 开头的条目
                                  仅 +name/-name 条目会增加或移除默认工具
   --exclude-tools, -xt <tools>   禁用的工具名称或 * 模式，包含 MCP 工具
-  --thinking <level>             思考强度：off、minimal、low、medium、high、xhigh、max
-  --extension, -e <path>         加载 Extension 文件，可重复使用
-  --no-extensions, -ne           关闭 Extension 自动发现，显式 -e 仍生效
+  --thinking <level>             思考强度：off、minimal、low、medium、high、xhigh、max、ultra
+  --extension, -e <path>         加载 Extension 文件或 builtin:<name>，可重复使用
+  --no-extensions, -ne           关闭 Extension 自动发现和内置 Extension，显式 -e 仍生效
   --no-mcp                       本次运行关闭内置 MCP，不连接服务器或提供 MCP 工具
   --skill <path>                 加载 Skill 文件或目录，可重复使用
   --no-skills, -ns               关闭 Skill 自动发现和加载
@@ -361,8 +361,8 @@ ${chalk.bold("选项：")}
   --theme <path>                 加载 Theme 文件或目录，可重复使用
   --use-theme <name[/name]>      本次运行使用指定交互主题
   --no-themes                    关闭 Theme 自动发现和加载
-  --no-context-files, -nc        关闭 AGENTS.md 和 CLAUDE.md 自动发现
-  --export <file>                导出会话为 HTML 后退出
+  --no-context-files, -nc        关闭 AGENTS.md 和 CLAUDE.md 自动发现和加载
+  --export <file> [output]       导出会话为 HTML 后退出
   --list-models [search]         列出可用模型，可附带模糊搜索
   --verbose                      强制显示详细启动信息
   --tui-mode <mode>              TUI 模式：fullscreen（默认）或 regular
@@ -500,6 +500,8 @@ ${chalk.bold("环境变量：")}
   ${ENV_SESSION_DIR.padEnd(32)} - 会话存储目录，可被 --session-dir 覆盖
   PI_PACKAGE_DIR                   - 覆盖 Package 目录，用于 Nix/Guix store
   PI_OFFLINE                       - 设为 1/true/yes 时关闭启动网络请求
+  PI_SELF_UPDATE_COMMAND           - 自更新命令模板，支持 {packageName}、{version}、{installSpec}
+  PI_TELEMETRY                     - 设为 1/true/yes 或 0/false/no 时覆盖安装遥测设置
   PI_SHARE_VIEWER_URL              - /share 查看地址（默认 https://pi.dev/session/）
 
 ${chalk.bold("内置工具名称：")}

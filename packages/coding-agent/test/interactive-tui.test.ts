@@ -544,7 +544,7 @@ describe("createInteractiveTui", () => {
 		const terminal = new RecordingTerminal(40, 8);
 		const workspaceInputHandler = vi.fn(() => ({ consume: true as const }));
 		const received: string[] = [];
-		const handleOverlayMouse = vi.fn(() => ({ consume: true as const }));
+		const handleOverlayMouse = vi.fn(() => ({ handled: true as const }));
 		const overlay: Component & { focused: boolean } = {
 			focused: false,
 			render: () => ["overlay"],
@@ -568,7 +568,9 @@ describe("createInteractiveTui", () => {
 			terminal.sendInput("\x1b[<64;10;2M");
 
 			expect(received).toEqual(["\x1b[5~"]);
-			expect(handleOverlayMouse).toHaveBeenCalledWith(expect.objectContaining({ type: "wheel", screenX: 9, screenY: 1 }));
+			expect(handleOverlayMouse).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "wheel", screenX: 9, screenY: 1 }),
+			);
 			expect(workspaceInputHandler).not.toHaveBeenCalled();
 		} finally {
 			handle.hide();
@@ -898,6 +900,7 @@ describe("InteractiveMode transcript rebuild", () => {
 			terminal,
 			fullscreenCopyOnSelect: false,
 		});
+		if (!(ui instanceof LystarTUI)) throw new Error("Fullscreen mode must create LystarTUI");
 		ui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
 		const context: RenderSessionEntriesContext = { renderer: ui, renderSessionItems: vi.fn() };
 		const { renderSessionEntries } = InteractiveMode.prototype as unknown as {

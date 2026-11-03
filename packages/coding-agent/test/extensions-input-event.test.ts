@@ -132,11 +132,12 @@ describe("Input Event", () => {
 			},
 			rootOrigin: "room" as const,
 		};
-		await r.emit({ type: "agent_settled", turn });
+		await r.emit({ type: "agent_settled", turn, aborted: false });
 		expect((globalThis as any).testVar).toEqual([ids[0], ids[1]]);
 		await r.emit({
 			type: "agent_settled",
 			turn: { ...turn, origin: { type: "user", channel: "rpc" }, rootOrigin: "user" },
+			aborted: false,
 		});
 		expect((globalThis as any).testVar).toEqual([ids[0], ids[1], "user settled"]);
 	});

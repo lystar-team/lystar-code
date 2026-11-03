@@ -1,5 +1,6 @@
 import type { AssistantMessage, WebSearchCallContent } from "@earendil-works/pi-ai";
 import {
+	type Component,
 	Container,
 	Markdown,
 	type MarkdownTheme,
@@ -163,6 +164,16 @@ function collapseLongMarkdown(markdown: string): string {
 }
 
 /**
+ * A Markdown block of the last update. The next update reuses it at the same position for the same kind of content, so
+ * a streamed answer keeps the blocks it already rendered, also once the stream ends.
+ */
+interface MarkdownSlot {
+	kind: "text" | "thinking";
+	codeBlockCollapsed: boolean;
+	markdown: Markdown;
+}
+
+/**
  * Component that renders a complete assistant message
  */
 export class AssistantMessageComponent extends Container {
@@ -184,7 +195,11 @@ export class AssistantMessageComponent extends Container {
 	private streamingMarkdown?: Markdown;
 	private webSearchComponents = new Map<string, WebSearchCallComponent>();
 	private webSearchRanges: WebSearchRange[] = [];
+	private messageId?: string;
+	private timestamp?: string;
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
+	private markdownSlots: MarkdownSlot[] = [];
+	private markdownSlotKey?: string;
 
 	constructor(
 		message?: AssistantMessage,
@@ -194,6 +209,8 @@ export class AssistantMessageComponent extends Container {
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 		showThinking = true,
+		messageId?: string,
+		timestamp?: string,
 	) {
 		super();
 
@@ -203,6 +220,8 @@ export class AssistantMessageComponent extends Container {
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.messageId = messageId;
+		this.timestamp = timestamp;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
@@ -246,6 +265,7 @@ export class AssistantMessageComponent extends Container {
 	setOutputPad(padding: number): void {
 		this.outputPad = padding;
 		this.streamingMarkdown = undefined;
+		this.markdownSlots = [];
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
@@ -387,7 +407,6 @@ export class AssistantMessageComponent extends Container {
 					}
 				: undefined;
 
-		// Clear content container
 		this.contentContainer.clear();
 		this.streamingMarkdown = undefined;
 
@@ -396,16 +415,32 @@ export class AssistantMessageComponent extends Container {
 			return collapseLongMarkdown(markdown);
 		};
 
-		const hasVisibleContent = message.content.some(
-			(c) =>
-				(c.type === "text" && c.text.trim()) ||
-				(this.showThinking && c.type === "thinking" && c.thinking.trim()) ||
-				c.type === "webSearchCall",
-		);
-
-		if (hasVisibleContent) {
-			this.contentContainer.addChild(new Spacer(1));
+		const markdownSlotKey = message.content.map((content) => content.type).join(",");
+		if (markdownSlotKey !== this.markdownSlotKey) {
+			this.markdownSlotKey = markdownSlotKey;
+			this.markdownSlots = [];
 		}
+		const previousSlots = this.markdownSlots;
+		this.markdownSlots = [];
+		const codeBlockCollapsed = codeBlockCollapse !== undefined;
+		const markdownBlock = (kind: MarkdownSlot["kind"], text: string, create: () => Markdown): Markdown => {
+			const slot = previousSlots[this.markdownSlots.length];
+			const markdown =
+				slot?.kind === kind && slot.codeBlockCollapsed === codeBlockCollapsed ? slot.markdown : create();
+			markdown.setText(text);
+			this.markdownSlots.push({ kind, codeBlockCollapsed, markdown });
+			return markdown;
+		};
+
+		// Delay spacers until visible content is added so hidden thinking leaves no blank lines.
+		let needsSpacer = true;
+		const addVisibleChild = (child: Component) => {
+			if (needsSpacer) {
+				this.contentContainer.addChild(new Spacer(1));
+				needsSpacer = false;
+			}
+			this.contentContainer.addChild(child);
+		};
 
 		// Render content in order
 		let thinkingRunIndex = 0;
@@ -415,15 +450,26 @@ export class AssistantMessageComponent extends Container {
 				const markdown = collapseMarkdown(content.text.trim());
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				const markdownComponent = new Markdown(markdown, this.outputPad, 0, this.markdownTheme, undefined, {
-					transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
-					codeBlockCollapse,
-				});
-				this.contentContainer.addChild(markdownComponent);
+				const markdownComponent = markdownBlock(
+					"text",
+					markdown,
+					() =>
+						new Markdown(markdown, this.outputPad, 0, this.markdownTheme, undefined, {
+							transform: createMarkdownTransform(
+								"assistant",
+								() => this.isStreaming,
+								this.markdownTransformers,
+								this.messageId,
+								this.timestamp,
+							),
+							codeBlockCollapse,
+						}),
+				);
+				addVisibleChild(markdownComponent);
 				if (streamingText !== undefined) this.streamingMarkdown = markdownComponent;
 				const citations = getCitationLinks(content);
 				if (citations.length > 0) {
-					this.contentContainer.addChild(
+					addVisibleChild(
 						new Markdown(
 							formatMarkdownLinks(t("status.citations"), citations),
 							this.outputPad,
@@ -434,7 +480,7 @@ export class AssistantMessageComponent extends Container {
 				}
 			} else if (content.type === "webSearchCall") {
 				const component = this.webSearchComponents.get(content.id);
-				if (component) this.contentContainer.addChild(component);
+				if (component) addVisibleChild(component);
 			} else if (content.type === "thinking") {
 				const thinkingBlocks: string[] = [];
 				for (; i < message.content.length; i++) {
@@ -456,8 +502,6 @@ export class AssistantMessageComponent extends Container {
 					continue;
 				}
 
-				// Add spacing only when another visible assistant content block follows.
-				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
 				const hasVisibleContentAfter = message.content
 					.slice(i + 1)
 					.some(
@@ -466,30 +510,41 @@ export class AssistantMessageComponent extends Container {
 							(this.showThinking && c.type === "thinking" && c.thinking.trim()) ||
 							c.type === "webSearchCall",
 					);
-
 				const runIndex = thinkingRunIndex++;
 				const hidden = this.thinkingVisibilityOverrides.get(runIndex) ?? this.hideThinkingBlock;
+				// A hidden run with an empty label renders nothing, including no spacing.
+				if (hidden && !this.hiddenThinkingLabel.trim()) {
+					continue;
+				}
+				const thinking = thinkingBlocks.join("\n\n");
 				const thinkingComponent = hidden
 					? new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0)
-					: new Markdown(
-							collapseMarkdown(thinkingBlocks.join("\n\n")),
-							this.outputPad,
-							0,
-							this.markdownTheme,
-							{
-								color: (text: string) => theme.fg("thinkingText", text),
-								italic: true,
-							},
-							{
-								transform: createMarkdownTransform(
-									"assistant-thinking",
-									this.isStreaming,
-									this.markdownTransformers,
+					: markdownBlock(
+							"thinking",
+							collapseMarkdown(thinking),
+							() =>
+								new Markdown(
+									collapseMarkdown(thinking),
+									this.outputPad,
+									0,
+									this.markdownTheme,
+									{
+										color: (text: string) => theme.fg("thinkingText", text),
+										italic: true,
+									},
+									{
+										transform: createMarkdownTransform(
+											"assistant-thinking",
+											() => this.isStreaming,
+											this.markdownTransformers,
+											this.messageId,
+											this.timestamp,
+										),
+										codeBlockCollapse,
+									},
 								),
-								codeBlockCollapse,
-							},
 						);
-				this.contentContainer.addChild(
+				addVisibleChild(
 					new MouseRegion(thinkingComponent, (event) => {
 						if (event.type !== "click" || event.button !== "left") return undefined;
 						this.thinkingVisibilityOverrides.set(runIndex, !hidden);
@@ -497,9 +552,7 @@ export class AssistantMessageComponent extends Container {
 						return { handled: true };
 					}),
 				);
-				if (hasVisibleContentAfter) {
-					this.contentContainer.addChild(new Spacer(1));
-				}
+				needsSpacer = hasVisibleContentAfter;
 			}
 		}
 

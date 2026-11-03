@@ -626,7 +626,6 @@ export function getSummarizationFailure(response: AssistantMessage, label: strin
 
 function createSummarizationOptions(
 	model: Model<any>,
-	maxTokens: number,
 	apiKey: string | undefined,
 	headers: Record<string, string> | undefined,
 	env: Record<string, string> | undefined,
@@ -634,7 +633,7 @@ function createSummarizationOptions(
 	thinkingLevel: ThinkingLevel | undefined,
 	sessionId: string | undefined,
 ): SimpleStreamOptions {
-	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers, env, sessionId };
+	const options: SimpleStreamOptions = { signal, apiKey, headers, env, sessionId };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		options.reasoning = thinkingLevel;
 	}
@@ -692,7 +691,8 @@ export async function completeSummarization(
 export async function generateSummary(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
-	reserveTokens: number,
+	// Unused. Kept for existing callers; summaries use the model's output limit (#9512).
+	_reserveTokens: number | undefined,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
@@ -709,7 +709,7 @@ export async function generateSummary(
 		await generateSummaryWithUsage(
 			currentMessages,
 			model,
-			reserveTokens,
+			_reserveTokens,
 			apiKey,
 			headers,
 			signal,
@@ -787,16 +787,18 @@ async function summarizeConversationText(options: {
 		const response = await completeSummarization(
 			options.model,
 			buildContext(chunk),
-			createSummarizationOptions(
-				options.model,
-				options.maxTokens,
-				options.apiKey,
-				options.headers,
-				options.env,
-				options.signal,
-				options.thinkingLevel,
-				options.sessionId,
-			),
+			{
+				...createSummarizationOptions(
+					options.model,
+					options.apiKey,
+					options.headers,
+					options.env,
+					options.signal,
+					options.thinkingLevel,
+					options.sessionId,
+				),
+				maxTokens: options.maxTokens,
+			},
 			options.streamFn,
 			options.retry,
 			options.callbacks,
@@ -819,7 +821,8 @@ async function summarizeConversationText(options: {
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
-	reserveTokens: number,
+	// The configured reserve budget caps summary output before model and context limits apply.
+	reserveTokensOption: number | undefined,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
@@ -833,6 +836,7 @@ export async function generateSummaryWithUsage(
 	sessionId?: string,
 	requestHead?: Message[],
 ): Promise<{ text: string; usage: Usage }> {
+	const reserveTokens = reserveTokensOption ?? DEFAULT_COMPACTION_SETTINGS.reserveTokens;
 	const maxTokens = Math.min(
 		Math.floor(0.8 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
@@ -859,12 +863,18 @@ export async function generateSummaryWithUsage(
 			const response = await completeSummarization(
 				model,
 				context,
-				createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId),
+				{
+					...createSummarizationOptions(model, apiKey, headers, env, signal, thinkingLevel, sessionId),
+					maxTokens,
+				},
 				streamFn,
 				retry,
 				callbacks,
 				true,
 			);
+			if (response.content.some((block) => block.type === "toolCall")) {
+				throw new Error("Summarization attempted to call a tool");
+			}
 			const reusedFailure = getSummarizationFailure(response, "Summarization");
 			if (reusedFailure) throw new Error(reusedFailure);
 			return { text: contentText(response.content), usage: response.usage };
@@ -1125,7 +1135,6 @@ export async function compact(
 		tokensBefore,
 		previousSummary,
 		fileOps,
-		settings,
 	} = preparation;
 
 	// Generate summaries and merge into one
@@ -1139,7 +1148,7 @@ export async function compact(
 			const historyResult = await generateSummaryWithUsage(
 				messagesToSummarize,
 				model,
-				settings.reserveTokens,
+				undefined,
 				apiKey,
 				headers,
 				signal,
@@ -1159,7 +1168,6 @@ export async function compact(
 		const turnPrefixResult = await generateTurnPrefixSummary(
 			turnPrefixMessages,
 			model,
-			settings.reserveTokens,
 			apiKey,
 			headers,
 			env,
@@ -1169,6 +1177,7 @@ export async function compact(
 			retry,
 			callbacks,
 			sessionId,
+			customInstructions,
 		);
 		// Merge into single summary
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
@@ -1178,7 +1187,7 @@ export async function compact(
 		const result = await generateSummaryWithUsage(
 			messagesToSummarize,
 			model,
-			settings.reserveTokens,
+			undefined,
 			apiKey,
 			headers,
 			signal,
@@ -1219,7 +1228,6 @@ export async function compact(
 async function generateTurnPrefixSummary(
 	messages: AgentMessage[],
 	model: Model<any>,
-	reserveTokens: number,
 	apiKey: string | undefined,
 	headers?: Record<string, string>,
 	env?: Record<string, string>,
@@ -1229,16 +1237,19 @@ async function generateTurnPrefixSummary(
 	retry?: RetryPolicy,
 	callbacks?: RetryCallbacks,
 	sessionId?: string,
+	customInstructions?: string,
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.min(
-		Math.floor(0.5 * reserveTokens),
+		Math.floor(0.5 * DEFAULT_COMPACTION_SETTINGS.reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
 	); // Smaller budget for turn prefix
 	const conversationText = `# Conversation\n${serializeConversation(convertToLlm(messages))}`;
+	let initialPrompt = TURN_PREFIX_SUMMARIZATION_PROMPT;
+	if (customInstructions) initialPrompt = `${initialPrompt}\n\nAdditional focus: ${customInstructions}`;
 	return summarizeConversationText({
 		conversationText,
-		initialPrompt: TURN_PREFIX_SUMMARIZATION_PROMPT,
-		updatePrompt: `${TURN_PREFIX_SUMMARIZATION_PROMPT}\n\nUpdate the previous summary with this additional conversation chunk.`,
+		initialPrompt,
+		updatePrompt: `${initialPrompt}\n\nUpdate the previous summary with this additional conversation chunk.`,
 		model,
 		maxTokens,
 		apiKey,

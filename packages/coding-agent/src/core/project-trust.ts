@@ -52,7 +52,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		return options.trustOverride;
 	}
 	if (!hasTrustRequiringProjectResources(options.cwd)) {
-		return true;
+		return options.trustStore.get(options.cwd) ?? true;
 	}
 
 	if (!options.forcePrompt && options.extensionsResult) {

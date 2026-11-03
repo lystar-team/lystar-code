@@ -43,7 +43,6 @@ describe("SettingsManager", () => {
 			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
 			expect(savedSettings.thinkingDisplayMode).toBe("transcript");
 		});
-
 	});
 
 	describe("preserves externally added settings", () => {

@@ -24,6 +24,7 @@ class CaptureTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 async function waitForRender(): Promise<void> {

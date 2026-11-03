@@ -449,9 +449,12 @@ describe("RPC prompt response semantics", () => {
 			responseDelayMs: 0,
 			responseGate: responseGate.promise,
 			toolExecutionGate: toolExecutionGate.promise,
-			onToolExecutionStart: () => { toolExecutionStarted = true; },
+			onToolExecutionStart: () => {
+				toolExecutionStarted = true;
+			},
 			onUserMessages: (messages) => {
-				queuedMessageReachedModel ||= messages.includes("Change direction") || messages.includes("Summarize when finished");
+				queuedMessageReachedModel ||=
+					messages.includes("Change direction") || messages.includes("Summarize when finished");
 			},
 		});
 
@@ -507,7 +510,9 @@ describe("RPC prompt response semantics", () => {
 			toolExecutionGate.resolve();
 			responseGate.resolve();
 			await vi.waitFor(() => {
-				expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "agent_settled")).toHaveLength(1);
+				expect(
+					parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "agent_settled"),
+				).toHaveLength(1);
 			});
 			expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type === "agent_start")).toHaveLength(1);
 			expect(queuedMessageReachedModel).toBe(false);

@@ -154,7 +154,6 @@ describe("Fireworks models", () => {
 		expect(findEnvKeys("fireworks")).toEqual(["FIREWORKS_API_KEY"]);
 		expect(getEnvApiKey("fireworks")).toBe("test-fireworks-key");
 	});
-
 });
 
 // --- Integration tests for Fireworks Anthropic session affinity and tool compat ---

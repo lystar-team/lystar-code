@@ -4,10 +4,23 @@ import { describe, expect, it } from "vitest";
 
 function reply(output: number, decodeDurationMs: number, timestamp = 1): AssistantMessage {
 	return {
-		role: "assistant", api: "openai-completions", provider: "deepseek", model: "deepseek-chat",
-		content: [], timestamp, decodeDurationMs, stopReason: "stop",
-		usage: { input: 10, output, reasoning: 31, cacheRead: 30, cacheWrite: 0, totalTokens: 40 + output,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		role: "assistant",
+		api: "openai-completions",
+		provider: "deepseek",
+		model: "deepseek-chat",
+		content: [],
+		timestamp,
+		decodeDurationMs,
+		stopReason: "stop",
+		usage: {
+			input: 10,
+			output,
+			reasoning: 31,
+			cacheRead: 30,
+			cacheWrite: 0,
+			totalTokens: 40 + output,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 	};
 }
 

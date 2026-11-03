@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 
 export type ProjectTrustDecision = boolean | null;
@@ -73,11 +73,28 @@ function trustDecision(value: TrustFileValue): boolean | undefined {
 	return typeof decision === "boolean" ? decision : undefined;
 }
 
+/** Trust file keys naming `path`. Usually one; several on Windows when saved with different casing. */
+function findTrustFileKeys(data: TrustFile, path: string): string[] {
+	return Object.keys(data).filter((key) => pathsEqual(key, path));
+}
+
+function trustRecordForPath(data: TrustFile, path: string): ProjectTrustRecord {
+	const result: ProjectTrustRecord = {};
+	for (const key of findTrustFileKeys(data, path)) {
+		const record = trustRecord(data[key]);
+		if (record.decision !== undefined) result.decision = record.decision;
+		if (record.collaborationInheritance) result.collaborationInheritance = record.collaborationInheritance;
+	}
+	return result;
+}
+
 function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
 	let currentDir = normalizeCwd(cwd);
 	while (true) {
-		const decision = trustDecision(data[currentDir]);
-		if (decision !== undefined) return { path: currentDir, decision };
+		for (const key of findTrustFileKeys(data, currentDir)) {
+			const decision = trustDecision(data[key]);
+			if (decision !== undefined) return { path: key, decision };
+		}
 
 		const parentDir = dirname(currentDir);
 		if (parentDir === currentDir) return null;
@@ -262,7 +279,7 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
 
 	while (true) {
 		const agentsSkillsDir = join(currentDir, ".agents", "skills");
-		if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) return true;
+		if (!pathsEqual(agentsSkillsDir, userAgentsSkillsDir) && existsSync(agentsSkillsDir)) return true;
 		const parentDir = dirname(currentDir);
 		if (parentDir === currentDir) return false;
 		currentDir = parentDir;
@@ -406,7 +423,9 @@ export class ProjectTrustStore {
 
 	getCollaborationInheritance(cwd: string): ProjectTrustCollaborationInheritance {
 		return withTrustFileLock(this.trustPath, () => {
-			const entry = trustRecord(readTrustFile(this.trustPath)[normalizeCwd(cwd)]).collaborationInheritance;
+			const key = normalizeCwd(cwd);
+			const data = readTrustFile(this.trustPath);
+			const entry = trustRecordForPath(data, key).collaborationInheritance;
 			return {
 				enabled: entry?.enabled !== false,
 				...(entry?.enabled && entry.resourceFingerprint ? { resourceFingerprint: entry.resourceFingerprint } : {}),
@@ -423,12 +442,13 @@ export class ProjectTrustStore {
 			const data = readTrustFile(this.trustPath);
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
-				const existing = trustRecord(data[key]);
+				const existing = trustRecordForPath(data, key);
+				for (const existingKey of findTrustFileKeys(data, key)) {
+					delete data[existingKey];
+				}
 				if (decision === null) {
 					if (existing.collaborationInheritance?.enabled) {
 						data[key] = { collaborationInheritance: { enabled: false } };
-					} else {
-						delete data[key];
 					}
 				} else if (decision === false && existing.collaborationInheritance?.enabled) {
 					data[key] = { decision, collaborationInheritance: { enabled: false } };
@@ -446,8 +466,8 @@ export class ProjectTrustStore {
 		withTrustFileLock(this.trustPath, () => {
 			const data = readTrustFile(this.trustPath);
 			const key = normalizeCwd(cwd);
-			const existing = trustRecord(data[key]);
-			if (enabled && trustDecision(data[key]) !== true) {
+			const existing = trustRecordForPath(data, key);
+			if (enabled && trustDecision(existing) !== true) {
 				throw Object.assign(new Error("协作信任继承需要来源项目已有的显式信任决定"), {
 					code: "project_trust_required",
 				});
@@ -456,6 +476,9 @@ export class ProjectTrustStore {
 				throw Object.assign(new Error("协作信任继承缺少资源授权指纹"), {
 					code: "project_trust_fingerprint_required",
 				});
+			}
+			for (const existingKey of findTrustFileKeys(data, key)) {
+				delete data[existingKey];
 			}
 			data[key] = {
 				...(existing.decision === undefined ? {} : { decision: existing.decision }),

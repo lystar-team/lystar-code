@@ -59,7 +59,7 @@ function responseCapture(): {
 		},
 		end(value: string) {
 			body = value;
-			response.writableFinished = true;
+			Object.defineProperty(response, "writableFinished", { value: true });
 		},
 		// 历史读取会在响应上监听 close 取消只读请求，假响应需要事件接口。
 		once: emitter.once.bind(emitter),

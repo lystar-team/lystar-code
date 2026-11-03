@@ -773,6 +773,7 @@ describe("task workbench components", () => {
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			startupNoticesShown: false,
 			changelogMarkdown: "## [0.84.2]\n\n- 上游更新",
+			extensionChangelogUpdates: [],
 			version: VERSION,
 			chatContainer,
 			workspace: { isFullscreen: () => true },

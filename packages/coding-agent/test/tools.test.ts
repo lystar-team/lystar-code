@@ -1,7 +1,7 @@
 import { applyPatch } from "diff";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join, resolve } from "path";
+import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
@@ -12,7 +12,7 @@ import {
 	createLocalBashOperations,
 } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition, type EditToolOptions } from "../src/core/tools/edit.ts";
-import { normalizeToLF, type Edit } from "../src/core/tools/edit-diff.ts";
+import { type Edit, normalizeToLF } from "../src/core/tools/edit-diff.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
@@ -26,10 +26,10 @@ import {
 	createReadTool,
 	createWriteTool,
 } from "../src/index.ts";
-import * as shellModule from "../src/utils/shell.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
-import { splitBom } from "../src/utils/text.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+import * as shellModule from "../src/utils/shell.ts";
+import { splitBom } from "../src/utils/text.ts";
 
 const readTool = createReadTool(process.cwd());
 const writeTool = createWriteTool(process.cwd());
@@ -68,7 +68,9 @@ async function executeSnapshotEdit(
 			newText: range.newText + (hasEnding && range.newText && !range.newText.endsWith("\n") ? "\n" : ""),
 		};
 	});
-	return createEditTool(cwd, options).execute(callId, { path, edits }, signal, undefined, context);
+	const params = { path, edits };
+	if (context) return createEditToolDefinition(cwd, options).execute(callId, params, signal, undefined, context);
+	return createEditTool(cwd, options).execute(callId, params, signal);
 }
 
 function createTinyBmp1x1Red24bpp(): Buffer {
@@ -379,9 +381,14 @@ describe("Coding Agent Tools", () => {
 			};
 
 			await expect(
-				executeSnapshotEdit(testDir, "test-call-write-conflict", testFile, original, [
-					{ startLine: 1, endLine: 1, newText: "ALPHA\n" },
-				], { operations }),
+				executeSnapshotEdit(
+					testDir,
+					"test-call-write-conflict",
+					testFile,
+					original,
+					[{ startLine: 1, endLine: 1, newText: "ALPHA\n" }],
+					{ operations },
+				),
 			).rejects.toMatchObject({
 				code: "MATCH_NOT_FOUND",
 				category: "precondition",
@@ -428,7 +435,10 @@ describe("Coding Agent Tools", () => {
 					path: missingFile,
 					edits: [{ oldText: "hello", newText: "world" }],
 				}),
-			).rejects.toMatchObject({ code: "TARGET_NOT_FOUND", details: { path: missingFile, writeState: "not_written" } });
+			).rejects.toMatchObject({
+				code: "TARGET_NOT_FOUND",
+				details: { path: missingFile, writeState: "not_written" },
+			});
 		});
 
 		it("should select one repeated source line by its exact range", async () => {
@@ -448,7 +458,9 @@ describe("Coding Agent Tools", () => {
 			await executeSnapshotEdit(process.cwd(), "test-call-duplicate-lines", testFile, original, [
 				{ oldText: "middle\nrepeat", newText: "middle\nchanged" },
 			]);
-			expect(readFileSync(testFile, "utf-8")).toBe("\uFEFFbefore\r\nrepeat\r\nmiddle\r\nchanged\r\nafter\r\nrepeat\r\n");
+			expect(readFileSync(testFile, "utf-8")).toBe(
+				"\uFEFFbefore\r\nrepeat\r\nmiddle\r\nchanged\r\nafter\r\nrepeat\r\n",
+			);
 		});
 
 		it("should select a Unicode-equivalent duplicate only by its requested line range", async () => {
@@ -528,9 +540,9 @@ describe("Coding Agent Tools", () => {
 			const testFile = join(testDir, "edit-empty-edits.txt");
 			writeFileSync(testFile, "hello\nworld\n");
 
-			await expect(executeSnapshotEdit(process.cwd(), "test-call-11", testFile, "hello\nworld\n", [])).rejects.toThrow(
-				/INVALID_ARGUMENTS/i,
-			);
+			await expect(
+				executeSnapshotEdit(process.cwd(), "test-call-11", testFile, "hello\nworld\n", []),
+			).rejects.toThrow(/INVALID_ARGUMENTS/i);
 		});
 
 		it("should fail when multi-edit regions overlap", async () => {
@@ -561,9 +573,9 @@ describe("Coding Agent Tools", () => {
 				category: "precondition",
 				retryable: false,
 				details: {
-							issues: expect.arrayContaining([
-								expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 }),
-							]),
+					issues: expect.arrayContaining([
+						expect.objectContaining({ code: "EDIT_OVERLAP", editIndex: 0, overlapEditIndex: 1 }),
+					]),
 					writeState: "not_written",
 				},
 				fingerprintConstraint: { kind: "edit_content", revision: expect.any(String), edits: expect.any(String) },
@@ -639,9 +651,14 @@ describe("Coding Agent Tools", () => {
 			};
 
 			await expect(
-				executeSnapshotEdit(testDir, "test-call-16", "broken.txt", "hello\n", [
-					{ startLine: 1, endLine: 1, newText: "world\n" },
-				], genericFailureOptions),
+				executeSnapshotEdit(
+					testDir,
+					"test-call-16",
+					"broken.txt",
+					"hello\n",
+					[{ startLine: 1, endLine: 1, newText: "world\n" }],
+					genericFailureOptions,
+				),
 			).rejects.toMatchObject({ code: "UNCLASSIFIED", message: "disk offline" });
 		});
 
@@ -684,13 +701,9 @@ describe("Coding Agent Tools", () => {
 			expect(operations.access).not.toHaveBeenCalled();
 			expect(operations.readFile).not.toHaveBeenCalled();
 
-			const result = await definition.execute(
-				"preview-execute",
-				args as never,
-				undefined,
-				undefined,
-				{ cwd: testDir } as ExtensionToolContext,
-			);
+			const result = await definition.execute("preview-execute", args as never, undefined, undefined, {
+				cwd: testDir,
+			} as ExtensionToolContext);
 			expect(result.details?.diff).toContain("-2 second");
 			expect(result.details?.diff).toContain("-3 third");
 			expect(result.details?.diff).toContain("+2 replacement");
@@ -1144,6 +1157,48 @@ describe("Coding Agent Tools", () => {
 			expect(output).not.toContain("match two");
 		});
 
+		// https://github.com/earendil-works/pi/issues/11398
+		it("should keep context line numbers aligned with ripgrep when a file contains a lone CR", async () => {
+			const testFile = join(testDir, "lone-cr.txt");
+			writeFileSync(testFile, "before\rprogress\nneedle\nafter");
+
+			const result = await grepTool.execute("test-call-lone-cr", {
+				pattern: "needle",
+				path: testFile,
+				context: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("lone-cr.txt-1- beforeprogress");
+			expect(output).toContain("lone-cr.txt:2: needle");
+			expect(output).toContain("lone-cr.txt-3- after");
+		});
+
+		// https://github.com/earendil-works/pi/issues/11203
+		it("should ignore RIPGREP_CONFIG_PATH", async () => {
+			const configFile = join(testDir, "rg-config");
+			const testFile = join(testDir, "fixture.txt");
+			writeFileSync(configFile, "--fixed-strings\n");
+			writeFileSync(testFile, "aXb\na.b\n");
+
+			const previous = process.env.RIPGREP_CONFIG_PATH;
+			process.env.RIPGREP_CONFIG_PATH = configFile;
+			try {
+				const result = await grepTool.execute("test-call-rg-config", {
+					pattern: "a.b",
+					path: testFile,
+					literal: false,
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("fixture.txt:1: aXb");
+				expect(output).toContain("fixture.txt:2: a.b");
+			} finally {
+				if (previous === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+				else process.env.RIPGREP_CONFIG_PATH = previous;
+			}
+		});
+
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");
 			const payload = join(testDir, "payload.sh");
@@ -1278,7 +1333,6 @@ describe("tool cwd resolution", () => {
 	it("edit uses ctx.cwd when provided", async () => {
 		const testFile = join(testDir, "ctx-cwd-edit.txt");
 		writeFileSync(testFile, "old text");
-		const tool = createEditToolDefinition("/");
 		await executeSnapshotEdit(
 			"/",
 			"test-edit-ctx-cwd",
@@ -1469,7 +1523,10 @@ describe("edit tool exact source replacements", () => {
 				{ oldText: "missing", newText: "replacement" },
 			]),
 		).rejects.toMatchObject({
-			details: { writeState: "not_written", issues: expect.arrayContaining([expect.objectContaining({ editIndex: 0 })]) },
+			details: {
+				writeState: "not_written",
+				issues: expect.arrayContaining([expect.objectContaining({ editIndex: 0 })]),
+			},
 		});
 		expect(readFileSync(testFile, "utf-8")).toBe(original);
 	});

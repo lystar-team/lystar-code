@@ -1,4 +1,5 @@
 import {
+	type ClientIdentity,
 	createInitialSystemMessage,
 	getCurrentSystemMessage,
 	getCurrentSystemPrompt,
@@ -143,6 +144,11 @@ export interface AgentOptions {
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
 	toolRecoveryController?: ToolRecoveryController;
+	/**
+	 * How requests identify the app to providers, merged field by field over `DEFAULT_AGENT_IDENTITY`
+	 * (`{ attribution: PI_ATTRIBUTION }`). Pass `{ attribution: null }` to send no attribution headers.
+	 */
+	identity?: ClientIdentity;
 }
 
 class PendingMessageQueue {
@@ -245,6 +251,8 @@ export class Agent {
 	public toolExecution: ToolExecutionMode;
 	/** 归一化 Tool 恢复结果的仅观察控制器。 */
 	public toolRecoveryController?: ToolRecoveryController;
+	/** Request identity forwarded to the stream function, over `DEFAULT_AGENT_IDENTITY`. */
+	public identity?: ClientIdentity;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -273,6 +281,7 @@ export class Agent {
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
 		this.toolRecoveryController = runtimeOptions.toolRecoveryController;
+		this.identity = runtimeOptions.identity;
 	}
 
 	/**
@@ -514,6 +523,7 @@ export class Agent {
 			transport: this.transport,
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
+			identity: this.identity,
 			toolExecution: this.toolExecution,
 			toolRecoveryController: this.toolRecoveryController,
 			beforeToolCall: this.beforeToolCall,

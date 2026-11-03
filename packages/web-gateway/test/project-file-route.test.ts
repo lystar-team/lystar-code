@@ -165,13 +165,38 @@ test("项目文件路由返回内容版本并使用哈希保护保存", async (t
 				} as T;
 			}
 			switch (command.command) {
-				case "read_project_file_chunk": return await files.readChunk(command.cwd, command.path, command.offset, command.limit, command.contentVersion) as T;
-				case "rename_project_file": return await files.rename(command.cwd, command.path, command.name) as T;
-				case "delete_project_files": return await files.delete(command.cwd, command.paths) as T;
-				case "archive_project_files": return await files.archive(command.cwd, command.paths, command.name) as T;
-				case "start_project_upload": return await files.startUpload("browser-one", command.cwd, command.path, command.name, uploadSignal) as T;
-				case "write_project_upload": return await files.writeUpload("browser-one", command.uploadId, command.offset, command.data, command.done) as T;
-				case "cancel_project_upload": return await files.cancelUpload("browser-one", command.uploadId) as T;
+				case "read_project_file_chunk":
+					return (await files.readChunk(
+						command.cwd,
+						command.path,
+						command.offset,
+						command.limit,
+						command.contentVersion,
+					)) as T;
+				case "rename_project_file":
+					return (await files.rename(command.cwd, command.path, command.name)) as T;
+				case "delete_project_files":
+					return (await files.delete(command.cwd, command.paths)) as T;
+				case "archive_project_files":
+					return (await files.archive(command.cwd, command.paths, command.name)) as T;
+				case "start_project_upload":
+					return (await files.startUpload(
+						"browser-one",
+						command.cwd,
+						command.path,
+						command.name,
+						uploadSignal,
+					)) as T;
+				case "write_project_upload":
+					return (await files.writeUpload(
+						"browser-one",
+						command.uploadId,
+						command.offset,
+						command.data,
+						command.done,
+					)) as T;
+				case "cancel_project_upload":
+					return (await files.cancelUpload("browser-one", command.uploadId)) as T;
 			}
 			throw new Error(`Unexpected command: ${command.command}`);
 		},

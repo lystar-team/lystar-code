@@ -220,6 +220,7 @@ class RpcProcess {
 			cwd: workspace.cwd,
 			env: {
 				...process.env,
+				NODE_OPTIONS: [process.env.NODE_OPTIONS, "--conditions=source"].filter(Boolean).join(" "),
 				PI_CODING_AGENT_DIR: workspace.agentDir,
 				PI_OFFLINE: "1",
 				LYSTAR_WEB_CONTRACT_SCENARIO: scenario,

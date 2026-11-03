@@ -58,6 +58,7 @@ export const editToolSystemPromptContribution = {
 		"Batch disjoint changes to the same file. Every oldText is matched against the same current file, not after earlier replacements. Merge overlapping changes into one edit.",
 		"Empty newText deletes oldText. To insert, replace a unique existing anchor with that anchor plus the inserted text; oldText must not be empty.",
 		"A rejected batch writes nothing. Use the returned current evidence to correct oldText or add context, then resubmit the complete edits array. Do not repeat an unchanged failed call or infer success from missing oldText.",
+		"Use edit for targeted changes. Batch changes to one file in a single call.",
 	],
 } as const;
 

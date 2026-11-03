@@ -10,7 +10,7 @@ export interface ChangelogEntry {
 	content: string;
 }
 
-type ChangelogVersion = Omit<ChangelogEntry, "content">;
+export type ChangelogVersion = Omit<ChangelogEntry, "content">;
 
 const GITHUB_REPO = "earendil-works/pi";
 const CHANGELOG_LINK_BASE_PATH = "packages/coding-agent";
@@ -195,7 +195,7 @@ export function getFullChangelogMarkdown(changelogPath = getChangelogPath()): st
 /**
  * Compare versions. Returns: -1 if v1 < v2, 0 if v1 === v2, 1 if v1 > v2
  */
-export function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number {
+export function compareVersions(v1: ChangelogVersion, v2: ChangelogVersion): number {
 	if (v1.major !== v2.major) return v1.major - v2.major;
 	if (v1.minor !== v2.minor) return v1.minor - v2.minor;
 	if (v1.patch !== v2.patch) return v1.patch - v2.patch;
@@ -225,17 +225,27 @@ export function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number 
 }
 
 /**
- * Get entries newer than lastVersion
+ * Get entries newer than lastVersion, optionally limited to versions at or below currentVersion.
  */
-export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] {
+export function getNewEntries(
+	entries: ChangelogEntry[],
+	lastVersion: string,
+	currentVersion?: string,
+): ChangelogEntry[] {
 	const last: ChangelogEntry = {
 		...(parseVersion(lastVersion) ?? { major: 0, minor: 0, patch: 0 }),
 		content: "",
 	};
 	const matchingIndex = entries.findIndex((entry) => compareVersions(entry, last) === 0);
-	if (matchingIndex !== -1) return entries.slice(0, matchingIndex);
-
-	return entries.filter((entry) => compareVersions(entry, last) > 0);
+	const newer =
+		matchingIndex !== -1
+			? entries.slice(0, matchingIndex)
+			: entries.filter((entry) => compareVersions(entry, last) > 0);
+	const current = currentVersion === undefined ? undefined : parseVersion(currentVersion);
+	if (currentVersion !== undefined && current === undefined) {
+		throw new Error(`Invalid changelog version: ${currentVersion}`);
+	}
+	return current === undefined ? newer : newer.filter((entry) => compareVersions(entry, current) <= 0);
 }
 
 // Re-export getChangelogPath from config.ts for convenience

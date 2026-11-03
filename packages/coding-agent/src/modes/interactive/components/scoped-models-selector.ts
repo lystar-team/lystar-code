@@ -4,13 +4,14 @@ import {
 	type Focusable,
 	fuzzyFilter,
 	getKeybindings,
+	getSelectPageIndex,
 	Input,
 	Key,
 	matchesKey,
 	Spacer,
 	Text,
 } from "@earendil-works/pi-tui";
-import { getModelSearchText } from "../model-search.ts";
+import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { uiGlyphs } from "../ui-glyphs.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -96,6 +97,7 @@ export interface ModelsCallbacks {
  * Changes are session-only until explicitly persisted with Ctrl+S.
  */
 export class ScopedModelsSelectorComponent extends Container implements Focusable {
+	readonly capturesViewportInput: boolean = true;
 	private modelsById: Map<string, Model<any>> = new Map();
 	private allIds: string[] = [];
 	private enabledIds: EnabledIds = null;
@@ -254,6 +256,8 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const id = item.model?.id ?? item.fullId;
 			const styledId = item.model ? id : theme.strikethrough(id);
 			const modelText = isSelected ? theme.fg("accent", styledId) : styledId;
+			const name = item.model ? getDistinctModelName(item.model) : undefined;
+			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
 			const providerBadge = theme.fg("muted", item.model ? ` [${item.model.provider}]` : " [unavailable]");
 			const status = item.model
 				? allEnabled
@@ -262,7 +266,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 						? theme.fg("success", ` ${uiGlyphs.success}`)
 						: theme.fg("dim", ` ${uiGlyphs.failure}`)
 				: theme.fg("dim", ` ${uiGlyphs.failure}`);
-			this.listContainer.addChild(new Text(`${prefix}${modelText}${providerBadge}${status}`, 0, 0));
+			this.listContainer.addChild(new Text(`${prefix}${modelText}${nameText}${providerBadge}${status}`, 0, 0));
 		}
 
 		// Add scroll indicator if needed
@@ -298,6 +302,13 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		if (kb.matches(data, "tui.select.down")) {
 			if (this.filteredItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
+			this.updateList();
+			return;
+		}
+		const pageIndex = getSelectPageIndex(kb, data, this.selectedIndex, this.filteredItems.length, this.maxVisible);
+		if (pageIndex !== undefined) {
+			if (this.filteredItems.length === 0) return;
+			this.selectedIndex = pageIndex;
 			this.updateList();
 			return;
 		}

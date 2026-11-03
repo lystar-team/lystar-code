@@ -1,12 +1,12 @@
 {
 	"name": "pi-extension-gondolin",
 	"private": true,
-	"version": "1.3.0-lystar.24",
+	"version": "1.5.0",
 	"type": "module",
 	"scripts": {
-		"clean": "echo 'nothing to clean'",
 		"build": "echo 'nothing to build'",
-		"check": "echo 'nothing to check'"
+		"check": "echo 'nothing to check'",
+		"clean": "echo 'nothing to clean'"
 	},
 	"pi": {
 		"extensions": [
@@ -14,6 +14,6 @@
 		]
 	},
 	"dependencies": {
-		"@earendil-works/gondolin": "0.12.0"
+		"@earendil-works/gondolin": "0.14.0"
 	}
 }

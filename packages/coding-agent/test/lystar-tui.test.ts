@@ -28,6 +28,7 @@ class CaptureTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 class TestOutputFlow extends EventEmitter implements OutputFlow {
@@ -187,5 +188,4 @@ describe("LYStar TUI", () => {
 		expect(output).not.toContain("\x1b[2J");
 		tui.stop();
 	});
-
 });

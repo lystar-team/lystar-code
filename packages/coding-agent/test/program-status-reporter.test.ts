@@ -32,7 +32,16 @@ function assistantEnd(stopReason: AssistantMessage["stopReason"], errorMessage?:
 	return { type: "message_end", message };
 }
 
-const settled: AgentSessionEvent = { type: "agent_settled", aborted: false };
+const settled: Extract<AgentSessionEvent, { type: "agent_settled" }> = {
+	type: "agent_settled",
+	turn: {
+		turnId: "turn-1",
+		inputId: "input-1",
+		origin: { type: "user", channel: "interactive" },
+		rootOrigin: "user",
+	},
+	aborted: false,
+};
 
 const compactionEnd = (
 	reason: "manual" | "threshold" | "overflow",
@@ -72,11 +81,11 @@ describe("ProgramStatusReporter", () => {
 		send({ type: "agent_start" }, assistantEnd("error", "Invalid API key\n{details}"), settled);
 		expect(last()).toEqual({ state: "error", message: "Invalid API key" });
 
-		send({ type: "agent_start" }, assistantEnd("aborted"), { type: "agent_settled", aborted: true });
+		send({ type: "agent_start" }, assistantEnd("aborted"), { ...settled, aborted: true });
 		expect(last()).toEqual({ state: "idle" });
 
 		// Aborted after a successful response, for example in an agent_before_settle hook or a retry delay.
-		send({ type: "agent_start" }, assistantEnd("stop"), { type: "agent_settled", aborted: true });
+		send({ type: "agent_start" }, assistantEnd("stop"), { ...settled, aborted: true });
 		expect(last()).toEqual({ state: "idle" });
 	});
 

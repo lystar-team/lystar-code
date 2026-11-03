@@ -14,9 +14,13 @@ for (const [name, apply] of [
 			["log(ﬀ);", "log(ff);"],
 		])("uses explicit indentation while normalizing %s", (originalLine, oldLine) => {
 			const original = `header\n        ${originalLine}\n    ${originalLine}   \nfooter\n`;
-			expect(apply(original, [{ oldText: `    ${name === "coding-agent" ? originalLine : oldLine}`, newText: "    done();" }], "memory.txt").newContent).toBe(
-				`header\n        ${originalLine}\n    done();   \nfooter\n`,
-			);
+			expect(
+				apply(
+					original,
+					[{ oldText: `    ${name === "coding-agent" ? originalLine : oldLine}`, newText: "    done();" }],
+					"memory.txt",
+				).newContent,
+			).toBe(`header\n        ${originalLine}\n    done();   \nfooter\n`);
 		});
 
 		it("preserves tab indentation and disjoint batch replacements", () => {
@@ -25,7 +29,10 @@ for (const [name, apply] of [
 				apply(
 					original,
 					[
-						{ oldText: name === "coding-agent" ? "		log(“x”);" : '		log("x");', newText: "		first();" },
+						{
+							oldText: name === "coding-agent" ? "		log(“x”);" : '		log("x");',
+							newText: "		first();",
+						},
 						{ oldText: name === "coding-agent" ? "	log(“x”);" : '	log("x");', newText: "	second();" },
 					],
 					"memory.txt",
@@ -45,7 +52,11 @@ for (const [name, apply] of [
 
 		it("does not infer indentation that the arguments did not provide", () => {
 			expect(() =>
-				apply("        log(“x”);\n    log(“x”);\n", [{ oldText: name === "coding-agent" ? "log(“x”);" : 'log("x");', newText: "done();" }], "memory.txt"),
+				apply(
+					"        log(“x”);\n    log(“x”);\n",
+					[{ oldText: name === "coding-agent" ? "log(“x”);" : 'log("x");', newText: "done();" }],
+					"memory.txt",
+				),
 			).toThrow("Found 2 occurrences");
 		});
 

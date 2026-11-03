@@ -23,13 +23,13 @@ import {
 	type SessionEntry,
 	SessionManager,
 } from "../../coding-agent/src/core/session-manager.ts";
-import * as sessionNameConfig from "../../coding-agent/src/extensions/session-name/config.ts";
 import { SettingsManager } from "../../coding-agent/src/core/settings-manager.ts";
 import {
 	appendSessionRecoveryLedger,
 	createRecoveryLedgerEntry,
 	getSessionRecoveryLedgerPath,
 } from "../../coding-agent/src/core/tool-recovery/ledger.ts";
+import * as sessionNameConfig from "../../coding-agent/src/extensions/session-name/config.ts";
 import { agentStepFromEntry } from "../src/agent-steps.ts";
 import { CodingAgentRuntimeAdapter, projectRuntimeProgress } from "../src/runtime-adapter.ts";
 import { projectTranscriptItem } from "../src/transcript-projection.ts";
@@ -1942,7 +1942,7 @@ describe("CodingAgentRuntimeAdapter", () => {
 		expect(roomContext).toContain("PROFILE_SYSTEM_MARKER");
 		expect(roomContext).toContain("PROFILE_AGENTS_MARKER");
 		expect(roomContext).toContain("GLOBAL_APPEND_MARKER");
-		expect(roomContext).toContain("expert coding assistant operating inside pi");
+		expect(roomContext).toContain("coding assistant running inside pi");
 		expect(roomContext).not.toContain("GLOBAL_AGENTS_MARKER");
 
 		capturedContexts.length = 0;

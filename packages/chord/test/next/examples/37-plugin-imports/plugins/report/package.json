@@ -1,0 +1,14 @@
+{
+	"name": "@example/report",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"example-greeting": "1.0.0",
+		"example-native": "1.0.0"
+	},
+	"chord": {
+		"external": [
+			"example-native"
+		]
+	}
+}

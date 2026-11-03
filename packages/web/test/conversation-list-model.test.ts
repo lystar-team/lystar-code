@@ -3,12 +3,33 @@ import { buildConversationListModel } from "../src/components/workbench/conversa
 import type { AgentStepRenderItem, MessageRenderItem } from "../src/components/workbench/conversation-render-model.ts";
 import { ConversationScrollCache } from "../src/components/workbench/conversation-scroll-cache.ts";
 
-const message: MessageRenderItem = { kind: "message", key: "answer", live: false, role: "assistant", text: "正文", attachments: [], sources: [], copyVisible: false, editable: false };
-const step: AgentStepRenderItem = { kind: "agent-step", key: "step", live: false,
-	step: { id: "step", title: "读取说明", status: "running", startedAt: 0, toolCallIds: [], messageEntryIds: [] }, items: [message] };
+const message: MessageRenderItem = {
+	kind: "message",
+	key: "answer",
+	live: false,
+	role: "assistant",
+	text: "正文",
+	attachments: [],
+	sources: [],
+	copyVisible: false,
+	editable: false,
+};
+const step: AgentStepRenderItem = {
+	kind: "agent-step",
+	key: "step",
+	live: false,
+	step: { id: "step", title: "读取说明", status: "running", startedAt: 0, toolCallIds: [], messageEntryIds: [] },
+	items: [message],
+};
 const options: Parameters<typeof buildConversationListModel>[1] = {
-	expandedAgentSteps: new Map(), expandedWorkProcesses: new Map(), expandedThinking: new Map(), expandedToolBatches: new Map(), retainedGroups: new Set(),
-	toolActivityPresentation: () => ({ repeatedFileReads: false }), toolPresentation: () => "group", gap: () => 12,
+	expandedAgentSteps: new Map(),
+	expandedWorkProcesses: new Map(),
+	expandedThinking: new Map(),
+	expandedToolBatches: new Map(),
+	retainedGroups: new Set(),
+	toolActivityPresentation: () => ({ repeatedFileReads: false }),
+	toolPresentation: () => "group",
+	gap: () => 12,
 };
 
 describe("conversation visible rows", () => {
@@ -26,14 +47,20 @@ describe("conversation visible rows", () => {
 	it("工作过程与内部步骤分别使用各自的展开选择", () => {
 		const items = [{ kind: "work-process" as const, key: "process", items: [step] }];
 		expect(buildConversationListModel(items, options).rows.map((row) => row.key)).toEqual(["process"]);
-		const open = buildConversationListModel(items, { ...options, expandedWorkProcesses: new Map([["process", true]]) });
+		const open = buildConversationListModel(items, {
+			...options,
+			expandedWorkProcesses: new Map([["process", true]]),
+		});
 		expect(open.rows.map((row) => row.key)).toEqual(["process", "process:padding", "step", "step:padding", "answer"]);
 		expect(open.nodes[0]?.end).toBe(open.rows.length - 1);
 	});
 
 	it("展开 Thinking 会打开其所属的完成步骤与工作过程", () => {
-		const completed: AgentStepRenderItem = { ...step, step: { ...step.step, status: "completed" },
-			items: [{ kind: "thinking", key: "thinking", live: false, streaming: false, text: "检查说明" }] };
+		const completed: AgentStepRenderItem = {
+			...step,
+			step: { ...step.step, status: "completed" },
+			items: [{ kind: "thinking", key: "thinking", live: false, streaming: false, text: "检查说明" }],
+		};
 		const items = [{ kind: "work-process" as const, key: "process", items: [completed] }];
 		const open = buildConversationListModel(items, { ...options, expandedThinking: new Map([["thinking", true]]) });
 		expect(open.rows.at(-1)?.key).toBe("thinking");

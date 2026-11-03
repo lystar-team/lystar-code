@@ -496,9 +496,8 @@ describe("createBranchedSession", () => {
 			const newFile = session.createBranchedSession(id1);
 			expect(newFile).toBeDefined();
 
-			// The branched path has no assistant, so the file should not exist yet
-			// (deferred to _persist on first assistant, matching newSession() contract)
-			expect(existsSync(newFile!)).toBe(false);
+			// The branched path starts with the first user message, which is persisted immediately (#10000).
+			expect(existsSync(newFile!)).toBe(true);
 
 			// Simulate extension adding entry before assistant (like preset on turn_start)
 			session.appendCustomEntry("preset-state", { name: "plan" });

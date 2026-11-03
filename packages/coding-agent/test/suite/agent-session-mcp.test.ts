@@ -305,7 +305,9 @@ describe("AgentSession MCP integration", () => {
 			resources: true,
 			toolExposure: { shot: "direct" },
 		});
-		await vi.waitFor(() => expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait", "mcp__docs__shot"]));
+		await vi.waitFor(() =>
+			expect(harness.session.getActiveToolNames()).toEqual(["codemode", "codemode_wait", "mcp__docs__shot"]),
+		);
 		const registered = harness.session.getAllTools().map((tool) => tool.name);
 		expect(registered).toEqual(expect.arrayContaining(["mcp__docs__search", "mcp__docs__shot"]));
 		expect(registered).not.toContain("mcp__docs__fail");

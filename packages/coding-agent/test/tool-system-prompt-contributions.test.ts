@@ -11,5 +11,4 @@ describe("built-in tool system prompt contributions", () => {
 
 		expect(definition.promptGuidelines).toBeUndefined();
 	});
-
 });

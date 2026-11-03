@@ -28,7 +28,12 @@ test("ProjectRegistry 串行处理并发保存并保留完整项目索引", asyn
 	);
 
 	const database = new DatabaseSync(registry.path, { readOnly: true });
-	const saved = { projects: database.prepare("SELECT data FROM projects ORDER BY position").all().map((row) => JSON.parse(String(row.data)) as { id: string; cwd: string }) };
+	const saved = {
+		projects: database
+			.prepare("SELECT data FROM projects ORDER BY position")
+			.all()
+			.map((row) => JSON.parse(String(row.data)) as { id: string; cwd: string }),
+	};
 	database.close();
 	assert.equal(saved.projects?.length, projectDirectories.length);
 	assert.deepEqual(

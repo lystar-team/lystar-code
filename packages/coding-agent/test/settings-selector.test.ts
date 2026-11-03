@@ -8,6 +8,7 @@ import {
 	type SettingsConfig,
 	SettingsSelectorComponent,
 } from "../src/modes/interactive/components/settings-selector.ts";
+import { SelectSubmenu } from "../src/modes/interactive/components/settings-submenu.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -101,7 +102,6 @@ describe("SettingsSelectorComponent", () => {
 			expect(onSettingChange).toHaveBeenLastCalledWith("quiet-startup", value);
 		}
 	});
-
 
 	it("keeps the configured fixed theme marked while browsing", () => {
 		const config = {
@@ -203,5 +203,24 @@ describe("SettingsSelectorComponent", () => {
 		compactList.handleInput("\r");
 		expect(compactSettings.getCompactionEnabled()).toBe(false);
 		expect(compactChanges).toHaveBeenLastCalledWith("autocompact", false);
+	});
+
+	it("pages a searchable submenu with selection page keys (#7629)", () => {
+		const onSelect = vi.fn();
+		const submenu = new SelectSubmenu(
+			"Theme",
+			"",
+			Array.from({ length: 20 }, (_, index) => ({ value: `theme-${index}`, label: `theme-${index}` })),
+			"theme-0",
+			onSelect,
+			() => {},
+			undefined,
+			{ searchable: true },
+		);
+
+		submenu.handleInput("\x1b[6~"); // PageDown
+		submenu.handleInput("\r");
+
+		expect(onSelect).toHaveBeenCalledWith("theme-10");
 	});
 });

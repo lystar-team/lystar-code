@@ -43,6 +43,7 @@ it("大历史工具结果不重复广播，连续文本增量保持完整", asyn
 		output: 0,
 		cacheRead: 0,
 		cacheWrite: 0,
+		totalTokens: 12,
 		total: 12,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};

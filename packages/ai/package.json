@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pi-ai",
-	"version": "1.3.0-lystar.24",
+	"version": "1.5.0",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -12,38 +12,47 @@
 	],
 	"exports": {
 		".": {
+			"source": "./src/index.ts",
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
 		"./models": {
+			"source": "./src/models.ts",
 			"types": "./dist/models.d.ts",
 			"import": "./dist/models.js"
 		},
 		"./compat": {
+			"source": "./src/compat.ts",
 			"types": "./dist/compat.d.ts",
 			"import": "./dist/compat.js"
 		},
 		"./providers/*": {
+			"source": "./src/providers/*.ts",
 			"types": "./dist/providers/*.d.ts",
 			"import": "./dist/providers/*.js"
 		},
 		"./api/*": {
+			"source": "./src/api/*.ts",
 			"types": "./dist/api/*.d.ts",
 			"import": "./dist/api/*.js"
 		},
 		"./utils/*": {
+			"source": "./src/utils/*.ts",
 			"types": "./dist/utils/*.d.ts",
 			"import": "./dist/utils/*.js"
 		},
 		"./oauth": {
+			"source": "./src/oauth.ts",
 			"types": "./dist/oauth.d.ts",
 			"import": "./dist/oauth.js"
 		},
 		"./bedrock-provider": {
+			"source": "./src/bedrock-provider.ts",
 			"types": "./dist/bedrock-provider.d.ts",
 			"import": "./dist/bedrock-provider.js"
 		},
 		"./bun-oauth": {
+			"source": "./src/bun-oauth.ts",
 			"types": "./dist/bun-oauth.d.ts",
 			"import": "./dist/bun-oauth.js"
 		}
@@ -56,28 +65,28 @@
 		"README.md"
 	],
 	"scripts": {
-		"clean": "shx rm -rf dist",
-		"generate-models": "node scripts/generate-models.ts --strict",
-		"hydrate-model-data": "node scripts/generate-models.ts --strict --data-only",
-		"generate-model-catalog": "node scripts/generate-models.ts --strict --json-only --json-output ../../.artifacts/model-catalog",
-		"check:model-data": "node scripts/check-model-data.ts",
 		"build": "npm run generate-models && npm run build:offline",
-		"build:offline": "npm run check:model-data && tsc -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
+		"build:offline": "npm run check:model-data && tsc -p tsconfig.build.json && node ../../scripts/package-files.mjs clean dist/providers/data && node ../../scripts/package-files.mjs copy src/providers/data dist/providers",
+		"check:model-data": "node scripts/check-model-data.ts",
+		"clean": "node ../../scripts/package-files.mjs clean dist",
+		"generate-model-catalog": "node catalog/generate.ts --strict --json-only --json-output ../../.artifacts/model-catalog",
+		"generate-models": "node catalog/generate.ts --strict",
+		"hydrate-model-data": "node catalog/generate.ts --strict --data-only",
+		"prepublishOnly": "npm run clean && npm run build",
 		"test": "vitest --run",
-		"test:live": "node -e \"if (process.env.PI_LIVE_TEST !== '1' || !Object.keys(process.env).some((key) => /(?:API_KEY|OAUTH_TOKEN|HF_TOKEN)$/.test(key))) { console.error('AI live tests require PI_LIVE_TEST=1 and at least one provider credential.'); process.exit(1); }\" && PI_TEST_SUITE=live vitest --run",
-		"prepublishOnly": "npm run clean && npm run build"
+		"test:live": "node -e \"if (process.env.PI_LIVE_TEST !== '1' || !Object.keys(process.env).some((key) => /(?:API_KEY|OAUTH_TOKEN|HF_TOKEN)$/.test(key))) { console.error('AI live tests require PI_LIVE_TEST=1 and at least one provider credential.'); process.exit(1); }\" && PI_TEST_SUITE=live vitest --run"
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "0.129.0",
 		"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-		"@earendil-works/pi-telemetry": "1.3.0-lystar.24",
+		"@earendil-works/pi-schema": "1.5.0",
+		"@earendil-works/pi-telemetry": "1.5.0",
 		"@google/genai": "2.21.0",
 		"@smithy/node-http-handler": "4.12.1",
 		"http-proxy-agent": "9.1.0",
 		"https-proxy-agent": "9.1.0",
 		"openai": "7.19.0",
-		"partial-json": "0.1.7",
-		"typebox": "1.3.27"
+		"partial-json": "0.1.7"
 	},
 	"keywords": [
 		"ai",
@@ -102,6 +111,7 @@
 	"devDependencies": {
 		"@types/node": "22.19.19",
 		"canvas": "3.2.3",
-		"vitest": "4.1.11"
+		"typebox": "1.3.27",
+		"vitest": "4.1.12"
 	}
 }

@@ -225,7 +225,7 @@ export class SessionReadIndex {
 		for (const stream of [worker.stdin, worker.stdout, worker.stderr]) {
 			if (stream instanceof Socket) stream.ref();
 		}
-		return new Promise((resolve, reject) => {
+		const result = new Promise<SessionIndexResponse["result"]>((resolve, reject) => {
 			const cleanup = () => signal?.removeEventListener("abort", onAbort);
 			const onAbort = () => {
 				const pending = this.pending.get(id);
@@ -266,6 +266,9 @@ export class SessionReadIndex {
 				},
 			);
 		});
+		// A client can disconnect before this read settles; disposal must not become an unhandled rejection.
+		void result.catch(() => {});
+		return result;
 	}
 
 	private releaseWorker(worker: ChildProcessWithoutNullStreams): void {

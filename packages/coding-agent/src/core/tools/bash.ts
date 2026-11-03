@@ -1,7 +1,6 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
@@ -21,7 +20,7 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { BASH_UPDATE_THROTTLE_MS, createShellRenderers } from "./renderers/bash.ts";
-import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+import { type TypeBoxAgentTool, wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -581,7 +580,7 @@ export function createBashToolDefinition(
 	return createShellToolDefinition(cwd, bashToolConfig, options);
 }
 
-export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
+export function createBashTool(cwd: string, options?: BashToolOptions): TypeBoxAgentTool<typeof bashSchema> {
 	const definition = createBashToolDefinition(cwd, options);
 	const tool = wrapToolDefinition(definition);
 	Object.assign(tool, {

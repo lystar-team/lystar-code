@@ -15,19 +15,32 @@ const frames = new Map<number, FrameRequestCallback>();
 
 function setup(scrollbarWidth = 10) {
 	const element = Object.assign(new ElementStub(), {
-		scrollTop: 400, scrollHeight: 1000, clientHeight: 200,
-		offsetWidth: 500, clientWidth: 500 - scrollbarWidth,
+		scrollTop: 400,
+		scrollHeight: 1000,
+		clientHeight: 200,
+		offsetWidth: 500,
+		clientWidth: 500 - scrollbarWidth,
 		getBoundingClientRect: () => ({ left: 0, right: 500 }),
 	}) as unknown as HTMLDivElement;
 	const options = {
-		onPause: vi.fn(), onUp: vi.fn(), onDown: vi.fn(), onCancel: vi.fn(),
-		onExpansion: vi.fn(), onUserPosition: vi.fn(),
+		onPause: vi.fn(),
+		onUp: vi.fn(),
+		onDown: vi.fn(),
+		onCancel: vi.fn(),
+		onExpansion: vi.fn(),
+		onUserPosition: vi.fn(),
 	};
 	const intent = useConversationScrollIntent(options, { current: element });
-	const pointer = (target: EventTarget = element, clientX = 495) => ({
-		target, currentTarget: element, clientX, button: 0, pointerType: "mouse",
-	}) as PointerEvent<HTMLDivElement>;
-	const scroll = () => intent.onScrollCapture?.({ target: element, currentTarget: element } as UIEvent<HTMLDivElement>);
+	const pointer = (target: EventTarget = element, clientX = 495) =>
+		({
+			target,
+			currentTarget: element,
+			clientX,
+			button: 0,
+			pointerType: "mouse",
+		}) as PointerEvent<HTMLDivElement>;
+	const scroll = () =>
+		intent.onScrollCapture?.({ target: element, currentTarget: element } as UIEvent<HTMLDivElement>);
 	return { element, options, intent, pointer, scroll };
 }
 
@@ -36,7 +49,11 @@ beforeEach(() => {
 	vi.stubGlobal("Element", ElementStub);
 	vi.stubGlobal("getComputedStyle", () => ({ width: "10px" }));
 	vi.stubGlobal("window", {
-		requestAnimationFrame: (callback: FrameRequestCallback) => { const id = frames.size + 1; frames.set(id, callback); return id; },
+		requestAnimationFrame: (callback: FrameRequestCallback) => {
+			const id = frames.size + 1;
+			frames.set(id, callback);
+			return id;
+		},
 		cancelAnimationFrame: (id: number) => frames.delete(id),
 	});
 });
@@ -45,7 +62,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("conversation scroll intent", () => {
 	it.each(["工具按钮", "列表空白"])("按下%s时程序滚动不取消定位或暂停跟随", (target) => {
 		const { element, options, intent, pointer, scroll } = setup();
-		intent.onPointerDown?.(pointer(target === "工具按钮" ? new ElementStub() as unknown as Element : element, 200));
+		intent.onPointerDown?.(pointer(target === "工具按钮" ? (new ElementStub() as unknown as Element) : element, 200));
 		element.scrollTop = 350;
 		scroll();
 		intent.onPointerUp?.(pointer());

@@ -40,6 +40,7 @@ class TestTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 
 	sendInput(data: string): void {
 		this.inputHandler?.(data);

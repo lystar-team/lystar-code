@@ -9,6 +9,7 @@ describe("node loader", () => {
 		const child = spawnSync(process.execPath, [fileURLToPath(new URL("./fixtures/loader.ts", import.meta.url))], {
 			encoding: "utf8",
 			timeout: 30_000,
+			env: { ...process.env, NODE_OPTIONS: "--conditions=source" },
 		});
 		assert.equal(child.error, undefined, child.stderr);
 		assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);

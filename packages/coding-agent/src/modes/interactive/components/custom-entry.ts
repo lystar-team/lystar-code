@@ -4,6 +4,7 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.ts";
 import type { InteractiveCardAction } from "./interactive-card.ts";
+import { keyHint, keyText } from "./keybinding-hints.ts";
 import { renderCardWithDivider } from "./tool-card-layout.ts";
 
 /**
@@ -71,7 +72,7 @@ export class CustomEntryComponent extends Container {
 
 		let component: Component | undefined;
 		try {
-			component = this.renderer(this.entry, { expanded: this._expanded }, theme);
+			component = this.renderer(this.entry, { expanded: this._expanded, keyText, keyHint }, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const box = new Box(this.outputPad, 0, (text) => text);

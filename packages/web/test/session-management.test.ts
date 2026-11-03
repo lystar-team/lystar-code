@@ -33,5 +33,4 @@ describe("会话管理排序", () => {
 		expect(result).toEqual(sessions);
 		expect(result).not.toBe(sessions);
 	});
-
 });

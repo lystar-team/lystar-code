@@ -33,15 +33,17 @@ test("Room 变更只推送轻量通知，不把消息和任务改动变成工作
 	};
 	const context = internal.createContext("room-client");
 	const sent: unknown[] = [];
-	context.sockets.add(Object.assign(new EventEmitter(), {
-		readyState: WebSocket.OPEN,
-		bufferedAmount: 0,
-		send(value: string, callback: (error?: Error) => void) {
-			sent.push(JSON.parse(value));
-			callback();
-		},
-		close() {},
-	}) as unknown as WebSocket);
+	context.sockets.add(
+		Object.assign(new EventEmitter(), {
+			readyState: WebSocket.OPEN,
+			bufferedAmount: 0,
+			send(value: string, callback: (error?: Error) => void) {
+				sent.push(JSON.parse(value));
+				callback();
+			},
+			close() {},
+		}) as unknown as WebSocket,
+	);
 	const event: ServerEvent = {
 		type: "room_updated",
 		cwd: agentDir,

@@ -20,6 +20,7 @@ export interface BuiltinSlashCommand {
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: t("command.settings") },
 	{ name: "model", description: t("command.model"), argumentHint: "<provider/model>" },
+	{ name: "tree", description: t("command.tree") },
 	{ name: "thinking", description: "设置思考级别", argumentHint: "<level>" },
 	{ name: "scoped-models", description: t("command.scopedModels") },
 	{ name: "export", description: t("command.export") },
@@ -35,7 +36,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "hotkeys", description: t("command.hotkeys") },
 	{ name: "fork", description: t("command.fork") },
 	{ name: "clone", description: t("command.clone") },
-	{ name: "tree", description: t("command.tree") },
 	{ name: "trust", description: t("command.trust") },
 	{ name: "login", description: t("command.login"), argumentHint: "<provider>" },
 	{ name: "logout", description: t("command.logout") },

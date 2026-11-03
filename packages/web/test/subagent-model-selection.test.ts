@@ -14,5 +14,4 @@ describe("智能体切换基础模型", () => {
 		expect(thinkingLevelAfterModelChange("high", [])).toBe("high");
 		expect(thinkingLevelAfterModelChange("high", undefined)).toBe("high");
 	});
-
 });

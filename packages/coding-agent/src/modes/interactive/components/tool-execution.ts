@@ -23,7 +23,7 @@ import {
 	isInteractiveCard,
 	resolveInteractiveCardAction,
 } from "./interactive-card.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import { keyHint, keyText } from "./keybinding-hints.ts";
 import type { SubagentRunTarget } from "./subagent-run.ts";
 import { renderCardHover } from "./tool-card-layout.ts";
 import { formatToolSummary } from "./tool-summary.ts";
@@ -71,6 +71,8 @@ export class ToolExecutionComponent extends Container {
 	private cwd: string;
 	private executionStarted = false;
 	private argsComplete = false;
+	/** `updateArgs()` ran since the last display update; the next render applies it. */
+	private argsPending = false;
 	private result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError: boolean;
@@ -159,6 +161,8 @@ export class ToolExecutionComponent extends Container {
 			resultDetails: this.result?.details,
 			durationMs: this.isPartial ? undefined : this.result?.durationMs,
 			outputPad: this.outputPad,
+			keyText,
+			keyHint,
 		};
 	}
 
@@ -258,10 +262,15 @@ export class ToolExecutionComponent extends Container {
 		this.result = { ...this.result, details };
 	}
 
+	/**
+	 * Show new partial arguments. Applied at the next render, so a call streaming many argument deltas between two
+	 * frames runs its renderer once per frame, not once per delta (#9265).
+	 */
 	updateArgs(args: any): void {
 		this.args = args;
 		this.argsRevision++;
-		this.updateDisplay();
+		this.argsPending = true;
+		this.ui.requestRender();
 	}
 
 	markExecutionStarted(): void {
@@ -389,6 +398,7 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): string[] {
 		this.lastRenderedWidth = width;
+		if (this.argsPending) this.updateDisplay();
 		if (this.hideComponent) {
 			this.lastRenderedLineCount = 0;
 			return [];
@@ -444,6 +454,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(updateCall = !this.preserveExpandedEditCall): void {
+		this.argsPending = false;
 		this.renderVersion++;
 
 		let hasContent = false;

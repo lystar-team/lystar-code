@@ -28,6 +28,8 @@
 			"scripts/model-catalog-protocol.ts",
 			"packages/*/src/**/*.ts",
 			"!packages/web/src/**/*",
+			"packages/*/test/**/*.ts",
+			"packages/ai/catalog/**/*.ts",
 			"packages/coding-agent/examples/**/*.ts",
 			"!**/*.d.ts",
 			"packages/agent/examples/**/*.ts",

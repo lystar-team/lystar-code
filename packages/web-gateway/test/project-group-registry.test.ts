@@ -28,7 +28,13 @@ test("ProjectGroupRegistry 持久化项目组和项目归属", async (t) => {
 	assert.deepEqual(restored.list(), registry.list());
 	assert.equal((await stat(restored.path)).mode & 0o777, 0o600);
 	const database = new DatabaseSync(restored.path, { readOnly: true });
-	assert.deepEqual(database.prepare("SELECT data FROM project_groups ORDER BY position").all().map((row) => JSON.parse(String(row.data))), [{ id: group.id, name: "重要项目", projectIds: [] }]);
+	assert.deepEqual(
+		database
+			.prepare("SELECT data FROM project_groups ORDER BY position")
+			.all()
+			.map((row) => JSON.parse(String(row.data))),
+		[{ id: group.id, name: "重要项目", projectIds: [] }],
+	);
 	assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 1);
 	database.close();
 });

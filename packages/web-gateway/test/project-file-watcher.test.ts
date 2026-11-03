@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { type TestContext, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { ProjectFileWatcher } from "../../web-runtime/src/project-file-watcher.ts";
@@ -102,7 +102,16 @@ test("linked worktree 监听实际 gitdir 和共享 refs，忽略对象库写入
 	const git = (cwd: string, args: string[]) => execFileAsync("git", ["-C", cwd, ...args], { timeout: 5000 });
 	await mkdir(main);
 	await git(main, ["init", "-q"]);
-	await git(main, ["-c", "user.name=Watcher", "-c", "user.email=watcher@example.invalid", "commit", "--allow-empty", "-qm", "initial"]);
+	await git(main, [
+		"-c",
+		"user.name=Watcher",
+		"-c",
+		"user.email=watcher@example.invalid",
+		"commit",
+		"--allow-empty",
+		"-qm",
+		"initial",
+	]);
 	await git(main, ["worktree", "add", "-qb", "linked", worktree]);
 	const batches: string[][] = [];
 	const errors: unknown[] = [];
@@ -135,10 +144,14 @@ test("关闭监听会清理待发送通知，关闭发生在初始化期间也�
 	watcher.close();
 	await delay(200);
 	assert.deepEqual(batches, []);
-	const early = new ProjectFileWatcher(root, (paths) => batches.push(paths));
+	const earlyBatches: string[][] = [];
+	const early = new ProjectFileWatcher(root, (paths) => {
+		earlyBatches.push(paths);
+	});
 	early.close();
 	await early.ready;
 	await writeFile(join(root, "later.txt"), "x");
 	await delay(200);
 	assert.deepEqual(batches, []);
+	assert.deepEqual(earlyBatches, []);
 });
