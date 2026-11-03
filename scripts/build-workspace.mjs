@@ -11,7 +11,7 @@ for (const arg of args) {
 const shared = args.has("--shared");
 const offline = shared || args.has("--offline");
 const packages = [
-	"chord", "tui", "telemetry", "codemode", "mcp", "ai", "durable", "env", "agent", "protocol",
+	"schema", "telemetry", "chord", "tui", "codemode", "mcp", "ai", "durable", "env", "agent", "protocol",
 	"coding-agent", "web-protocol", "web-runtime", "web", "web-gateway",
 ];
 for (const name of packages) {

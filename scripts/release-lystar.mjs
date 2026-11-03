@@ -100,6 +100,7 @@ function commit(paths, message, releaseChecked = false) {
 function prepareVersion(previous, version, packages, upstream) {
 	const paths = new Set([
 		"package-lock.json",
+		"packages/ai/src/utils/version.ts",
 		"packages/coding-agent/npm-shrinkwrap.json",
 		"packages/coding-agent/install-lock/package.json",
 		"packages/coding-agent/install-lock/package-lock.json",
